@@ -1,7 +1,7 @@
 # Execution Tasks: Carole.ai Platform
 
 ## 1. Foundation & Infrastructure
-- [ ] Setup Next.js monolithic repository structure.
+- [x] Setup Next.js monolithic repository structure.
 - [ ] Initialize PostgreSQL database with `pgvector` extension.
 - [ ] Implement robust WebSocket `EventBus` for real-time bi-directional communication.
 

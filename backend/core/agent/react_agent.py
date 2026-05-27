@@ -5,11 +5,16 @@ This file defines the core ReACT (Reasoning and Acting) loop for standard Worker
 
 Responsibilities:
 1. Execute the Thought-Action-Observation loop.
-2. Maintain local Working Memory (JSONB scratchpad).
-3. Query the MultiModelRouter for LLM completions.
-4. Invoke the ToolExecutor to run tools (Code, Shell, Playwright, Git).
-5. Pause execution and emit an EventBus message when a tool requires Judge or Human permission.
-6. Parse the `<task-notification>` protocol when acting as a Coordinator reading Worker outputs.
+2. ENFORCE CONFIDENCE-BASED RESEARCH: 
+    - Step 1: Think and assess confidence based on internal knowledge and 'Lessons Learned' memory.
+    - Step 2: If confidence is low or the task requires modern/external documentation, MUST use `WebSearchTool` or `BrowserTool` to gather real-time data first.
+    - Step 3: Re-evaluate and reason with citations from the web data.
+    - Step 4: Execute actions (write code, run commands).
+3. Maintain local Working Memory (JSONB scratchpad).
+4. Query the MultiModelRouter for LLM completions.
+5. Invoke the ToolExecutor to run tools (Code, Shell, Playwright, Git).
+6. Pause execution and emit an EventBus message when a tool requires Judge or Human permission.
+7. Parse the `<task-notification>` protocol when acting as a Coordinator reading Worker outputs.
 """
 
 class ReACTAgent:
@@ -18,5 +23,11 @@ class ReACTAgent:
         self.event_bus = event_bus
         
     async def run_loop(self, initial_prompt: str):
-        # TODO: Implement the Thought-Action-Observation loop
+        # 1. Fetch System Prompt (Includes constraints to check confidence and search web first)
+        # 2. Start While Loop (Until task is marked Complete):
+        #      a. Generate LLM Completion (Thought -> Action)
+        #      b. If Thought indicates low confidence -> force tool: WebSearch
+        #      c. Execute Tool via ToolExecutor
+        #      d. Append Observation to local memory
+        #      e. Check if goal is met
         pass

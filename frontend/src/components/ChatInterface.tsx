@@ -1,6 +1,8 @@
+"use client";
+
+import React, { useState, useEffect } from 'react';
+
 /**
- * frontend/src/components/ChatInterface.tsx
- * 
  * Main Chat UI for the Carole.ai Platform.
  * 
  * Responsibilities:
@@ -9,16 +11,12 @@
  * 3. Support @name and /@name mentions in the input box.
  * 4. Display live typing indicators and tool execution streaming from active agents.
  * 5. Provide an interface for Humans to approve 'Human-Only' tool execution requests.
- * 
- * Note: Styled exclusively with premium Vanilla CSS (Glassmorphism, vibrant colors, smooth animations).
  */
-
-import React, { useState, useEffect } from 'react';
-
 export default function ChatInterface() {
     return (
         <div className="chat-container">
             {/* TODO: Implement Chat UI */}
+            <h1>Carole.ai Live Chat</h1>
         </div>
     );
 }
