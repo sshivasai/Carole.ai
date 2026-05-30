@@ -24,7 +24,7 @@
 - [x] **Web Research**: Implement `web_tools.py` (Tavily search + URL text extraction).
 - [ ] **Browser**: Integrate Headless Playwright Chromium with screenshot capturing to the EventBus.
 - [ ] **Voice**: Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) APIs for meeting participation.
-- [ ] **Coordination**: Implement `AgentTool` (Spawn) and `SendMessageTool` (Continue).
+- [x] **Coordination**: Implement `AgentTool` (Spawn) and `SendMessageTool` (Continue).
 
 ## 4. Multi-Model Orchestrator & Agent Engine
 - [x] Build `MultiModelRouter` to route requests to Claude 3.5, GPT-4o-mini, and Qwen dynamically.
@@ -37,7 +37,7 @@
 ## 5. Specialized Agents & Roles
 - [ ] **Coordinator Agent**: The primary interface that synthesizes plans and manages workers.
 - [ ] **Worker Agents**: Specialized in execution without delegating understanding.
-- [ ] **Judge AI**: Passively monitors `EventBus`, detects hallucinations, provides real-time coaching, and autonomously approves safe tools.
+- [x] **Judge AI**: LLM-powered tool safety evaluator wired into ToolExecutor judge gate.
 - [ ] **Utility Bots**: Implement the Meeting Assistant (consumes STT, produces notes) and Daily Email/Summarizer bots.
 
 ## 6. Web Interface (Next.js/React)

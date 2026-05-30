@@ -19,6 +19,8 @@ from core.tools.file_tools import file_tools
 from core.tools.shell_tools import shell_tools
 from core.tools.git_tools import git_tools
 from core.tools.web_tools import web_tools
+from core.tools.agent_tools import agent_tools
+from core.judge.judge_evaluator import judge_evaluator
 
 # Global dictionaries to manage pending human approvals across concurrent agent loops
 pending_approvals: Dict[str, asyncio.Event] = {}
@@ -47,6 +49,9 @@ class ToolExecutor:
             # Web research tools
             "web_search": self._wrap_web_search,
             "web_fetch": self._wrap_web_fetch,
+            # Agent coordination tools
+            "spawn_agent": self._wrap_spawn_agent,
+            "send_message": self._wrap_send_message,
         }
 
     async def execute(
@@ -83,10 +88,11 @@ class ToolExecutor:
                 "arguments": arguments,
                 "text": f"⚠️ Agent '{agent_name}' wants to run '{tool_name}'. Awaiting Judge AI appraisal..."
             })
-            # TODO: Hook actual Judge LLM prompt evaluation here
-            print(f"⚖️ [Judge] Appraising tool '{tool_name}' for agent '{agent_name}'...")
-            await asyncio.sleep(1.0)
-            return await self.registry[tool_name](arguments, team_id)
+            approved = await judge_evaluator.evaluate(tool_name, arguments, agent_name)
+            if approved:
+                return await self.registry[tool_name](arguments, team_id)
+            else:
+                return f"✗ Judge DENIED execution of '{tool_name}' for agent '{agent_name}'."
 
         # 3. Human — block until user approves via POST /api/tools/approve/{tx_id}
         elif gate_level == "human":
@@ -211,6 +217,25 @@ class ToolExecutor:
         if not url:
             return "Error: Missing parameter 'url'."
         return await web_tools.web_fetch(url)
+
+    # ========================
+    # Agent Coordination Wrappers
+    # ========================
+
+    async def _wrap_spawn_agent(self, args: Dict[str, Any], team_id: str) -> str:
+        name = args.get("agent_name") or args.get("name") or args.get("value", "")
+        task = args.get("task") or args.get("prompt", "")
+        if not name or not task:
+            return "Error: Missing 'agent_name' or 'task'."
+        return await agent_tools.spawn_agent(name, task, team_id)
+
+    async def _wrap_send_message(self, args: Dict[str, Any], team_id: str) -> str:
+        text = args.get("text") or args.get("message") or args.get("value", "")
+        sender = args.get("sender_id", "agent")
+        recipient = args.get("recipient_name")
+        if not text:
+            return "Error: Missing 'text'."
+        return await agent_tools.send_message(text, sender, team_id, recipient)
 
 
 # Singleton global executor
