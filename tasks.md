@@ -2,14 +2,14 @@
 
 ## 1. Foundation & Infrastructure
 - [x] Setup Next.js monolithic repository structure.
-- [ ] Initialize PostgreSQL database with `pgvector` extension.
-- [ ] Implement robust WebSocket `EventBus` for real-time bi-directional communication.
+- [x] Initialize PostgreSQL database with `pgvector` extension.
+- [x] Implement robust WebSocket `EventBus` for real-time bi-directional communication.
 
 ## 2. Memory & Database Layer
-- [ ] Create schema for `Teams`, `Agents`, and `Users`.
-- [ ] Create schema for `conversations` and `messages` (Short-Term Memory).
+- [x] Create schema for `Teams`, `Agents`, and `Users`.
+- [x] Create schema for `conversations` and `messages` (Short-Term Memory).
 - [ ] Implement `working_memory` JSONB scratchpads for active agents.
-- [ ] Create `learnings` table in `pgvector` for the "Lessons Learned" ledger.
+- [x] Create `learnings` table in `pgvector` for the "Lessons Learned" ledger.
 - [ ] Build the background "Dream" worker to auto-consolidate logs into semantic embeddings.
 
 ## 3. The Core Tool Suite
