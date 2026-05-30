@@ -4,27 +4,34 @@
 - [x] Setup Next.js monolithic repository structure.
 - [x] Initialize PostgreSQL database with `pgvector` extension.
 - [x] Implement robust WebSocket `EventBus` for real-time bi-directional communication.
+- [x] Add `__init__.py` package files for all Python modules.
+- [x] Fix `.env` credentials to match `docker-compose.yml`.
+- [x] Fix `docker-compose.yml` healthcheck user mismatch.
+- [x] Add CORS middleware for frontend-backend communication.
 
 ## 2. Memory & Database Layer
-- [x] Create schema for `Teams`, `Agents`, and `Users`.
-- [x] Create schema for `conversations` and `messages` (Short-Term Memory).
-- [ ] Implement `working_memory` JSONB scratchpads for active agents.
+- [x] Create schema for `Users`, `Projects`, `Teams`, and `Agents`.
+- [x] Create schema for `messages` (Short-Term Memory with vector embeddings).
 - [x] Create `learnings` table in `pgvector` for the "Lessons Learned" ledger.
-- [ ] Build the background "Dream" worker to auto-consolidate logs into semantic embeddings.
+- [x] Implement `working_memory` JSONB scratchpads for active agents.
+- [x] Build the background "Dream" worker to auto-consolidate logs into semantic embeddings.
 
 ## 3. The Core Tool Suite
-- [ ] Port existing `core/tools` into the new architecture.
-- [ ] Implement `ToolExecutor` with Team-level permission gating (Safe, Judge-Approvable, Human-Only).
-- [ ] **File & Shell**: Implement `Bash`, `FileRead`, `FileWrite`, `FileEdit`, `Glob`, `Grep`.
-- [ ] **Git**: Implement `GitCommit`, `GitPush`, `GitDiff`.
-- [ ] **Voice**: Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) APIs for meeting participation.
+- [x] Implement `ToolExecutor` with Team-level permission gating (Safe, Judge-Approvable, Human-Only).
+- [x] **Filesystem**: Implement `file_tools.py` (Safe sandboxing / Workspace locked).
+- [x] **Shell**: Implement `shell_tools.py` (Asynchronous streaming process execution).
+- [x] **Git**: Implement `git_tools.py` (status, diff, add, commit, log, checkout, push).
+- [x] **Web Research**: Implement `web_tools.py` (Tavily search + URL text extraction).
 - [ ] **Browser**: Integrate Headless Playwright Chromium with screenshot capturing to the EventBus.
+- [ ] **Voice**: Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) APIs for meeting participation.
 - [ ] **Coordination**: Implement `AgentTool` (Spawn) and `SendMessageTool` (Continue).
 
 ## 4. Multi-Model Orchestrator & Agent Engine
-- [ ] Build `MultiModelRouter` to route requests to Claude 3.5, GPT-4o-mini, and Qwen dynamically.
-- [ ] Build prompt-assembly engine (incorporating system prompts, active learnings from DB, and tool rules).
-- [ ] Implement the core `ReACT` Thought-Action-Observation loop.
+- [x] Build `MultiModelRouter` to route requests to Claude 3.5, GPT-4o-mini, and Qwen dynamically.
+- [x] Build prompt-assembly engine (incorporating system prompts, active learnings from DB, and tool rules).
+- [x] Implement the core `ReACT` Thought-Action-Observation loop.
+- [x] Build `MessageRouter` with @mention parsing, DB persistence, and async agent triggering.
+- [x] Build Human-In-The-Loop approval API endpoint (`POST /api/tools/approve/{tx_id}`).
 - [ ] Implement the `<task-notification>` XML protocol for Worker-to-Coordinator communication.
 
 ## 5. Specialized Agents & Roles
