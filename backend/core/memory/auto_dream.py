@@ -14,7 +14,7 @@ Responsibilities:
 
 import asyncio
 from datetime import datetime, timedelta
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import async_session
@@ -81,7 +81,7 @@ class AutoDreamWorker:
             select(Message)
             .where(Message.team_id == team.id)
             .where(Message.created_at >= cutoff)
-            .where(Message.embedding == None)  # Only unprocessed messages
+            .where(Message.embedding.is_(None))  # Only unprocessed messages
             .order_by(Message.created_at)
             .limit(50)
         )

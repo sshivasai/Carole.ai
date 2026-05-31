@@ -22,8 +22,9 @@
 - [x] **Shell**: Implement `shell_tools.py` (Asynchronous streaming process execution).
 - [x] **Git**: Implement `git_tools.py` (status, diff, add, commit, log, checkout, push).
 - [x] **Web Research**: Implement `web_tools.py` (Tavily search + URL text extraction).
-- [ ] **Browser**: Integrate Headless Playwright Chromium with screenshot capturing to the EventBus.
-- [ ] **Voice**: Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) APIs for meeting participation.
+- [x] **Browser**: Integrate Headless Playwright Chromium with screenshot capturing to the EventBus.
+- [x] **Voice**: OpenAI Whisper STT + OpenAI TTS-1 implemented in `voice_stt_tts.py`.
+- [x] **Interaction**: `ask_user` (blocks agent, human replies via REST) and `sleep` tools.
 - [x] **Coordination**: Implement `AgentTool` (Spawn) and `SendMessageTool` (Continue).
 
 ## 4. Multi-Model Orchestrator & Agent Engine
@@ -32,21 +33,26 @@
 - [x] Implement the core `ReACT` Thought-Action-Observation loop.
 - [x] Build `MessageRouter` with @mention parsing, DB persistence, and async agent triggering.
 - [x] Build Human-In-The-Loop approval API endpoint (`POST /api/tools/approve/{tx_id}`).
-- [ ] Implement the `<task-notification>` XML protocol for Worker-to-Coordinator communication.
+- [x] Implement the `<task-notification>` XML protocol for Worker-to-Coordinator communication.
 
 ## 5. Specialized Agents & Roles
-- [ ] **Coordinator Agent**: The primary interface that synthesizes plans and manages workers.
-- [ ] **Worker Agents**: Specialized in execution without delegating understanding.
+- [x] **Coordinator Agent**: CoordinatorAgent with team roster injection, task tracking, and worker notification collection.
+- [x] **Worker Agents**: ReACTAgent with parent_coordinator_id and task-notification emission.
 - [x] **Judge AI**: LLM-powered tool safety evaluator wired into ToolExecutor judge gate.
-- [ ] **Utility Bots**: Implement the Meeting Assistant (consumes STT, produces notes) and Daily Email/Summarizer bots.
+- [x] **Utility Bots**: MeetingTool (transcribe, notes, TTS) wired with VoiceService.
 
 ## 6. Web Interface (Next.js/React)
-- [ ] Build Team Creation & Agent Configuration UI (Assigning models, roles, tool permissions).
-- [ ] Build the main Chat Interface with `@name` and `/@name` mentions.
-- [ ] Implement real-time typing indicators and tool-execution streaming.
-- [ ] Build the "Live Browser View" component to render Playwright screenshots in-chat.
+- [x] Build Team Creation & Agent Configuration UI (sidebar Add Agent form with role/model pickers).
+- [x] Build the main Chat Interface with `@name` and `/@name` mentions.
+- [x] Implement real-time typing indicators and tool-execution streaming.
+- [x] Build the "Live Browser View" component to render Playwright screenshots in-chat.
 
 ## 7. Polish & Verification
+- [x] Create `frontend/src/lib/types.ts` (was missing — frontend would not compile).
+- [x] Fix `auto_dream.py` pgvector NULL comparison (`== None` → `.is_(None)`).
+- [x] Add `POST /api/agent/answer/{question_id}` endpoint + frontend question card UI.
+- [x] Add `GET /api/messages/search/{team_id}` semantic pgvector search endpoint.
+- [x] Add `POST /api/audio/transcribe/{team_id}` Whisper transcription upload endpoint.
 - [ ] End-to-end test of the "Lessons Learned" feedback loop.
 - [ ] End-to-end test of a Coder agent writing and pushing to GitHub.
 - [ ] Verify Voice Meeting integration.

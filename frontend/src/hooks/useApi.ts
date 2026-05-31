@@ -20,8 +20,21 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 // ---- Projects ----
 export const api = {
   seedDemo: () => apiFetch<any>("/api/seed", { method: "POST" }),
+  
+  // ---- Users / Tenants ----
+  listUsers: () => apiFetch<any[]>("/api/users"),
+  createUser: (email: string, firstName?: string, lastName?: string) =>
+    apiFetch<any>("/api/users", { method: "POST", body: JSON.stringify({ email, first_name: firstName, last_name: lastName }) }),
+
+  // ---- Projects ----
   listProjects: () => apiFetch<any[]>("/api/projects"),
-  createProject: (name: string) => apiFetch<any>("/api/projects", { method: "POST", body: JSON.stringify({ name }) }),
+  createProject: (name: string, ownerId?: string) =>
+    apiFetch<any>("/api/projects", { method: "POST", body: JSON.stringify({ name, owner_id: ownerId }) }),
+
+  // ---- Learnings / Knowledge ----
+  listLearnings: (projectId: string) => apiFetch<any[]>(`/api/learnings/${projectId}`),
+  createLearning: (data: { project_id: string, task_summary: string, lesson_rule: string, team_id?: string }) =>
+    apiFetch<any>("/api/learnings", { method: "POST", body: JSON.stringify(data) }),
 
   // ---- Teams ----
   listTeams: (projectId: string) => apiFetch<any[]>(`/api/teams/${projectId}`),
@@ -37,6 +50,8 @@ export const api = {
 
   // ---- Messages ----
   listMessages: (teamId: string, limit = 50) => apiFetch<any[]>(`/api/messages/${teamId}?limit=${limit}`),
+  searchMessages: (teamId: string, query: string, limit = 10) =>
+    apiFetch<any[]>(`/api/messages/search/${teamId}?q=${encodeURIComponent(query)}&limit=${limit}`),
 
   // ---- Tasks ----
   listTasks: (teamId: string, status?: string) =>
@@ -51,6 +66,10 @@ export const api = {
   // ---- Approvals ----
   approveToolExecution: (txId: string, approved: boolean) =>
     apiFetch<any>(`/api/tools/approve/${txId}`, { method: "POST", body: JSON.stringify({ approved }) }),
+
+  // ---- Agent Questions ----
+  answerAgentQuestion: (questionId: string, answer: string) =>
+    apiFetch<any>(`/api/agent/answer/${questionId}`, { method: "POST", body: JSON.stringify({ answer }) }),
 
   // ---- Health ----
   healthCheck: () => apiFetch<any>("/health"),

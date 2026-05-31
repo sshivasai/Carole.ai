@@ -8,7 +8,7 @@ Also provides a /api/seed endpoint for bootstrapping a demo environment.
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,18 @@ router = APIRouter(prefix="/api", tags=["crud"])
 # ============================================================
 # Pydantic Schemas
 # ============================================================
+
+class UserCreate(BaseModel):
+    email: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    password: str = "demo"
+
+class LearningCreate(BaseModel):
+    project_id: str
+    task_summary: str
+    lesson_rule: str
+    team_id: Optional[str] = None
 
 class ProjectCreate(BaseModel):
     name: str
@@ -40,6 +52,8 @@ class AgentCreate(BaseModel):
     system_prompt: str = ""
     personality: str = "professional"  # professional, casual, witty, mentor
     tool_permissions: dict = {}
+    custom_instructions: Optional[str] = None
+    skills: Optional[List[str]] = None
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -48,6 +62,8 @@ class AgentUpdate(BaseModel):
     system_prompt: Optional[str] = None
     personality: Optional[str] = None
     tool_permissions: Optional[dict] = None
+    custom_instructions: Optional[str] = None
+    skills: Optional[List[str]] = None
 
 class TaskCreate(BaseModel):
     team_id: str
@@ -67,12 +83,48 @@ class TaskUpdate(BaseModel):
 
 
 # ============================================================
+# Users / Tenants
+# ============================================================
+
+@router.post("/users")
+async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db)):
+    user = User(
+        email=body.email,
+        hashed_password=body.password,
+        first_name=body.first_name,
+        last_name=body.last_name,
+        is_verified=True,
+    )
+    db.add(user)
+    await db.flush()
+    return {"id": str(user.id), "email": user.email, "first_name": user.first_name, "last_name": user.last_name}
+
+@router.get("/users")
+async def list_users(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).order_by(User.created_at.desc()))
+    return [{"id": str(u.id), "email": u.email, "first_name": u.first_name, "last_name": u.last_name} for u in result.scalars().all()]
+
+
+# ============================================================
 # Projects
 # ============================================================
 
 @router.post("/projects")
 async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)):
-    project = Project(name=body.name, owner_id=body.owner_id or uuid.uuid4())
+    # If owner_id is provided, make sure it is valid; otherwise fetch the first user or default
+    owner_uuid = None
+    if body.owner_id:
+        owner_uuid = uuid.UUID(body.owner_id)
+    else:
+        # fallback to first user
+        users_result = await db.execute(select(User).limit(1))
+        first_user = users_result.scalar_one_or_none()
+        if first_user:
+            owner_uuid = first_user.id
+        else:
+            owner_uuid = uuid.uuid4()
+    
+    project = Project(name=body.name, owner_id=owner_uuid)
     db.add(project)
     await db.flush()
     return {"id": str(project.id), "name": project.name}
@@ -80,7 +132,48 @@ async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)
 @router.get("/projects")
 async def list_projects(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Project).order_by(Project.created_at.desc()))
-    return [{"id": str(p.id), "name": p.name} for p in result.scalars().all()]
+    return [{"id": str(p.id), "name": p.name, "owner_id": str(p.owner_id)} for p in result.scalars().all()]
+
+
+# ============================================================
+# Learnings (Knowledge base)
+# ============================================================
+
+@router.post("/learnings")
+async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_db)):
+    from core.llm.multi_model_router import llm_router
+    from core.memory.models import Learning
+
+    combined_text = f"Task: {body.task_summary} | Rule: {body.lesson_rule}"
+    embedding = await llm_router.generate_embeddings(combined_text)
+    
+    learning = Learning(
+        project_id=uuid.UUID(body.project_id),
+        team_id=uuid.UUID(body.team_id) if body.team_id else None,
+        task_summary=body.task_summary,
+        lesson_rule=body.lesson_rule,
+        embedding=embedding,
+    )
+    db.add(learning)
+    await db.flush()
+    return {"id": str(learning.id), "task_summary": learning.task_summary, "lesson_rule": learning.lesson_rule}
+
+@router.get("/learnings/{project_id}")
+async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db)):
+    from core.memory.models import Learning
+    stmt = select(Learning).where(Learning.project_id == uuid.UUID(project_id)).order_by(Learning.created_at.desc())
+    result = await db.execute(stmt)
+    return [
+        {
+            "id": str(l.id),
+            "task_summary": l.task_summary,
+            "lesson_rule": l.lesson_rule,
+            "team_id": str(l.team_id) if l.team_id else None,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        }
+        for l in result.scalars().all()
+    ]
+
 
 
 # ============================================================
@@ -108,12 +201,21 @@ async def list_teams(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/agents")
 async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
+    prompt = body.system_prompt or _default_system_prompt(body.name, body.role, body.personality)
+    
+    if body.custom_instructions:
+        prompt += f"\n\nSPECIAL CUSTOM INSTRUCTIONS:\n{body.custom_instructions}"
+        
+    if body.skills and len(body.skills) > 0:
+        skills_text = "\n".join(f"- {s}" for s in body.skills)
+        prompt += f"\n\nSPECIALIZED SKILLS & TOOLKITS:\n{skills_text}"
+
     agent = Agent(
         team_id=body.team_id,
         name=body.name,
         role=body.role,
         model=body.model,
-        system_prompt=body.system_prompt or _default_system_prompt(body.name, body.role, body.personality),
+        system_prompt=prompt,
         tool_permissions=body.tool_permissions,
     )
     db.add(agent)
@@ -250,6 +352,60 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
 @router.get("/tools")
 async def list_tools():
     return ToolRegistry.to_api_list()
+
+
+# ============================================================
+# Semantic Search (pgvector)
+# ============================================================
+
+@router.get("/messages/search/{team_id}")
+async def search_messages(team_id: str, q: str, limit: int = 10, db: AsyncSession = Depends(get_db)):
+    """Semantic vector search over past team messages using pgvector cosine distance."""
+    from core.llm.multi_model_router import llm_router
+    from core.memory.models import Message
+
+    query_vector = await llm_router.generate_embeddings(q)
+    stmt = (
+        select(Message)
+        .where(Message.team_id == team_id)
+        .where(Message.embedding.isnot(None))
+        .order_by(Message.embedding.cosine_distance(query_vector))
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    messages = result.scalars().all()
+
+    return [
+        {
+            "id": str(m.id), "sender_id": m.sender_id,
+            "text": m.text,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        }
+        for m in messages
+    ]
+
+
+# ============================================================
+# Audio Transcription Upload
+# ============================================================
+
+@router.post("/audio/transcribe/{team_id}")
+async def transcribe_audio_upload(team_id: str, file: UploadFile = File(...)):
+    """
+    Accepts an audio file upload, transcribes it via OpenAI Whisper,
+    and broadcasts the transcription to the team EventBus.
+    """
+    from core.tools.meeting_tool import meeting_tool
+
+    audio_data = await file.read()
+    text = await meeting_tool.transcribe_audio(
+        audio_data=audio_data,
+        agent_id="system",
+        agent_name="Meeting Assistant",
+        team_id=team_id,
+        filename=file.filename or "audio.webm",
+    )
+    return {"transcription": text}
 
 
 # ============================================================

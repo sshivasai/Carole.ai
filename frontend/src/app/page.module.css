@@ -505,3 +505,931 @@
   color: var(--text-secondary);
   max-width: 400px;
 }
+
+/* ============================================================
+   Playground Deck UI Nodes
+   ============================================================ */
+
+.playgroundDeck {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+/* Tenant Capsule */
+.tenantCapsule {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  position: relative;
+}
+.tenantCapsule:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-medium);
+  transform: translateY(-1px);
+}
+.tenantCapsuleActive {
+  border-color: rgba(91, 108, 255, 0.4);
+  box-shadow: 0 4px 16px rgba(91, 108, 255, 0.1);
+}
+
+.tenantAvatarNode {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: white;
+  box-shadow: 0 2px 8px rgba(91, 108, 255, 0.3);
+}
+
+.tenantInfoNode {
+  flex: 1;
+  min-width: 0;
+}
+.tenantInfoNode .title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--accent-blue);
+  letter-spacing: 0.8px;
+}
+.tenantInfoNode .value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Playground Folder Tabs Carousel */
+.projectListCarousel {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 0 10px 0;
+  scrollbar-width: thin;
+}
+.projectListCarousel::-webkit-scrollbar {
+  height: 4px;
+}
+.projectListCarousel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-full);
+}
+
+.projectVisualCard {
+  flex: 0 0 120px;
+  height: 90px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: var(--space-md);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  position: relative;
+  overflow: hidden;
+}
+.projectVisualCard:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border-medium);
+  transform: translateY(-2px);
+}
+.projectVisualCardActive {
+  background: linear-gradient(135deg, rgba(91, 108, 255, 0.08), rgba(155, 109, 255, 0.03));
+  border-color: var(--accent-blue);
+  box-shadow: 0 4px 20px rgba(91, 108, 255, 0.15);
+}
+.projectVisualCardActive::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+}
+
+.projectCardFolderIcon {
+  font-size: 20px;
+  color: var(--text-secondary);
+  transition: transform var(--transition-fast);
+}
+.projectVisualCard:hover .projectCardFolderIcon {
+  transform: scale(1.1) rotate(-3deg);
+  color: var(--accent-blue);
+}
+.projectVisualCardActive .projectCardFolderIcon {
+  color: var(--accent-blue);
+}
+
+.projectCardName {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 8px;
+}
+
+/* Team Room Capsules Grid */
+.teamGridStack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.teamVisualPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all var(--transition-base);
+}
+.teamVisualPill:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-medium);
+  color: var(--text-primary);
+}
+.teamVisualPillActive {
+  background: linear-gradient(135deg, rgba(52, 211, 153, 0.08), rgba(91, 108, 255, 0.02));
+  border-color: var(--accent-green);
+  color: var(--text-primary);
+  box-shadow: 0 2px 10px rgba(52, 211, 153, 0.1);
+}
+
+.teamBroadcastLight {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+  transition: background var(--transition-fast);
+}
+.teamVisualPillActive .teamBroadcastLight {
+  background: var(--accent-green);
+  box-shadow: 0 0 6px var(--accent-green);
+  animation: pulse 1.2s infinite ease-in-out;
+}
+
+/* Interactive Connection Flow Lines */
+.connectorLine {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 14px;
+  margin: -6px 0;
+  position: relative;
+  z-index: 1;
+}
+.connectorLineDotted {
+  width: 2px;
+  height: 100%;
+  border-left: 2px dotted var(--border-medium);
+  opacity: 0.6;
+}
+
+/* Beautiful Sliding Form overlay */
+.playgroundOverlayForm {
+  background: rgba(18, 20, 28, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  margin-top: 10px;
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  box-shadow: var(--shadow-lg);
+}
+
+/* ============================================================
+   2D Collaborative Board Canvas (Playground)
+   ============================================================ */
+
+.playgroundContainer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 50%, rgba(20, 24, 40, 0.95) 0%, rgba(10, 11, 16, 1) 100%);
+  background-size: cover;
+}
+
+.playgroundGrid {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  background-position: center;
+  pointer-events: none;
+  opacity: 0.75;
+}
+
+/* Toggle Deck in Header */
+.toggleDeck {
+  display: flex;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  padding: 3px;
+  gap: 2px;
+}
+
+.toggleBtn {
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  background: transparent;
+  border: none;
+}
+
+.toggleBtnActive {
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  color: white;
+  box-shadow: 0 2px 10px rgba(91, 108, 255, 0.3);
+}
+
+/* Visual Breadcrumbs Floating Deck */
+.visualBreadcrumbs {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(18, 20, 28, 0.65);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-full);
+  padding: 8px 18px;
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.breadcrumbSegment {
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+.breadcrumbSegment:hover {
+  color: var(--accent-blue);
+}
+
+.breadcrumbActive {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.breadcrumbSeparator {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+/* Floating Org Bubbles */
+.bubbleCluster {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 40px;
+  flex-wrap: wrap;
+  padding: 80px;
+}
+
+.glowBubble {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(91, 108, 255, 0.15) 0%, rgba(155, 109, 255, 0.05) 100%);
+  border: 2px solid rgba(91, 108, 255, 0.25);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  text-align: center;
+  box-shadow: 0 10px 40px rgba(91, 108, 255, 0.08), inset 0 0 20px rgba(255, 255, 255, 0.05);
+  animation: floatBreathing 5s infinite ease-in-out;
+}
+
+.glowBubble:hover {
+  transform: scale(1.08) translateY(-4px);
+  border-color: rgba(155, 109, 255, 0.6);
+  box-shadow: 
+    0 15px 50px rgba(155, 109, 255, 0.25), 
+    inset 0 0 30px rgba(255, 255, 255, 0.1);
+}
+
+.glowBubbleText {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 8px;
+  max-width: 110px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.glowBubbleDomain {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.glowBubbleIcon {
+  font-size: 32px;
+  filter: drop-shadow(0 4px 8px rgba(91, 108, 255, 0.4));
+  animation: bounceSlow 3s infinite ease-in-out;
+}
+
+/* Orbits level */
+.orbitCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.orbitContainer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.centralOrgNode {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(155, 109, 255, 0.2) 0%, rgba(91, 108, 255, 0.05) 100%);
+  border: 2px solid rgba(155, 109, 255, 0.35);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  box-shadow: 0 0 40px rgba(155, 109, 255, 0.15);
+  z-index: 2;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+.centralOrgNode:hover {
+  border-color: var(--accent-purple);
+  transform: scale(1.05);
+}
+
+.projectOrbitNode {
+  position: absolute;
+  width: 150px;
+  height: 100px;
+  border-radius: var(--radius-lg);
+  background: rgba(18, 20, 28, 0.65);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 14px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 2;
+  pointer-events: auto;
+  box-shadow: var(--shadow-md);
+}
+
+.projectOrbitNode:hover {
+  border-color: var(--accent-blue);
+  transform: translateY(-4px) scale(1.05);
+  box-shadow: 0 10px 30px rgba(91, 108, 255, 0.2);
+}
+
+.projectOrbitNodeActive {
+  border-color: var(--accent-blue);
+  background: linear-gradient(135deg, rgba(91, 108, 255, 0.12), rgba(18, 20, 28, 0.85));
+  box-shadow: 0 0 30px rgba(91, 108, 255, 0.25);
+}
+
+/* Virtual Table Level */
+.tableContainer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.roomTagLine {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--accent-green);
+  letter-spacing: 2px;
+  margin-bottom: 24px;
+  animation: pulse 2s infinite ease-in-out;
+}
+
+.conferenceTableWrapper {
+  position: relative;
+  width: 580px;
+  height: 380px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.conferenceTable {
+  width: 380px;
+  height: 200px;
+  border-radius: 120px;
+  background: linear-gradient(135deg, rgba(25, 30, 48, 0.75) 0%, rgba(15, 17, 26, 0.85) 100%);
+  border: 4px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 
+    0 20px 60px rgba(0, 0, 0, 0.5), 
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 0 40px rgba(91, 108, 255, 0.15);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  z-index: 10;
+}
+
+.conferenceTable:hover {
+  transform: translateY(-2px);
+  border-color: rgba(91, 108, 255, 0.3);
+  box-shadow: 
+    0 25px 70px rgba(91, 108, 255, 0.15), 
+    0 0 0 1px rgba(91, 108, 255, 0.2),
+    inset 0 0 50px rgba(91, 108, 255, 0.25);
+}
+
+.holoCore {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(52, 211, 153, 0.2) 0%, transparent 70%);
+  border: 1px dashed rgba(52, 211, 153, 0.4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-green);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  animation: spinClockwise 20s linear infinite;
+}
+
+.holoPulseNode {
+  position: absolute;
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  background: rgba(52, 211, 153, 0.1);
+  animation: pulseHolo 2s infinite ease-in-out;
+  pointer-events: none;
+}
+
+.tableInstructions {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* Bot sitting around table coordinates */
+.botAvatarSeat {
+  position: absolute;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 20;
+}
+
+.botAvatarSeat:hover {
+  transform: scale(1.15);
+  z-index: 30;
+}
+
+.seatGlowRing {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  right: -6px;
+  bottom: -6px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  transition: all var(--transition-base);
+}
+
+.seatGlowRing.idle {
+  border-color: rgba(52, 211, 153, 0.35);
+  animation: pulseGlowIdle 2.5s infinite ease-in-out;
+}
+
+.seatGlowRing.thinking {
+  border-color: var(--accent-yellow);
+  border-style: dashed;
+  animation: spinClockwise 2.5s linear infinite;
+}
+
+.seatAvatarCircle {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  color: white;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.35);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  position: relative;
+  z-index: 2;
+}
+
+.seatActiveLight {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  border: 2px solid #0f111a;
+  z-index: 5;
+}
+
+.seatActiveLight.thinking {
+  background: var(--accent-yellow);
+}
+
+/* Typing state dots overlay on seat */
+.seatTypingIndicator {
+  position: absolute;
+  top: -15px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(91, 108, 255, 0.9);
+  padding: 3px 6px;
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: 2px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+
+.seatTypingIndicator span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: white;
+  animation: typingDot 1.2s infinite ease-in-out;
+}
+.seatTypingIndicator span:nth-child(2) { animation-delay: 0.2s; }
+.seatTypingIndicator span:nth-child(3) { animation-delay: 0.4s; }
+
+/* Frosted Glass Bot Hover Card */
+.agentHoverCard {
+  position: absolute;
+  top: 75px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 250px;
+  background: rgba(18, 21, 35, 0.92);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  box-shadow: 
+    0 15px 40px rgba(0, 0, 0, 0.5), 
+    0 0 20px rgba(91, 108, 255, 0.15);
+  z-index: 100;
+  pointer-events: none;
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.hoverCardHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.hoverCardAvatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: white;
+}
+
+.hoverCardTitle {
+  flex: 1;
+  min-width: 0;
+}
+.hoverCardTitle h4 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+.hoverCardTitle p {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hoverCardSection {
+  margin-bottom: var(--space-sm);
+}
+
+.hoverCardSection label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  letter-spacing: 0.5px;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.hoverCardModelBadge {
+  display: inline-block;
+  font-size: 10px;
+  background: rgba(155, 109, 255, 0.15);
+  color: var(--accent-purple);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+}
+
+.hoverCardSkillsList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hoverCardSkillBadge {
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.hoverCardInstructions {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  font-style: italic;
+  max-height: 60px;
+  overflow-y: auto;
+}
+
+/* Interactive Chat Slide Drawer Overlay & Container */
+.chatDrawerOverlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(5, 5, 8, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 40;
+  animation: fadeIn var(--transition-fast) forwards;
+}
+
+.chatDrawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 580px;
+  height: 100%;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  z-index: 50;
+  animation: slideInRight 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  box-shadow: -10px 0 40px rgba(0, 0, 0, 0.5);
+}
+
+.chatDrawerHeader {
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-xl);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+}
+
+.chatDrawerHeaderTitle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.chatDrawerHeaderTitle h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chatDrawerCloseBtn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all var(--transition-fast);
+}
+
+.chatDrawerCloseBtn:hover {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--accent-red);
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+.chatDrawerSplitBody {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.chatDrawerChatSection {
+  flex: 1.2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.chatDrawerInfoSection {
+  flex: 0.8;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* ============================================================
+   Micro-Animations Keyframes
+   ============================================================ */
+
+@keyframes floatBreathing {
+  0% {
+    transform: translateY(0px) scale(1);
+  }
+  50% {
+    transform: translateY(-8px) scale(1.02);
+  }
+  100% {
+    transform: translateY(0px) scale(1);
+  }
+}
+
+@keyframes bounceSlow {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes spinClockwise {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulseHolo {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.8;
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.4);
+  }
+  70% {
+    transform: scale(1.15);
+    opacity: 0;
+    box-shadow: 0 0 0 15px rgba(52, 211, 153, 0);
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0;
+  }
+}
+
+@keyframes pulseGlowIdle {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.98);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.05);
+    box-shadow: 0 0 10px rgba(52, 211, 153, 0.4);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(15px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+

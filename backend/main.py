@@ -172,6 +172,31 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision):
 
 
 # ============================================================
+# Agent Question Answer API
+# ============================================================
+
+class QuestionAnswer(BaseModel):
+    answer: str
+
+
+@app.post("/api/agent/answer/{question_id}")
+async def answer_agent_question(question_id: str, body: QuestionAnswer):
+    """
+    Resolves a pending ask_user question from an agent.
+    Called by the frontend when the user types an answer.
+    """
+    from core.tools.interaction_tools import pending_questions, question_answers
+
+    if question_id not in pending_questions:
+        raise HTTPException(status_code=404, detail=f"Question '{question_id}' not found or already answered.")
+
+    question_answers[question_id] = body.answer
+    pending_questions[question_id].set()
+
+    return {"status": "ok", "question_id": question_id}
+
+
+# ============================================================
 # Dynamic Tool Registration (runtime hot-reload)
 # ============================================================
 

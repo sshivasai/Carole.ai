@@ -23,6 +23,7 @@ from core.tools.git_tools import git_tools
 from core.tools.web_tools import web_tools
 from core.tools.agent_tools import agent_tools
 from core.tools.browser_tool import browser_tool
+from core.tools.interaction_tools import interaction_tools
 from core.judge.judge_evaluator import judge_evaluator
 
 # Global dictionaries to manage pending human approvals across concurrent agent loops
@@ -125,6 +126,14 @@ def register_builtin_tools():
                   "status": {"type": "string", "required": False},
                   "notes": {"type": "string", "required": False}},
                  "safe", _wrap_update_task),
+
+        # ---- Interaction ----
+        ToolSpec("ask_user", "Ask the human a clarifying question and wait for their answer", "interaction",
+                 {"question": {"type": "string", "required": True}},
+                 "safe", _wrap_ask_user),
+        ToolSpec("sleep", "Pause execution for a number of seconds", "interaction",
+                 {"seconds": {"type": "number", "required": True}},
+                 "safe", _wrap_sleep),
     ]
 
     for spec in builtins:
@@ -392,6 +401,20 @@ async def _wrap_update_task(args: Dict[str, Any], team_id: str) -> str:
     if not task_id:
         return "Error: Missing 'task_id'."
     return await task_tools.update_task(task_id, status, notes)
+
+
+async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
+    question = args.get("question") or args.get("value", "")
+    if not question:
+        return "Error: Missing 'question'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await interaction_tools.ask_user(question, agent_id, agent_name, team_id)
+
+
+async def _wrap_sleep(args: Dict[str, Any], team_id: str) -> str:
+    seconds = float(args.get("seconds", args.get("value", 5)))
+    return await interaction_tools.sleep(seconds)
 
 
 # Singleton global executor

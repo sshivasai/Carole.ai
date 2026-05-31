@@ -66,13 +66,17 @@ class MultiModelRouter:
             async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
                 yield chunk
 
-        # 3. Route to Qwen (Or other OpenAI compatible endpoints like Ollama)
-        elif model.startswith("qwen"):
+        # 3. Route to Qwen or Gemini (Or other OpenAI compatible endpoints)
+        elif model.startswith("qwen") or model.startswith("gemini"):
             async for chunk in self._stream_qwen(model, system_prompt, messages, temperature, max_tokens):
                 yield chunk
 
+        # 4. Generic Fallback
         else:
-            raise ValueError(f"Unsupported model router target: '{model}'")
+            print(f"⚠️ [Router] Model '{model}' not explicitly recognized. Falling back to OpenAI stream.")
+            async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
+                yield chunk
+
 
     async def _stream_anthropic(
         self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
