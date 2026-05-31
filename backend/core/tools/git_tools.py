@@ -75,6 +75,28 @@ class GitTools:
             return await self._run_git("push", remote, branch)
         return await self._run_git("push", remote, "HEAD")
 
+    async def stash(self, action: str = "push", message: str = None) -> str:
+        """Stash or unstash changes. action: push, pop, list, drop."""
+        if action == "push":
+            if message:
+                return await self._run_git("stash", "push", "-m", message)
+            return await self._run_git("stash", "push")
+        elif action == "pop":
+            return await self._run_git("stash", "pop")
+        elif action == "list":
+            return await self._run_git("stash", "list")
+        elif action == "drop":
+            return await self._run_git("stash", "drop")
+        else:
+            return f"Error: Unknown stash action '{action}'. Use push, pop, list, or drop."
+
+    async def clone(self, url: str, directory: str = None) -> str:
+        """Clones a repository into the workspace."""
+        args = ["clone", url]
+        if directory:
+            args.append(directory)
+        return await self._run_git(*args)
+
 
 # Singleton
 git_tools = GitTools()

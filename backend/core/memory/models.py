@@ -41,22 +41,26 @@ class Project(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
     
     # Each Project belongs to a User Account
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Team(Base):
     __tablename__ = "teams"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
     
     # Each Team is scoped under a Project
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Agent(Base):
     __tablename__ = "agents"
@@ -64,15 +68,27 @@ class Agent(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(100), nullable=False)
-    role = Column(String(100), nullable=False)  # e.g. "Coder", "Reviewer", "Manager"
-    model = Column(String(50), nullable=False)   # e.g. "claude-3-5-sonnet", "gpt-4o-mini", "qwen"
+    role = Column(String(100), nullable=False)  # e.g. "Coder", "Reviewer", "Manager", or custom role
+    model = Column(String(50), nullable=False)   # e.g. "claude-sonnet-4", "gpt-4o-mini", "gemini-2.0-flash"
     system_prompt = Column(Text, nullable=False)
+    
+    # Personality style: professional, casual, witty, mentor
+    personality = Column(String(50), nullable=True, default="professional")
+    
+    # Custom role instructions provided during agent creation
+    custom_instructions = Column(Text, nullable=True)
+    
+    # List of specialized skills/toolkits the agent has
+    skills = Column(JSON, nullable=True, default=list)
     
     # JSONB columns for dynamic configuration
     tool_permissions = Column(JSON, nullable=False, default=dict)  # {"file_read": "safe", "bash": "human_only"}
     working_memory = Column(JSON, nullable=True, default=dict)    # Scratchpad state / current task variables
     
+    is_active = Column(Boolean, default=True, nullable=False)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Message(Base):
     __tablename__ = "messages"
@@ -82,6 +98,7 @@ class Message(Base):
     
     # Direct routing keys
     sender_id = Column(String(100), nullable=False)  # "human" or specific agent UUID
+    sender_name = Column(String(100), nullable=True)  # Display name for the sender
     recipient_id = Column(String(100), nullable=True) # Null for group broadcast, specific agent ID for private message (/@name)
     
     text = Column(Text, nullable=False)

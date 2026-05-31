@@ -25,11 +25,14 @@ export const api = {
   listUsers: () => apiFetch<any[]>("/api/users"),
   createUser: (email: string, firstName?: string, lastName?: string) =>
     apiFetch<any>("/api/users", { method: "POST", body: JSON.stringify({ email, first_name: firstName, last_name: lastName }) }),
+  deleteUser: (userId: string) => apiFetch<any>(`/api/users/${userId}`, { method: "DELETE" }),
 
   // ---- Projects ----
   listProjects: () => apiFetch<any[]>("/api/projects"),
+  getProject: (projectId: string) => apiFetch<any>(`/api/projects/single/${projectId}`),
   createProject: (name: string, ownerId?: string) =>
     apiFetch<any>("/api/projects", { method: "POST", body: JSON.stringify({ name, owner_id: ownerId }) }),
+  deleteProject: (projectId: string) => apiFetch<any>(`/api/projects/${projectId}`, { method: "DELETE" }),
 
   // ---- Learnings / Knowledge ----
   listLearnings: (projectId: string) => apiFetch<any[]>(`/api/learnings/${projectId}`),
@@ -38,8 +41,10 @@ export const api = {
 
   // ---- Teams ----
   listTeams: (projectId: string) => apiFetch<any[]>(`/api/teams/${projectId}`),
+  getTeam: (teamId: string) => apiFetch<any>(`/api/teams/single/${teamId}`),
   createTeam: (name: string, projectId: string) =>
     apiFetch<any>("/api/teams", { method: "POST", body: JSON.stringify({ name, project_id: projectId }) }),
+  deleteTeam: (teamId: string) => apiFetch<any>(`/api/teams/${teamId}`, { method: "DELETE" }),
 
   // ---- Agents ----
   listAgents: (teamId: string) => apiFetch<any[]>(`/api/agents/${teamId}`),
@@ -70,6 +75,26 @@ export const api = {
   // ---- Agent Questions ----
   answerAgentQuestion: (questionId: string, answer: string) =>
     apiFetch<any>(`/api/agent/answer/${questionId}`, { method: "POST", body: JSON.stringify({ answer }) }),
+
+  // ---- Role Templates ----
+  listRoleTemplates: () => apiFetch<any[]>("/api/role-templates"),
+  getRoleTemplate: (role: string) => apiFetch<any>(`/api/role-templates/${role}`),
+
+  // ---- Auth ----
+  signup: (email: string, password: string, firstName?: string, lastName?: string) =>
+    apiFetch<any>("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
+    }),
+  login: (email: string, password: string) =>
+    apiFetch<any>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  getMe: (token: string) =>
+    apiFetch<any>("/api/auth/me", {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
 
   // ---- Health ----
   healthCheck: () => apiFetch<any>("/health"),

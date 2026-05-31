@@ -1,0 +1,181 @@
+"""
+# backend/core/tools/code_analysis_tools.py
+
+Code analysis tools for agents to understand codebases.
+
+- find_function: Locate function/class definitions by name.
+- find_todos: Find TODO/FIXME/HACK comments across files.
+- count_lines: Count lines of code, comments, and blanks.
+- analyze_imports: List all imports in a Python/JS/TS file.
+- check_syntax: Validate Python syntax without executing.
+"""
+
+import os
+import re
+import ast
+from pathlib import Path
+from typing import List
+
+
+class CodeAnalysisTools:
+    def __init__(self, workspace_root: str = None):
+        if not workspace_root:
+            workspace_root = os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[3]))
+        self.workspace_root = Path(workspace_root).resolve()
+
+    def _resolve_safe_path(self, relative_path: str) -> Path:
+        joined = Path(self.workspace_root / relative_path)
+        resolved = joined.resolve()
+        if not str(resolved).startswith(str(self.workspace_root)):
+            raise PermissionError(f"Access Denied: Path outside sandbox.")
+        return resolved
+
+    _SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.next', 'venv', '.venv', 'dist', 'build'}
+
+    def find_function(self, name: str, relative_path: str = ".") -> str:
+        """Finds function/class definitions matching a name across files."""
+        try:
+            safe_path = self._resolve_safe_path(relative_path)
+            pattern = re.compile(
+                rf"^\s*(?:def|class|function|const|let|var|export\s+(?:default\s+)?(?:function|class|const))\s+{re.escape(name)}\b",
+                re.MULTILINE
+            )
+            results = []
+            target = safe_path if safe_path.is_file() else None
+
+            def scan(fpath: Path):
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        for i, line in enumerate(f, 1):
+                            if pattern.search(line):
+                                rel = fpath.relative_to(self.workspace_root)
+                                results.append(f"{rel}:{i}: {line.rstrip()}")
+                except (UnicodeDecodeError, PermissionError):
+                    pass
+
+            if target:
+                scan(target)
+            else:
+                for root, dirs, files in os.walk(safe_path):
+                    dirs[:] = [d for d in dirs if d not in self._SKIP_DIRS and not d.startswith('.')]
+                    for fname in files:
+                        if fname.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java')):
+                            scan(Path(root) / fname)
+                            if len(results) >= 30:
+                                break
+
+            if not results:
+                return f"No definitions found for '{name}'."
+            return f"Found {len(results)} definition(s) for '{name}':\n" + "\n".join(results)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    def find_todos(self, relative_path: str = ".") -> str:
+        """Finds TODO/FIXME/HACK/XXX comments across files."""
+        try:
+            safe_path = self._resolve_safe_path(relative_path)
+            pattern = re.compile(r"#\s*(TODO|FIXME|HACK|XXX|BUG|NOTE)\b.*|//\s*(TODO|FIXME|HACK|XXX|BUG|NOTE)\b.*", re.IGNORECASE)
+            results = []
+
+            def scan(fpath: Path):
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        for i, line in enumerate(f, 1):
+                            m = pattern.search(line)
+                            if m:
+                                rel = fpath.relative_to(self.workspace_root)
+                                results.append(f"{rel}:{i}: {line.strip()}")
+                except (UnicodeDecodeError, PermissionError):
+                    pass
+
+            if safe_path.is_file():
+                scan(safe_path)
+            else:
+                for root, dirs, files in os.walk(safe_path):
+                    dirs[:] = [d for d in dirs if d not in self._SKIP_DIRS and not d.startswith('.')]
+                    for fname in files:
+                        if fname.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.css', '.html')):
+                            scan(Path(root) / fname)
+                            if len(results) >= 50:
+                                break
+
+            if not results:
+                return "No TODO/FIXME/HACK comments found."
+            return f"Found {len(results)} comment(s):\n" + "\n".join(results)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    def count_lines(self, relative_path: str) -> str:
+        """Counts total lines, code lines, comment lines, and blank lines."""
+        try:
+            safe_path = self._resolve_safe_path(relative_path)
+            if not safe_path.is_file():
+                return f"Error: '{relative_path}' is not a file."
+
+            total = code = comments = blanks = 0
+            ext = safe_path.suffix
+            comment_char = "#" if ext == ".py" else "//"
+
+            with open(safe_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    total += 1
+                    stripped = line.strip()
+                    if not stripped:
+                        blanks += 1
+                    elif stripped.startswith(comment_char):
+                        comments += 1
+                    else:
+                        code += 1
+
+            return (
+                f"📊 Line count for '{relative_path}':\n"
+                f"  Total:    {total}\n"
+                f"  Code:     {code}\n"
+                f"  Comments: {comments}\n"
+                f"  Blank:    {blanks}"
+            )
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    def analyze_imports(self, relative_path: str) -> str:
+        """Lists all import statements in a file."""
+        try:
+            safe_path = self._resolve_safe_path(relative_path)
+            if not safe_path.is_file():
+                return f"Error: '{relative_path}' is not a file."
+
+            imports = []
+            with open(safe_path, "r", encoding="utf-8", errors="ignore") as f:
+                for i, line in enumerate(f, 1):
+                    stripped = line.strip()
+                    if re.match(r"^(import |from .+ import |const .+ = require\(|import .+ from )", stripped):
+                        imports.append(f"  L{i}: {stripped}")
+
+            if not imports:
+                return f"No imports found in '{relative_path}'."
+            return f"📦 Imports in '{relative_path}' ({len(imports)}):\n" + "\n".join(imports)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    def check_syntax(self, relative_path: str) -> str:
+        """Validates Python syntax without executing the file."""
+        try:
+            safe_path = self._resolve_safe_path(relative_path)
+            if not safe_path.is_file():
+                return f"Error: '{relative_path}' is not a file."
+            if not safe_path.suffix == ".py":
+                return f"Error: check_syntax only supports .py files."
+
+            with open(safe_path, "r", encoding="utf-8") as f:
+                source = f.read()
+
+            ast.parse(source, filename=relative_path)
+            return f"✅ Syntax OK: '{relative_path}' has no Python syntax errors."
+        except SyntaxError as e:
+            return f"❌ Syntax Error in '{relative_path}':\n  Line {e.lineno}: {e.msg}\n  {e.text.strip() if e.text else ''}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+
+# Singleton
+code_analysis_tools = CodeAnalysisTools()

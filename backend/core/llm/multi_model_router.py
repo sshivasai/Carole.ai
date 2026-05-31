@@ -4,36 +4,42 @@
 This module acts as the gateway to route LLM requests to different providers.
 
 Supported Providers:
-1. Anthropic (Claude models e.g. claude-3-5-sonnet)
+1. Anthropic (Claude models e.g. claude-3-5-sonnet, claude-sonnet-4, claude-opus-4)
 2. OpenAI (GPT models e.g. gpt-4o, gpt-4o-mini)
-3. Qwen (Via DashScope, OpenRouter, or local vLLM/Ollama OpenAI-compatible endpoint)
+3. Google Gemini (e.g. gemini-2.0-flash, gemini-2.5-pro)
+4. Qwen (Via DashScope, OpenRouter, or local vLLM/Ollama OpenAI-compatible endpoint)
 
 Features:
 - Standard generation completions.
 - Asynchronous generator streaming (crucial for live-streaming agent thoughts to the WebSocket EventBus).
 - Dynamic fallback or base-URL configuration for local LLMs.
+- Gemini embeddings fallback when OpenAI key is unavailable.
+- Retry with exponential backoff for transient API failures.
 """
 
 import os
 import json
+import asyncio
 import httpx
-from typing import AsyncGenerator, List, Dict
+from typing import AsyncGenerator, List, Dict, Optional
+
 
 class MultiModelRouter:
     def __init__(self):
         # Load API keys and configurations
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         self.openai_key = os.getenv("OPENAI_API_KEY")
-        
+        self.gemini_key = os.getenv("GOOGLE_API_KEY")
+
         # Qwen specific configuration (defaults to OpenAI-compatible base URL if local)
         self.qwen_key = os.getenv("QWEN_API_KEY")
         self.qwen_base_url = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 
     async def generate_completion(
-        self, 
-        model: str, 
-        system_prompt: str, 
-        messages: List[Dict[str, str]], 
+        self,
+        model: str,
+        system_prompt: str,
+        messages: List[Dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 4000
     ) -> str:
@@ -46,15 +52,16 @@ class MultiModelRouter:
         return response_text
 
     async def generate_stream(
-        self, 
-        model: str, 
-        system_prompt: str, 
-        messages: List[Dict[str, str]], 
+        self,
+        model: str,
+        system_prompt: str,
+        messages: List[Dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 4000
     ) -> AsyncGenerator[str, None]:
         """
         Asynchronous generator streaming chunks of the completion in real-time.
+        Routes to the correct provider based on model name prefix.
         """
         # 1. Route to Anthropic (Claude)
         if model.startswith("claude"):
@@ -62,21 +69,29 @@ class MultiModelRouter:
                 yield chunk
 
         # 2. Route to OpenAI (GPT)
-        elif model.startswith("gpt"):
+        elif model.startswith("gpt") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"):
             async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
                 yield chunk
 
-        # 3. Route to Qwen or Gemini (Or other OpenAI compatible endpoints)
-        elif model.startswith("qwen") or model.startswith("gemini"):
+        # 3. Route to Google Gemini
+        elif model.startswith("gemini"):
+            async for chunk in self._stream_gemini(model, system_prompt, messages, temperature, max_tokens):
+                yield chunk
+
+        # 4. Route to Qwen (Or other OpenAI compatible endpoints)
+        elif model.startswith("qwen"):
             async for chunk in self._stream_qwen(model, system_prompt, messages, temperature, max_tokens):
                 yield chunk
 
-        # 4. Generic Fallback
+        # 5. Generic Fallback — try OpenAI-compatible
         else:
             print(f"⚠️ [Router] Model '{model}' not explicitly recognized. Falling back to OpenAI stream.")
             async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
                 yield chunk
 
+    # ================================================================
+    # Anthropic (Claude)
+    # ================================================================
 
     async def _stream_anthropic(
         self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
@@ -90,7 +105,7 @@ class MultiModelRouter:
             "anthropic-version": "2023-06-01",
             "content-type": "application/json"
         }
-        
+
         payload = {
             "model": model,
             "system": system_prompt,
@@ -100,35 +115,12 @@ class MultiModelRouter:
             "stream": True
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            try:
-                async with client.stream(
-                    "POST", 
-                    "https://api.anthropic.com/v1/messages", 
-                    headers=headers, 
-                    json=payload
-                ) as response:
-                    if response.status_code != 200:
-                        err_body = await response.aread()
-                        yield f"[Anthropic API Error {response.status_code}: {err_body.decode('utf-8')}]"
-                        return
+        async for chunk in self._stream_with_retry("https://api.anthropic.com/v1/messages", headers, payload, "anthropic"):
+            yield chunk
 
-                    async for line in response.iter_lines():
-                        if line.startswith("data:"):
-                            data_str = line[5:].strip()
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                # Anthropic uses 'content_block_delta' for message chunk streams
-                                if data.get("type") == "content_block_delta":
-                                    delta = data.get("delta", {})
-                                    if delta.get("type") == "text_delta":
-                                        yield delta.get("text", "")
-                            except json.JSONDecodeError:
-                                continue
-            except Exception as e:
-                yield f"[Router Connection Exception: {str(e)}]"
+    # ================================================================
+    # OpenAI (GPT, o-series)
+    # ================================================================
 
     async def _stream_openai(
         self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
@@ -142,9 +134,8 @@ class MultiModelRouter:
             "Content-Type": "application/json"
         }
 
-        # Formulate full payload including system prompt as first message
         formatted_messages = [{"role": "system", "content": system_prompt}] + messages
-        
+
         payload = {
             "model": model,
             "messages": formatted_messages,
@@ -153,47 +144,86 @@ class MultiModelRouter:
             "stream": True
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async for chunk in self._stream_with_retry("https://api.openai.com/v1/chat/completions", headers, payload, "openai"):
+            yield chunk
+
+    # ================================================================
+    # Google Gemini
+    # ================================================================
+
+    async def _stream_gemini(
+        self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
+    ) -> AsyncGenerator[str, None]:
+        if not self.gemini_key:
+            yield "[Router Error: GOOGLE_API_KEY is not configured in the backend environment.]"
+            return
+
+        # Build Gemini-format contents array
+        contents = []
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": msg["content"]}]
+            })
+
+        payload = {
+            "contents": contents,
+            "systemInstruction": {
+                "parts": [{"text": system_prompt}]
+            },
+            "generationConfig": {
+                "temperature": temp,
+                "maxOutputTokens": max_tokens,
+            }
+        }
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+            f":streamGenerateContent?alt=sse&key={self.gemini_key}"
+        )
+
+        async with httpx.AsyncClient(timeout=90.0) as client:
             try:
-                async with client.stream(
-                    "POST", 
-                    "https://api.openai.com/v1/chat/completions", 
-                    headers=headers, 
-                    json=payload
-                ) as response:
+                async with client.stream("POST", url, json=payload) as response:
                     if response.status_code != 200:
                         err_body = await response.aread()
-                        yield f"[OpenAI API Error {response.status_code}: {err_body.decode('utf-8')}]"
+                        yield f"[Gemini API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
                         return
 
                     async for line in response.iter_lines():
                         if line.startswith("data:"):
                             data_str = line[5:].strip()
-                            if data_str == "[DONE]":
-                                break
+                            if not data_str or data_str == "[DONE]":
+                                continue
                             try:
                                 data = json.loads(data_str)
-                                choices = data.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    if content:
-                                        yield content
+                                candidates = data.get("candidates", [])
+                                if candidates:
+                                    content = candidates[0].get("content", {})
+                                    parts = content.get("parts", [])
+                                    for part in parts:
+                                        text = part.get("text", "")
+                                        if text:
+                                            yield text
                             except json.JSONDecodeError:
                                 continue
             except Exception as e:
-                yield f"[Router Connection Exception: {str(e)}]"
+                yield f"[Router Connection Exception (Gemini): {str(e)}]"
+
+    # ================================================================
+    # Qwen / OpenAI-compatible
+    # ================================================================
 
     async def _stream_qwen(
         self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
     ) -> AsyncGenerator[str, None]:
-        # Qwen can run locally (no keys) or via DashScope/OpenRouter (requires keys)
         headers = {"Content-Type": "application/json"}
         if self.qwen_key:
             headers["Authorization"] = f"Bearer {self.qwen_key}"
 
         formatted_messages = [{"role": "system", "content": system_prompt}] + messages
-        
+
         payload = {
             "model": model,
             "messages": formatted_messages,
@@ -202,50 +232,117 @@ class MultiModelRouter:
             "stream": True
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            try:
-                async with client.stream(
-                    "POST", 
-                    f"{self.qwen_base_url}/chat/completions", 
-                    headers=headers, 
-                    json=payload
-                ) as response:
-                    if response.status_code != 200:
-                        err_body = await response.aread()
-                        yield f"[Qwen API Error {response.status_code}: {err_body.decode('utf-8')}]"
-                        return
+        async for chunk in self._stream_with_retry(
+            f"{self.qwen_base_url}/chat/completions", headers, payload, "openai"
+        ):
+            yield chunk
 
-                    async for line in response.iter_lines():
-                        if line.startswith("data:"):
+    # ================================================================
+    # Shared SSE streaming with retry
+    # ================================================================
+
+    async def _stream_with_retry(
+        self, url: str, headers: dict, payload: dict, parse_format: str,
+        max_retries: int = 3
+    ) -> AsyncGenerator[str, None]:
+        """
+        Shared SSE stream parser with retry/backoff.
+        parse_format: 'anthropic' or 'openai'
+        """
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    async with client.stream("POST", url, headers=headers, json=payload) as response:
+                        if response.status_code == 429:
+                            # Rate limited — backoff and retry
+                            wait = (2 ** attempt) * 2
+                            print(f"⚠️ [Router] Rate limited (429). Retrying in {wait}s... (attempt {attempt+1}/{max_retries})")
+                            await asyncio.sleep(wait)
+                            continue
+
+                        if response.status_code >= 500:
+                            wait = (2 ** attempt) * 1
+                            print(f"⚠️ [Router] Server error ({response.status_code}). Retrying in {wait}s...")
+                            await asyncio.sleep(wait)
+                            continue
+
+                        if response.status_code != 200:
+                            err_body = await response.aread()
+                            yield f"[API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
+                            return
+
+                        async for line in response.iter_lines():
+                            if not line.startswith("data:"):
+                                continue
                             data_str = line[5:].strip()
                             if data_str == "[DONE]":
                                 break
                             try:
                                 data = json.loads(data_str)
-                                choices = data.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    if content:
-                                        yield content
+                                text = self._extract_text_from_sse(data, parse_format)
+                                if text:
+                                    yield text
                             except json.JSONDecodeError:
                                 continue
+                        return  # Success — don't retry
+
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+                wait = (2 ** attempt) * 1
+                if attempt < max_retries - 1:
+                    print(f"⚠️ [Router] Connection error: {e}. Retrying in {wait}s... (attempt {attempt+1}/{max_retries})")
+                    await asyncio.sleep(wait)
+                else:
+                    yield f"[Router Connection Error after {max_retries} retries: {str(e)}]"
             except Exception as e:
-                yield f"[Router Connection Exception: {str(e)}]"
+                yield f"[Router Exception: {str(e)}]"
+                return
+
+    @staticmethod
+    def _extract_text_from_sse(data: dict, parse_format: str) -> str:
+        """Extracts text content from an SSE data payload."""
+        if parse_format == "anthropic":
+            if data.get("type") == "content_block_delta":
+                delta = data.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    return delta.get("text", "")
+        elif parse_format == "openai":
+            choices = data.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                return delta.get("content", "")
+        return ""
+
+    # ================================================================
+    # Embeddings (with Gemini fallback)
+    # ================================================================
 
     async def generate_embeddings(self, text: str) -> List[float]:
         """
-        Generates a 1536-dimensional vector embedding for the input text using OpenAI.
+        Generates a vector embedding for the input text.
+        Tries OpenAI first (1536-dim), falls back to Gemini (768-dim, zero-padded to 1536).
+        Returns a zero vector if no API key is available.
         """
-        if not self.openai_key:
-            # Return a mock zero-vector if no OpenAI key is configured
-            return [0.0] * 1536
+        # Try OpenAI first
+        if self.openai_key:
+            result = await self._embeddings_openai(text)
+            if result:
+                return result
 
+        # Fallback to Gemini
+        if self.gemini_key:
+            result = await self._embeddings_gemini(text)
+            if result:
+                return result
+
+        # No keys available — return mock zero-vector
+        return [0.0] * 1536
+
+    async def _embeddings_openai(self, text: str) -> Optional[List[float]]:
+        """OpenAI text-embedding-3-small (1536 dimensions)."""
         headers = {
             "Authorization": f"Bearer {self.openai_key}",
             "Content-Type": "application/json"
         }
-        
         payload = {
             "input": text,
             "model": "text-embedding-3-small"
@@ -262,11 +359,44 @@ class MultiModelRouter:
                     data = response.json()
                     return data["data"][0]["embedding"]
                 else:
-                    print(f"✗ [Router] Embeddings API error: {response.text}")
-                    return [0.0] * 1536
+                    print(f"✗ [Router] OpenAI Embeddings error: {response.text[:200]}")
+                    return None
             except Exception as e:
-                print(f"✗ [Router] Embeddings connection error: {str(e)}")
-                return [0.0] * 1536
+                print(f"✗ [Router] OpenAI Embeddings connection error: {str(e)}")
+                return None
+
+    async def _embeddings_gemini(self, text: str) -> Optional[List[float]]:
+        """Google Gemini text-embedding-004 (768 dimensions, zero-padded to 1536)."""
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004"
+            f":embedContent?key={self.gemini_key}"
+        )
+        payload = {
+            "model": "models/text-embedding-004",
+            "content": {
+                "parts": [{"text": text[:2048]}]  # Gemini embedding input limit
+            }
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(url, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    values = data.get("embedding", {}).get("values", [])
+                    if values:
+                        # Zero-pad from 768 to 1536 to match pgvector column dimension
+                        while len(values) < 1536:
+                            values.append(0.0)
+                        return values[:1536]
+                    return None
+                else:
+                    print(f"✗ [Router] Gemini Embeddings error: {response.text[:200]}")
+                    return None
+            except Exception as e:
+                print(f"✗ [Router] Gemini Embeddings connection error: {str(e)}")
+                return None
+
 
 # Global singleton router
 llm_router = MultiModelRouter()

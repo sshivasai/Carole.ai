@@ -30,6 +30,7 @@ from core.memory.auto_dream import dream_worker
 from core.tools.tool_executor import register_builtin_tools
 from core.tools.tool_registry import ToolRegistry
 from core.api.crud_routes import router as crud_router
+from core.api.auth_routes import router as auth_router
 
 dotenv.load_dotenv()
 
@@ -77,8 +78,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register CRUD API routes
+# Register API routes
 app.include_router(crud_router)
+app.include_router(auth_router)
 
 
 # ============================================================

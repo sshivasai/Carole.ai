@@ -216,6 +216,9 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
         role=body.role,
         model=body.model,
         system_prompt=prompt,
+        personality=body.personality,
+        custom_instructions=body.custom_instructions,
+        skills=body.skills or [],
         tool_permissions=body.tool_permissions,
     )
     db.add(agent)
@@ -223,6 +226,8 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
     return {
         "id": str(agent.id), "name": agent.name, "role": agent.role,
         "model": agent.model, "team_id": str(agent.team_id),
+        "personality": agent.personality, "skills": agent.skills,
+        "custom_instructions": agent.custom_instructions,
     }
 
 @router.get("/agents/{team_id}")
@@ -234,6 +239,8 @@ async def list_agents(team_id: str, db: AsyncSession = Depends(get_db)):
         {
             "id": str(a.id), "name": a.name, "role": a.role,
             "model": a.model, "tool_permissions": a.tool_permissions,
+            "personality": a.personality, "skills": a.skills or [],
+            "custom_instructions": a.custom_instructions,
         }
         for a in result.scalars().all()
     ]
@@ -250,10 +257,27 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
         agent.role = body.role
     if body.model is not None:
         agent.model = body.model
-    if body.system_prompt is not None:
-        agent.system_prompt = body.system_prompt
     if body.tool_permissions is not None:
         agent.tool_permissions = body.tool_permissions
+    if body.personality is not None:
+        agent.personality = body.personality
+    if body.custom_instructions is not None:
+        agent.custom_instructions = body.custom_instructions
+    if body.skills is not None:
+        agent.skills = body.skills
+    # Rebuild system prompt if role/name/personality/skills/instructions changed
+    rebuild = any(x is not None for x in [body.system_prompt, body.name, body.role, body.personality, body.skills, body.custom_instructions])
+    if rebuild:
+        if body.system_prompt is not None:
+            agent.system_prompt = body.system_prompt
+        else:
+            prompt = _default_system_prompt(agent.name, agent.role, agent.personality or "professional")
+            if agent.custom_instructions:
+                prompt += f"\n\nSPECIAL CUSTOM INSTRUCTIONS:\n{agent.custom_instructions}"
+            if agent.skills and len(agent.skills) > 0:
+                skills_text = "\n".join(f"- {s}" for s in agent.skills)
+                prompt += f"\n\nSPECIALIZED SKILLS & TOOLKITS:\n{skills_text}"
+            agent.system_prompt = prompt
     await db.flush()
     return {"status": "updated", "id": agent_id}
 
@@ -261,6 +285,47 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
 async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
     await db.execute(delete(Agent).where(Agent.id == agent_id))
     return {"status": "deleted", "id": agent_id}
+
+
+# ============================================================
+# Delete endpoints for Projects, Teams, Users
+# ============================================================
+
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
+    await db.execute(delete(Project).where(Project.id == project_id))
+    return {"status": "deleted", "id": project_id}
+
+@router.delete("/teams/{team_id}")
+async def delete_team(team_id: str, db: AsyncSession = Depends(get_db)):
+    await db.execute(delete(Team).where(Team.id == team_id))
+    return {"status": "deleted", "id": team_id}
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: str, db: AsyncSession = Depends(get_db)):
+    await db.execute(delete(User).where(User.id == user_id))
+    return {"status": "deleted", "id": user_id}
+
+
+# ============================================================
+# Single-entity GET endpoints
+# ============================================================
+
+@router.get("/projects/single/{project_id}")
+async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"id": str(p.id), "name": p.name, "owner_id": str(p.owner_id)}
+
+@router.get("/teams/single/{team_id}")
+async def get_team(team_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Team).where(Team.id == team_id))
+    t = result.scalar_one_or_none()
+    if not t:
+        raise HTTPException(status_code=404, detail="Team not found")
+    return {"id": str(t.id), "name": t.name, "project_id": str(t.project_id)}
 
 
 # ============================================================
@@ -352,6 +417,24 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
 @router.get("/tools")
 async def list_tools():
     return ToolRegistry.to_api_list()
+
+
+# ============================================================
+# Role Templates
+# ============================================================
+
+@router.get("/role-templates")
+async def list_role_templates():
+    from core.agent.role_templates import get_all_templates
+    return get_all_templates()
+
+@router.get("/role-templates/{role}")
+async def get_role_template(role: str):
+    from core.agent.role_templates import get_template_by_role
+    template = get_template_by_role(role)
+    if not template:
+        raise HTTPException(status_code=404, detail=f"No template found for role '{role}'.")
+    return template
 
 
 # ============================================================

@@ -24,6 +24,7 @@ from core.tools.web_tools import web_tools
 from core.tools.agent_tools import agent_tools
 from core.tools.browser_tool import browser_tool
 from core.tools.interaction_tools import interaction_tools
+from core.tools.code_analysis_tools import code_analysis_tools
 from core.judge.judge_evaluator import judge_evaluator
 
 # Global dictionaries to manage pending human approvals across concurrent agent loops
@@ -52,6 +53,22 @@ def register_builtin_tools():
         ToolSpec("list_directory", "List files and directories at a path", "filesystem",
                  {"relative_path": {"type": "string", "required": False}},
                  "safe", _wrap_list_directory),
+        ToolSpec("append_file", "Append content to the end of a file", "filesystem",
+                 {"relative_path": {"type": "string", "required": True},
+                  "content": {"type": "string", "required": True}},
+                 "judge", _wrap_append_file),
+        ToolSpec("delete_file", "Delete a file from the workspace", "filesystem",
+                 {"relative_path": {"type": "string", "required": True}},
+                 "human", _wrap_delete_file),
+        ToolSpec("grep_search", "Search file contents for a regex pattern", "search",
+                 {"pattern": {"type": "string", "required": True},
+                  "path": {"type": "string", "required": False},
+                  "case_sensitive": {"type": "boolean", "required": False}},
+                 "safe", _wrap_grep_search),
+        ToolSpec("glob_search", "Find files matching a glob pattern (e.g. **/*.py)", "search",
+                 {"pattern": {"type": "string", "required": True},
+                  "path": {"type": "string", "required": False}},
+                 "safe", _wrap_glob_search),
 
         # ---- Shell ----
         ToolSpec("execute_command", "Execute a shell command in the workspace", "shell",
@@ -75,6 +92,35 @@ def register_builtin_tools():
         ToolSpec("git_push", "Push current branch to remote", "git",
                  {"remote": {"type": "string", "required": False},
                   "branch": {"type": "string", "required": False}}, "human", _wrap_git_push),
+        ToolSpec("git_stash", "Stash or unstash changes (push/pop/list/drop)", "git",
+                 {"action": {"type": "string", "required": False},
+                  "message": {"type": "string", "required": False}}, "judge", _wrap_git_stash),
+        ToolSpec("git_clone", "Clone a repository", "git",
+                 {"url": {"type": "string", "required": True},
+                  "directory": {"type": "string", "required": False}}, "human", _wrap_git_clone),
+
+        # ---- Filesystem extras ----
+        ToolSpec("copy_file", "Copy a file to a new location", "filesystem",
+                 {"source": {"type": "string", "required": True},
+                  "destination": {"type": "string", "required": True}}, "judge", _wrap_copy_file),
+        ToolSpec("move_file", "Move or rename a file", "filesystem",
+                 {"source": {"type": "string", "required": True},
+                  "destination": {"type": "string", "required": True}}, "judge", _wrap_move_file),
+        ToolSpec("create_directory", "Create a new directory", "filesystem",
+                 {"path": {"type": "string", "required": True}}, "safe", _wrap_create_directory),
+
+        # ---- Code Analysis ----
+        ToolSpec("find_function", "Find function/class definitions by name", "code_analysis",
+                 {"name": {"type": "string", "required": True},
+                  "path": {"type": "string", "required": False}}, "safe", _wrap_find_function),
+        ToolSpec("find_todos", "Find TODO/FIXME/HACK comments in code", "code_analysis",
+                 {"path": {"type": "string", "required": False}}, "safe", _wrap_find_todos),
+        ToolSpec("count_lines", "Count lines of code, comments, and blanks in a file", "code_analysis",
+                 {"path": {"type": "string", "required": True}}, "safe", _wrap_count_lines),
+        ToolSpec("analyze_imports", "List all import statements in a file", "code_analysis",
+                 {"path": {"type": "string", "required": True}}, "safe", _wrap_analyze_imports),
+        ToolSpec("check_syntax", "Validate Python syntax without executing", "code_analysis",
+                 {"path": {"type": "string", "required": True}}, "safe", _wrap_check_syntax),
 
         # ---- Web ----
         ToolSpec("web_search", "Search the web for information", "web",
@@ -417,5 +463,109 @@ async def _wrap_sleep(args: Dict[str, Any], team_id: str) -> str:
     return await interaction_tools.sleep(seconds)
 
 
+# ---- New Filesystem Tools ----
+
+async def _wrap_append_file(args: Dict[str, Any], team_id: str):
+    path = args.get("relative_path") or args.get("path")
+    content = args.get("content")
+    if not path or content is None:
+        return "Error: Missing 'relative_path' or 'content'."
+    return file_tools.append_file(path, content)
+
+
+async def _wrap_delete_file(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("relative_path") or args.get("path") or args.get("value")
+    if not path:
+        return "Error: Missing 'relative_path'."
+    return file_tools.delete_file(path)
+
+
+async def _wrap_grep_search(args: Dict[str, Any], team_id: str) -> str:
+    pattern = args.get("pattern") or args.get("value", "")
+    if not pattern:
+        return "Error: Missing 'pattern'."
+    path = args.get("path", ".")
+    case_sensitive = args.get("case_sensitive", True)
+    return file_tools.grep_search(pattern, path, case_sensitive)
+
+
+async def _wrap_glob_search(args: Dict[str, Any], team_id: str) -> str:
+    pattern = args.get("pattern") or args.get("value", "")
+    if not pattern:
+        return "Error: Missing 'pattern'."
+    path = args.get("path", ".")
+    return file_tools.glob_search(pattern, path)
+
+
 # Singleton global executor
 tool_executor = ToolExecutor()
+
+
+# ---- New Filesystem Wrappers ----
+
+async def _wrap_copy_file(args: Dict[str, Any], team_id: str) -> str:
+    src = args.get("source", "")
+    dst = args.get("destination", "")
+    if not src or not dst:
+        return "Error: Missing 'source' or 'destination'."
+    return file_tools.copy_file(src, dst)
+
+async def _wrap_move_file(args: Dict[str, Any], team_id: str) -> str:
+    src = args.get("source", "")
+    dst = args.get("destination", "")
+    if not src or not dst:
+        return "Error: Missing 'source' or 'destination'."
+    return file_tools.move_file(src, dst)
+
+async def _wrap_create_directory(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("path") or args.get("relative_path", "")
+    if not path:
+        return "Error: Missing 'path'."
+    return file_tools.create_directory(path)
+
+
+# ---- Git Extras ----
+
+async def _wrap_git_stash(args: Dict[str, Any], team_id: str) -> str:
+    action = args.get("action", "push")
+    message = args.get("message")
+    return await git_tools.stash(action, message)
+
+async def _wrap_git_clone(args: Dict[str, Any], team_id: str) -> str:
+    url = args.get("url", "")
+    if not url:
+        return "Error: Missing 'url'."
+    directory = args.get("directory")
+    return await git_tools.clone(url, directory)
+
+
+# ---- Code Analysis Wrappers ----
+
+async def _wrap_find_function(args: Dict[str, Any], team_id: str) -> str:
+    name = args.get("name") or args.get("value", "")
+    if not name:
+        return "Error: Missing 'name'."
+    path = args.get("path", ".")
+    return code_analysis_tools.find_function(name, path)
+
+async def _wrap_find_todos(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("path", ".")
+    return code_analysis_tools.find_todos(path)
+
+async def _wrap_count_lines(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("path") or args.get("value", "")
+    if not path:
+        return "Error: Missing 'path'."
+    return code_analysis_tools.count_lines(path)
+
+async def _wrap_analyze_imports(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("path") or args.get("value", "")
+    if not path:
+        return "Error: Missing 'path'."
+    return code_analysis_tools.analyze_imports(path)
+
+async def _wrap_check_syntax(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("path") or args.get("value", "")
+    if not path:
+        return "Error: Missing 'path'."
+    return code_analysis_tools.check_syntax(path)

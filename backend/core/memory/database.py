@@ -8,6 +8,7 @@ Responsibilities:
 2. Initialize pgvector extension if it doesn't exist.
 3. Provide dependency injection sessions for FastAPI routes and background workers.
 4. Run schema bootstrapping during startup.
+5. Support force-recreate for dev environments (drops and recreates all tables).
 """
 
 import os
@@ -51,7 +52,19 @@ async def get_db():
             await session.close()
 
 # Database initialization function (creates pgvector extension & tables)
-async def init_db():
+async def init_db(force_recreate: bool = False):
+    """
+    Initialize the database schema.
+    
+    Args:
+        force_recreate: If True, drops all existing tables and recreates them.
+                        Useful during development when schema changes are made.
+                        Set via FORCE_DB_RECREATE=true environment variable.
+    """
+    # Check env var for force recreate
+    if os.getenv("FORCE_DB_RECREATE", "").lower() in ("true", "1", "yes"):
+        force_recreate = True
+
     async with engine.begin() as conn:
         # 1. Enable the pgvector extension in PostgreSQL
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
@@ -59,5 +72,10 @@ async def init_db():
         # 2. Dynamically import models to register with Base metadata
         from . import models
         
-        # 3. Create all tables
+        # 3. Optionally drop all tables first (dev convenience)
+        if force_recreate:
+            print("⚠️ [DB] FORCE_DB_RECREATE enabled — dropping all tables...")
+            await conn.run_sync(Base.metadata.drop_all)
+        
+        # 4. Create all tables (additive — won't modify existing columns)
         await conn.run_sync(Base.metadata.create_all)
