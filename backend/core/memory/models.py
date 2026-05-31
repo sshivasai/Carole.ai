@@ -115,3 +115,22 @@ class Learning(Base):
     embedding = Column(Vector(1536), nullable=False)
     
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(500), nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # Workflow states: todo → in_progress → review → done | blocked
+    status = Column(String(20), nullable=False, default="todo")
+    priority = Column(String(10), nullable=False, default="medium")  # low, medium, high, critical
+    
+    assigned_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    parent_task_id = Column(UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
+    created_by = Column(String(100), nullable=False, default="human")  # agent_id or "human"
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

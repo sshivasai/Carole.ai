@@ -1,13 +1,14 @@
 """
 # backend/core/tools/tool_executor.py
 
-This module manages secure tool registration, permission gating, and human-in-the-loop approvals.
+Manages secure tool execution, permission gating, and human-in-the-loop approvals.
+Delegates all tool lookups to the ToolRegistry and emits file_change / tool events
+to the EventBus for live UI streaming.
 
 Permission Levels:
 1. "safe" - Instantly executes.
-2. "judge" - Pauses and requests an async verification appraisal from the team's Judge AI.
-3. "human" - Pauses and blocks the execution flow, emitting a WebSocket event to the UI,
-            blocking until the human approves or denies the transaction.
+2. "judge" - Pauses and requests an async verification appraisal from the Judge AI.
+3. "human" - Blocks the execution flow until the human approves via the REST API.
 """
 
 import uuid
@@ -15,11 +16,13 @@ import asyncio
 from typing import Dict, Any, Callable, Awaitable
 
 from core.chat.event_bus import event_bus
-from core.tools.file_tools import file_tools
+from core.tools.tool_registry import ToolRegistry, ToolSpec
+from core.tools.file_tools import file_tools, FileChangeResult
 from core.tools.shell_tools import shell_tools
 from core.tools.git_tools import git_tools
 from core.tools.web_tools import web_tools
 from core.tools.agent_tools import agent_tools
+from core.tools.browser_tool import browser_tool
 from core.judge.judge_evaluator import judge_evaluator
 
 # Global dictionaries to manage pending human approvals across concurrent agent loops
@@ -27,33 +30,110 @@ pending_approvals: Dict[str, asyncio.Event] = {}
 approval_results: Dict[str, bool] = {}  # Maps tx_id to True (Approved) or False (Denied)
 
 
-class ToolExecutor:
-    def __init__(self):
-        # Register mapping of tool names to their operational functions
-        self.registry: Dict[str, Callable[..., Awaitable[str]]] = {
-            # File system tools
-            "read_file": self._wrap_read_file,
-            "write_file": self._wrap_write_file,
-            "edit_file": self._wrap_edit_file,
-            "list_directory": self._wrap_list_directory,
-            # Shell tools
-            "execute_command": self._wrap_execute_command,
-            # Git tools
-            "git_status": self._wrap_git_status,
-            "git_diff": self._wrap_git_diff,
-            "git_add": self._wrap_git_add,
-            "git_commit": self._wrap_git_commit,
-            "git_log": self._wrap_git_log,
-            "git_checkout": self._wrap_git_checkout,
-            "git_push": self._wrap_git_push,
-            # Web research tools
-            "web_search": self._wrap_web_search,
-            "web_fetch": self._wrap_web_fetch,
-            # Agent coordination tools
-            "spawn_agent": self._wrap_spawn_agent,
-            "send_message": self._wrap_send_message,
-        }
+def register_builtin_tools():
+    """Registers all built-in tools with the ToolRegistry at startup.
+    Called once from main.py lifespan."""
 
+    builtins = [
+        # ---- Filesystem ----
+        ToolSpec("read_file", "Read contents of a file", "filesystem",
+                 {"relative_path": {"type": "string", "required": True}},
+                 "safe", _wrap_read_file),
+        ToolSpec("write_file", "Create or overwrite a file", "filesystem",
+                 {"relative_path": {"type": "string", "required": True},
+                  "content": {"type": "string", "required": True}},
+                 "judge", _wrap_write_file),
+        ToolSpec("edit_file", "Replace a specific block of text in a file", "filesystem",
+                 {"relative_path": {"type": "string", "required": True},
+                  "target_content": {"type": "string", "required": True},
+                  "replacement_content": {"type": "string", "required": True}},
+                 "judge", _wrap_edit_file),
+        ToolSpec("list_directory", "List files and directories at a path", "filesystem",
+                 {"relative_path": {"type": "string", "required": False}},
+                 "safe", _wrap_list_directory),
+
+        # ---- Shell ----
+        ToolSpec("execute_command", "Execute a shell command in the workspace", "shell",
+                 {"command": {"type": "string", "required": True},
+                  "timeout": {"type": "number", "required": False}},
+                 "judge", _wrap_execute_command),
+
+        # ---- Git ----
+        ToolSpec("git_status", "Show current git status", "git", {}, "safe", _wrap_git_status),
+        ToolSpec("git_diff", "Show uncommitted changes", "git",
+                 {"staged": {"type": "boolean", "required": False}}, "safe", _wrap_git_diff),
+        ToolSpec("git_add", "Stage files for commit", "git",
+                 {"paths": {"type": "string", "required": False}}, "judge", _wrap_git_add),
+        ToolSpec("git_commit", "Create a commit", "git",
+                 {"message": {"type": "string", "required": True}}, "judge", _wrap_git_commit),
+        ToolSpec("git_log", "Show recent commit history", "git",
+                 {"count": {"type": "number", "required": False}}, "safe", _wrap_git_log),
+        ToolSpec("git_checkout", "Switch or create a branch", "git",
+                 {"branch": {"type": "string", "required": True},
+                  "create": {"type": "boolean", "required": False}}, "judge", _wrap_git_checkout),
+        ToolSpec("git_push", "Push current branch to remote", "git",
+                 {"remote": {"type": "string", "required": False},
+                  "branch": {"type": "string", "required": False}}, "human", _wrap_git_push),
+
+        # ---- Web ----
+        ToolSpec("web_search", "Search the web for information", "web",
+                 {"query": {"type": "string", "required": True},
+                  "max_results": {"type": "number", "required": False}},
+                 "safe", _wrap_web_search),
+        ToolSpec("web_fetch", "Fetch and extract text from a URL", "web",
+                 {"url": {"type": "string", "required": True}}, "safe", _wrap_web_fetch),
+
+        # ---- Browser Automation ----
+        ToolSpec("browser_navigate", "Navigate the headless browser to a URL, capture screenshot, and extract page text", "browser",
+                 {"url": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_navigate),
+        ToolSpec("browser_screenshot", "Capture a screenshot of the current browser page", "browser",
+                 {}, "judge", _wrap_browser_screenshot),
+        ToolSpec("browser_click", "Click an element on the current browser page by CSS selector", "browser",
+                 {"selector": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_click),
+        ToolSpec("browser_type", "Type text into an input element on the browser page", "browser",
+                 {"selector": {"type": "string", "required": True},
+                  "text": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_type),
+        ToolSpec("browser_extract_text", "Extract text content from the browser page or a specific element", "browser",
+                 {"selector": {"type": "string", "required": False}},
+                 "safe", _wrap_browser_extract_text),
+
+        # ---- Coordination ----
+        ToolSpec("spawn_agent", "Spawn a teammate's ReACT loop with a task", "coordination",
+                 {"agent_name": {"type": "string", "required": True},
+                  "task": {"type": "string", "required": True}},
+                 "safe", _wrap_spawn_agent),
+        ToolSpec("send_message", "Send a message in the team chat", "coordination",
+                 {"text": {"type": "string", "required": True},
+                  "recipient_name": {"type": "string", "required": False}},
+                 "safe", _wrap_send_message),
+
+        # ---- Tasks ----
+        ToolSpec("create_task", "Create a task on the team board", "task",
+                 {"title": {"type": "string", "required": True},
+                  "description": {"type": "string", "required": False},
+                  "priority": {"type": "string", "required": False},
+                  "assignee": {"type": "string", "required": False}},
+                 "safe", _wrap_create_task),
+        ToolSpec("list_tasks", "List tasks on the team board", "task",
+                 {"status": {"type": "string", "required": False}},
+                 "safe", _wrap_list_tasks),
+        ToolSpec("update_task", "Update a task's status", "task",
+                 {"task_id": {"type": "string", "required": True},
+                  "status": {"type": "string", "required": False},
+                  "notes": {"type": "string", "required": False}},
+                 "safe", _wrap_update_task),
+    ]
+
+    for spec in builtins:
+        ToolRegistry.register(spec)
+
+    print(f"🔧 [ToolRegistry] Registered {len(builtins)} built-in tools.")
+
+
+class ToolExecutor:
     async def execute(
         self,
         tool_name: str,
@@ -67,17 +147,18 @@ class ToolExecutor:
         Gated Execution entrypoint.
         Checks tool permissions and enforces safe execution or human-in-the-loop gating.
         """
-        if tool_name not in self.registry:
+        spec = ToolRegistry.get(tool_name)
+        if not spec:
             return f"Error: Tool '{tool_name}' is not registered in the system."
 
-        # Fetch the permission level for this specific tool (defaults to "human" for security)
-        gate_level = permissions.get(tool_name, "human")
+        # Permission level: agent-specific override → tool default
+        gate_level = permissions.get(tool_name, spec.permission_default)
 
         # 1. Safe — instant execution
         if gate_level == "safe":
-            return await self.registry[tool_name](arguments, team_id)
+            return await self._run_tool(spec, arguments, agent_id, agent_name, team_id)
 
-        # 2. Judge — broadcast review request, then execute
+        # 2. Judge — LLM-based review, then execute
         elif gate_level == "judge":
             topic = f"team:{team_id}"
             await event_bus.publish(topic, {
@@ -90,7 +171,7 @@ class ToolExecutor:
             })
             approved = await judge_evaluator.evaluate(tool_name, arguments, agent_name)
             if approved:
-                return await self.registry[tool_name](arguments, team_id)
+                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id)
             else:
                 return f"✗ Judge DENIED execution of '{tool_name}' for agent '{agent_name}'."
 
@@ -120,7 +201,7 @@ class ToolExecutor:
 
             if approved:
                 print(f"✓ [Executor] Tx {tx_id} APPROVED. Resuming execution...")
-                return await self.registry[tool_name](arguments, team_id)
+                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id)
             else:
                 print(f"✗ [Executor] Tx {tx_id} DENIED. Cancelling execution...")
                 return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
@@ -128,114 +209,189 @@ class ToolExecutor:
         else:
             return f"Error: Unknown tool permission gate level '{gate_level}'."
 
-    # ========================
-    # File System Wrappers
-    # ========================
+    async def _run_tool(
+        self, spec: ToolSpec, arguments: Dict[str, Any],
+        agent_id: str, agent_name: str, team_id: str
+    ) -> str:
+        """Executes the tool handler and emits file_change events for file operations."""
+        # Inject agent identity into args so tool wrappers can access it
+        arguments["_agent_id"] = agent_id
+        arguments["_agent_name"] = agent_name
+        result = await spec.handler(arguments, team_id)
 
-    async def _wrap_read_file(self, args: Dict[str, Any], team_id: str) -> str:
-        path = args.get("relative_path") or args.get("path") or args.get("value")
-        if not path:
-            return "Error: Missing parameter 'relative_path'."
-        return file_tools.read_file(path)
+        # If the tool returned a FileChangeResult, emit a file_change event
+        if isinstance(result, FileChangeResult):
+            if result.diff:
+                await event_bus.publish(f"team:{team_id}", {
+                    "type": "file_change",
+                    "action": result.action,
+                    "path": result.path,
+                    "diff": result.diff,
+                    "before_content": result.before_content,
+                    "after_content": result.after_content,
+                    "sender_id": agent_id,
+                    "sender_name": agent_name,
+                })
+            return result.message
 
-    async def _wrap_write_file(self, args: Dict[str, Any], team_id: str) -> str:
-        path = args.get("relative_path") or args.get("path")
-        content = args.get("content")
-        if not path or content is None:
-            return "Error: Missing parameter 'relative_path' or 'content'."
-        return file_tools.write_file(path, content)
+        return result
 
-    async def _wrap_edit_file(self, args: Dict[str, Any], team_id: str) -> str:
-        path = args.get("relative_path") or args.get("path")
-        target = args.get("target_content") or args.get("target")
-        replacement = args.get("replacement_content") or args.get("replacement")
-        if not path or target is None or replacement is None:
-            return "Error: Missing parameters for editing."
-        return file_tools.edit_file(path, target, replacement)
 
-    async def _wrap_list_directory(self, args: Dict[str, Any], team_id: str) -> str:
-        path = args.get("relative_path", ".") or args.get("path", ".")
-        return file_tools.list_directory(path)
+# ========================
+# Tool Handler Functions
+# ========================
 
-    # ========================
-    # Shell Wrappers
-    # ========================
+async def _wrap_read_file(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("relative_path") or args.get("path") or args.get("value")
+    if not path:
+        return "Error: Missing parameter 'relative_path'."
+    return file_tools.read_file(path)
 
-    async def _wrap_execute_command(self, args: Dict[str, Any], team_id: str) -> str:
-        command = args.get("command") or args.get("value")
-        if not command:
-            return "Error: Missing parameter 'command'."
-        timeout = float(args.get("timeout", 60.0))
-        return await shell_tools.execute_command(command, team_id, timeout)
+async def _wrap_write_file(args: Dict[str, Any], team_id: str):
+    path = args.get("relative_path") or args.get("path")
+    content = args.get("content")
+    if not path or content is None:
+        return "Error: Missing parameter 'relative_path' or 'content'."
+    return file_tools.write_file(path, content)
 
-    # ========================
-    # Git Wrappers
-    # ========================
+async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
+    path = args.get("relative_path") or args.get("path")
+    target = args.get("target_content") or args.get("target")
+    replacement = args.get("replacement_content") or args.get("replacement")
+    if not path or target is None or replacement is None:
+        return "Error: Missing parameters for editing."
+    return file_tools.edit_file(path, target, replacement)
 
-    async def _wrap_git_status(self, args: Dict[str, Any], team_id: str) -> str:
-        return await git_tools.status()
+async def _wrap_list_directory(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("relative_path", ".") or args.get("path", ".")
+    return file_tools.list_directory(path)
 
-    async def _wrap_git_diff(self, args: Dict[str, Any], team_id: str) -> str:
-        staged = args.get("staged", False)
-        return await git_tools.diff(staged=staged)
+async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
+    command = args.get("command") or args.get("value")
+    if not command:
+        return "Error: Missing parameter 'command'."
+    timeout = float(args.get("timeout", 60.0))
+    return await shell_tools.execute_command(command, team_id, timeout)
 
-    async def _wrap_git_add(self, args: Dict[str, Any], team_id: str) -> str:
-        paths = args.get("paths", ".") or args.get("value", ".")
-        return await git_tools.add(paths)
+async def _wrap_git_status(args: Dict[str, Any], team_id: str) -> str:
+    return await git_tools.status()
 
-    async def _wrap_git_commit(self, args: Dict[str, Any], team_id: str) -> str:
-        message = args.get("message") or args.get("value", "")
-        return await git_tools.commit(message)
+async def _wrap_git_diff(args: Dict[str, Any], team_id: str) -> str:
+    staged = args.get("staged", False)
+    return await git_tools.diff(staged=staged)
 
-    async def _wrap_git_log(self, args: Dict[str, Any], team_id: str) -> str:
-        count = int(args.get("count", 10))
-        return await git_tools.log(count=count)
+async def _wrap_git_add(args: Dict[str, Any], team_id: str) -> str:
+    paths = args.get("paths", ".") or args.get("value", ".")
+    return await git_tools.add(paths)
 
-    async def _wrap_git_checkout(self, args: Dict[str, Any], team_id: str) -> str:
-        branch = args.get("branch") or args.get("value", "")
-        create = args.get("create", False)
-        return await git_tools.checkout_branch(branch, create=create)
+async def _wrap_git_commit(args: Dict[str, Any], team_id: str) -> str:
+    message = args.get("message") or args.get("value", "")
+    return await git_tools.commit(message)
 
-    async def _wrap_git_push(self, args: Dict[str, Any], team_id: str) -> str:
-        remote = args.get("remote", "origin")
-        branch = args.get("branch")
-        return await git_tools.push(remote, branch)
+async def _wrap_git_log(args: Dict[str, Any], team_id: str) -> str:
+    count = int(args.get("count", 10))
+    return await git_tools.log(count=count)
 
-    # ========================
-    # Web Research Wrappers
-    # ========================
+async def _wrap_git_checkout(args: Dict[str, Any], team_id: str) -> str:
+    branch = args.get("branch") or args.get("value", "")
+    create = args.get("create", False)
+    return await git_tools.checkout_branch(branch, create=create)
 
-    async def _wrap_web_search(self, args: Dict[str, Any], team_id: str) -> str:
-        query = args.get("query") or args.get("value", "")
-        if not query:
-            return "Error: Missing parameter 'query'."
-        max_results = int(args.get("max_results", 5))
-        return await web_tools.web_search(query, max_results)
+async def _wrap_git_push(args: Dict[str, Any], team_id: str) -> str:
+    remote = args.get("remote", "origin")
+    branch = args.get("branch")
+    return await git_tools.push(remote, branch)
 
-    async def _wrap_web_fetch(self, args: Dict[str, Any], team_id: str) -> str:
-        url = args.get("url") or args.get("value", "")
-        if not url:
-            return "Error: Missing parameter 'url'."
-        return await web_tools.web_fetch(url)
+async def _wrap_web_search(args: Dict[str, Any], team_id: str) -> str:
+    query = args.get("query") or args.get("value", "")
+    if not query:
+        return "Error: Missing parameter 'query'."
+    max_results = int(args.get("max_results", 5))
+    return await web_tools.web_search(query, max_results)
 
-    # ========================
-    # Agent Coordination Wrappers
-    # ========================
+async def _wrap_web_fetch(args: Dict[str, Any], team_id: str) -> str:
+    url = args.get("url") or args.get("value", "")
+    if not url:
+        return "Error: Missing parameter 'url'."
+    return await web_tools.web_fetch(url)
 
-    async def _wrap_spawn_agent(self, args: Dict[str, Any], team_id: str) -> str:
-        name = args.get("agent_name") or args.get("name") or args.get("value", "")
-        task = args.get("task") or args.get("prompt", "")
-        if not name or not task:
-            return "Error: Missing 'agent_name' or 'task'."
-        return await agent_tools.spawn_agent(name, task, team_id)
+# ---- Browser Wrappers ----
+# These wrappers need agent identity context, which the standard (args, team_id)
+# signature doesn't provide. We store it in the args dict from the ToolExecutor.
 
-    async def _wrap_send_message(self, args: Dict[str, Any], team_id: str) -> str:
-        text = args.get("text") or args.get("message") or args.get("value", "")
-        sender = args.get("sender_id", "agent")
-        recipient = args.get("recipient_name")
-        if not text:
-            return "Error: Missing 'text'."
-        return await agent_tools.send_message(text, sender, team_id, recipient)
+async def _wrap_browser_navigate(args: Dict[str, Any], team_id: str) -> str:
+    url = args.get("url") or args.get("value", "")
+    if not url:
+        return "Error: Missing parameter 'url'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.navigate(url, agent_id, agent_name, team_id)
+
+async def _wrap_browser_screenshot(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.screenshot(agent_id, agent_name, team_id)
+
+async def _wrap_browser_click(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    if not selector:
+        return "Error: Missing parameter 'selector'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.click(selector, agent_id)
+
+async def _wrap_browser_type(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    text = args.get("text", "")
+    if not selector or not text:
+        return "Error: Missing 'selector' or 'text'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.type_text(selector, text, agent_id)
+
+async def _wrap_browser_extract_text(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.extract_text(selector, agent_id)
+
+
+async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
+    name = args.get("agent_name") or args.get("name") or args.get("value", "")
+    task = args.get("task") or args.get("prompt", "")
+    if not name or not task:
+        return "Error: Missing 'agent_name' or 'task'."
+    parent_id = args.get("_agent_id")
+    return await agent_tools.spawn_agent(name, task, team_id, parent_coordinator_id=parent_id)
+
+async def _wrap_send_message(args: Dict[str, Any], team_id: str) -> str:
+    text = args.get("text") or args.get("message") or args.get("value", "")
+    sender = args.get("sender_id", "agent")
+    recipient = args.get("recipient_name")
+    if not text:
+        return "Error: Missing 'text'."
+    return await agent_tools.send_message(text, sender, team_id, recipient)
+
+async def _wrap_create_task(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.task_tools import task_tools
+    title = args.get("title", "")
+    description = args.get("description", "")
+    priority = args.get("priority", "medium")
+    assignee = args.get("assignee")
+    if not title:
+        return "Error: Missing 'title'."
+    return await task_tools.create_task(team_id, title, description, priority, assignee)
+
+async def _wrap_list_tasks(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.task_tools import task_tools
+    status = args.get("status")
+    return await task_tools.list_tasks(team_id, status)
+
+async def _wrap_update_task(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.task_tools import task_tools
+    task_id = args.get("task_id", "")
+    status = args.get("status")
+    notes = args.get("notes")
+    if not task_id:
+        return "Error: Missing 'task_id'."
+    return await task_tools.update_task(task_id, status, notes)
 
 
 # Singleton global executor

@@ -14,20 +14,29 @@ Responsibilities:
 4. Query the MultiModelRouter for LLM completions.
 5. Invoke the ToolExecutor to run tools (Code, Shell, Playwright, Git).
 6. Pause execution and emit an EventBus message when a tool requires Judge or Human permission.
-7. Parse the `<task-notification>` protocol when acting as a Coordinator reading Worker outputs.
+7. Emit <task-notification> XML when completing a task delegated by a Coordinator.
+8. Talk like a real human developer — casual, direct, natural.
 """
 
 import json
-from typing import List, Dict, Any
+import re
+from typing import List, Dict, Any, Optional
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.llm.multi_model_router import llm_router
 from core.chat.event_bus import event_bus
 from core.memory.models import Learning, Message, Agent
+from core.tools.tool_registry import ToolRegistry
+
 
 class ReACTAgent:
-    def __init__(self, agent_id: str, team_id: str, project_id: str, name: str, role: str, model: str, system_prompt: str):
+    def __init__(
+        self, agent_id: str, team_id: str, project_id: str,
+        name: str, role: str, model: str, system_prompt: str,
+        parent_coordinator_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ):
         self.agent_id = agent_id
         self.team_id = team_id
         self.project_id = project_id
@@ -36,13 +45,16 @@ class ReACTAgent:
         self.model = model
         self.system_prompt = system_prompt
         self.topic = f"team:{self.team_id}"
+        self.parent_coordinator_id = parent_coordinator_id
+        self.task_id = task_id
 
     async def assemble_system_prompt(self, db_session: AsyncSession, current_task: str) -> str:
         """
         Assembles a highly customized system prompt for this ReACT invocation:
-        1. Base System Prompt
+        1. Base System Prompt (with human-like personality)
         2. Relevant vector-recalled past learnings (pgvector cosine similarity)
-        3. Real-time web-citation guidelines
+        3. Available tools from the dynamic ToolRegistry
+        4. Real-time web-citation guidelines
         """
         # 1. Fetch top 3 semantically relevant "Lessons Learned" from pgvector
         query_vector = await llm_router.generate_embeddings(current_task)
@@ -65,24 +77,29 @@ class ReACTAgent:
                 learnings_block += f"- Task context: {learning.task_summary}\n  Lesson: {learning.lesson_rule}\n"
             learnings_block += "</lessons-learned>\n"
 
-        # 3. Inject strict confidence and research guidelines
+        # 3. Inject the dynamic tool list so the agent knows what it can do
+        tools_block = "\n" + ToolRegistry.to_llm_prompt() + "\n"
+
+        # 4. Inject reasoning guidelines
         research_directives = (
             "\n<strict-reasoning-guidelines>\n"
             "1. CONFIDENCE ASSESSMENT: Analyze your confidence level in fulfilling the user request. "
-            "If your internal data is old, vague, or missing key parameters, you MUST immediately call `WebSearch` or `BrowserTool` first.\n"
+            "If your internal data is old, vague, or missing key parameters, you MUST immediately call `web_search` or `web_fetch` first.\n"
             "2. WEB CITATIONS: When gathering information from the web, ALWAYS output the source citations (URLs) in your final response.\n"
-            "3. THOUGHT AND ACTION FORMAT: Wrap all thoughts in [THOUGHT]...[/THOUGHT] tags, and wrap tool execution calls in [ACTION]tool_name(args)[/ACTION] tags.\n"
+            "3. TOOL CALLS: Use [ACTION]tool_name({\"param\": \"value\"})[/ACTION] to invoke tools. Only use tools listed above.\n"
+            "4. NATURAL SPEECH: Talk like a real dev in a team chat. Be concise, direct, and natural.\n"
+            "5. When you're done, just say your final answer — no [ACTION] tag means you're finished.\n"
             "</strict-reasoning-guidelines>\n"
         )
 
-        return f"{self.system_prompt}\n{learnings_block}\n{research_directives}"
+        return f"{self.system_prompt}\n{learnings_block}\n{tools_block}\n{research_directives}"
 
     async def run_loop(self, db_session: AsyncSession, initial_prompt: str):
         """
         Runs the core ReACT Thought-Action-Observation loop.
-        Steams thoughts to the EventBus character-by-character for beautiful premium UI rendering.
+        Streams thoughts to the EventBus character-by-character for premium UI rendering.
         """
-        # Fetch the agent's latest configurations (including tool permissions) from the database
+        # Fetch the agent's latest configurations from the database
         stmt = select(Agent).where(Agent.id == self.agent_id)
         res = await db_session.execute(stmt)
         db_agent = res.scalar_one_or_none()
@@ -96,7 +113,16 @@ class ReACTAgent:
         
         loop_count = 0
         max_loops = 10  # Prevent infinite loops in runaway agents
-        
+
+        # Emit agent status: active
+        await event_bus.publish(self.topic, {
+            "type": "agent_status",
+            "sender_id": self.agent_id,
+            "sender_name": self.name,
+            "role": self.role,
+            "status": "active",
+        })
+
         while loop_count < max_loops:
             loop_count += 1
             
@@ -134,11 +160,10 @@ class ReACTAgent:
             messages.append({"role": "assistant", "content": thought_buffer})
             
             # Check if the thought has completed the task or is calling a tool
-            # For simplicity, we parse [ACTION]tool_name(args)[/ACTION]
             action_call = self._parse_action(thought_buffer)
             
             if not action_call:
-                # No action called. The agent finished the reasoning loop and outputted the final answer.
+                # No action called — agent is done
                 print(f"✓ [Agent: {self.name}] Task finished.")
                 
                 # Write final message to db
@@ -158,12 +183,43 @@ class ReACTAgent:
                     "role": self.role,
                     "text": thought_buffer
                 })
+
+                # If this agent was spawned by a coordinator, emit a task-notification
+                if self.parent_coordinator_id:
+                    notification = self._build_task_notification(thought_buffer, "completed")
+                    await event_bus.publish(self.topic, {
+                        "type": "message",
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "text": notification,
+                        "is_task_notification": True,
+                    })
+
+                # Emit agent status: idle
+                await event_bus.publish(self.topic, {
+                    "type": "agent_status",
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "status": "idle",
+                })
                 break
                 
             else:
                 # Tool Action called!
                 tool_name, tool_args = action_call
                 print(f"🛠️ [Agent: {self.name}] Executing Tool: {tool_name} with args: {tool_args}")
+
+                # Emit agent status change
+                await event_bus.publish(self.topic, {
+                    "type": "agent_status",
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "status": "executing_tool",
+                    "tool_name": tool_name,
+                })
                 
                 # Emit tool execution started event
                 await event_bus.publish(self.topic, {
@@ -176,7 +232,9 @@ class ReACTAgent:
                 
                 # --- TOOL EXECUTION LAYER ---
                 try:
-                    observation = await self._execute_tool(name=tool_name, args=tool_args, permissions=permissions)
+                    observation = await self._execute_tool(
+                        name=tool_name, args=tool_args, permissions=permissions
+                    )
                 except Exception as e:
                     observation = f"✗ Tool Execution Error: {str(e)}"
                 
@@ -186,7 +244,7 @@ class ReACTAgent:
                     "sender_id": self.agent_id,
                     "sender_name": self.name,
                     "tool_name": tool_name,
-                    "observation": observation
+                    "observation": observation[:500]  # truncate for WS payload
                 })
                 
                 # Feed observation back as next message in prompt context
@@ -197,7 +255,6 @@ class ReACTAgent:
 
     def _parse_action(self, text: str) -> Any:
         """Parses [ACTION]tool_name(args)[/ACTION] from the generated text."""
-        import re
         # Look for [ACTION]tool_name(json_string_or_raw)[/ACTION]
         match = re.search(r"\[ACTION\](\w+)\((.*?)\)\[/ACTION\]", text, re.DOTALL)
         if match:
@@ -211,9 +268,23 @@ class ReACTAgent:
             return tool_name, arguments
         return None
 
+    def _build_task_notification(self, result_text: str, status: str) -> str:
+        """Builds a <task-notification> XML message for the Coordinator."""
+        task_id = self.task_id or "unknown"
+        # Truncate result to avoid blowing up context
+        result_summary = result_text[:1000] if len(result_text) > 1000 else result_text
+        return (
+            f"<task-notification>\n"
+            f"  <task_id>{task_id}</task_id>\n"
+            f"  <agent>{self.name}</agent>\n"
+            f"  <status>{status}</status>\n"
+            f"  <result>{result_summary}</result>\n"
+            f"</task-notification>"
+        )
+
     async def _execute_tool(self, name: str, args: Dict[str, Any], permissions: Dict[str, str]) -> str:
         """
-        Routes the tool execution request to our dedicated tool registry (ToolExecutor).
+        Routes the tool execution request to the ToolExecutor.
         """
         from core.tools.tool_executor import tool_executor
         return await tool_executor.execute(

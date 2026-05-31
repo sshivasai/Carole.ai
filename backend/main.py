@@ -9,10 +9,12 @@ Responsibilities:
 3. Initialize the database connection pool (PostgreSQL + pgvector).
 4. Register HTTP API routes for Team Management, Agent Configuration, and Approvals.
 5. Startup background workers (AutoDream memory consolidation worker).
+6. Register built-in tools and load plugin tools from the /plugins/ directory.
 """
 
 import json
 import asyncio
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -25,6 +27,9 @@ from core.memory.database import init_db, get_db, async_session
 from core.chat.event_bus import event_bus
 from core.chat.message_router import message_router
 from core.memory.auto_dream import dream_worker
+from core.tools.tool_executor import register_builtin_tools
+from core.tools.tool_registry import ToolRegistry
+from core.api.crud_routes import router as crud_router
 
 dotenv.load_dotenv()
 
@@ -40,6 +45,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"✗ [Lifespan] Error initializing database: {str(e)}")
 
+    # Register built-in tools with the dynamic ToolRegistry
+    print("🔧 [Lifespan] Registering built-in tools...")
+    register_builtin_tools()
+
+    # Load plugin tools from the /plugins/ directory
+    plugins_dir = str(Path(__file__).parent / "plugins")
+    print(f"🔌 [Lifespan] Loading plugins from {plugins_dir}...")
+    ToolRegistry.load_plugin_directory(plugins_dir)
+
     # Start background Dream Worker
     print("🚀 [Lifespan] Starting Background 'Dream' Worker...")
     dream_task = asyncio.create_task(dream_worker.start())
@@ -52,7 +66,7 @@ async def lifespan(app: FastAPI):
     dream_task.cancel()
 
 
-app = FastAPI(title="Carole.ai Backend", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Carole.ai Backend", version="0.2.0", lifespan=lifespan)
 
 # CORS middleware for frontend communication
 app.add_middleware(
@@ -63,6 +77,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Register CRUD API routes
+app.include_router(crud_router)
+
 
 # ============================================================
 # Health & Root
@@ -70,12 +87,16 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "Carole.ai Backend is Running"}
+    return {"message": "Carole.ai Backend is Running", "version": "0.2.0"}
 
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "0.1.0"}
+    return {
+        "status": "healthy",
+        "version": "0.2.0",
+        "tools_registered": len(ToolRegistry.list_names()),
+    }
 
 
 # ============================================================
@@ -112,7 +133,7 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
         try:
             while True:
                 event = await event_queue.get()
-                await websocket.send_text(json.dumps(event))
+                await websocket.send_text(json.dumps(event, default=str))
                 event_queue.task_done()
         except Exception:
             pass  # Client disconnected
@@ -148,6 +169,43 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision):
 
     action = "APPROVED" if decision.approved else "DENIED"
     return {"status": "ok", "tx_id": tx_id, "action": action}
+
+
+# ============================================================
+# Dynamic Tool Registration (runtime hot-reload)
+# ============================================================
+
+class ToolRegisterRequest(BaseModel):
+    name: str
+    description: str
+    category: str = "custom"
+    permission_default: str = "safe"
+    parameters: dict = {}
+
+
+@app.post("/api/tools/register")
+async def register_tool_runtime(body: ToolRegisterRequest):
+    """Register a tool at runtime (metadata only — handler must be loaded via plugin)."""
+    from core.tools.tool_registry import ToolSpec
+    # For runtime registration without a handler, create a placeholder
+    existing = ToolRegistry.get(body.name)
+    if existing:
+        return {"status": "already_registered", "name": body.name}
+
+    spec = ToolSpec(
+        name=body.name,
+        description=body.description,
+        category=body.category,
+        parameters=body.parameters,
+        permission_default=body.permission_default,
+        handler=_placeholder_handler,
+    )
+    ToolRegistry.register(spec)
+    return {"status": "registered", "name": body.name}
+
+
+async def _placeholder_handler(args: dict, team_id: str) -> str:
+    return "Error: This tool was registered at runtime without a handler. Load the plugin first."
 
 
 # ============================================================
