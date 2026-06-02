@@ -182,15 +182,16 @@ async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/teams")
 async def create_team(body: TeamCreate, db: AsyncSession = Depends(get_db)):
-    team = Team(name=body.name, project_id=body.project_id)
+    team = Team(name=body.name, project_id=uuid.UUID(body.project_id))
     db.add(team)
     await db.flush()
     return {"id": str(team.id), "name": team.name, "project_id": str(team.project_id)}
 
+
 @router.get("/teams/{project_id}")
 async def list_teams(project_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Team).where(Team.project_id == project_id).order_by(Team.created_at.desc())
+        select(Team).where(Team.project_id == uuid.UUID(project_id)).order_by(Team.created_at.desc())
     )
     return [{"id": str(t.id), "name": t.name} for t in result.scalars().all()]
 
@@ -211,7 +212,7 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
         prompt += f"\n\nSPECIALIZED SKILLS & TOOLKITS:\n{skills_text}"
 
     agent = Agent(
-        team_id=body.team_id,
+        team_id=uuid.UUID(body.team_id),
         name=body.name,
         role=body.role,
         model=body.model,
@@ -233,7 +234,7 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
 @router.get("/agents/{team_id}")
 async def list_agents(team_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Agent).where(Agent.team_id == team_id).order_by(Agent.created_at)
+        select(Agent).where(Agent.team_id == uuid.UUID(team_id)).order_by(Agent.created_at)
     )
     return [
         {
@@ -247,7 +248,7 @@ async def list_agents(team_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.put("/agents/{agent_id}")
 async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -283,7 +284,7 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
 
 @router.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
-    await db.execute(delete(Agent).where(Agent.id == agent_id))
+    await db.execute(delete(Agent).where(Agent.id == uuid.UUID(agent_id)))
     return {"status": "deleted", "id": agent_id}
 
 
@@ -293,17 +294,17 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
-    await db.execute(delete(Project).where(Project.id == project_id))
+    await db.execute(delete(Project).where(Project.id == uuid.UUID(project_id)))
     return {"status": "deleted", "id": project_id}
 
 @router.delete("/teams/{team_id}")
 async def delete_team(team_id: str, db: AsyncSession = Depends(get_db)):
-    await db.execute(delete(Team).where(Team.id == team_id))
+    await db.execute(delete(Team).where(Team.id == uuid.UUID(team_id)))
     return {"status": "deleted", "id": team_id}
 
 @router.delete("/users/{user_id}")
 async def delete_user(user_id: str, db: AsyncSession = Depends(get_db)):
-    await db.execute(delete(User).where(User.id == user_id))
+    await db.execute(delete(User).where(User.id == uuid.UUID(user_id)))
     return {"status": "deleted", "id": user_id}
 
 
@@ -313,7 +314,7 @@ async def delete_user(user_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("/projects/single/{project_id}")
 async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Project).where(Project.id == project_id))
+    result = await db.execute(select(Project).where(Project.id == uuid.UUID(project_id)))
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -321,7 +322,7 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("/teams/single/{team_id}")
 async def get_team(team_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Team).where(Team.id == team_id))
+    result = await db.execute(select(Team).where(Team.id == uuid.UUID(team_id)))
     t = result.scalar_one_or_none()
     if not t:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -336,7 +337,7 @@ async def get_team(team_id: str, db: AsyncSession = Depends(get_db)):
 async def list_messages(team_id: str, limit: int = 50, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Message)
-        .where(Message.team_id == team_id)
+        .where(Message.team_id == uuid.UUID(team_id))
         .order_by(Message.created_at.desc())
         .limit(limit)
     )
@@ -358,12 +359,12 @@ async def list_messages(team_id: str, limit: int = 50, db: AsyncSession = Depend
 @router.post("/tasks")
 async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     task = Task(
-        team_id=body.team_id,
+        team_id=uuid.UUID(body.team_id) if body.team_id else None,
         title=body.title,
         description=body.description,
         priority=body.priority,
-        assigned_agent_id=body.assigned_agent_id,
-        parent_task_id=body.parent_task_id,
+        assigned_agent_id=uuid.UUID(body.assigned_agent_id) if body.assigned_agent_id else None,
+        parent_task_id=uuid.UUID(body.parent_task_id) if body.parent_task_id else None,
         created_by=body.created_by,
     )
     db.add(task)
@@ -372,7 +373,7 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
 
 @router.get("/tasks/{team_id}")
 async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(Task).where(Task.team_id == team_id)
+    stmt = select(Task).where(Task.team_id == uuid.UUID(team_id))
     if status:
         stmt = stmt.where(Task.status == status)
     stmt = stmt.order_by(Task.created_at.desc())
@@ -391,7 +392,7 @@ async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSessio
 
 @router.put("/tasks/{task_id}")
 async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Task).where(Task.id == task_id))
+    result = await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -641,3 +642,83 @@ def _default_system_prompt(name: str, role: str, personality: str = "professiona
         "8. Use [ACTION]tool_name({\"param\": \"value\"})[/ACTION] to invoke tools.\n"
         "9. When done, just say your final answer naturally — no [ACTION] tag means you're done.\n"
     )
+
+
+# ============================================================
+# Knowledge Upload & Ingestion
+# ============================================================
+
+@router.post("/knowledge/upload")
+async def upload_knowledge(
+    project_id: str,
+    team_id: Optional[str] = None,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Ingests an uploaded file (PDF, TXT, MD) into the learnings table (pgvector).
+    """
+    from core.knowledge.knowledge_ingestor import ingest_file
+
+    data = await file.read()
+    res = await ingest_file(db, project_id, team_id, file.filename, data)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+# ============================================================
+# Estimated Token Usage & Cost Routing
+# ============================================================
+
+@router.get("/usage/{project_id}")
+async def get_project_usage(project_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Returns estimated token usage and cost for all agents in the project.
+    """
+    from core.memory.models import TokenUsage
+    import uuid
+
+    stmt = select(TokenUsage).where(TokenUsage.project_id == uuid.UUID(project_id))
+    result = await db.execute(stmt)
+    usages = result.scalars().all()
+
+    total_prompt = 0
+    total_completion = 0
+    total_cost = 0.0
+
+    by_agent = {}
+
+    for u in usages:
+        prompt = int(u.prompt_tokens or 0)
+        completion = int(u.completion_tokens or 0)
+        cost = float(u.estimated_cost_usd or 0.0)
+
+        total_prompt += prompt
+        total_completion += completion
+        total_cost += cost
+
+        name = u.agent_name or "Unknown Agent"
+        if name not in by_agent:
+            by_agent[name] = {"prompt": 0, "completion": 0, "cost": 0.0, "calls": 0}
+        by_agent[name]["prompt"] += prompt
+        by_agent[name]["completion"] += completion
+        by_agent[name]["cost"] += cost
+        by_agent[name]["calls"] += 1
+
+    return {
+        "project_id": project_id,
+        "total_prompt_tokens": total_prompt,
+        "total_completion_tokens": total_completion,
+        "total_cost_usd": f"{total_cost:.4f}",
+        "by_agent": {
+            name: {
+                "prompt_tokens": data["prompt"],
+                "completion_tokens": data["completion"],
+                "estimated_cost_usd": f"{data['cost']:.4f}",
+                "calls": data["calls"]
+            }
+            for name, data in by_agent.items()
+        }
+    }
+

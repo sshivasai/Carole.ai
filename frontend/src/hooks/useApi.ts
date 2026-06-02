@@ -96,6 +96,24 @@ export const api = {
       headers: { Authorization: `Bearer ${token}` },
     }),
 
+  // ---- Knowledge File Upload & Usage ----
+  uploadKnowledgeFile: async (projectId: string, teamId: string | null, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const path = `/api/knowledge/upload?project_id=${projectId}${teamId ? `&team_id=${teamId}` : ""}`;
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Upload failed ${res.status}: ${text}`);
+    }
+    return res.json();
+  },
+  getProjectUsage: (projectId: string) => apiFetch<any>(`/api/usage/${projectId}`),
+
   // ---- Health ----
   healthCheck: () => apiFetch<any>("/health"),
 };
+

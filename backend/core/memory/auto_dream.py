@@ -80,6 +80,7 @@ class AutoDreamWorker:
         stmt = (
             select(Message)
             .where(Message.team_id == team.id)
+            .where(Message.is_private == False)  # Do not leak private messages into team memory
             .where(Message.created_at >= cutoff)
             .where(Message.embedding.is_(None))  # Only unprocessed messages
             .order_by(Message.created_at)

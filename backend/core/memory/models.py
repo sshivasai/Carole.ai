@@ -100,6 +100,7 @@ class Message(Base):
     sender_id = Column(String(100), nullable=False)  # "human" or specific agent UUID
     sender_name = Column(String(100), nullable=True)  # Display name for the sender
     recipient_id = Column(String(100), nullable=True) # Null for group broadcast, specific agent ID for private message (/@name)
+    is_private = Column(Boolean, default=False, nullable=False) # True if sent via /@name
     
     text = Column(Text, nullable=False)
     
@@ -151,3 +152,27 @@ class Task(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TokenUsage(Base):
+    """
+    Tracks LLM token usage and estimated cost per agent call.
+    Enables cost monitoring per project/agent over time.
+    """
+    __tablename__ = "token_usage"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    agent_name = Column(String(100), nullable=True)
+
+    model = Column(String(80), nullable=False)
+    provider = Column(String(30), nullable=False)        # anthropic | openai | google | qwen | ollama
+
+    prompt_tokens = Column(String(20), nullable=True)   # stored as string for flexibility
+    completion_tokens = Column(String(20), nullable=True)
+    total_tokens = Column(String(20), nullable=True)
+    estimated_cost_usd = Column(String(20), nullable=True)  # e.g. "0.0024"
+
+    created_at = Column(DateTime, default=datetime.utcnow)

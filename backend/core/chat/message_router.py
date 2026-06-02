@@ -73,6 +73,7 @@ class MessageRouter:
                 team_id=team_id,
                 sender_id=sender_id,
                 recipient_id=recipient_id,
+                is_private=is_private,
                 text=text
             )
             db.add(db_msg)

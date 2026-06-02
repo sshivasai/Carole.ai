@@ -41,13 +41,20 @@ class MultiModelRouter:
         system_prompt: str,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 4000
+        max_tokens: int = 4000,
+        project_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        agent_name: Optional[str] = None
     ) -> str:
         """
         Generates a standard non-streaming text completion.
         """
         response_text = ""
-        async for chunk in self.generate_stream(model, system_prompt, messages, temperature, max_tokens):
+        async for chunk in self.generate_stream(
+            model, system_prompt, messages, temperature, max_tokens,
+            project_id, team_id, agent_id, agent_name
+        ):
             response_text += chunk
         return response_text
 
@@ -57,37 +64,148 @@ class MultiModelRouter:
         system_prompt: str,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 4000
+        max_tokens: int = 4000,
+        project_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        agent_name: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
         """
         Asynchronous generator streaming chunks of the completion in real-time.
         Routes to the correct provider based on model name prefix.
+        Tracks token usage upon completion.
         """
-        # 1. Route to Anthropic (Claude)
-        if model.startswith("claude"):
-            async for chunk in self._stream_anthropic(model, system_prompt, messages, temperature, max_tokens):
-                yield chunk
+        response_text = ""
+        provider = "unknown"
+        try:
+            # 0. Route to Ollama Local
+            if model.startswith("ollama/"):
+                provider = "ollama"
+                async for chunk in self._stream_ollama(model.replace("ollama/", ""), system_prompt, messages, temperature, max_tokens):
+                    response_text += chunk
+                    yield chunk
 
-        # 2. Route to OpenAI (GPT)
-        elif model.startswith("gpt") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"):
-            async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
-                yield chunk
+            # 1. Route to Anthropic (Claude)
+            elif model.startswith("claude"):
+                provider = "anthropic"
+                async for chunk in self._stream_anthropic(model, system_prompt, messages, temperature, max_tokens):
+                    response_text += chunk
+                    yield chunk
 
-        # 3. Route to Google Gemini
-        elif model.startswith("gemini"):
-            async for chunk in self._stream_gemini(model, system_prompt, messages, temperature, max_tokens):
-                yield chunk
+            # 2. Route to OpenAI (GPT)
+            elif model.startswith("gpt") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"):
+                provider = "openai"
+                async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
+                    response_text += chunk
+                    yield chunk
 
-        # 4. Route to Qwen (Or other OpenAI compatible endpoints)
-        elif model.startswith("qwen"):
-            async for chunk in self._stream_qwen(model, system_prompt, messages, temperature, max_tokens):
-                yield chunk
+            # 3. Route to Google Gemini
+            elif model.startswith("gemini"):
+                provider = "google"
+                async for chunk in self._stream_gemini(model, system_prompt, messages, temperature, max_tokens):
+                    response_text += chunk
+                    yield chunk
 
-        # 5. Generic Fallback — try OpenAI-compatible
-        else:
-            print(f"⚠️ [Router] Model '{model}' not explicitly recognized. Falling back to OpenAI stream.")
-            async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
-                yield chunk
+            # 4. Route to Qwen (Or other OpenAI compatible endpoints)
+            elif model.startswith("qwen"):
+                provider = "qwen"
+                async for chunk in self._stream_qwen(model, system_prompt, messages, temperature, max_tokens):
+                    response_text += chunk
+                    yield chunk
+
+            # 5. Generic Fallback — try OpenAI-compatible
+            else:
+                provider = "openai"
+                print(f"⚠️ [Router] Model '{model}' not explicitly recognized. Falling back to OpenAI stream.")
+                async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
+                    response_text += chunk
+                    yield chunk
+        finally:
+            if project_id or team_id or agent_id:
+                asyncio.create_task(
+                    self._log_usage(
+                        provider=provider,
+                        model=model,
+                        system_prompt=system_prompt,
+                        messages=messages,
+                        response_text=response_text,
+                        project_id=project_id,
+                        team_id=team_id,
+                        agent_id=agent_id,
+                        agent_name=agent_name
+                    )
+                )
+
+    async def _stream_ollama(
+        self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
+    ) -> AsyncGenerator[str, None]:
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        formatted_messages = [{"role": "system", "content": system_prompt}] + messages
+        payload = {
+            "model": model,
+            "messages": formatted_messages,
+            "temperature": temp,
+            "max_tokens": max_tokens,
+            "stream": True
+        }
+        headers = {"Content-Type": "application/json"}
+        async for chunk in self._stream_with_retry(f"{ollama_url}/chat/completions", headers, payload, "openai"):
+            yield chunk
+
+    async def _log_usage(
+        self,
+        provider: str,
+        model: str,
+        system_prompt: str,
+        messages: List[Dict[str, str]],
+        response_text: str,
+        project_id: Optional[str],
+        team_id: Optional[str],
+        agent_id: Optional[str],
+        agent_name: Optional[str]
+    ):
+        try:
+            prompt_chars = len(system_prompt) + sum(len(m.get("content", "")) for m in messages)
+            prompt_tokens = int(prompt_chars / 4)
+            completion_tokens = int(len(response_text) / 4)
+            total_tokens = prompt_tokens + completion_tokens
+
+            # Pricing mappings (per 1M tokens)
+            pricing = {
+                "gpt-4o-mini": (0.15, 0.60),
+                "gpt-4o": (2.50, 10.00),
+                "o4-mini": (1.15, 4.50),
+                "claude-sonnet-4": (3.00, 15.00),
+                "claude-opus-4": (15.00, 75.00),
+                "claude-3-5-sonnet-20241022": (3.00, 15.00),
+                "gemini-2.0-flash": (0.075, 0.30),
+                "gemini-2.5-pro": (1.25, 5.00),
+            }
+
+            rate_in, rate_out = pricing.get(model, (0.0, 0.0))
+            cost = (prompt_tokens * rate_in + completion_tokens * rate_out) / 1_000_000
+
+            from core.memory.database import async_session
+            from core.memory.models import TokenUsage
+            import uuid
+
+            async with async_session() as session:
+                usage = TokenUsage(
+                    project_id=uuid.UUID(project_id) if isinstance(project_id, str) else project_id,
+                    team_id=uuid.UUID(team_id) if isinstance(team_id, str) else team_id,
+                    agent_id=uuid.UUID(agent_id) if isinstance(agent_id, str) else agent_id,
+                    agent_name=agent_name,
+                    model=model,
+                    provider=provider,
+                    prompt_tokens=str(prompt_tokens),
+                    completion_tokens=str(completion_tokens),
+                    total_tokens=str(total_tokens),
+                    estimated_cost_usd=f"{cost:.6f}"
+                )
+                session.add(usage)
+                await session.commit()
+        except Exception as e:
+            print(f"✗ [Router] Token usage tracking failed: {e}")
 
     # ================================================================
     # Anthropic (Claude)
@@ -398,5 +516,10 @@ class MultiModelRouter:
                 return None
 
 
+    # Alias for compatibility with older code paths
+    get_embedding = generate_embeddings
+
+
 # Global singleton router
 llm_router = MultiModelRouter()
+

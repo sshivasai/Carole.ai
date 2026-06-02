@@ -39,7 +39,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({});
   const [typingAgents, setTypingAgents] = useState<Set<string>>(new Set());
-  const [rightTab, setRightTab] = useState<"tasks" | "diffs" | "browser" | "knowledge">("tasks");
+  const [rightTab, setRightTab] = useState<"tasks" | "diffs" | "browser" | "knowledge" | "usage">("tasks");
+  const [usageData, setUsageData] = useState<any>(null);
   const [diffs, setDiffs] = useState<FileChangeEvent[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalRequestEvent[]>([]);
   const [browserScreenshots, setBrowserScreenshots] = useState<BrowserScreenshotEvent[]>([]);
@@ -49,6 +50,16 @@ export default function Home() {
   const [showAddTeam, setShowAddTeam] = useState(false);
   const [showAddKnowledge, setShowAddKnowledge] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // ---- Fetch Token Usage data ----
+  useEffect(() => {
+    if (rightTab === "usage" && projectId) {
+      api.getProjectUsage(projectId)
+        .then(res => setUsageData(res))
+        .catch(err => console.error("Failed to load usage data", err));
+    }
+  }, [rightTab, projectId]);
+
 
   // ---- WebSocket ----
   const { connected, events, sendMessage } = useWebSocket(teamId);
@@ -979,32 +990,49 @@ export default function Home() {
                         <button className={`${styles.tab} ${rightTab === "diffs" ? styles.active : ""}`} onClick={() => setRightTab("diffs")}>Diffs</button>
                         <button className={`${styles.tab} ${rightTab === "browser" ? styles.active : ""}`} onClick={() => setRightTab("browser")}>Browser</button>
                         <button className={`${styles.tab} ${rightTab === "knowledge" ? styles.active : ""}`} onClick={() => setRightTab("knowledge")}>Knowledge</button>
+                        <button className={`${styles.tab} ${rightTab === "usage" ? styles.active : ""}`} onClick={() => setRightTab("usage")}>Usage</button>
                       </div>
                     </div>
 
                     <div className={styles.rightPanelContent}>
-                      {/* Tasks tab */}
+                      {/* Tasks tab (Kanban style) */}
                       {rightTab === "tasks" && (
-                        <>
-                          {tasks.length === 0 ? (
-                            <p style={{ color: "var(--text-tertiary)", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>
-                              No tasks yet.
-                            </p>
-                          ) : (
-                            tasks.map((task) => (
-                              <div key={task.id} className={styles.taskItem}>
-                                <div className={styles.taskTitle}>{task.title}</div>
-                                <div className={styles.taskMeta}>
-                                  <span className={`badge badge-${task.status === "done" ? "green" : task.status === "in_progress" ? "blue" : task.priority === "critical" ? "red" : "yellow"}`}>
-                                    {task.status}
-                                  </span>
-                                  <span>{task.priority}</span>
-                                  {task.assigned_to && <span>→ {task.assigned_to}</span>}
+                        <div style={{ display: "flex", gap: "8px", overflowX: "auto", paddingBottom: "12px", minHeight: "350px" }}>
+                          {["todo", "in_progress", "review", "done"].map((col) => {
+                            const colTasks = tasks.filter((t) => t.status === col);
+                            const colTitle = col === "todo" ? "To Do" : col === "in_progress" ? "Active" : col === "review" ? "Review" : "Done";
+                            const colColor = col === "todo" ? "var(--text-tertiary)" : col === "in_progress" ? "var(--accent-blue)" : col === "review" ? "var(--accent-purple)" : "var(--accent-green)";
+
+                            return (
+                              <div key={col} style={{ flex: 1, minWidth: "140px", background: "rgba(255,255,255,0.02)", borderRadius: "6px", padding: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                                <div style={{ fontSize: "10px", fontWeight: "700", textTransform: "uppercase", color: colColor, borderBottom: "1px solid var(--border-subtle)", paddingBottom: "6px", marginBottom: "4px" }}>
+                                  {colTitle} ({colTasks.length})
+                                </div>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "6px", overflowY: "auto", flex: 1 }}>
+                                  {colTasks.length === 0 ? (
+                                    <div style={{ fontSize: "9px", color: "var(--text-tertiary)", textAlign: "center", padding: "16px 0", border: "1px dashed rgba(255,255,255,0.04)", borderRadius: "4px" }}>Empty</div>
+                                  ) : (
+                                    colTasks.map((task) => (
+                                      <div key={task.id} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                                        <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-primary)" }}>{task.title}</div>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                          <span style={{ fontSize: "8px", padding: "2px 5px", background: task.priority === "critical" ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.06)", color: task.priority === "critical" ? "var(--accent-red)" : "var(--text-secondary)", borderRadius: "3px" }}>
+                                            {task.priority}
+                                          </span>
+                                          {task.assigned_agent_id && (
+                                            <span style={{ fontSize: "8px", color: "var(--text-tertiary)" }}>
+                                              👤 Assigned
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    ))
+                                  )}
                                 </div>
                               </div>
-                            ))
-                          )}
-                        </>
+                            );
+                          })}
+                        </div>
                       )}
 
                       {/* Diffs tab */}
@@ -1058,13 +1086,15 @@ export default function Home() {
                         <>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
                             <h4 style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-tertiary)", textTransform: "uppercase" }}>Long-term Memory</h4>
-                            <button 
-                              className="btn btn-ghost" 
-                              style={{ fontSize: "10px", padding: "2px 6px" }}
-                              onClick={() => setShowAddKnowledge(!showAddKnowledge)}
-                            >
-                              {showAddKnowledge ? "Cancel" : "+ Add"}
-                            </button>
+                            <div style={{ display: "flex", gap: "6px" }}>
+                              <button 
+                                className="btn btn-ghost" 
+                                style={{ fontSize: "10px", padding: "2px 6px" }}
+                                onClick={() => setShowAddKnowledge(!showAddKnowledge)}
+                              >
+                                {showAddKnowledge ? "Cancel" : "+ Add"}
+                              </button>
+                            </div>
                           </div>
 
                           {showAddKnowledge && (
@@ -1076,7 +1106,7 @@ export default function Home() {
                               <textarea id="pg-knowledge-rule" className="input" placeholder="Concrete Lesson..." style={{ fontSize: "12px", minHeight: "50px", marginBottom: "8px" }} />
                               <button
                                 className="btn btn-primary"
-                                style={{ width: "100%", fontSize: "12px" }}
+                                style={{ width: "100%", fontSize: "12px", marginBottom: "8px" }}
                                 onClick={async () => {
                                   const summary = (document.getElementById("pg-knowledge-summary") as HTMLInputElement).value.trim();
                                   const rule = (document.getElementById("pg-knowledge-rule") as HTMLTextAreaElement).value.trim();
@@ -1092,6 +1122,41 @@ export default function Home() {
                               </button>
                             </div>
                           )}
+
+                          {/* File Document Upload Ingestor */}
+                          <div style={{
+                            padding: "12px", background: "rgba(255,255,255,0.01)", borderRadius: "var(--radius-md)",
+                            border: "1px dashed var(--border-subtle)", marginBottom: "16px", textAlign: "center"
+                          }}>
+                            <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
+                              Upload Reference Document
+                            </div>
+                            <input
+                              type="file"
+                              accept=".pdf,.txt,.md"
+                              style={{ display: "none" }}
+                              id="knowledge-file-input"
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (!file || !projectId) return;
+                                try {
+                                  const res = await api.uploadKnowledgeFile(projectId, teamId, file);
+                                  alert(`Successfully ingested: ${res.filename} (${res.chunks_stored} vector chunks created)`);
+                                  const lrns = await api.listLearnings(projectId);
+                                  setLearnings(lrns);
+                                } catch (err: any) {
+                                  alert(`Upload failed: ${err.message}`);
+                                }
+                              }}
+                            />
+                            <button
+                              className="btn btn-ghost"
+                              style={{ fontSize: "11px", width: "100%", background: "rgba(255,255,255,0.02)" }}
+                              onClick={() => document.getElementById("knowledge-file-input")?.click()}
+                            >
+                              📁 Select PDF / TXT / MD File
+                            </button>
+                          </div>
 
                           {learnings.length === 0 ? (
                             <p style={{ color: "var(--text-tertiary)", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>
@@ -1111,7 +1176,67 @@ export default function Home() {
                           )}
                         </>
                       )}
+
+                      {/* Usage tab */}
+                      {rightTab === "usage" && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                          <h4 style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: "0" }}>
+                            Estimated Usage & LLM Cost Dashboard
+                          </h4>
+
+                          {usageData ? (
+                            <>
+                              <div style={{ display: "flex", gap: "8px" }}>
+                                <div style={{ flex: 1, background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "8px", textAlign: "center" }}>
+                                  <div style={{ fontSize: "10px", color: "var(--text-tertiary)" }}>Estimated Cost</div>
+                                  <div style={{ fontSize: "16px", fontWeight: "700", color: "var(--accent-green)", marginTop: "4px" }}>
+                                    ${usageData.total_cost_usd}
+                                  </div>
+                                </div>
+                                <div style={{ flex: 1, background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "8px", textAlign: "center" }}>
+                                  <div style={{ fontSize: "10px", color: "var(--text-tertiary)" }}>Prompt Tokens</div>
+                                  <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)", marginTop: "4px" }}>
+                                    {usageData.total_prompt_tokens.toLocaleString()}
+                                  </div>
+                                </div>
+                                <div style={{ flex: 1, background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "8px", textAlign: "center" }}>
+                                  <div style={{ fontSize: "10px", color: "var(--text-tertiary)" }}>Comp. Tokens</div>
+                                  <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)", marginTop: "4px" }}>
+                                    {usageData.total_completion_tokens.toLocaleString()}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+                                <div style={{ fontSize: "10px", fontWeight: "700", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Breakdown Per Agent</div>
+                                {Object.keys(usageData.by_agent).length === 0 ? (
+                                  <div style={{ fontSize: "11px", color: "var(--text-tertiary)", fontStyle: "italic" }}>No agent calls recorded yet.</div>
+                                ) : (
+                                  Object.entries(usageData.by_agent).map(([name, data]: [string, any]) => (
+                                    <div key={name} style={{ background: "rgba(255,255,255,0.01)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                      <div>
+                                        <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-primary)" }}>{name}</div>
+                                        <div style={{ fontSize: "9px", color: "var(--text-tertiary)", marginTop: "2px" }}>
+                                          Calls: {data.calls} | Tokens: {(data.prompt_tokens + data.completion_tokens).toLocaleString()}
+                                        </div>
+                                      </div>
+                                      <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--accent-green)" }}>
+                                        ${data.estimated_cost_usd}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </>
+                          ) : (
+                            <p style={{ color: "var(--text-tertiary)", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>
+                              No usage statistics available.
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
+
                   </div>
                 </div>
               </div>
@@ -1357,61 +1482,66 @@ export default function Home() {
                   <select 
                     className="input" 
                     style={{ marginBottom: "8px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(91, 108, 255, 0.4)", cursor: "pointer", fontSize: "12px" }}
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const val = e.target.value;
+                      if (!val) return;
                       const nameEl = document.getElementById("new-agent-name") as HTMLInputElement;
                       const roleEl = document.getElementById("new-agent-role") as HTMLInputElement;
                       const skillsEl = document.getElementById("new-agent-skills") as HTMLInputElement;
                       const instEl = document.getElementById("new-agent-instructions") as HTMLTextAreaElement;
                       const sysEl = document.getElementById("new-agent-system-prompt") as HTMLTextAreaElement;
+                      const modelEl = document.getElementById("new-agent-model") as HTMLSelectElement;
                       
-                      if (val === "coder") {
-                        roleEl.value = "Fullstack Developer";
-                        skillsEl.value = "react, typescript, node, css";
-                        instEl.value = "Write clean, modular code. Prefer functional components and async/await syntax.";
-                        sysEl.value = "You are a master Fullstack Developer dedicated to writing pristine TypeScript and CSS.";
-                        if (!nameEl.value) nameEl.value = "Nova";
-                      } else if (val === "db") {
-                        roleEl.value = "Database Architect";
-                        skillsEl.value = "postgresql, pgvector, prisma, query_tuning";
-                        instEl.value = "Enforce index optimization, suggest schema safety rules, and always write EXPLAIN ANALYZE.";
-                        sysEl.value = "You are Helix, the database architect and ultimate optimizer.";
-                        if (!nameEl.value) nameEl.value = "Helix";
-                      } else if (val === "reviewer") {
-                        roleEl.value = "Senior Reviewer";
-                        skillsEl.value = "git, code_review, quality_assurance";
-                        instEl.value = "Evaluate all changes against strict maintainability principles and check for hidden edge cases.";
-                        sysEl.value = "You are Sage, a thoughtful senior code reviewer who maintains high codebase standards.";
-                        if (!nameEl.value) nameEl.value = "Sage";
-                      } else if (val === "secops") {
-                        roleEl.value = "SecOps Specialist";
-                        skillsEl.value = "security, pentest, audit, patch";
-                        instEl.value = "Search for injections, security leaks, outdated dependencies, and verify token safety.";
-                        sysEl.value = "You are Sentinel, the security guardian who audits all code changes.";
-                        if (!nameEl.value) nameEl.value = "Sentinel";
+                      try {
+                        const tmpl = await api.getRoleTemplate(val);
+                        if (tmpl) {
+                          roleEl.value = tmpl.display_name || tmpl.role;
+                          skillsEl.value = (tmpl.skills || []).join(", ");
+                          instEl.value = tmpl.custom_instructions || "";
+                          sysEl.value = "";
+                          if (tmpl.recommended_model && modelEl) {
+                            modelEl.value = tmpl.recommended_model;
+                          }
+                          if (!nameEl.value && tmpl.suggested_names?.length > 0) {
+                            nameEl.value = tmpl.suggested_names[0];
+                          }
+                        }
+                      } catch (err) {
+                        console.error("Failed to load template:", err);
                       }
                     }}
                   >
                     <option value="">-- Choose Ready-Made Template --</option>
-                    <option value="coder">📁 Coder (Fullstack Developer)</option>
-                    <option value="db">💾 Database Architect (Postgres Optimizer)</option>
-                    <option value="reviewer">🔍 Senior Reviewer (Sage QA Auditor)</option>
-                    <option value="secops">🛡️ SecOps Specialist (Security Guard)</option>
+                    <option value="Coordinator">🎯 Coordinator (Team Lead)</option>
+                    <option value="Coder">💻 Coder (Software Engineer)</option>
+                    <option value="Reviewer">🔍 Reviewer (Code QA)</option>
+                    <option value="Researcher">🔬 Researcher (Analyst)</option>
+                    <option value="DevOps">⚙️ DevOps (Infrastructure)</option>
+                    <option value="Designer">🎨 Designer (UI/UX)</option>
+                    <option value="Tester">🧪 Tester (QA Engineer)</option>
+                    <option value="Technical Writer">📝 Technical Writer (Docs)</option>
                   </select>
 
                   <input className="input" placeholder="Name" id="new-agent-name" style={{ marginBottom: "6px" }} />
                   <input className="input" placeholder="Custom Role (e.g. Coder, Rust Specialist)" id="new-agent-role" style={{ marginBottom: "6px" }} />
                   <select className="input" id="new-agent-model" style={{ marginBottom: "6px" }}>
-                    <option value="gpt-4o-mini">gpt-4o-mini</option>
-                    <option value="gpt-4o">gpt-4o</option>
-                    <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
-                    <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
-                    <option value="claude-4-5-sonnet">claude-4-5-sonnet</option>
-                    <option value="claude-4-8-sonnet">claude-4-8-sonnet</option>
-                    <option value="claude-4-8-opus">claude-4-8-opus</option>
-                    <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-                    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                    <option value="qwen-plus">qwen-plus</option>
+                    <optgroup label="OpenAI">
+                      <option value="gpt-4o-mini">gpt-4o-mini</option>
+                      <option value="gpt-4o">gpt-4o</option>
+                      <option value="o4-mini">o4-mini</option>
+                    </optgroup>
+                    <optgroup label="Anthropic">
+                      <option value="claude-sonnet-4">claude-sonnet-4</option>
+                      <option value="claude-opus-4">claude-opus-4</option>
+                      <option value="claude-3-5-sonnet-20241022">claude-3.5-sonnet</option>
+                    </optgroup>
+                    <optgroup label="Google">
+                      <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                      <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                    </optgroup>
+                    <optgroup label="Qwen">
+                      <option value="qwen-plus">qwen-plus</option>
+                    </optgroup>
                   </select>
                   <input className="input" placeholder="Skills (e.g. git, web_research)" id="new-agent-skills" style={{ marginBottom: "6px" }} />
                   <textarea className="input" placeholder="Custom Instructions (e.g. prioritize safety)" id="new-agent-instructions" style={{ marginBottom: "6px", minHeight: "48px", fontSize: "12px", resize: "vertical" }} />

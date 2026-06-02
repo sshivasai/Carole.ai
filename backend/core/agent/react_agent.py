@@ -47,6 +47,13 @@ class ReACTAgent:
         stmt = (
             select(Message)
             .where(Message.team_id == self.team_id)
+            .where(
+                or_(
+                    Message.is_private == False,
+                    Message.recipient_id == self.agent_id,
+                    Message.sender_id == self.agent_id
+                )
+            )
             .order_by(Message.created_at.desc())
             .limit(limit)
         )
@@ -153,7 +160,11 @@ class ReACTAgent:
                         model=self.model,
                         system_prompt=system_prompt,
                         messages=messages,
-                        temperature=0.4
+                        temperature=0.4,
+                        project_id=self.project_id,
+                        team_id=self.team_id,
+                        agent_id=self.agent_id,
+                        agent_name=self.name
                     ):
                         thought_buffer += chunk
                         await event_bus.publish(self.topic, {

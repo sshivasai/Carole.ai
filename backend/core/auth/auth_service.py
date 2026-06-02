@@ -165,7 +165,7 @@ class AuthService:
         if not user_id:
             return None
 
-        stmt = select(User).where(User.id == user_id)
+        stmt = select(User).where(User.id == uuid.UUID(user_id))
         result = await db.execute(stmt)
         user = result.scalar_one_or_none()
         if not user:
