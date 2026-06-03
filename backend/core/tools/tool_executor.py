@@ -25,6 +25,9 @@ from core.tools.agent_tools import agent_tools
 from core.tools.browser_tool import browser_tool
 from core.tools.interaction_tools import interaction_tools
 from core.tools.code_analysis_tools import code_analysis_tools
+from core.tools.memory_tools import memory_tools
+from core.tools.meeting_tool import meeting_tool
+from core.tools.google_workspace_tools import create_meeting, send_email
 from core.judge.judge_evaluator import judge_evaluator
 
 # Global dictionaries to manage pending human approvals across concurrent agent loops
@@ -121,6 +124,8 @@ def register_builtin_tools():
                  {"path": {"type": "string", "required": True}}, "safe", _wrap_analyze_imports),
         ToolSpec("check_syntax", "Validate Python syntax without executing", "code_analysis",
                  {"path": {"type": "string", "required": True}}, "safe", _wrap_check_syntax),
+        ToolSpec("analyze_impact", "Analyze the impact of modifying a file based on its dependencies and active editors", "code_analysis",
+                 {"file_path": {"type": "string", "required": True}}, "safe", _wrap_analyze_impact),
 
         # ---- Web ----
         ToolSpec("web_search", "Search the web for information", "web",
@@ -180,6 +185,42 @@ def register_builtin_tools():
         ToolSpec("sleep", "Pause execution for a number of seconds", "interaction",
                  {"seconds": {"type": "number", "required": True}},
                  "safe", _wrap_sleep),
+                 
+        # ---- Voice & Meetings ----
+        ToolSpec("join_meeting", "Join a Google Meet or Zoom call and listen to audio", "browser",
+                 {"url": {"type": "string", "required": True}},
+                 "judge", _wrap_join_meeting),
+        ToolSpec("join_google_meet", "Join a Google Meet call and start live DOM captions", "browser",
+                 {"url": {"type": "string", "required": True}},
+                 "judge", _wrap_join_google_meet),
+        ToolSpec("send_google_meet_chat", "Send a message to the Google Meet chat box", "browser",
+                 {"text": {"type": "string", "required": True}},
+                 "judge", _wrap_send_google_meet_chat),
+
+        # ---- Memory ----
+        ToolSpec("update_memory", "Update a specific long-term memory lesson in the database", "memory",
+                 {"memory_id": {"type": "string", "required": True},
+                  "new_lesson": {"type": "string", "required": True}},
+                 "safe", _wrap_update_memory),
+        ToolSpec("forget_memory", "Delete a specific long-term memory from the database", "memory",
+                 {"memory_id": {"type": "string", "required": True}},
+                 "safe", _wrap_forget_memory),
+                 
+        # ---- Google Workspace ----
+        ToolSpec("create_meeting", "Create a Google Calendar event with a Meet link", "workspace",
+                 {"summary": {"type": "string", "required": True},
+                  "start_time_iso": {"type": "string", "required": True},
+                  "end_time_iso": {"type": "string", "required": True},
+                  "attendees_emails": {"type": "array", "required": False}},
+                 "judge", _wrap_create_meeting),
+        ToolSpec("send_email", "Send an email using Gmail", "workspace",
+                 {"to_email": {"type": "string", "required": True},
+                  "subject": {"type": "string", "required": True},
+                  "body": {"type": "string", "required": True}},
+                 "judge", _wrap_send_email),
+        ToolSpec("generate_mom", "Generate structured Minutes of Meeting from a transcription", "workspace",
+                 {"transcription": {"type": "string", "required": True}},
+                 "safe", _wrap_generate_mom),
     ]
 
     for spec in builtins:
@@ -277,7 +318,7 @@ class ToolExecutor:
         # If the tool returned a FileChangeResult, emit a file_change event
         if isinstance(result, FileChangeResult):
             if result.diff:
-                await event_bus.publish(f"team:{team_id}", {
+                event = {
                     "type": "file_change",
                     "action": result.action,
                     "path": result.path,
@@ -286,7 +327,9 @@ class ToolExecutor:
                     "after_content": result.after_content,
                     "sender_id": agent_id,
                     "sender_name": agent_name,
-                })
+                }
+                await event_bus.publish(f"team:{team_id}", event)
+                await event_bus.publish("system:file_changes", event)
             return result.message
 
         return result
@@ -300,26 +343,28 @@ async def _wrap_read_file(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path") or args.get("path") or args.get("value")
     if not path:
         return "Error: Missing parameter 'relative_path'."
-    return file_tools.read_file(path)
+    return await file_tools.read_file(path)
 
 async def _wrap_write_file(args: Dict[str, Any], team_id: str):
     path = args.get("relative_path") or args.get("path")
     content = args.get("content")
+    agent_name = args.get("_agent_name", "Unknown")
     if not path or content is None:
         return "Error: Missing parameter 'relative_path' or 'content'."
-    return file_tools.write_file(path, content)
+    return await file_tools.write_file(path, content, agent_name)
 
 async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
     path = args.get("relative_path") or args.get("path")
     target = args.get("target_content") or args.get("target")
     replacement = args.get("replacement_content") or args.get("replacement")
+    agent_name = args.get("_agent_name", "Unknown")
     if not path or target is None or replacement is None:
         return "Error: Missing parameters for editing."
-    return file_tools.edit_file(path, target, replacement)
+    return await file_tools.edit_file(path, target, replacement, agent_name)
 
 async def _wrap_list_directory(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path", ".") or args.get("path", ".")
-    return file_tools.list_directory(path)
+    return await file_tools.list_directory(path)
 
 async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
     command = args.get("command") or args.get("value")
@@ -463,21 +508,50 @@ async def _wrap_sleep(args: Dict[str, Any], team_id: str) -> str:
     return await interaction_tools.sleep(seconds)
 
 
+# ---- Voice & Meetings Wrappers ----
+
+async def _wrap_join_meeting(args: Dict[str, Any], team_id: str) -> str:
+    url = args.get("url", "")
+    if not url:
+        return "Error: Missing parameter 'url'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await meeting_tool.join_meeting(url, agent_id, agent_name, team_id)
+
+async def _wrap_join_google_meet(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.google_meet_tool import google_meet_tool
+    url = args.get("url", "")
+    if not url:
+        return "Error: Missing parameter 'url'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await google_meet_tool.join_google_meet(url, agent_id, agent_name, team_id)
+
+async def _wrap_send_google_meet_chat(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.google_meet_tool import google_meet_tool
+    text = args.get("text", "")
+    if not text:
+        return "Error: Missing parameter 'text'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await google_meet_tool.send_google_meet_chat(text, agent_id)
+
 # ---- New Filesystem Tools ----
 
 async def _wrap_append_file(args: Dict[str, Any], team_id: str):
     path = args.get("relative_path") or args.get("path")
     content = args.get("content")
+    agent_name = args.get("_agent_name", "Unknown")
     if not path or content is None:
         return "Error: Missing 'relative_path' or 'content'."
-    return file_tools.append_file(path, content)
+    return await file_tools.append_file(path, content, agent_name)
 
 
 async def _wrap_delete_file(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path") or args.get("path") or args.get("value")
+    agent_name = args.get("_agent_name", "Unknown")
     if not path:
         return "Error: Missing 'relative_path'."
-    return file_tools.delete_file(path)
+    return await file_tools.delete_file(path, agent_name)
 
 
 async def _wrap_grep_search(args: Dict[str, Any], team_id: str) -> str:
@@ -486,7 +560,7 @@ async def _wrap_grep_search(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'pattern'."
     path = args.get("path", ".")
     case_sensitive = args.get("case_sensitive", True)
-    return file_tools.grep_search(pattern, path, case_sensitive)
+    return await file_tools.grep_search(pattern, path, case_sensitive)
 
 
 async def _wrap_glob_search(args: Dict[str, Any], team_id: str) -> str:
@@ -494,7 +568,7 @@ async def _wrap_glob_search(args: Dict[str, Any], team_id: str) -> str:
     if not pattern:
         return "Error: Missing 'pattern'."
     path = args.get("path", ".")
-    return file_tools.glob_search(pattern, path)
+    return await file_tools.glob_search(pattern, path)
 
 
 # Singleton global executor
@@ -508,20 +582,20 @@ async def _wrap_copy_file(args: Dict[str, Any], team_id: str) -> str:
     dst = args.get("destination", "")
     if not src or not dst:
         return "Error: Missing 'source' or 'destination'."
-    return file_tools.copy_file(src, dst)
+    return await file_tools.copy_file(src, dst)
 
 async def _wrap_move_file(args: Dict[str, Any], team_id: str) -> str:
     src = args.get("source", "")
     dst = args.get("destination", "")
     if not src or not dst:
         return "Error: Missing 'source' or 'destination'."
-    return file_tools.move_file(src, dst)
+    return await file_tools.move_file(src, dst)
 
 async def _wrap_create_directory(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("path") or args.get("relative_path", "")
     if not path:
         return "Error: Missing 'path'."
-    return file_tools.create_directory(path)
+    return await file_tools.create_directory(path)
 
 
 # ---- Git Extras ----
@@ -569,3 +643,50 @@ async def _wrap_check_syntax(args: Dict[str, Any], team_id: str) -> str:
     if not path:
         return "Error: Missing 'path'."
     return code_analysis_tools.check_syntax(path)
+
+async def _wrap_analyze_impact(args: Dict[str, Any], team_id: str) -> str:
+    path = args.get("file_path") or args.get("path") or args.get("value", "")
+    if not path:
+        return "Error: Missing 'file_path'."
+    return code_analysis_tools.analyze_impact(path)
+
+# ---- Memory Wrappers ----
+
+async def _wrap_update_memory(args: Dict[str, Any], team_id: str) -> str:
+    memory_id = args.get("memory_id", "")
+    new_lesson = args.get("new_lesson", "")
+    if not memory_id or not new_lesson:
+        return "Error: Missing 'memory_id' or 'new_lesson'."
+    return await memory_tools.update_memory(memory_id, new_lesson)
+
+async def _wrap_forget_memory(args: Dict[str, Any], team_id: str) -> str:
+    memory_id = args.get("memory_id", "")
+    if not memory_id:
+        return "Error: Missing 'memory_id'."
+    return await memory_tools.forget_memory(memory_id)
+
+# ---- Google Workspace Wrappers ----
+
+async def _wrap_create_meeting(args: Dict[str, Any], team_id: str) -> str:
+    summary = args.get("summary", "")
+    start_time_iso = args.get("start_time_iso", "")
+    end_time_iso = args.get("end_time_iso", "")
+    attendees_emails = args.get("attendees_emails", [])
+    if not summary or not start_time_iso or not end_time_iso:
+        return "Error: Missing 'summary', 'start_time_iso', or 'end_time_iso'."
+    return create_meeting(summary, start_time_iso, end_time_iso, attendees_emails)
+
+async def _wrap_send_email(args: Dict[str, Any], team_id: str) -> str:
+    to_email = args.get("to_email", "")
+    subject = args.get("subject", "")
+    body = args.get("body", "")
+    if not to_email or not subject or not body:
+        return "Error: Missing 'to_email', 'subject', or 'body'."
+    return send_email(to_email, subject, body)
+
+async def _wrap_generate_mom(args: Dict[str, Any], team_id: str) -> str:
+    transcription = args.get("transcription", "")
+    if not transcription:
+        return "Error: Missing 'transcription'."
+    return await meeting_tool.generate_mom(transcription)
+

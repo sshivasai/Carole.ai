@@ -20,24 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.memory.database import async_session
 from core.memory.models import Message, Learning, Team
 from core.llm.multi_model_router import llm_router
-
-
-CONSOLIDATION_PROMPT = """You are a knowledge extraction engine. Analyze the following conversation log from a multi-agent team chat.
-
-Extract the most important lessons learned, decisions made, or mistakes to avoid.
-For EACH lesson, output it in this exact format (one per line):
-
-TASK_SUMMARY: <brief context of what was being discussed or done>
-LESSON_RULE: <concrete, actionable rule to follow or mistake to avoid in the future>
-
-Only extract genuinely useful lessons. If the conversation is casual or contains no actionable knowledge, output: NO_LESSONS
-
-Conversation log:
-{conversation}"""
+from core.config import CONSOLIDATION_PROMPT, DEFAULT_FAST_MODEL, DREAM_INTERVAL_MINUTES
 
 
 class AutoDreamWorker:
-    def __init__(self, interval_minutes: int = 15):
+    def __init__(self, interval_minutes: int = DREAM_INTERVAL_MINUTES):
         self.interval = interval_minutes
         self._running = False
 
@@ -101,7 +88,7 @@ class AutoDreamWorker:
         # Ask a cheap LLM to extract lessons
         prompt = CONSOLIDATION_PROMPT.format(conversation=conversation_text)
         extraction = await llm_router.generate_completion(
-            model="gpt-4o-mini",
+            model=DEFAULT_FAST_MODEL,
             system_prompt="You are a precise knowledge extraction engine.",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,

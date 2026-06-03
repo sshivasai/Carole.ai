@@ -30,10 +30,13 @@ class MultiModelRouter:
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         self.openai_key = os.getenv("OPENAI_API_KEY")
         self.gemini_key = os.getenv("GOOGLE_API_KEY")
+        self.openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        self.nvidia_key = os.getenv("NVIDIA_API_KEY")
 
-        # Qwen specific configuration (defaults to OpenAI-compatible base URL if local)
+        # Configurations
         self.qwen_key = os.getenv("QWEN_API_KEY")
         self.qwen_base_url = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
     async def generate_completion(
         self,
@@ -78,48 +81,106 @@ class MultiModelRouter:
         response_text = ""
         provider = "unknown"
         try:
-            # 0. Route to Ollama Local
-            if model.startswith("ollama/"):
+            if model.startswith("openrouter/"):
+                provider = "openrouter"
+                async for chunk in self._stream_openai_compatible(
+                    url="https://openrouter.ai/api/v1/chat/completions",
+                    key=self.openrouter_key,
+                    model=model,
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    temp=temperature,
+                    max_tokens=max_tokens
+                ):
+                    response_text += chunk
+                    yield chunk
+
+            elif model.startswith("nvidia/"):
+                provider = "nvidia"
+                target_model = model.replace("nvidia/", "", 1)
+                async for chunk in self._stream_openai_compatible(
+                    url="https://integrate.api.nvidia.com/v1/chat/completions",
+                    key=self.nvidia_key,
+                    model=target_model,
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    temp=temperature,
+                    max_tokens=max_tokens
+                ):
+                    response_text += chunk
+                    yield chunk
+
+            elif model.startswith("ollama/"):
                 provider = "ollama"
-                async for chunk in self._stream_ollama(model.replace("ollama/", ""), system_prompt, messages, temperature, max_tokens):
+                target_model = model.replace("ollama/", "", 1)
+                async for chunk in self._stream_openai_compatible(
+                    url=f"{self.ollama_base_url}/chat/completions",
+                    key=None,
+                    model=target_model,
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    temp=temperature,
+                    max_tokens=max_tokens
+                ):
                     response_text += chunk
                     yield chunk
 
-            # 1. Route to Anthropic (Claude)
-            elif model.startswith("claude"):
-                provider = "anthropic"
-                async for chunk in self._stream_anthropic(model, system_prompt, messages, temperature, max_tokens):
-                    response_text += chunk
-                    yield chunk
-
-            # 2. Route to OpenAI (GPT)
-            elif model.startswith("gpt") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"):
-                provider = "openai"
-                async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
-                    response_text += chunk
-                    yield chunk
-
-            # 3. Route to Google Gemini
             elif model.startswith("gemini"):
                 provider = "google"
                 async for chunk in self._stream_gemini(model, system_prompt, messages, temperature, max_tokens):
                     response_text += chunk
                     yield chunk
 
-            # 4. Route to Qwen (Or other OpenAI compatible endpoints)
-            elif model.startswith("qwen"):
-                provider = "qwen"
-                async for chunk in self._stream_qwen(model, system_prompt, messages, temperature, max_tokens):
-                    response_text += chunk
-                    yield chunk
+            elif model.startswith("claude"):
+                if self.openrouter_key:
+                    provider = "openrouter"
+                    target_model = f"anthropic/{model}" if "/" not in model else model
+                    async for chunk in self._stream_openai_compatible(
+                        url="https://openrouter.ai/api/v1/chat/completions",
+                        key=self.openrouter_key,
+                        model=target_model,
+                        system_prompt=system_prompt,
+                        messages=messages,
+                        temp=temperature,
+                        max_tokens=max_tokens
+                    ):
+                        response_text += chunk
+                        yield chunk
+                else:
+                    provider = "anthropic"
+                    async for chunk in self._stream_anthropic(model, system_prompt, messages, temperature, max_tokens):
+                        response_text += chunk
+                        yield chunk
 
-            # 5. Generic Fallback — try OpenAI-compatible
             else:
-                provider = "openai"
-                print(f"⚠️ [Router] Model '{model}' not explicitly recognized. Falling back to OpenAI stream.")
-                async for chunk in self._stream_openai(model, system_prompt, messages, temperature, max_tokens):
-                    response_text += chunk
-                    yield chunk
+                # Other models (like gpt-*)
+                if self.openrouter_key:
+                    provider = "openrouter"
+                    target_model = f"openai/{model}" if "/" not in model else model
+                    async for chunk in self._stream_openai_compatible(
+                        url="https://openrouter.ai/api/v1/chat/completions",
+                        key=self.openrouter_key,
+                        model=target_model,
+                        system_prompt=system_prompt,
+                        messages=messages,
+                        temp=temperature,
+                        max_tokens=max_tokens
+                    ):
+                        response_text += chunk
+                        yield chunk
+                else:
+                    provider = "openai"
+                    async for chunk in self._stream_openai_compatible(
+                        url="https://api.openai.com/v1/chat/completions",
+                        key=self.openai_key,
+                        model=model,
+                        system_prompt=system_prompt,
+                        messages=messages,
+                        temp=temperature,
+                        max_tokens=max_tokens
+                    ):
+                        response_text += chunk
+                        yield chunk
         finally:
             if project_id or team_id or agent_id:
                 asyncio.create_task(
@@ -136,11 +197,25 @@ class MultiModelRouter:
                     )
                 )
 
-    async def _stream_ollama(
-        self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
+    async def _stream_openai_compatible(
+        self, url: str, key: Optional[str], model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
     ) -> AsyncGenerator[str, None]:
-        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        if "api.openai.com" in url and not key:
+            yield "[Router Error: OPENAI_API_KEY is not configured.]"
+            return
+        if "openrouter.ai" in url and not key:
+            yield "[Router Error: OPENROUTER_API_KEY is not configured.]"
+            return
+        if "integrate.api.nvidia.com" in url and not key:
+            yield "[Router Error: NVIDIA_API_KEY is not configured.]"
+            return
+
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+
         formatted_messages = [{"role": "system", "content": system_prompt}] + messages
+
         payload = {
             "model": model,
             "messages": formatted_messages,
@@ -148,8 +223,8 @@ class MultiModelRouter:
             "max_tokens": max_tokens,
             "stream": True
         }
-        headers = {"Content-Type": "application/json"}
-        async for chunk in self._stream_with_retry(f"{ollama_url}/chat/completions", headers, payload, "openai"):
+
+        async for chunk in self._stream_with_retry(url, headers, payload, "openai"):
             yield chunk
 
     async def _log_usage(
@@ -183,6 +258,9 @@ class MultiModelRouter:
             }
 
             rate_in, rate_out = pricing.get(model, (0.0, 0.0))
+            if "free" in model.lower() and provider in ["openrouter", "nvidia", "ollama"]:
+                rate_in, rate_out = 0.0, 0.0
+
             cost = (prompt_tokens * rate_in + completion_tokens * rate_out) / 1_000_000
 
             from core.memory.database import async_session
@@ -234,35 +312,6 @@ class MultiModelRouter:
         }
 
         async for chunk in self._stream_with_retry("https://api.anthropic.com/v1/messages", headers, payload, "anthropic"):
-            yield chunk
-
-    # ================================================================
-    # OpenAI (GPT, o-series)
-    # ================================================================
-
-    async def _stream_openai(
-        self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
-    ) -> AsyncGenerator[str, None]:
-        if not self.openai_key:
-            yield "[Router Error: OPENAI_API_KEY is not configured in the backend environment.]"
-            return
-
-        headers = {
-            "Authorization": f"Bearer {self.openai_key}",
-            "Content-Type": "application/json"
-        }
-
-        formatted_messages = [{"role": "system", "content": system_prompt}] + messages
-
-        payload = {
-            "model": model,
-            "messages": formatted_messages,
-            "temperature": temp,
-            "max_tokens": max_tokens,
-            "stream": True
-        }
-
-        async for chunk in self._stream_with_retry("https://api.openai.com/v1/chat/completions", headers, payload, "openai"):
             yield chunk
 
     # ================================================================
@@ -328,32 +377,6 @@ class MultiModelRouter:
                                 continue
             except Exception as e:
                 yield f"[Router Connection Exception (Gemini): {str(e)}]"
-
-    # ================================================================
-    # Qwen / OpenAI-compatible
-    # ================================================================
-
-    async def _stream_qwen(
-        self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
-    ) -> AsyncGenerator[str, None]:
-        headers = {"Content-Type": "application/json"}
-        if self.qwen_key:
-            headers["Authorization"] = f"Bearer {self.qwen_key}"
-
-        formatted_messages = [{"role": "system", "content": system_prompt}] + messages
-
-        payload = {
-            "model": model,
-            "messages": formatted_messages,
-            "temperature": temp,
-            "max_tokens": max_tokens,
-            "stream": True
-        }
-
-        async for chunk in self._stream_with_retry(
-            f"{self.qwen_base_url}/chat/completions", headers, payload, "openai"
-        ):
-            yield chunk
 
     # ================================================================
     # Shared SSE streaming with retry

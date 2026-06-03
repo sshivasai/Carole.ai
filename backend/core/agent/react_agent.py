@@ -20,9 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.llm.multi_model_router import llm_router
 from core.chat.event_bus import event_bus
-from core.memory.models import Learning, Message, Agent
+from core.memory.models import Learning, Message, Agent, Project, User
 from core.tools.tool_registry import ToolRegistry
-
+from core.config import (
+    STRICT_REASONING_GUIDELINES, KEYWORD_EXTRACTION_PROMPT,
+    CONTEXT_COMPACTION_THRESHOLD, COMPACTION_SYSTEM_PROMPT,
+    COMPACTION_USER_PROMPT, DEFAULT_FAST_MODEL, MEMORY_RETRIEVAL_LIMIT
+)
 
 class ReACTAgent:
     def __init__(
@@ -71,21 +75,74 @@ class ReACTAgent:
         return history
 
     async def assemble_system_prompt(self, db_session: AsyncSession, current_task: str) -> str:
-        """Assembles system prompt with learnings, tools, and reasoning guidelines."""
-        # 1. Fetch top 3 semantically relevant "Lessons Learned" from pgvector
+        """Assembles system prompt with learnings, tools, team roster, and reasoning guidelines."""
+        from sqlalchemy import func
+
+        # 0. Fetch current team roster so the agent knows who is available
+        stmt = select(Agent).where(Agent.team_id == self.team_id)
+        roster_result = await db_session.execute(stmt)
+        teammates = roster_result.scalars().all()
+
+        roster_block = "\n<team-roster>\n"
+        for teammate in teammates:
+            if str(teammate.id) != self.agent_id:
+                roster_block += f"- {teammate.name} (Role: {teammate.role})\n"
+        roster_block += "</team-roster>\n"
+
+        # 0.5 Fetch human user context
+        human_context = ""
+        project_result = await db_session.execute(select(Project).where(Project.id == self.project_id))
+        project = project_result.scalar_one_or_none()
+        if project:
+            user_result = await db_session.execute(select(User).where(User.id == project.owner_id))
+            user = user_result.scalar_one_or_none()
+            if user:
+                first = user.first_name or ""
+                last = user.last_name or ""
+                full_name = f"{first} {last}".strip() or "Unknown User"
+                human_context = f"\n<human-context>\nThe human user / project owner is {full_name}.\n</human-context>\n"
+
+        # 1. Generate search embeddings
         query_vector = await llm_router.generate_embeddings(current_task)
+
+        # 2. Extract concise keywords for the Sparse (Lexical) Search component
+        keyword_prompt = KEYWORD_EXTRACTION_PROMPT.format(task=current_task)
+        try:
+            keywords = await llm_router.generate_completion(
+                model=DEFAULT_FAST_MODEL,
+                system_prompt="You are a keyword extractor.",
+                messages=[{"role": "user", "content": keyword_prompt}],
+                temperature=0.1,
+                max_tokens=20
+            )
+            # Clean up punctuation and newlines
+            keywords = keywords.replace('"', '').replace(',', '').strip()
+        except Exception:
+            keywords = current_task[:50]  # Fallback
+
+        # 3. Hybrid Search: Combine pgvector Cosine Distance with PostgreSQL tsvector Full-Text Search
+        # We want to match exact technical keywords (Sparse) while still understanding concepts (Dense).
+        # We parse the LLM-extracted keywords into an OR-based text query (word1 | word2 | word3)
+        or_query = ' | '.join(keywords.split())
+        ts_query = func.to_tsquery('english', or_query)
+        ts_vector = func.to_tsvector('english', Learning.task_summary.concat(' ').concat(Learning.lesson_rule))
+        ts_rank = func.ts_rank_cd(ts_vector, ts_query)
+
+        # Hybrid Score: Cosine distance is lower=better (0 to 2). Rank is higher=better.
+        # We subtract rank to boost exact keyword matches to the top of the semantic results.
+        hybrid_order = Learning.embedding.cosine_distance(query_vector) - (ts_rank * 0.5)
 
         stmt = (
             select(Learning)
             .where(Learning.project_id == self.project_id)
             .where(or_(Learning.team_id == None, Learning.team_id == self.team_id))
-            .order_by(Learning.embedding.cosine_distance(query_vector))
-            .limit(3)
+            .order_by(hybrid_order)
+            .limit(MEMORY_RETRIEVAL_LIMIT)
         )
         res = await db_session.execute(stmt)
         past_learnings = res.scalars().all()
 
-        # 2. Format past learnings
+        # 4. Format past learnings
         learnings_block = ""
         if past_learnings:
             learnings_block = "\n<lessons-learned>\n"
@@ -94,20 +151,10 @@ class ReACTAgent:
             learnings_block += "</lessons-learned>\n"
 
         # 3. Tool list
-        tools_block = "\n" + ToolRegistry.to_llm_prompt() + "\n"
+        tools_block = "\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n"
 
         # 4. Reasoning guidelines
-        research_directives = (
-            "\n<strict-reasoning-guidelines>\n"
-            "1. CONFIDENCE ASSESSMENT: If your internal data is old or missing, call `web_search` or `web_fetch` first.\n"
-            "2. WEB CITATIONS: When using web data, include source URLs in your response.\n"
-            "3. TOOL CALLS: Use [ACTION]tool_name({\"param\": \"value\"})[/ACTION] to invoke tools.\n"
-            "4. NATURAL SPEECH: Talk like a real dev in a team chat. Be concise and direct.\n"
-            "5. When done, just say your final answer — no [ACTION] tag means you're finished.\n"
-            "</strict-reasoning-guidelines>\n"
-        )
-
-        return f"{self.system_prompt}\n{learnings_block}\n{tools_block}\n{research_directives}"
+        return f"{self.system_prompt}\n{roster_block}\n{human_context}\n{learnings_block}\n{tools_block}\n{STRICT_REASONING_GUIDELINES}"
 
     async def run_loop(self, db_session: AsyncSession, initial_prompt: str):
         """Runs the core ReACT loop with conversation history and streaming."""
@@ -147,6 +194,23 @@ class ReACTAgent:
                 "role": self.role,
                 "status": "thinking"
             })
+
+            # Compaction Check
+            if len(messages) > CONTEXT_COMPACTION_THRESHOLD:
+                print(f"🗜️ [Agent: {self.name}] Context window growing large. Compacting...")
+                to_compact = messages[1:-5]
+                try:
+                    summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact))
+                    summary = await llm_router.generate_completion(
+                        model=DEFAULT_FAST_MODEL,
+                        system_prompt=COMPACTION_SYSTEM_PROMPT,
+                        messages=[{"role": "user", "content": summary_prompt}],
+                        temperature=0.3,
+                        max_tokens=1000
+                    )
+                    messages = [messages[0]] + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{summary}\n[/COMPACTED HISTORY]"}] + messages[-5:]
+                except Exception as e:
+                    print(f"⚠️ [Agent: {self.name}] Compaction failed, continuing with full context: {e}")
 
             # Stream completion with retry
             print(f"🤖 [Agent: {self.name}] Thinking... (loop {loop_count})")

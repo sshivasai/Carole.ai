@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.memory.database import get_db
 from core.memory.models import User, Project, Team, Agent, Message, Task
 from core.tools.tool_registry import ToolRegistry
+from core.config import DEFAULT_FAST_MODEL
 
 router = APIRouter(prefix="/api", tags=["crud"])
 
@@ -48,7 +49,7 @@ class AgentCreate(BaseModel):
     team_id: str
     name: str
     role: str
-    model: str = "gpt-4o-mini"
+    model: str = DEFAULT_FAST_MODEL
     system_prompt: str = ""
     personality: str = "professional"  # professional, casual, witty, mentor
     tool_permissions: dict = {}
@@ -81,6 +82,13 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
 
+
+class McpServerCreate(BaseModel):
+    team_id: str
+    server_name: str
+    command: str
+    args: str
+    agent_id: Optional[str] = None
 
 # ============================================================
 # Users / Tenants
@@ -173,6 +181,33 @@ async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db)):
         }
         for l in result.scalars().all()
     ]
+
+@router.put("/learnings/{learning_id}")
+async def update_learning(learning_id: str, body: LearningCreate, db: AsyncSession = Depends(get_db)):
+    from core.llm.multi_model_router import llm_router
+    from core.memory.models import Learning
+    
+    stmt = select(Learning).where(Learning.id == uuid.UUID(learning_id))
+    result = await db.execute(stmt)
+    learning = result.scalar_one_or_none()
+    if not learning:
+        raise HTTPException(status_code=404, detail="Learning not found")
+        
+    combined_text = f"Task: {body.task_summary} | Rule: {body.lesson_rule}"
+    new_embedding = await llm_router.generate_embeddings(combined_text)
+    
+    learning.task_summary = body.task_summary
+    learning.lesson_rule = body.lesson_rule
+    learning.embedding = new_embedding
+    await db.flush()
+    return {"status": "updated", "id": learning_id}
+
+@router.delete("/learnings/{learning_id}")
+async def delete_learning(learning_id: str, db: AsyncSession = Depends(get_db)):
+    from core.memory.models import Learning
+    await db.execute(delete(Learning).where(Learning.id == uuid.UUID(learning_id)))
+    await db.flush()
+    return {"status": "deleted", "id": learning_id}
 
 
 
@@ -358,6 +393,9 @@ async def list_messages(team_id: str, limit: int = 50, db: AsyncSession = Depend
 
 @router.post("/tasks")
 async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
+    from core.chat.event_bus import event_bus
+    from core.chat.message_router import message_router
+
     task = Task(
         team_id=uuid.UUID(body.team_id) if body.team_id else None,
         title=body.title,
@@ -369,6 +407,31 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     )
     db.add(task)
     await db.flush()
+
+    assignee_name = "unassigned"
+    agent = None
+    if task.assigned_agent_id:
+        agent_stmt = select(Agent).where(Agent.id == task.assigned_agent_id)
+        agent_result = await db.execute(agent_stmt)
+        agent = agent_result.scalar_one_or_none()
+        if agent:
+            assignee_name = agent.name
+
+    if task.team_id:
+        await event_bus.publish(f"team:{str(task.team_id)}", {
+            "type": "task_update",
+            "action": "created",
+            "task": {
+                "id": str(task.id), "title": task.title, "description": task.description,
+                "status": task.status, "priority": task.priority,
+                "assigned_to": assignee_name,
+            },
+        })
+
+    if agent:
+        prompt = f"The human just assigned a new task to you on the Kanban board: '{task.title}'. Please review it and start working."
+        await message_router._trigger_agent(agent, prompt, db)
+
     return {"id": str(task.id), "title": task.title, "status": task.status}
 
 @router.get("/tasks/{team_id}")
@@ -526,7 +589,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
         {
             "name": "Archer",
             "role": "Coordinator",
-            "model": "gpt-4o-mini",
+            "model": DEFAULT_FAST_MODEL,
             "personality": "casual",
             "tool_permissions": {
                 "read_file": "safe", "list_directory": "safe",
@@ -538,7 +601,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
         {
             "name": "Nova",
             "role": "Coder",
-            "model": "gpt-4o-mini",
+            "model": DEFAULT_FAST_MODEL,
             "personality": "witty",
             "tool_permissions": {
                 "read_file": "safe", "write_file": "judge", "edit_file": "judge",
@@ -551,7 +614,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
         {
             "name": "Sage",
             "role": "Reviewer",
-            "model": "gpt-4o-mini",
+            "model": DEFAULT_FAST_MODEL,
             "personality": "mentor",
             "tool_permissions": {
                 "read_file": "safe", "list_directory": "safe",
@@ -721,4 +784,60 @@ async def get_project_usage(project_id: str, db: AsyncSession = Depends(get_db))
             for name, data in by_agent.items()
         }
     }
+
+
+# ============================================================
+# MCP Servers
+# ============================================================
+
+@router.post("/mcp")
+async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_db)):
+    from core.memory.models import McpServer
+    from core.tools.mcp_client import mcp_manager
+    import asyncio
+    
+    # Parse args
+    args_list = [arg.strip() for arg in body.args.split(",") if arg.strip()]
+
+    server = McpServer(
+        team_id=uuid.UUID(body.team_id),
+        agent_id=uuid.UUID(body.agent_id) if body.agent_id else None,
+        server_name=body.server_name,
+        command=body.command,
+        args=args_list,
+        env_vars=None
+    )
+    db.add(server)
+    await db.flush()
+
+    # Launch in background
+    asyncio.create_task(
+        mcp_manager.connect_stdio_server(
+            server_name=body.server_name,
+            command=body.command,
+            args=args_list,
+            team_id=body.team_id,
+            agent_id=body.agent_id
+        )
+    )
+
+    return {"id": str(server.id), "status": "connecting"}
+
+@router.get("/mcp/{team_id}")
+async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db)):
+    from core.memory.models import McpServer
+    stmt = select(McpServer).where(McpServer.team_id == uuid.UUID(team_id))
+    result = await db.execute(stmt)
+    servers = result.scalars().all()
+    return [
+        {
+            "id": str(s.id),
+            "server_name": s.server_name,
+            "command": s.command,
+            "args": s.args,
+            "agent_id": str(s.agent_id) if s.agent_id else None
+        }
+        for s in servers
+    ]
+
 

@@ -176,3 +176,18 @@ class TokenUsage(Base):
     estimated_cost_usd = Column(String(20), nullable=True)  # e.g. "0.0024"
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class McpServer(Base):
+    __tablename__ = "mcp_servers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    
+    server_name = Column(String(255), nullable=False)
+    command = Column(String(255), nullable=False)
+    args = Column(JSON, nullable=False, default=list)
+    env_vars = Column(JSON, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+

@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import styles from "./page.module.css";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { api } from "@/hooks/useApi";
+import KanbanBoard from "@/components/KanbanBoard";
+import McpIntegration from "@/components/McpIntegration";
 import type {
   ChatMessage, AgentConfig, TaskItem, WSEvent,
   FileChangeEvent, ApprovalRequestEvent, BrowserScreenshotEvent, LearningItem,
@@ -39,7 +41,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({});
   const [typingAgents, setTypingAgents] = useState<Set<string>>(new Set());
-  const [rightTab, setRightTab] = useState<"tasks" | "diffs" | "browser" | "knowledge" | "usage">("tasks");
+  const [rightTab, setRightTab] = useState<"tasks" | "diffs" | "browser" | "knowledge" | "usage" | "mcp">("tasks");
   const [usageData, setUsageData] = useState<any>(null);
   const [diffs, setDiffs] = useState<FileChangeEvent[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalRequestEvent[]>([]);
@@ -991,48 +993,14 @@ export default function Home() {
                         <button className={`${styles.tab} ${rightTab === "browser" ? styles.active : ""}`} onClick={() => setRightTab("browser")}>Browser</button>
                         <button className={`${styles.tab} ${rightTab === "knowledge" ? styles.active : ""}`} onClick={() => setRightTab("knowledge")}>Knowledge</button>
                         <button className={`${styles.tab} ${rightTab === "usage" ? styles.active : ""}`} onClick={() => setRightTab("usage")}>Usage</button>
+                        <button className={`${styles.tab} ${rightTab === "mcp" ? styles.active : ""}`} onClick={() => setRightTab("mcp")}>MCP</button>
                       </div>
                     </div>
 
-                    <div className={styles.rightPanelContent}>
+                    <div className={styles.rightPanelContent} style={{ padding: rightTab === "tasks" ? 0 : undefined }}>
                       {/* Tasks tab (Kanban style) */}
                       {rightTab === "tasks" && (
-                        <div style={{ display: "flex", gap: "8px", overflowX: "auto", paddingBottom: "12px", minHeight: "350px" }}>
-                          {["todo", "in_progress", "review", "done"].map((col) => {
-                            const colTasks = tasks.filter((t) => t.status === col);
-                            const colTitle = col === "todo" ? "To Do" : col === "in_progress" ? "Active" : col === "review" ? "Review" : "Done";
-                            const colColor = col === "todo" ? "var(--text-tertiary)" : col === "in_progress" ? "var(--accent-blue)" : col === "review" ? "var(--accent-purple)" : "var(--accent-green)";
-
-                            return (
-                              <div key={col} style={{ flex: 1, minWidth: "140px", background: "rgba(255,255,255,0.02)", borderRadius: "6px", padding: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                                <div style={{ fontSize: "10px", fontWeight: "700", textTransform: "uppercase", color: colColor, borderBottom: "1px solid var(--border-subtle)", paddingBottom: "6px", marginBottom: "4px" }}>
-                                  {colTitle} ({colTasks.length})
-                                </div>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "6px", overflowY: "auto", flex: 1 }}>
-                                  {colTasks.length === 0 ? (
-                                    <div style={{ fontSize: "9px", color: "var(--text-tertiary)", textAlign: "center", padding: "16px 0", border: "1px dashed rgba(255,255,255,0.04)", borderRadius: "4px" }}>Empty</div>
-                                  ) : (
-                                    colTasks.map((task) => (
-                                      <div key={task.id} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                                        <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-primary)" }}>{task.title}</div>
-                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                          <span style={{ fontSize: "8px", padding: "2px 5px", background: task.priority === "critical" ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.06)", color: task.priority === "critical" ? "var(--accent-red)" : "var(--text-secondary)", borderRadius: "3px" }}>
-                                            {task.priority}
-                                          </span>
-                                          {task.assigned_agent_id && (
-                                            <span style={{ fontSize: "8px", color: "var(--text-tertiary)" }}>
-                                              👤 Assigned
-                                            </span>
-                                          )}
-                                        </div>
-                                      </div>
-                                    ))
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                        <KanbanBoard teamId={teamId} />
                       )}
 
                       {/* Diffs tab */}
@@ -1233,6 +1201,12 @@ export default function Home() {
                               No usage statistics available.
                             </p>
                           )}
+                        </div>
+                      )}
+                      {/* MCP tab */}
+                      {rightTab === "mcp" && (
+                        <div style={{ padding: "16px" }}>
+                          <McpIntegration teamId={teamId} agents={agents} />
                         </div>
                       )}
                     </div>
@@ -1740,39 +1714,22 @@ export default function Home() {
           </main>
 
           {/* ---- RIGHT PANEL ---- */}
-          <aside className={styles.rightPanel}>
+          <aside className={styles.rightPanel} style={{ flex: rightTab === "tasks" ? 1 : "none", width: rightTab === "tasks" ? "auto" : "var(--rightpanel-width)" }}>
             <div className={styles.rightPanelHeader}>
               <div className={styles.tabBar}>
                 <button className={`${styles.tab} ${rightTab === "tasks" ? styles.active : ""}`} onClick={() => setRightTab("tasks")}>Tasks</button>
                 <button className={`${styles.tab} ${rightTab === "diffs" ? styles.active : ""}`} onClick={() => setRightTab("diffs")}>Diffs</button>
                 <button className={`${styles.tab} ${rightTab === "browser" ? styles.active : ""}`} onClick={() => setRightTab("browser")}>Browser</button>
                 <button className={`${styles.tab} ${rightTab === "knowledge" ? styles.active : ""}`} onClick={() => setRightTab("knowledge")}>Knowledge</button>
+                <button className={`${styles.tab} ${rightTab === "usage" ? styles.active : ""}`} onClick={() => setRightTab("usage")}>Usage</button>
+                <button className={`${styles.tab} ${rightTab === "mcp" ? styles.active : ""}`} onClick={() => setRightTab("mcp")}>MCP</button>
               </div>
             </div>
 
-            <div className={styles.rightPanelContent}>
+            <div className={styles.rightPanelContent} style={{ padding: rightTab === "tasks" ? 0 : undefined }}>
               {/* Tasks tab */}
               {rightTab === "tasks" && (
-                <>
-                  {tasks.length === 0 ? (
-                    <p style={{ color: "var(--text-tertiary)", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>
-                      No tasks yet. Agents will create tasks as they work.
-                    </p>
-                  ) : (
-                    tasks.map((task) => (
-                      <div key={task.id} className={styles.taskItem}>
-                        <div className={styles.taskTitle}>{task.title}</div>
-                        <div className={styles.taskMeta}>
-                          <span className={`badge badge-${task.status === "done" ? "green" : task.status === "in_progress" ? "blue" : task.priority === "critical" ? "red" : "yellow"}`}>
-                            {task.status}
-                          </span>
-                          <span>{task.priority}</span>
-                          {task.assigned_to && <span>→ {task.assigned_to}</span>}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </>
+                <KanbanBoard teamId={teamId} />
               )}
 
               {/* Diffs tab */}
@@ -1886,6 +1843,21 @@ export default function Home() {
                     ))
                   )}
                 </>
+              )}
+              {/* Usage tab (split view) */}
+              {rightTab === "usage" && (
+                <div style={{ padding: "16px" }}>
+                  <p style={{ color: "var(--text-tertiary)", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>
+                    Switch to playground view to see Usage stats.
+                  </p>
+                </div>
+              )}
+
+              {/* MCP tab (split view) */}
+              {rightTab === "mcp" && (
+                <div style={{ padding: "16px" }}>
+                  <McpIntegration teamId={teamId} agents={agents} />
+                </div>
               )}
             </div>
           </aside>

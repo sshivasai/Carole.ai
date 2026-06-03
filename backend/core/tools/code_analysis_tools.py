@@ -176,6 +176,50 @@ class CodeAnalysisTools:
         except Exception as e:
             return f"Error: {str(e)}"
 
+    def analyze_impact(self, file_path: str) -> str:
+        """Analyzes the impact of modifying a file using the Code Knowledge Graph."""
+        from core.knowledge.code_graph import code_graph
+        try:
+            safe_path = self._resolve_safe_path(file_path)
+            try:
+                path_str = str(safe_path.relative_to(self.workspace_root)).replace("\\", "/")
+            except ValueError:
+                return f"Error: '{file_path}' is not within the workspace."
+
+            if not code_graph.graph.has_node(path_str):
+                return f"No dependency graph data for '{path_str}'."
+
+            # Find all files that depend on this file
+            dependent_files = list(code_graph.graph.predecessors(path_str))
+            
+            output = [f"🔍 Impact Analysis for '{path_str}':"]
+            if dependent_files:
+                output.append(f"  {len(dependent_files)} file(s) depend on this:")
+                for dep in dependent_files:
+                    output.append(f"    - {dep}")
+            else:
+                output.append("  No internal files depend on this.")
+
+            # Check active editors
+            warnings = []
+            active_target = code_graph.active_editors.get(path_str)
+            if active_target:
+                warnings.append(f"⚠️ TARGET FILE actively edited by: {', '.join(active_target)}")
+            
+            for dep in dependent_files:
+                active_dep = code_graph.active_editors.get(dep)
+                if active_dep:
+                    warnings.append(f"⚠️ DEPENDENT FILE '{dep}' actively edited by: {', '.join(active_dep)}")
+                    
+            if warnings:
+                output.append("\n" + "\n".join(warnings))
+            else:
+                output.append("\n✅ No active editing conflicts detected.")
+
+            return "\n".join(output)
+        except Exception as e:
+            return f"Error analyzing impact: {str(e)}"
+
 
 # Singleton
 code_analysis_tools = CodeAnalysisTools()

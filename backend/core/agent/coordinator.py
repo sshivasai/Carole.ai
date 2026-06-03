@@ -22,6 +22,7 @@ from core.agent.react_agent import ReACTAgent
 from core.chat.event_bus import event_bus
 from core.memory.models import Agent, Task, Message
 from core.memory.database import async_session
+from core.config import COORDINATOR_DIRECTIVES
 
 
 class CoordinatorAgent(ReACTAgent):
@@ -36,17 +37,6 @@ class CoordinatorAgent(ReACTAgent):
     async def assemble_system_prompt(self, db_session: AsyncSession, current_task: str) -> str:
         """Extends the base prompt with coordinator-specific directives."""
         base_prompt = await super().assemble_system_prompt(db_session, current_task)
-
-        # Fetch current team roster so the coordinator knows who's available
-        stmt = select(Agent).where(Agent.team_id == self.team_id)
-        result = await db_session.execute(stmt)
-        teammates = result.scalars().all()
-
-        roster_block = "\n<team-roster>\n"
-        for agent in teammates:
-            if str(agent.id) != self.agent_id:
-                roster_block += f"- {agent.name} (Role: {agent.role}, Model: {agent.model})\n"
-        roster_block += "</team-roster>\n"
 
         # Fetch active tasks
         task_stmt = select(Task).where(
@@ -76,20 +66,7 @@ class CoordinatorAgent(ReACTAgent):
                 )
             worker_results_block += "</worker-reports>\n"
 
-        coordinator_directives = (
-            "\n<coordinator-directives>\n"
-            "You are the COORDINATOR. Your job is to:\n"
-            "1. Break complex requests into concrete sub-tasks.\n"
-            "2. Assign tasks to the right teammate based on their role.\n"
-            "3. Use spawn_agent to kick off a worker, or send_message to continue one.\n"
-            "4. When workers finish, they send <task-notification> messages. Read them carefully.\n"
-            "5. NEVER delegate understanding. After a worker reports back, synthesize their findings.\n"
-            "6. Track progress with create_task / update_task tools.\n"
-            "7. When everything is done, summarize the results to the team.\n"
-            "</coordinator-directives>\n"
-        )
-
-        return f"{base_prompt}\n{roster_block}\n{tasks_block}\n{worker_results_block}\n{coordinator_directives}"
+        return f"{base_prompt}\n{tasks_block}\n{worker_results_block}\n{COORDINATOR_DIRECTIVES}"
 
     async def run_loop(self, db_session: AsyncSession, initial_prompt: str):
         """

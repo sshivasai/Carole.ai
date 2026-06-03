@@ -130,8 +130,22 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=True),
     )
 
+    op.create_table(
+        "mcp_servers",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("team_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("teams.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("server_name", sa.String(255), nullable=False),
+        sa.Column("command", sa.String(255), nullable=False),
+        sa.Column("args", postgresql.JSON(astext_type=sa.Text()), nullable=False),
+        sa.Column("env_vars", postgresql.JSON(astext_type=sa.Text()), nullable=True),
+        sa.Column("created_at", sa.DateTime(), nullable=True),
+    )
+
+
 
 def downgrade() -> None:
+    op.drop_table("mcp_servers")
     op.drop_table("token_usage")
     op.drop_table("tasks")
     op.drop_table("learnings")

@@ -127,7 +127,8 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
                 # Route the message through our MessageRouter (persists + triggers agents)
                 text = payload.get("text", data if isinstance(data, str) else "")
                 sender_id = payload.get("sender_id", "human")
-                await message_router.route_message(text, sender_id, team_id)
+                sender_name = payload.get("sender_name")
+                await message_router.route_message(text, sender_id, team_id, sender_name)
         except Exception:
             pass  # Client disconnected
 

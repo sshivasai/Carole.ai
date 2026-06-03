@@ -58,6 +58,11 @@ export const api = {
   searchMessages: (teamId: string, query: string, limit = 10) =>
     apiFetch<any[]>(`/api/messages/search/${teamId}?q=${encodeURIComponent(query)}&limit=${limit}`),
 
+  // ---- MCP ----
+  listMcpServers: (teamId: string) => apiFetch<any[]>(`/api/mcp/${teamId}`),
+  createMcpServer: (data: { team_id: string, server_name: string, command: string, args: string, agent_id?: string }) =>
+    apiFetch<any>("/api/mcp", { method: "POST", body: JSON.stringify(data) }),
+
   // ---- Tasks ----
   listTasks: (teamId: string, status?: string) =>
     apiFetch<any[]>(`/api/tasks/${teamId}${status ? `?status=${status}` : ""}`),

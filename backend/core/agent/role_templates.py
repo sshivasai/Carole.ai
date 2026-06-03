@@ -6,6 +6,8 @@ Users can select a template to auto-fill name suggestions, system prompt,
 skills, and custom instructions when creating an agent.
 """
 
+from core.config import DEFAULT_FAST_MODEL, DEFAULT_SMART_MODEL, DEFAULT_CODER_MODEL
+
 ROLE_TEMPLATES = [
     {
         "role": "Coordinator",
@@ -24,7 +26,7 @@ ROLE_TEMPLATES = [
             "Track progress, collect results, and synthesize a final answer. "
             "Never do coding tasks yourself — delegate to the Coder."
         ),
-        "recommended_model": "gpt-4o",
+        "recommended_model": DEFAULT_SMART_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "list_directory": "safe",
             "web_search": "safe", "web_fetch": "safe",
@@ -50,7 +52,7 @@ ROLE_TEMPLATES = [
             "Always read existing files before editing. Run tests after changes. "
             "Use descriptive commit messages. Ask for clarification on vague requirements."
         ),
-        "recommended_model": "claude-sonnet-4",
+        "recommended_model": DEFAULT_CODER_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "write_file": "judge", "edit_file": "judge",
             "append_file": "judge", "list_directory": "safe",
@@ -81,7 +83,7 @@ ROLE_TEMPLATES = [
             "Point out bugs, security issues, and performance concerns. "
             "Suggest concrete improvements. Approve good work genuinely."
         ),
-        "recommended_model": "gpt-4o",
+        "recommended_model": DEFAULT_SMART_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "list_directory": "safe",
             "grep_search": "safe", "glob_search": "safe",
@@ -110,7 +112,7 @@ ROLE_TEMPLATES = [
             "Always cite your sources with URLs. Summarize findings clearly. "
             "If information is uncertain, say so explicitly."
         ),
-        "recommended_model": "gpt-4o-mini",
+        "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
             "web_search": "safe", "web_fetch": "safe",
             "read_file": "safe", "list_directory": "safe",
@@ -136,7 +138,7 @@ ROLE_TEMPLATES = [
             "Always check the current state before making changes. "
             "Document your changes and verify they work."
         ),
-        "recommended_model": "gpt-4o-mini",
+        "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "write_file": "judge", "edit_file": "judge",
             "list_directory": "safe", "execute_command": "judge",
@@ -162,7 +164,7 @@ ROLE_TEMPLATES = [
             "and ensure responsive layouts. Use modern design patterns. "
             "Test in the browser when possible."
         ),
-        "recommended_model": "claude-sonnet-4",
+        "recommended_model": DEFAULT_CODER_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "write_file": "judge", "edit_file": "judge",
             "list_directory": "safe",
@@ -189,7 +191,7 @@ ROLE_TEMPLATES = [
             "Use pytest for Python and jest for JavaScript. "
             "Report test results clearly with pass/fail counts."
         ),
-        "recommended_model": "gpt-4o-mini",
+        "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "write_file": "judge", "edit_file": "judge",
             "list_directory": "safe", "execute_command": "judge",
@@ -215,12 +217,40 @@ ROLE_TEMPLATES = [
             "Read the codebase to understand what to document. "
             "Use proper Markdown formatting. Include code examples where helpful."
         ),
-        "recommended_model": "gpt-4o-mini",
+        "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "write_file": "judge",
             "list_directory": "safe", "grep_search": "safe",
             "glob_search": "safe", "analyze_imports": "safe",
             "find_function": "safe", "count_lines": "safe",
+        },
+    },
+    {
+        "role": "Executive Assistant",
+        "display_name": "Utility Bot",
+        "description": "Automates pre/post meeting workflows, email communication, and calendar management.",
+        "suggested_names": ["Alfred", "Jarvis", "Secretary"],
+        "personality": "professional",
+        "skills": [
+            "Calendar management",
+            "Email communication",
+            "Meeting summarization",
+            "Utility automation",
+        ],
+        "custom_instructions": (
+            "You manage meetings and emails. Use create_meeting to schedule Google Meet events, "
+            "send_email to distribute information, and generate_mom to create structured meeting notes "
+            "from transcripts. Always be polite and professional in communications."
+        ),
+        "recommended_model": DEFAULT_FAST_MODEL,
+        "recommended_permissions": {
+            "create_meeting": "judge",
+            "send_email": "judge",
+            "generate_mom": "safe",
+            "join_google_meet": "judge",
+            "send_message": "safe",
+            "read_file": "safe",
+            "list_directory": "safe"
         },
     },
 ]

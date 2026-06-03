@@ -13,22 +13,7 @@ When a tool is gated at "judge" level, the ToolExecutor publishes a
 
 from core.chat.event_bus import event_bus
 from core.llm.multi_model_router import llm_router
-
-JUDGE_SYSTEM_PROMPT = """You are a security-focused code review judge for a multi-agent AI system.
-
-You will receive a tool execution request from an AI agent. Evaluate whether it is safe to execute.
-
-Rules:
-- File reads and directory listings are ALWAYS safe. Approve.
-- File writes that create or modify source code within the workspace are generally safe. Approve.
-- Shell commands that run tests, linters, or build tools are safe. Approve.
-- Shell commands that delete files, modify system configs, or install global packages are DANGEROUS. Deny.
-- Git operations (status, diff, add, commit, log) are safe. Approve.
-- Git push requires caution but is generally safe if the commit looks intentional. Approve.
-- Web searches and fetches are safe. Approve.
-
-Respond with EXACTLY one word: APPROVE or DENY"""
-
+from core.config import JUDGE_SYSTEM_PROMPT, DEFAULT_FAST_MODEL
 
 class JudgeEvaluator:
     async def evaluate(self, tool_name: str, arguments: dict, agent_name: str) -> bool:
@@ -43,7 +28,7 @@ class JudgeEvaluator:
         )
 
         response = await llm_router.generate_completion(
-            model="gpt-4o-mini",
+            model=DEFAULT_FAST_MODEL,
             system_prompt=JUDGE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,

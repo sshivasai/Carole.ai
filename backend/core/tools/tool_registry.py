@@ -24,6 +24,8 @@ class ToolSpec:
     parameters: Dict[str, Any]  # simplified JSON-schema style
     permission_default: str  # "safe" | "judge" | "human"
     handler: Callable[..., Awaitable[str]]  # async (args: dict, team_id: str) -> str
+    team_id: Optional[str] = None
+    agent_id: Optional[str] = None
 
 
 class ToolRegistry:
@@ -57,7 +59,7 @@ class ToolRegistry:
     # ---- prompt generation ----
 
     @classmethod
-    def to_llm_prompt(cls) -> str:
+    def to_llm_prompt(cls, team_id: str = None, agent_id: str = None) -> str:
         """Generates a tool description block for agent system prompts so the
         LLM knows exactly which tools it can call and how."""
         if not cls._tools:
@@ -65,6 +67,11 @@ class ToolRegistry:
 
         lines = ["<available-tools>"]
         for spec in cls._tools.values():
+            if spec.team_id is not None and spec.team_id != team_id:
+                continue
+            if spec.agent_id is not None and spec.agent_id != agent_id:
+                continue
+
             params_desc = ", ".join(
                 f"{k}: {v.get('type', 'string')}"
                 for k, v in spec.parameters.items()

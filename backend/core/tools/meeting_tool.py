@@ -19,6 +19,7 @@ from typing import Optional
 from core.chat.event_bus import event_bus
 from core.tools.voice_stt_tts import voice_service
 from core.llm.multi_model_router import llm_router
+from core.config import DEFAULT_FAST_MODEL
 
 
 MEETING_NOTES_PROMPT = """Analyze the following meeting transcription and produce structured meeting notes.
@@ -42,6 +43,16 @@ Transcription:
 
 
 class MeetingTool:
+    async def join_meeting(self, url: str, agent_id: str, agent_name: str, team_id: str) -> str:
+        """Navigates to a meeting URL and sets up a background task to process incoming audio.
+        
+        Note: Agents are expected to reply using text via the standard chat interface 
+        rather than generating audio.
+        """
+        from core.tools.google_meet_tool import google_meet_tool
+        
+        return await google_meet_tool.join_google_meet(url, agent_id, agent_name, team_id)
+
     async def transcribe_audio(
         self, audio_data: bytes, agent_id: str, agent_name: str, team_id: str,
         filename: str = "audio.webm"
@@ -80,6 +91,20 @@ class MeetingTool:
         })
 
         return notes
+
+    async def generate_mom(
+        self, transcription: str
+    ) -> str:
+        """Takes a transcription and produces structured Minutes of Meeting (Summary, Decisions, Action Items)."""
+        prompt = MEETING_NOTES_PROMPT.format(transcription=transcription)
+        mom = await llm_router.generate_completion(
+            model=DEFAULT_FAST_MODEL,
+            system_prompt="You produce concise, actionable Minutes of Meeting.",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2000,
+        )
+        return mom
 
     async def speak_response(
         self, text: str, agent_id: str, agent_name: str, team_id: str,

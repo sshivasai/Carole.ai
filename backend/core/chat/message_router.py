@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.chat.event_bus import event_bus
-from core.memory.models import Agent, Message, Team
+from core.memory.models import Agent, Message, Team, Project, User
 from core.memory.database import async_session
 
 
@@ -26,7 +26,7 @@ class MessageRouter:
     def __init__(self):
         pass
 
-    async def route_message(self, text: str, sender_id: str, team_id: str):
+    async def route_message(self, text: str, sender_id: str, team_id: str, sender_name: Optional[str] = None):
         """
         Parses a raw incoming message, persists it, and triggers agent ReACT loops
         based on @mention and /@private mention patterns.
@@ -57,6 +57,29 @@ class MessageRouter:
                     if len(mentioned_names) == 1:
                         recipient_id = str(agent.id)
 
+            resolved_sender_name = sender_name
+            if sender_id == "human" and not resolved_sender_name:
+                stmt = select(Team).where(Team.id == team_id)
+                res = await db.execute(stmt)
+                team = res.scalar_one_or_none()
+                if team:
+                    stmt = select(Project).where(Project.id == team.project_id)
+                    res = await db.execute(stmt)
+                    project = res.scalar_one_or_none()
+                    if project:
+                        stmt = select(User).where(User.id == project.owner_id)
+                        res = await db.execute(stmt)
+                        user = res.scalar_one_or_none()
+                        if user:
+                            first = user.first_name or ""
+                            last = user.last_name or ""
+                            resolved_sender_name = f"{first} {last}".strip()
+
+            if not resolved_sender_name and sender_id == "human":
+                resolved_sender_name = "You"
+            elif not resolved_sender_name:
+                resolved_sender_name = sender_id
+
             # If no agents mentioned, route to Coordinator (if one exists)
             if not target_agents and sender_id == "human":
                 stmt = select(Agent).where(
@@ -72,6 +95,7 @@ class MessageRouter:
             db_msg = Message(
                 team_id=team_id,
                 sender_id=sender_id,
+                sender_name=resolved_sender_name,
                 recipient_id=recipient_id,
                 is_private=is_private,
                 text=text
@@ -84,7 +108,7 @@ class MessageRouter:
             await event_bus.publish(topic, {
                 "type": "message",
                 "sender_id": sender_id,
-                "sender_name": "You" if sender_id == "human" else sender_id,
+                "sender_name": resolved_sender_name,
                 "recipient_id": recipient_id,
                 "text": text,
                 "is_private": is_private,
