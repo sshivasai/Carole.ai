@@ -34,8 +34,6 @@ class MultiModelRouter:
         self.nvidia_key = os.getenv("NVIDIA_API_KEY")
 
         # Configurations
-        self.qwen_key = os.getenv("QWEN_API_KEY")
-        self.qwen_base_url = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
     async def generate_completion(

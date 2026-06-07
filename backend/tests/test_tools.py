@@ -31,14 +31,14 @@ async def test_file_tools_direct(tmp_path):
     file_tools.workspace_root = tmp_path
 
     # 1. Test create_directory
-    res = file_tools.create_directory("test_subdir")
+    res = await file_tools.create_directory("test_subdir")
     assert "Success" in res
 
     # 2. Test copy_file
     src_file = tmp_path / "src.txt"
     src_file.write_text("Hello World", encoding="utf-8")
 
-    res = file_tools.copy_file("src.txt", "dest.txt")
+    res = await file_tools.copy_file("src.txt", "dest.txt")
     assert "Success" in res
     assert (tmp_path / "dest.txt").read_text(encoding="utf-8") == "Hello World"
 
