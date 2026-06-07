@@ -5,10 +5,12 @@ services:
     image: ankane/pgvector:latest
     container_name: carole_postgres
     restart: always
+    env_file:
+      - ./backend/.env
     environment:
-      POSTGRES_USER: charoledb
-      POSTGRES_PASSWORD: charolepassword
-      POSTGRES_DB: charoledb
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
     ports:
       - "5432:5432"
     volumes:

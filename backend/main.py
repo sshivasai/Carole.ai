@@ -34,6 +34,14 @@ from core.api.auth_routes import router as auth_router
 
 dotenv.load_dotenv()
 
+import logging
+import importlib
+from typing import Optional
+from core.auth.auth_middleware import require_auth
+
+# Configure basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("carole")
 
 # --- Lifespan context manager ---
 @asynccontextmanager
@@ -124,13 +132,24 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
                 except json.JSONDecodeError:
                     payload = {"text": data, "sender_id": "human"}
 
-                # Route the message through our MessageRouter (persists + triggers agents)
+                # Basic validation to avoid injection/spoofing
                 text = payload.get("text", data if isinstance(data, str) else "")
                 sender_id = payload.get("sender_id", "human")
                 sender_name = payload.get("sender_name")
-                await message_router.route_message(text, sender_id, team_id, sender_name)
-        except Exception:
-            pass  # Client disconnected
+
+                if not isinstance(text, str) or len(text) == 0 or len(text) > 10000:
+                    logger.warning("Dropping invalid websocket message for team %s: text invalid", team_id)
+                    continue
+                if not isinstance(sender_id, str) or len(sender_id) > 100:
+                    logger.warning("Dropping invalid websocket message for team %s: sender_id invalid", team_id)
+                    continue
+
+                # Route the message through our MessageRouter (persists + triggers agents)
+                await message_router.route_message(text.strip(), sender_id.strip(), team_id, sender_name)
+        except asyncio.CancelledError:
+            logger.info("WebSocket receive task cancelled for team %s", team_id)
+        except Exception as e:
+            logger.exception("Unexpected error in receive_from_client for team %s: %s", team_id, e)
 
     async def send_to_client():
         try:
@@ -138,8 +157,10 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
                 event = await event_queue.get()
                 await websocket.send_text(json.dumps(event, default=str))
                 event_queue.task_done()
-        except Exception:
-            pass  # Client disconnected
+        except asyncio.CancelledError:
+            logger.info("WebSocket send task cancelled for team %s", team_id)
+        except Exception as e:
+            logger.exception("Unexpected error in send_to_client for team %s: %s", team_id, e)
 
     try:
         await asyncio.gather(receive_from_client(), send_to_client())
@@ -156,7 +177,7 @@ class ApprovalDecision(BaseModel):
 
 
 @app.post("/api/tools/approve/{tx_id}")
-async def approve_tool_execution(tx_id: str, decision: ApprovalDecision):
+async def approve_tool_execution(tx_id: str, decision: ApprovalDecision, user: dict = Depends(require_auth)):
     """
     Resolves a pending human-in-the-loop approval request.
     Called by the frontend when the user clicks Approve or Deny.
@@ -183,7 +204,7 @@ class QuestionAnswer(BaseModel):
 
 
 @app.post("/api/agent/answer/{question_id}")
-async def answer_agent_question(question_id: str, body: QuestionAnswer):
+async def answer_agent_question(question_id: str, body: QuestionAnswer, user: dict = Depends(require_auth)):
     """
     Resolves a pending ask_user question from an agent.
     Called by the frontend when the user types an answer.
@@ -209,16 +230,32 @@ class ToolRegisterRequest(BaseModel):
     category: str = "custom"
     permission_default: str = "safe"
     parameters: dict = {}
+    handler_module: Optional[str] = None
+    handler_fn: Optional[str] = None
 
 
 @app.post("/api/tools/register")
-async def register_tool_runtime(body: ToolRegisterRequest):
-    """Register a tool at runtime (metadata only — handler must be loaded via plugin)."""
+async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(require_auth)):
+    """Register a tool at runtime. Requires authenticated user and a handler reference."""
     from core.tools.tool_registry import ToolSpec
-    # For runtime registration without a handler, create a placeholder
+
     existing = ToolRegistry.get(body.name)
     if existing:
         return {"status": "already_registered", "name": body.name}
+
+    # Require a handler reference for runtime registration to avoid placeholder-only tools
+    if not (body.handler_module and body.handler_fn):
+        raise HTTPException(status_code=400, detail="handler_module and handler_fn are required for runtime registration")
+
+    try:
+        module = importlib.import_module(body.handler_module)
+        handler = getattr(module, body.handler_fn)
+        # Accept either async or sync callables; wrap sync in coroutine later if needed by executor
+        if not callable(handler):
+            raise AttributeError("handler is not callable")
+    except Exception as e:
+        logger.exception("Failed to load handler for tool %s: %s", body.name, e)
+        raise HTTPException(status_code=400, detail=f"Failed to load handler: {e}")
 
     spec = ToolSpec(
         name=body.name,
@@ -226,9 +263,11 @@ async def register_tool_runtime(body: ToolRegisterRequest):
         category=body.category,
         parameters=body.parameters,
         permission_default=body.permission_default,
-        handler=_placeholder_handler,
+        handler=handler,
     )
+
     ToolRegistry.register(spec)
+    logger.info("User %s registered tool %s", user.get("email"), body.name)
     return {"status": "registered", "name": body.name}
 
 

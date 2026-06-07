@@ -38,6 +38,14 @@ class ToolRegistry:
 
     @classmethod
     def register(cls, spec: ToolSpec) -> None:
+        # Validate tool name, uniqueness, and handler
+        import re
+        if spec.name in cls._tools:
+            raise ValueError(f"Tool '{spec.name}' already registered")
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_\-]*$', spec.name):
+            raise ValueError(f"Invalid tool name: {spec.name}")
+        if not callable(spec.handler):
+            raise ValueError(f"Handler for '{spec.name}' is not callable")
         cls._tools[spec.name] = spec
 
     @classmethod

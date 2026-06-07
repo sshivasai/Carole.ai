@@ -21,6 +21,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     # Fallback to local default if env variable is missing
     DATABASE_URL = "postgresql+asyncpg://user:pass@localhost:5432/charoledb"
+    raise ValueError("DATABASE_URL environment variable not set. Set it to: postgresql+asyncpg://user:password@host:port/dbname")
 
 # Create async database engine
 engine = create_async_engine(

@@ -44,6 +44,9 @@ class EventBus:
                 self._subscribers[topic].discard(queue)
                 if not self._subscribers[topic]:
                     del self._subscribers[topic]
+                    # Clean up history to prevent memory growth for inactive topics
+                    if topic in self._history:
+                        del self._history[topic]
 
     async def publish(self, topic: str, message: dict):
         """Publish a message to all subscribers of a topic and record in history."""
