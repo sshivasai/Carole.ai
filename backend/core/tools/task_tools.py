@@ -6,6 +6,8 @@ Agents can create, list, update, and assign tasks — enabling real-time
 Kanban-style project tracking visible in both the chat and the UI.
 """
 
+import uuid
+import logging
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import select
@@ -14,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.memory.database import async_session
 from core.memory.models import Task, Agent
 from core.chat.event_bus import event_bus
+
+logger = logging.getLogger("carole.task_tools")
 
 
 class TaskTools:
@@ -25,14 +29,17 @@ class TaskTools:
         async with async_session() as db:
             assigned_agent_id = None
             if assignee_name:
-                stmt = select(Agent).where(Agent.team_id == team_id, Agent.name == assignee_name)
+                stmt = select(Agent).where(
+                    Agent.team_id == uuid.UUID(team_id),
+                    Agent.name == assignee_name
+                )
                 result = await db.execute(stmt)
                 agent = result.scalar_one_or_none()
                 if agent:
                     assigned_agent_id = agent.id
 
             task = Task(
-                team_id=team_id,
+                team_id=uuid.UUID(team_id),
                 title=title,
                 description=description,
                 priority=priority,
@@ -60,7 +67,7 @@ class TaskTools:
     async def list_tasks(self, team_id: str, status_filter: str = None) -> str:
         """Lists tasks for the team, optionally filtered by status."""
         async with async_session() as db:
-            stmt = select(Task).where(Task.team_id == team_id)
+            stmt = select(Task).where(Task.team_id == uuid.UUID(team_id))
             if status_filter:
                 stmt = stmt.where(Task.status == status_filter)
             stmt = stmt.order_by(Task.created_at.desc())
@@ -91,7 +98,12 @@ class TaskTools:
     async def update_task(self, task_id: str, status: str = None, notes: str = None) -> str:
         """Updates a task's status and/or adds notes."""
         async with async_session() as db:
-            stmt = select(Task).where(Task.id == task_id)
+            try:
+                task_uuid = uuid.UUID(task_id)
+            except (ValueError, AttributeError):
+                return f"Error: '{task_id}' is not a valid task ID."
+
+            stmt = select(Task).where(Task.id == task_uuid)
             result = await db.execute(stmt)
             task = result.scalar_one_or_none()
             if not task:
@@ -99,6 +111,9 @@ class TaskTools:
 
             old_status = task.status
             if status:
+                valid_statuses = {"todo", "in_progress", "review", "done", "blocked"}
+                if status not in valid_statuses:
+                    return f"Error: Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}"
                 task.status = status
             if notes:
                 task.description = (task.description or "") + f"\n[Update] {notes}"
@@ -106,7 +121,8 @@ class TaskTools:
             await db.commit()
 
             # Broadcast status change
-            await event_bus.publish(f"team:{task.team_id}", {
+            team_id_str = str(task.team_id)
+            await event_bus.publish(f"team:{team_id_str}", {
                 "type": "task_update",
                 "action": "updated",
                 "task": {

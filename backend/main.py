@@ -36,11 +36,15 @@ dotenv.load_dotenv()
 
 import logging
 import importlib
-from typing import Optional
+from typing import Optional, List
 from core.auth.auth_middleware import require_auth
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger("carole")
 
 # --- Lifespan context manager ---
@@ -74,13 +78,24 @@ async def lifespan(app: FastAPI):
     dream_worker.stop()
     dream_task.cancel()
 
+    # Close browser contexts
+    try:
+        from core.tools.browser_pool import close_all
+        await close_all()
+    except Exception as e:
+        logger.warning("Browser pool cleanup error: %s", e)
+
 
 app = FastAPI(title="Carole.ai Backend", version="0.2.0", lifespan=lifespan)
 
-# CORS middleware for frontend communication
+# CORS middleware — origins configurable via ALLOWED_ORIGINS env var
+# Example: ALLOWED_ORIGINS=http://localhost:3000,https://carole.ai
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+ALLOWED_ORIGINS: List[str] = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -106,6 +121,21 @@ async def health_check():
         "status": "healthy",
         "version": "0.2.0",
         "tools_registered": len(ToolRegistry.list_names()),
+        "allowed_origins": ALLOWED_ORIGINS,
+    }
+
+
+@app.get("/api/ws/status/{team_id}")
+async def ws_status(team_id: str):
+    """Returns the number of active WebSocket subscribers on a team topic.
+    Useful for debugging disconnection or missed-message issues."""
+    topic = f"team:{team_id}"
+    history = event_bus.get_history(topic)
+    subscriber_count = len(event_bus._subscribers.get(topic, set()))
+    return {
+        "topic": topic,
+        "active_subscribers": subscriber_count,
+        "buffered_events": len(history),
     }
 
 

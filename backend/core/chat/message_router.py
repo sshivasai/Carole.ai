@@ -12,10 +12,14 @@ Responsibilities:
 """
 
 import re
+import uuid
 import asyncio
+import logging
 from typing import Optional, List
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger("carole.message_router")
 
 from core.chat.event_bus import event_bus
 from core.memory.models import Agent, Message, Team, Project, User
@@ -45,9 +49,15 @@ class MessageRouter:
             target_agents: List[Agent] = []
             recipient_id = None
 
+            try:
+                team_uuid = uuid.UUID(team_id)
+            except (ValueError, AttributeError):
+                logger.error("Invalid team_id in route_message: %s", team_id)
+                return
+
             for name in mentioned_names:
                 stmt = select(Agent).where(
-                    Agent.team_id == team_id,
+                    Agent.team_id == team_uuid,
                     Agent.name == name
                 )
                 result = await db.execute(stmt)
@@ -83,7 +93,7 @@ class MessageRouter:
             # If no agents mentioned, route to Coordinator (if one exists)
             if not target_agents and sender_id == "human":
                 stmt = select(Agent).where(
-                    Agent.team_id == team_id,
+                    Agent.team_id == team_uuid,
                     Agent.role == "Coordinator"
                 )
                 result = await db.execute(stmt)
@@ -93,7 +103,7 @@ class MessageRouter:
 
             # Save message to short-term memory
             db_msg = Message(
-                team_id=team_id,
+                team_id=team_uuid,
                 sender_id=sender_id,
                 sender_name=resolved_sender_name,
                 recipient_id=recipient_id,

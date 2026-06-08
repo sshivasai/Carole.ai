@@ -1,20 +1,20 @@
 """
 # backend/core/memory/auto_dream.py
 
-This file defines the background 'Dream' worker for memory consolidation.
+Background 'Dream' worker for memory consolidation.
 
 Responsibilities:
 1. Run periodically in the background (every N minutes).
-2. Read the recent short-term conversation logs (messages) from PostgreSQL.
-3. Pass the logs to a cheap LLM (e.g., gpt-4o-mini) to extract key facts, decisions, and lessons.
-4. Generate vector embeddings for these summaries.
-5. Insert the semantic embeddings into the `learnings` pgvector table.
-6. Mark processed messages so they are not re-analyzed in subsequent cycles.
+2. Read UNPROCESSED public conversation messages from the DB.
+3. Pass messages to a cheap LLM to extract key lessons/decisions.
+4. Generate vector embeddings and insert into LanceDB + Learning table.
+5. Mark processed messages so they are NOT re-analyzed in future cycles.
 """
 
 import asyncio
+import logging
 from datetime import datetime, timedelta
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import async_session
@@ -22,6 +22,8 @@ from core.memory.models import Message, Learning, Team
 from core.memory.lancedb_client import lancedb_client
 from core.llm.multi_model_router import llm_router
 from core.config import CONSOLIDATION_PROMPT, DEFAULT_FAST_MODEL, DREAM_INTERVAL_MINUTES
+
+logger = logging.getLogger("carole.dream")
 
 
 class AutoDreamWorker:
@@ -32,27 +34,25 @@ class AutoDreamWorker:
     async def start(self):
         """Starts the periodic consolidation loop as a background coroutine."""
         self._running = True
-        print(f"💤 [Dream Worker] Started. Consolidating every {self.interval} minutes.")
+        logger.info("💤 [Dream Worker] Started. Consolidating every %d minutes.", self.interval)
 
         while self._running:
             try:
                 await self.consolidate_all_teams()
             except Exception as e:
-                print(f"✗ [Dream Worker] Error during consolidation cycle: {str(e)}")
+                logger.exception("✗ [Dream Worker] Error during consolidation cycle: %s", e)
 
             await asyncio.sleep(self.interval * 60)
 
     def stop(self):
         """Gracefully stops the consolidation loop."""
         self._running = False
-        print("💤 [Dream Worker] Stopped.")
+        logger.info("💤 [Dream Worker] Stopped.")
 
     async def consolidate_all_teams(self):
-        """Iterates all teams and consolidates recent unprocessed messages."""
+        """Iterates all teams and consolidates unprocessed messages."""
         async with async_session() as db:
-            # Fetch all teams
-            stmt = select(Team)
-            result = await db.execute(stmt)
+            result = await db.execute(select(Team))
             teams = result.scalars().all()
 
             for team in teams:
@@ -60,16 +60,15 @@ class AutoDreamWorker:
 
     async def _consolidate_team(self, db: AsyncSession, team):
         """
-        Consolidates recent messages from a team into long-term semantic memory.
-        Only processes messages from the last consolidation window.
+        Consolidates unprocessed public messages for a team into long-term memory.
+        Only processes messages that have NOT been marked as processed yet.
         """
-        # Fetch recent messages (last N minutes window, unembedded)
-        cutoff = datetime.utcnow() - timedelta(minutes=self.interval * 2)
+        # Fetch unprocessed public messages (up to 50 most recent)
         stmt = (
             select(Message)
             .where(Message.team_id == team.id)
-            .where(Message.is_private == False)  # Do not leak private messages into team memory
-            .where(Message.created_at >= cutoff)
+            .where(Message.is_private == False)   # Never leak private messages
+            .where(Message.processed == False)     # Only unprocessed messages
             .order_by(Message.created_at)
             .limit(50)
         )
@@ -77,57 +76,79 @@ class AutoDreamWorker:
         messages = result.scalars().all()
 
         if len(messages) < 3:
-            # Not enough conversation to consolidate
+            # Not enough conversation to extract meaningful lessons
             return
 
         # Build conversation log
         conversation_text = "\n".join(
-            f"[{msg.sender_id}]: {msg.text}" for msg in messages
+            f"[{msg.sender_name or msg.sender_id}]: {msg.text}" for msg in messages
         )
 
-        # Ask a cheap LLM to extract lessons
+        # Extract lessons via LLM
         prompt = CONSOLIDATION_PROMPT.format(conversation=conversation_text)
-        extraction = await llm_router.generate_completion(
-            model=DEFAULT_FAST_MODEL,
-            system_prompt="You are a precise knowledge extraction engine.",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=2000
+        try:
+            extraction = await llm_router.generate_completion(
+                model=DEFAULT_FAST_MODEL,
+                system_prompt="You are a precise knowledge extraction engine.",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=2000,
+            )
+        except Exception as e:
+            logger.error("💤 [Dream] Team '%s': LLM extraction failed: %s", team.name, e)
+            return
+
+        # Mark messages as processed REGARDLESS of whether lessons were extracted
+        # so we don't keep retrying conversations that yield nothing useful
+        message_ids = [msg.id for msg in messages]
+        await db.execute(
+            update(Message)
+            .where(Message.id.in_(message_ids))
+            .values(processed=True)
         )
 
         if "NO_LESSONS" in extraction:
-            print(f"💤 [Dream] Team '{team.name}': No actionable lessons found.")
+            logger.info("💤 [Dream] Team '%s': No actionable lessons found.", team.name)
+            await db.commit()
             return
 
-        # Parse extracted lessons
+        # Parse and store extracted lessons
         lessons = self._parse_lessons(extraction)
         if not lessons:
+            await db.commit()
             return
 
-        # Generate embeddings and insert into learnings table
+        stored = 0
         for task_summary, lesson_rule in lessons:
-            combined_text = f"{task_summary} | {lesson_rule}"
-            embedding = await llm_router.generate_embeddings(combined_text)
+            try:
+                combined_text = f"{task_summary} | {lesson_rule}"
+                embedding = await llm_router.generate_embeddings(combined_text)
 
-            learning = Learning(
-                project_id=team.project_id,
-                team_id=team.id,
-                task_summary=task_summary,
-                lesson_rule=lesson_rule
-            )
-            db.add(learning)
-            
-            # Insert into LanceDB
-            await lancedb_client.insert_learning(
-                project_id=str(team.project_id),
-                team_id=str(team.id),
-                task_summary=task_summary,
-                lesson_rule=lesson_rule,
-                vector=embedding
-            )
+                learning = Learning(
+                    project_id=team.project_id,
+                    team_id=team.id,
+                    task_summary=task_summary,
+                    lesson_rule=lesson_rule,
+                )
+                db.add(learning)
+
+                await lancedb_client.insert_learning(
+                    project_id=str(team.project_id),
+                    team_id=str(team.id),
+                    task_summary=task_summary,
+                    lesson_rule=lesson_rule,
+                    vector=embedding,
+                )
+                stored += 1
+            except Exception as e:
+                logger.error("💤 [Dream] Team '%s': Failed to store lesson: %s", team.name, e)
+                continue
 
         await db.commit()
-        print(f"💤 [Dream] Team '{team.name}': Consolidated {len(lessons)} lessons into long-term memory.")
+        logger.info(
+            "💤 [Dream] Team '%s': Consolidated %d/%d lessons into long-term memory.",
+            team.name, stored, len(lessons)
+        )
 
     def _parse_lessons(self, text: str):
         """Parses TASK_SUMMARY/LESSON_RULE pairs from the LLM extraction output."""

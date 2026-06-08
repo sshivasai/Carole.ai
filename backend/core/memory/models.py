@@ -101,6 +101,10 @@ class Message(Base):
     is_private = Column(Boolean, default=False, nullable=False) # True if sent via /@name
     
     text = Column(Text, nullable=False)
+
+    # Tracks whether the AutoDream worker has processed this message for memory consolidation.
+    # Prevents duplicate lesson extraction across dream cycles.
+    processed = Column(Boolean, default=False, nullable=False)
     
     created_at = Column(DateTime, default=datetime.utcnow)
 

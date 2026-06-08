@@ -3,15 +3,22 @@
 
 Centralized configuration for Carole.ai.
 Contains default models, prompts, memory settings, and system guidelines.
-Users can edit this file to tweak the global behavior of the AI ecosystem.
+Users can edit this file or set environment variables to control behaviour.
+
+Environment Variables (all optional):
+  DEFAULT_FAST_MODEL   — lightweight model for cheap/frequent calls (default: openrouter/free)
+  DEFAULT_SMART_MODEL  — high-capability model for complex reasoning (default: openrouter/free)
+  DEFAULT_CODER_MODEL  — code-optimised model (default: openrouter/free)
 """
 
+import os
+
 # ==========================================
-# Global Model Settings
+# Global Model Settings  (env-configurable)
 # ==========================================
-DEFAULT_FAST_MODEL = "openrouter/free"
-DEFAULT_SMART_MODEL = "openrouter/free"
-DEFAULT_CODER_MODEL = "openrouter/free"
+DEFAULT_FAST_MODEL  = os.getenv("DEFAULT_FAST_MODEL",  "openrouter/free")
+DEFAULT_SMART_MODEL = os.getenv("DEFAULT_SMART_MODEL", "openrouter/free")
+DEFAULT_CODER_MODEL = os.getenv("DEFAULT_CODER_MODEL", "openrouter/free")
 
 # ==========================================
 # Memory & Dream Settings

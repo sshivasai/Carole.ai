@@ -1,67 +1,136 @@
 """
 # backend/core/tools/browser_pool.py
 
-Manages the Playwright browser lifecycle. Provides isolated browser contexts
-per agent so multiple agents can browse concurrently without interference.
+Manages the Playwright browser lifecycle for multi-agent concurrent browsing.
+
+Key design decisions:
+- One shared Playwright instance, launched lazily on first use.
+- One isolated BrowserContext per agent (separate cookies, localStorage, history).
+- One persistent Page per agent context (re-used across actions; new page created on demand).
+- Thread-safe lock protects all context/page lookups.
+- close_agent_browser() allows an agent to cleanly release its session.
+- close_all() shuts down the entire browser — called on server shutdown.
 """
 
 import asyncio
+import logging
 from typing import Dict, Optional
 
-_browser = None
-_contexts: Dict[str, any] = {}  # agent_id -> BrowserContext
+logger = logging.getLogger("carole.browser_pool")
+
+_playwright = None          # Playwright instance
+_browser = None             # Single shared Chromium browser
+_contexts: Dict[str, any] = {}   # agent_id → BrowserContext
 _lock = asyncio.Lock()
 
 
-async def get_browser():
-    """Returns the shared Playwright browser instance, launching it if needed."""
-    global _browser
+async def _ensure_browser():
+    """Launch the shared Playwright browser if not already running."""
+    global _playwright, _browser
+    if _browser is not None and _browser.is_connected():
+        return _browser
+
     async with _lock:
-        if _browser is None:
-            try:
-                from playwright.async_api import async_playwright
-                pw = await async_playwright().start()
-                _browser = await pw.chromium.launch(headless=True)
-                print("🌐 [BrowserPool] Chromium launched successfully.")
-            except Exception as e:
-                print(f"✗ [BrowserPool] Failed to launch browser: {e}")
-                raise
+        # Double-check inside lock
+        if _browser is not None and _browser.is_connected():
+            return _browser
+        try:
+            from playwright.async_api import async_playwright
+            _playwright = await async_playwright().start()
+            _browser = await _playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
+                ],
+            )
+            logger.info("🌐 [BrowserPool] Chromium launched (headless=True).")
+        except Exception as e:
+            logger.error("✗ [BrowserPool] Failed to launch browser: %s", e)
+            raise
     return _browser
 
 
 async def get_page(agent_id: str):
-    """Returns an isolated browser page for the given agent.
-    Creates a new browser context if one doesn't exist."""
-    browser = await get_browser()
+    """
+    Returns an isolated browser Page for the given agent.
+    Creates a new BrowserContext and Page if one doesn't exist yet.
+    The same page is reused across tool calls to maintain navigation state.
+    """
+    browser = await _ensure_browser()
+
     async with _lock:
         if agent_id not in _contexts:
             ctx = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="CaroleAI/1.0 (Headless Chromium)"
+                viewport={"width": 1280, "height": 900},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                locale="en-US",
+                timezone_id="America/Chicago",
+                # Accept most common permission types so sites don't block
+                permissions=["notifications"],
             )
             _contexts[agent_id] = ctx
+            logger.debug("🌐 [BrowserPool] Created new context for agent %s", agent_id[:8])
+
         context = _contexts[agent_id]
 
     pages = context.pages
     if pages:
         return pages[0]
-    return await context.new_page()
+    page = await context.new_page()
+    # Intercept console errors so agents get useful debug info
+    page.on("pageerror", lambda exc: logger.debug("Browser page error: %s", exc))
+    return page
+
+
+async def close_agent_browser(agent_id: str) -> bool:
+    """Close and remove the browser context for a specific agent."""
+    async with _lock:
+        ctx = _contexts.pop(agent_id, None)
+    if ctx:
+        try:
+            await ctx.close()
+            logger.info("🌐 [BrowserPool] Closed context for agent %s", agent_id[:8])
+            return True
+        except Exception as e:
+            logger.warning("BrowserPool close_agent error: %s", e)
+    return False
+
+
+async def get_active_agents() -> list:
+    """Returns a list of agent_ids that currently have active browser sessions."""
+    return list(_contexts.keys())
 
 
 async def close_all():
-    """Closes all browser contexts and the browser itself."""
-    global _browser
+    """Closes all browser contexts and the browser itself. Called on server shutdown."""
+    global _browser, _playwright
     async with _lock:
-        for ctx in _contexts.values():
-            try:
-                await ctx.close()
-            except Exception:
-                pass
-        _contexts.clear()
+        agent_ids = list(_contexts.keys())
+
+    for agent_id in agent_ids:
+        await close_agent_browser(agent_id)
+
+    async with _lock:
         if _browser:
             try:
                 await _browser.close()
+                logger.info("🌐 [BrowserPool] Browser closed.")
             except Exception:
                 pass
             _browser = None
-    print("🌐 [BrowserPool] All browser contexts closed.")
+
+        if _playwright:
+            try:
+                await _playwright.stop()
+            except Exception:
+                pass
+            _playwright = None
+
+    logger.info("🌐 [BrowserPool] All browser resources released.")

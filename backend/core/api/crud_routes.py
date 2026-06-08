@@ -96,9 +96,10 @@ class McpServerCreate(BaseModel):
 
 @router.post("/users")
 async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db)):
+    from core.auth.auth_service import _hash_password
     user = User(
         email=body.email,
-        hashed_password=body.password,
+        hashed_password=_hash_password(body.password),  # Always hash passwords
         first_name=body.first_name,
         last_name=body.last_name,
         is_verified=True,
@@ -469,7 +470,10 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
     if body.priority is not None:
         task.priority = body.priority
     if body.assigned_agent_id is not None:
-        task.assigned_agent_id = body.assigned_agent_id
+        try:
+            task.assigned_agent_id = uuid.UUID(body.assigned_agent_id)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail="Invalid assigned_agent_id format")
     if body.title is not None:
         task.title = body.title
     if body.description is not None:

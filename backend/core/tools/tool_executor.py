@@ -136,21 +136,106 @@ def register_builtin_tools():
                  {"url": {"type": "string", "required": True}}, "safe", _wrap_web_fetch),
 
         # ---- Browser Automation ----
-        ToolSpec("browser_navigate", "Navigate the headless browser to a URL, capture screenshot, and extract page text", "browser",
-                 {"url": {"type": "string", "required": True}},
+        ToolSpec("browser_navigate", "Navigate to a URL, take screenshot, return page title+text", "browser",
+                 {"url": {"type": "string", "required": True},
+                  "wait_until": {"type": "string", "required": False}},
                  "judge", _wrap_browser_navigate),
-        ToolSpec("browser_screenshot", "Capture a screenshot of the current browser page", "browser",
-                 {}, "judge", _wrap_browser_screenshot),
-        ToolSpec("browser_click", "Click an element on the current browser page by CSS selector", "browser",
+        ToolSpec("browser_screenshot", "Capture a screenshot of the current page and stream to UI", "browser",
+                 {"full_page": {"type": "boolean", "required": False}},
+                 "safe", _wrap_browser_screenshot),
+        ToolSpec("browser_screenshot_element", "Screenshot a specific element on the page", "browser",
+                 {"selector": {"type": "string", "required": True}},
+                 "safe", _wrap_browser_screenshot_element),
+        ToolSpec("browser_click", "Click an element on the page by CSS selector", "browser",
                  {"selector": {"type": "string", "required": True}},
                  "judge", _wrap_browser_click),
-        ToolSpec("browser_type", "Type text into an input element on the browser page", "browser",
+        ToolSpec("browser_click_text", "Click an element on the page by its visible text", "browser",
+                 {"text": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_click_text),
+        ToolSpec("browser_type", "Type text into an input element (clears existing content)", "browser",
                  {"selector": {"type": "string", "required": True},
-                  "text": {"type": "string", "required": True}},
+                  "text": {"type": "string", "required": True},
+                  "clear_first": {"type": "boolean", "required": False}},
                  "judge", _wrap_browser_type),
-        ToolSpec("browser_extract_text", "Extract text content from the browser page or a specific element", "browser",
+        ToolSpec("browser_press_key", "Press a keyboard key (e.g. Enter, Tab, Escape, ArrowDown)", "browser",
+                 {"key": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_press_key),
+        ToolSpec("browser_hover", "Hover over an element to trigger tooltips or menus", "browser",
+                 {"selector": {"type": "string", "required": True}},
+                 "safe", _wrap_browser_hover),
+        ToolSpec("browser_select_option", "Select an option in a <select> dropdown", "browser",
+                 {"selector": {"type": "string", "required": True},
+                  "value": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_select_option),
+        ToolSpec("browser_checkbox", "Check or uncheck a checkbox on the page", "browser",
+                 {"selector": {"type": "string", "required": True},
+                  "checked": {"type": "boolean", "required": True}},
+                 "judge", _wrap_browser_checkbox),
+        ToolSpec("browser_scroll", "Scroll the page up/down/left/right by pixels", "browser",
+                 {"direction": {"type": "string", "required": True},
+                  "amount": {"type": "number", "required": True},
+                  "selector": {"type": "string", "required": False}},
+                 "safe", _wrap_browser_scroll),
+        ToolSpec("browser_scroll_to_element", "Scroll an element into view", "browser",
+                 {"selector": {"type": "string", "required": True}},
+                 "safe", _wrap_browser_scroll_to_element),
+        ToolSpec("browser_extract_text", "Extract visible text from a page element (empty selector = whole page)", "browser",
                  {"selector": {"type": "string", "required": False}},
                  "safe", _wrap_browser_extract_text),
+        ToolSpec("browser_extract_html", "Extract raw HTML from an element or the full page", "browser",
+                 {"selector": {"type": "string", "required": False}},
+                 "safe", _wrap_browser_extract_html),
+        ToolSpec("browser_get_attribute", "Get an attribute value from an element (e.g. href, src)", "browser",
+                 {"selector": {"type": "string", "required": True},
+                  "attribute": {"type": "string", "required": True}},
+                 "safe", _wrap_browser_get_attribute),
+        ToolSpec("browser_find_elements", "Find all elements matching a CSS selector and list them", "browser",
+                 {"selector": {"type": "string", "required": True},
+                  "limit": {"type": "number", "required": False}},
+                 "safe", _wrap_browser_find_elements),
+        ToolSpec("browser_get_metadata", "Get current page URL, title, and meta description", "browser",
+                 {}, "safe", _wrap_browser_get_metadata),
+        ToolSpec("browser_get_all_links", "Extract all hyperlinks from the current page", "browser",
+                 {"limit": {"type": "number", "required": False}},
+                 "safe", _wrap_browser_get_all_links),
+        ToolSpec("browser_eval_js", "Execute JavaScript in the browser and return the result", "browser",
+                 {"script": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_eval_js),
+        ToolSpec("browser_wait_for_selector", "Wait until a CSS selector appears in the DOM", "browser",
+                 {"selector": {"type": "string", "required": True},
+                  "timeout_ms": {"type": "number", "required": False}},
+                 "safe", _wrap_browser_wait_for_selector),
+        ToolSpec("browser_wait_for_navigation", "Wait for a page navigation to complete", "browser",
+                 {"timeout_ms": {"type": "number", "required": False}},
+                 "safe", _wrap_browser_wait_for_navigation),
+        ToolSpec("browser_wait_ms", "Wait for a specified number of milliseconds (max 10s)", "browser",
+                 {"ms": {"type": "number", "required": True}},
+                 "safe", _wrap_browser_wait_ms),
+        ToolSpec("browser_go_back", "Navigate back in browser history", "browser",
+                 {}, "safe", _wrap_browser_go_back),
+        ToolSpec("browser_go_forward", "Navigate forward in browser history", "browser",
+                 {}, "safe", _wrap_browser_go_forward),
+        ToolSpec("browser_reload", "Reload the current page", "browser",
+                 {}, "safe", _wrap_browser_reload),
+        ToolSpec("browser_get_url", "Get the current page URL", "browser",
+                 {}, "safe", _wrap_browser_get_url),
+        ToolSpec("browser_get_cookies", "Get all cookies for the current browser session", "browser",
+                 {}, "safe", _wrap_browser_get_cookies),
+        ToolSpec("browser_clear_cookies", "Clear all cookies for the current browser session", "browser",
+                 {}, "judge", _wrap_browser_clear_cookies),
+        ToolSpec("browser_open_tab", "Open a URL in a new browser tab", "browser",
+                 {"url": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_open_tab),
+        ToolSpec("browser_list_tabs", "List all open browser tabs for this agent", "browser",
+                 {}, "safe", _wrap_browser_list_tabs),
+        ToolSpec("browser_switch_tab", "Switch focus to a browser tab by index", "browser",
+                 {"index": {"type": "number", "required": True}},
+                 "judge", _wrap_browser_switch_tab),
+        ToolSpec("browser_close_tab", "Close a browser tab by index", "browser",
+                 {"index": {"type": "number", "required": True}},
+                 "judge", _wrap_browser_close_tab),
+        ToolSpec("browser_close_session", "Close and release the agent's entire browser session", "browser",
+                 {}, "judge", _wrap_browser_close_session),
 
         # ---- Coordination ----
         ToolSpec("spawn_agent", "Spawn a teammate's ReACT loop with a task", "coordination",
@@ -419,25 +504,48 @@ async def _wrap_web_fetch(args: Dict[str, Any], team_id: str) -> str:
 # These wrappers need agent identity context, which the standard (args, team_id)
 # signature doesn't provide. We store it in the args dict from the ToolExecutor.
 
+# ===========================================================
+# Browser Automation Wrappers
+# ===========================================================
+
 async def _wrap_browser_navigate(args: Dict[str, Any], team_id: str) -> str:
     url = args.get("url") or args.get("value", "")
     if not url:
         return "Error: Missing parameter 'url'."
     agent_id = args.get("_agent_id", "unknown")
     agent_name = args.get("_agent_name", "Agent")
-    return await browser_tool.navigate(url, agent_id, agent_name, team_id)
+    wait_until = args.get("wait_until", "domcontentloaded")
+    return await browser_tool.navigate(url, agent_id, agent_name, team_id, wait_until=wait_until)
 
 async def _wrap_browser_screenshot(args: Dict[str, Any], team_id: str) -> str:
     agent_id = args.get("_agent_id", "unknown")
     agent_name = args.get("_agent_name", "Agent")
-    return await browser_tool.screenshot(agent_id, agent_name, team_id)
+    full_page = bool(args.get("full_page", False))
+    return await browser_tool.screenshot(agent_id, agent_name, team_id, full_page=full_page)
+
+async def _wrap_browser_screenshot_element(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    if not selector:
+        return "Error: Missing parameter 'selector'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.screenshot_element(selector, agent_id, agent_name, team_id)
 
 async def _wrap_browser_click(args: Dict[str, Any], team_id: str) -> str:
     selector = args.get("selector", "")
     if not selector:
         return "Error: Missing parameter 'selector'."
     agent_id = args.get("_agent_id", "unknown")
-    return await browser_tool.click(selector, agent_id)
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.click(selector, agent_id, agent_name=agent_name, team_id=team_id)
+
+async def _wrap_browser_click_text(args: Dict[str, Any], team_id: str) -> str:
+    text = args.get("text", "")
+    if not text:
+        return "Error: Missing parameter 'text'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.click_text(text, agent_id, agent_name=agent_name, team_id=team_id)
 
 async def _wrap_browser_type(args: Dict[str, Any], team_id: str) -> str:
     selector = args.get("selector", "")
@@ -445,12 +553,167 @@ async def _wrap_browser_type(args: Dict[str, Any], team_id: str) -> str:
     if not selector or not text:
         return "Error: Missing 'selector' or 'text'."
     agent_id = args.get("_agent_id", "unknown")
-    return await browser_tool.type_text(selector, text, agent_id)
+    clear_first = bool(args.get("clear_first", True))
+    return await browser_tool.type_text(selector, text, agent_id, clear_first=clear_first)
+
+async def _wrap_browser_press_key(args: Dict[str, Any], team_id: str) -> str:
+    key = args.get("key", "")
+    if not key:
+        return "Error: Missing parameter 'key'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.press_key(key, agent_id)
+
+async def _wrap_browser_hover(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    if not selector:
+        return "Error: Missing parameter 'selector'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.hover(selector, agent_id, agent_name=agent_name, team_id=team_id)
+
+async def _wrap_browser_select_option(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    value = args.get("value", "")
+    if not selector or not value:
+        return "Error: Missing 'selector' or 'value'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.select_option(selector, value, agent_id)
+
+async def _wrap_browser_checkbox(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    checked = args.get("checked", True)
+    if not selector:
+        return "Error: Missing parameter 'selector'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.check_checkbox(selector, bool(checked), agent_id)
+
+async def _wrap_browser_scroll(args: Dict[str, Any], team_id: str) -> str:
+    direction = args.get("direction", "down")
+    amount = int(args.get("amount", 300))
+    selector = args.get("selector", "")
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.scroll(direction, amount, agent_id, selector=selector)
+
+async def _wrap_browser_scroll_to_element(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    if not selector:
+        return "Error: Missing parameter 'selector'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.scroll_to_element(selector, agent_id)
 
 async def _wrap_browser_extract_text(args: Dict[str, Any], team_id: str) -> str:
     selector = args.get("selector", "")
     agent_id = args.get("_agent_id", "unknown")
     return await browser_tool.extract_text(selector, agent_id)
+
+async def _wrap_browser_extract_html(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.extract_html(selector, agent_id)
+
+async def _wrap_browser_get_attribute(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    attribute = args.get("attribute", "")
+    if not selector or not attribute:
+        return "Error: Missing 'selector' or 'attribute'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.get_attribute(selector, attribute, agent_id)
+
+async def _wrap_browser_find_elements(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    if not selector:
+        return "Error: Missing parameter 'selector'."
+    agent_id = args.get("_agent_id", "unknown")
+    limit = int(args.get("limit", 20))
+    return await browser_tool.find_elements(selector, agent_id, limit=limit)
+
+async def _wrap_browser_get_metadata(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.get_page_metadata(agent_id)
+
+async def _wrap_browser_get_all_links(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    limit = int(args.get("limit", 30))
+    return await browser_tool.get_all_links(agent_id, limit=limit)
+
+async def _wrap_browser_eval_js(args: Dict[str, Any], team_id: str) -> str:
+    script = args.get("script", "")
+    if not script:
+        return "Error: Missing parameter 'script'."
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.evaluate_js(script, agent_id)
+
+async def _wrap_browser_wait_for_selector(args: Dict[str, Any], team_id: str) -> str:
+    selector = args.get("selector", "")
+    if not selector:
+        return "Error: Missing parameter 'selector'."
+    agent_id = args.get("_agent_id", "unknown")
+    timeout_ms = int(args.get("timeout_ms", 10000))
+    return await browser_tool.wait_for_selector(selector, agent_id, timeout_ms=timeout_ms)
+
+async def _wrap_browser_wait_for_navigation(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    timeout_ms = int(args.get("timeout_ms", 10000))
+    return await browser_tool.wait_for_navigation(agent_id, timeout_ms=timeout_ms)
+
+async def _wrap_browser_wait_ms(args: Dict[str, Any], team_id: str) -> str:
+    ms = int(args.get("ms", 1000))
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.wait_ms(ms, agent_id)
+
+async def _wrap_browser_go_back(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.go_back(agent_id, agent_name, team_id)
+
+async def _wrap_browser_go_forward(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.go_forward(agent_id, agent_name, team_id)
+
+async def _wrap_browser_reload(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.reload(agent_id, agent_name, team_id)
+
+async def _wrap_browser_get_url(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.get_current_url(agent_id)
+
+async def _wrap_browser_get_cookies(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.get_cookies(agent_id)
+
+async def _wrap_browser_clear_cookies(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.clear_cookies(agent_id)
+
+async def _wrap_browser_open_tab(args: Dict[str, Any], team_id: str) -> str:
+    url = args.get("url", "")
+    if not url:
+        return "Error: Missing parameter 'url'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.open_new_tab(url, agent_id, agent_name, team_id)
+
+async def _wrap_browser_list_tabs(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.list_tabs(agent_id)
+
+async def _wrap_browser_switch_tab(args: Dict[str, Any], team_id: str) -> str:
+    index = int(args.get("index", 0))
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await browser_tool.switch_tab(index, agent_id, agent_name, team_id)
+
+async def _wrap_browser_close_tab(args: Dict[str, Any], team_id: str) -> str:
+    index = int(args.get("index", 0))
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.close_tab(index, agent_id)
+
+async def _wrap_browser_close_session(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.close_browser(agent_id)
 
 
 async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
