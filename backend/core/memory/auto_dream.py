@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import async_session
 from core.memory.models import Message, Learning, Team
+from core.memory.lancedb_client import lancedb_client
 from core.llm.multi_model_router import llm_router
 from core.config import CONSOLIDATION_PROMPT, DEFAULT_FAST_MODEL, DREAM_INTERVAL_MINUTES
 
@@ -69,7 +70,6 @@ class AutoDreamWorker:
             .where(Message.team_id == team.id)
             .where(Message.is_private == False)  # Do not leak private messages into team memory
             .where(Message.created_at >= cutoff)
-            .where(Message.embedding.is_(None))  # Only unprocessed messages
             .order_by(Message.created_at)
             .limit(50)
         )
@@ -113,20 +113,21 @@ class AutoDreamWorker:
                 project_id=team.project_id,
                 team_id=team.id,
                 task_summary=task_summary,
-                lesson_rule=lesson_rule,
-                embedding=embedding
+                lesson_rule=lesson_rule
             )
             db.add(learning)
+            
+            # Insert into LanceDB
+            await lancedb_client.insert_learning(
+                project_id=str(team.project_id),
+                team_id=str(team.id),
+                task_summary=task_summary,
+                lesson_rule=lesson_rule,
+                vector=embedding
+            )
 
         await db.commit()
         print(f"💤 [Dream] Team '{team.name}': Consolidated {len(lessons)} lessons into long-term memory.")
-
-        # Generate embeddings for the processed messages themselves (for semantic chat search)
-        for msg in messages:
-            msg_embedding = await llm_router.generate_embeddings(msg.text)
-            msg.embedding = msg_embedding
-
-        await db.commit()
 
     def _parse_lessons(self, text: str):
         """Parses TASK_SUMMARY/LESSON_RULE pairs from the LLM extraction output."""

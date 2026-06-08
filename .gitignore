@@ -17,6 +17,7 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
 
 # Virtual environments
 venv/
@@ -36,7 +37,10 @@ out/
 .DS_Store
 Thumbs.db
 
-# Database
+# Database and Carole Local Data
 *.sqlite3
 *.db
+.carole/
+
+# Credentials
 backend/credentials.json

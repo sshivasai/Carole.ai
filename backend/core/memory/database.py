@@ -1,14 +1,13 @@
 """
 # backend/core/memory/database.py
 
-This file manages the PostgreSQL database connection and setup, including pgvector for semantic memory.
+This file manages the SQLite database connection and setup.
 
 Responsibilities:
-1. Connect to PostgreSQL via SQLAlchemy/Asyncpg.
-2. Initialize pgvector extension if it doesn't exist.
-3. Provide dependency injection sessions for FastAPI routes and background workers.
-4. Run schema bootstrapping during startup.
-5. Support force-recreate for dev environments (drops and recreates all tables).
+1. Connect to SQLite via SQLAlchemy/Aiosqlite.
+2. Provide dependency injection sessions for FastAPI routes and background workers.
+3. Run schema bootstrapping during startup.
+4. Support force-recreate for dev environments (drops and recreates all tables).
 """
 
 import os
@@ -16,12 +15,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
+# Ensure .carole directory exists
+os.makedirs(".carole", exist_ok=True)
+
 # Read the database URL from environment
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    # Fallback to local default if env variable is missing
-    DATABASE_URL = "postgresql+asyncpg://user:pass@localhost:5432/charoledb"
-    raise ValueError("DATABASE_URL environment variable not set. Set it to: postgresql+asyncpg://user:password@host:port/dbname")
+    DATABASE_URL = "sqlite+aiosqlite:///.carole/carole.db"
 
 # Create async database engine
 engine = create_async_engine(
@@ -52,7 +52,7 @@ async def get_db():
         finally:
             await session.close()
 
-# Database initialization function (creates pgvector extension & tables)
+# Database initialization function
 async def init_db(force_recreate: bool = False):
     """
     Initialize the database schema.
@@ -67,16 +67,13 @@ async def init_db(force_recreate: bool = False):
         force_recreate = True
 
     async with engine.begin() as conn:
-        # 1. Enable the pgvector extension in PostgreSQL
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
-        
-        # 2. Dynamically import models to register with Base metadata
+        # 1. Dynamically import models to register with Base metadata
         from . import models
         
-        # 3. Optionally drop all tables first (dev convenience)
+        # 2. Optionally drop all tables first (dev convenience)
         if force_recreate:
             print("⚠️ [DB] FORCE_DB_RECREATE enabled — dropping all tables...")
             await conn.run_sync(Base.metadata.drop_all)
         
-        # 4. Create all tables (additive — won't modify existing columns)
+        # 3. Create all tables (additive — won't modify existing columns)
         await conn.run_sync(Base.metadata.create_all)

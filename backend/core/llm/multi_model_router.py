@@ -356,7 +356,7 @@ class MultiModelRouter:
                         yield f"[Gemini API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
                         return
 
-                    async for line in response.iter_lines():
+                    async for line in response.aiter_lines():
                         if line.startswith("data:"):
                             data_str = line[5:].strip()
                             if not data_str or data_str == "[DONE]":
@@ -410,7 +410,7 @@ class MultiModelRouter:
                             yield f"[API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
                             return
 
-                        async for line in response.iter_lines():
+                        async for line in response.aiter_lines():
                             if not line.startswith("data:"):
                                 continue
                             data_str = line[5:].strip()

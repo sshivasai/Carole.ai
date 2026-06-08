@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     print("🚀 [Lifespan] Initializing Database Connection Pool...")
     try:
         await init_db()
-        print("✓ [Lifespan] Database and pgvector initialized successfully!")
+        print("✓ [Lifespan] Database initialized successfully!")
     except Exception as e:
         print(f"✗ [Lifespan] Error initializing database: {str(e)}")
 

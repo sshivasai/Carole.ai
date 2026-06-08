@@ -6,6 +6,7 @@ Real-time Code Knowledge Graph for tracking dependencies and active file editors
 
 import os
 import re
+import json
 import posixpath
 from pathlib import Path
 import asyncio
@@ -19,22 +20,46 @@ class CodeGraph:
         if not workspace_root:
             workspace_root = os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[3]))
         self.workspace_root = Path(workspace_root).resolve()
-        self.graph = nx.DiGraph()
+        
+        self.graph_file = Path(".carole/code_graph.json")
+        os.makedirs(".carole", exist_ok=True)
+        
+        if self.graph_file.exists():
+            try:
+                with open(self.graph_file, "r") as f:
+                    data = json.load(f)
+                    self.graph = nx.node_link_graph(data)
+            except Exception:
+                self.graph = nx.DiGraph()
+        else:
+            self.graph = nx.DiGraph()
+            
         self.active_editors: Dict[str, Set[str]] = {}
         self._lock = asyncio.Lock()
         
         # Build initial graph synchronously or kick off task
-        self.build_graph()
+        if not self.graph_file.exists():
+            self.build_graph()
+            
         self.start_listening_task()
+
+    def _save_graph(self):
+        try:
+            with open(self.graph_file, "w") as f:
+                json.dump(nx.node_link_data(self.graph), f)
+        except Exception as e:
+            print(f"Error saving code graph: {e}")
 
     def mark_file_active(self, path: str, agent_name: str):
         if path not in self.active_editors:
             self.active_editors[path] = set()
         self.active_editors[path].add(agent_name)
+        self._save_graph()
         
     def clear_file_active(self, path: str):
         if path in self.active_editors:
             self.active_editors.pop(path, None)
+            self._save_graph()
 
     def parse_file(self, relative_path: str):
         """Parses a file for dependencies and updates the graph."""
@@ -101,6 +126,8 @@ class CodeGraph:
         
         for dep in dependencies:
             self.graph.add_edge(relative_path, dep)
+            
+        self._save_graph()
 
     def build_graph(self):
         """Scans WORKSPACE_ROOT and maps all files."""
@@ -117,6 +144,7 @@ class CodeGraph:
                         self.parse_file(rel_str)
                     except ValueError:
                         pass
+        self._save_graph()
 
     async def _listen_for_file_changes(self):
         queue = await event_bus.subscribe("system:file_changes")

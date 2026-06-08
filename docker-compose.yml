@@ -1,26 +1,4 @@
-version: '3.8'
-
 services:
-  db:
-    image: ankane/pgvector:latest
-    container_name: carole_postgres
-    restart: always
-    env_file:
-      - ./backend/.env
-    environment:
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-      - POSTGRES_DB=${DB_NAME}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U charoledb -d charoledb"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   api:
     build: 
       context: ./backend
@@ -29,10 +7,7 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - ./backend/.env
-    depends_on:
-      db:
-        condition: service_healthy
+      - ./.env
     volumes:
       - ./backend:/app
 
@@ -50,18 +25,3 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-
-  pgadmin:
-    image: dpage/pgadmin4
-    container_name: carole_pgadmin
-    restart: always
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@carole.ai
-      PGADMIN_DEFAULT_PASSWORD: admin
-    ports:
-      - "5050:80"
-    depends_on:
-      - db
-
-volumes:
-  postgres_data:

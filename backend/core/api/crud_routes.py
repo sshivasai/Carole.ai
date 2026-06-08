@@ -151,6 +151,7 @@ async def list_projects(db: AsyncSession = Depends(get_db)):
 async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_db)):
     from core.llm.multi_model_router import llm_router
     from core.memory.models import Learning
+    from core.memory.lancedb_client import lancedb_client
 
     combined_text = f"Task: {body.task_summary} | Rule: {body.lesson_rule}"
     embedding = await llm_router.generate_embeddings(combined_text)
@@ -160,10 +161,18 @@ async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_d
         team_id=uuid.UUID(body.team_id) if body.team_id else None,
         task_summary=body.task_summary,
         lesson_rule=body.lesson_rule,
-        embedding=embedding,
     )
     db.add(learning)
     await db.flush()
+    
+    await lancedb_client.insert_learning(
+        project_id=body.project_id,
+        team_id=body.team_id,
+        task_summary=body.task_summary,
+        lesson_rule=body.lesson_rule,
+        vector=embedding
+    )
+    
     return {"id": str(learning.id), "task_summary": learning.task_summary, "lesson_rule": learning.lesson_rule}
 
 @router.get("/learnings/{project_id}")
@@ -184,8 +193,8 @@ async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.put("/learnings/{learning_id}")
 async def update_learning(learning_id: str, body: LearningCreate, db: AsyncSession = Depends(get_db)):
-    from core.llm.multi_model_router import llm_router
     from core.memory.models import Learning
+    from core.memory.lancedb_client import lancedb_client
     
     stmt = select(Learning).where(Learning.id == uuid.UUID(learning_id))
     result = await db.execute(stmt)
@@ -193,12 +202,8 @@ async def update_learning(learning_id: str, body: LearningCreate, db: AsyncSessi
     if not learning:
         raise HTTPException(status_code=404, detail="Learning not found")
         
-    combined_text = f"Task: {body.task_summary} | Rule: {body.lesson_rule}"
-    new_embedding = await llm_router.generate_embeddings(combined_text)
-    
     learning.task_summary = body.task_summary
     learning.lesson_rule = body.lesson_rule
-    learning.embedding = new_embedding
     await db.flush()
     return {"status": "updated", "id": learning_id}
 
@@ -507,16 +512,14 @@ async def get_role_template(role: str):
 
 @router.get("/messages/search/{team_id}")
 async def search_messages(team_id: str, q: str, limit: int = 10, db: AsyncSession = Depends(get_db)):
-    """Semantic vector search over past team messages using pgvector cosine distance."""
-    from core.llm.multi_model_router import llm_router
+    """Simple text search over past team messages using ILIKE."""
     from core.memory.models import Message
 
-    query_vector = await llm_router.generate_embeddings(q)
     stmt = (
         select(Message)
-        .where(Message.team_id == team_id)
-        .where(Message.embedding.isnot(None))
-        .order_by(Message.embedding.cosine_distance(query_vector))
+        .where(Message.team_id == uuid.UUID(team_id))
+        .where(Message.text.ilike(f"%{q}%"))
+        .order_by(Message.created_at.desc())
         .limit(limit)
     )
     result = await db.execute(stmt)
