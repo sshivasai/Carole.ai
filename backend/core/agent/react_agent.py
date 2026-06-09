@@ -46,6 +46,9 @@ class ReACTAgent:
         self.topic = f"team:{self.team_id}"
         self.parent_coordinator_id = parent_coordinator_id
         self.task_id = task_id
+        self._worker_results: List[Dict[str, Any]] = []
+        self._notification_queue: asyncio.Queue = asyncio.Queue()
+        self._listening = False
 
     async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20) -> List[Dict[str, str]]:
         """Loads recent team messages from the DB to give the agent conversation context."""
@@ -79,16 +82,22 @@ class ReACTAgent:
         """Assembles system prompt with learnings, tools, team roster, and reasoning guidelines."""
         from sqlalchemy import func
 
+        capabilities_block = "\n====\nCAPABILITIES & MEMORY\n====\n"
+
         # 0. Fetch current team roster so the agent knows who is available
         stmt = select(Agent).where(Agent.team_id == self.team_id)
         roster_result = await db_session.execute(stmt)
         teammates = roster_result.scalars().all()
 
-        roster_block = "\n<team-roster>\n"
-        for teammate in teammates:
-            if str(teammate.id) != self.agent_id:
-                roster_block += f"- {teammate.name} (Role: {teammate.role})\n"
-        roster_block += "</team-roster>\n"
+        roster_block = ""
+        has_teammates = any(str(t.id) != self.agent_id for t in teammates)
+        if has_teammates:
+            roster_block = "TEAM ROSTER:\n"
+            for teammate in teammates:
+                if str(teammate.id) != self.agent_id:
+                    roster_block += f"- {teammate.name} (Role: {teammate.role})\n"
+            roster_block += "\n"
+        capabilities_block += roster_block
 
         # 0.5 Fetch human user context
         human_context = ""
@@ -101,7 +110,8 @@ class ReACTAgent:
                 first = user.first_name or ""
                 last = user.last_name or ""
                 full_name = f"{first} {last}".strip() or "Unknown User"
-                human_context = f"\n<human-context>\nThe human user / project owner is {full_name}.\n</human-context>\n"
+                human_context = f"HUMAN CONTEXT:\nThe human user / project owner is {full_name}.\n\n"
+        capabilities_block += human_context
 
         # 1. Generate search embeddings
         query_vector = await llm_router.generate_embeddings(current_task)
@@ -117,19 +127,49 @@ class ReACTAgent:
         # 3. Format past learnings
         learnings_block = ""
         if past_learnings:
-            learnings_block = "\n<lessons-learned>\n"
+            learnings_block = "LESSONS LEARNED:\n"
             for learning in past_learnings:
                 learnings_block += f"- Task context: {learning.get('task_summary')}\n  Lesson: {learning.get('lesson_rule')}\n"
-            learnings_block += "</lessons-learned>\n"
+            learnings_block += "\n"
+        capabilities_block += learnings_block
 
         # 4. Tool list
-        tools_block = "\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n"
+        tools_block = "AVAILABLE TOOLS:\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n\n"
+        capabilities_block += tools_block
 
-        # 4. Reasoning guidelines
-        return f"{self.system_prompt}\n{roster_block}\n{human_context}\n{learnings_block}\n{tools_block}\n{STRICT_REASONING_GUIDELINES}"
+        # 5. Worker reports
+        worker_results_block = ""
+        if self._worker_results:
+            worker_results_block = "WORKER REPORTS:\n"
+            for wr in self._worker_results:
+                worker_results_block += (
+                    f"- Agent: {wr.get('agent', 'unknown')}, Task: {wr.get('task_id', 'unknown')}, "
+                    f"Status: {wr.get('status', 'unknown')}\n"
+                    f"  Result: {wr.get('result', 'No result')[:500]}\n"
+                )
+            worker_results_block += "\n"
+        capabilities_block += worker_results_block
+
+        # 6. Reasoning guidelines
+        return f"{self.system_prompt}\n{capabilities_block}{STRICT_REASONING_GUIDELINES}"
 
     async def run_loop(self, db_session: AsyncSession, initial_prompt: str):
         """Runs the core ReACT loop with conversation history and streaming."""
+        
+        self._listening = True
+        listener_task = asyncio.create_task(self._listen_for_notifications())
+        
+        try:
+            await self._run_loop_inner(db_session, initial_prompt)
+        finally:
+            self._listening = False
+            listener_task.cancel()
+            try:
+                await listener_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str):
         # Fetch agent config
         stmt = select(Agent).where(Agent.id == self.agent_id)
         res = await db_session.execute(stmt)
@@ -337,6 +377,80 @@ class ReACTAgent:
             f"  <result>{result_summary}</result>\n"
             f"</task-notification>"
         )
+
+    async def _listen_for_notifications(self):
+        """
+        Background listener that subscribes to the team EventBus and
+        collects <task-notification> messages from worker agents.
+        """
+        topic = f"team:{self.team_id}"
+        queue = await event_bus.subscribe(topic)
+
+        try:
+            while self._listening:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=2.0)
+
+                    # Check if this is a task-notification from a worker
+                    if (
+                        event.get("type") == "message"
+                        and event.get("is_task_notification")
+                        and event.get("sender_id") != self.agent_id
+                    ):
+                        text = event.get("text", "")
+                        notifications = self.parse_task_notifications(text)
+                        for notif in notifications:
+                            notif["agent"] = event.get("sender_name", "unknown")
+                            self._worker_results.append(notif)
+                            print(
+                                f"📋 [Agent: {self.name}] Collected notification from "
+                                f"{notif['agent']}: task_id={notif.get('task_id', '?')}, "
+                                f"status={notif.get('status', '?')}"
+                            )
+
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await event_bus.unsubscribe(topic, queue)
+
+    async def collect_pending_notifications(self, timeout: float = 30.0) -> List[Dict[str, str]]:
+        """
+        Waits up to `timeout` seconds for worker notifications to arrive.
+        Returns a list of parsed notification dicts.
+        Used when the agent explicitly needs to wait for worker results.
+        """
+        collected = []
+        deadline = asyncio.get_event_loop().time() + timeout
+
+        while asyncio.get_event_loop().time() < deadline:
+            if self._worker_results:
+                # Drain all pending results
+                collected.extend(self._worker_results)
+                self._worker_results.clear()
+                break
+            await asyncio.sleep(1.0)
+
+        return collected
+
+    def parse_task_notifications(self, text: str) -> List[Dict[str, str]]:
+        """Parses <task-notification> XML blocks from worker messages."""
+        notifications = []
+        pattern = r"<task-notification>(.*?)</task-notification>"
+        matches = re.findall(pattern, text, re.DOTALL)
+
+        for match in matches:
+            notification = {}
+            for field in ["task_id", "agent", "status", "result", "tokens_used"]:
+                field_match = re.search(f"<{field}>(.*?)</{field}>", match, re.DOTALL)
+                if field_match:
+                    notification[field] = field_match.group(1).strip()
+            if notification:
+                notifications.append(notification)
+
+        return notifications
 
     async def _execute_tool(self, name: str, args: Dict[str, Any], permissions: Dict[str, str]) -> str:
         from core.tools.tool_executor import tool_executor

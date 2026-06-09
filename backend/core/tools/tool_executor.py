@@ -242,6 +242,12 @@ def register_builtin_tools():
                  {"agent_name": {"type": "string", "required": True},
                   "task": {"type": "string", "required": True}},
                  "safe", _wrap_spawn_agent),
+        ToolSpec("hire_subagent", "Dynamically hire a temporary subagent to offload a specific task", "coordination",
+                 {"role": {"type": "string", "required": True},
+                  "expertise": {"type": "string", "required": True},
+                  "task": {"type": "string", "required": True},
+                  "model": {"type": "string", "required": False}},
+                 "judge", _wrap_hire_subagent),
         ToolSpec("send_message", "Send a message in the team chat", "coordination",
                  {"text": {"type": "string", "required": True},
                   "recipient_name": {"type": "string", "required": False}},
@@ -723,6 +729,23 @@ async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'agent_name' or 'task'."
     parent_id = args.get("_agent_id")
     return await agent_tools.spawn_agent(name, task, team_id, parent_coordinator_id=parent_id)
+
+async def _wrap_hire_subagent(args: Dict[str, Any], team_id: str) -> str:
+    agent_name = args.get("_agent_name", "")
+    # Enforce 1-Level Only Guardrail
+    if agent_name.startswith("Subagent-"):
+        return "Error: Subagents are not permitted to hire further subagents (Maximum depth of 1 reached)."
+    
+    role = args.get("role", "")
+    expertise = args.get("expertise", "")
+    task = args.get("task", "")
+    model = args.get("model")
+    
+    if not role or not expertise or not task:
+        return "Error: Missing 'role', 'expertise', or 'task'."
+        
+    agent_id = args.get("_agent_id", "")
+    return await agent_tools.hire_subagent(role, expertise, task, team_id, agent_id, model=model)
 
 async def _wrap_send_message(args: Dict[str, Any], team_id: str) -> str:
     text = args.get("text") or args.get("message") or args.get("value", "")

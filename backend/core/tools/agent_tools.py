@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.chat.event_bus import event_bus
 from core.memory.database import async_session
 from core.memory.models import Agent, Team, Message
+from core.config import DEFAULT_FAST_MODEL
 
 
 class AgentTools:
@@ -110,6 +111,44 @@ class AgentTools:
             "text": text,
         })
         return "Message sent."
+
+    async def hire_subagent(self, role: str, expertise: str, task: str, team_id: str, _agent_id: str, model: str = None) -> str:
+        """
+        Dynamically creates a new subagent row in the database and spawns its loop asynchronously.
+        Returns a string confirming successful hiring.
+        """
+        subagent_name = f"Subagent-{role.replace(' ', '')}"
+        sys_prompt = f"You are a temporary subagent. Your role is: {role}.\nYour expertise: {expertise}\nYou must complete the given task and return the result."
+        
+        async with async_session() as db:
+            # Check for existing agent just in case (optional, we could generate unique names)
+            stmt = select(Agent).where(Agent.team_id == team_id, Agent.name == subagent_name)
+            result = await db.execute(stmt)
+            existing = result.scalar_one_or_none()
+            if existing:
+                # Append a random UUID suffix to make it unique if a subagent for this role exists
+                subagent_name = f"{subagent_name}-{str(uuid.uuid4())[:4]}"
+
+            new_agent = Agent(
+                team_id=team_id,
+                name=subagent_name,
+                role=role,
+                system_prompt=sys_prompt,
+                model=model or DEFAULT_FAST_MODEL,
+                tool_permissions={"safe": True} # Give it basic tools by default
+            )
+            db.add(new_agent)
+            await db.commit()
+            
+            # Now spawn the agent
+            spawn_res = await self.spawn_agent(
+                agent_name=subagent_name,
+                task=task,
+                team_id=team_id,
+                parent_coordinator_id=_agent_id
+            )
+            
+        return f"Successfully hired subagent {subagent_name}. They are working asynchronously. You will receive a <task-notification> in your chat history when they finish. You may continue working on other things."
 
 
 # Singleton
