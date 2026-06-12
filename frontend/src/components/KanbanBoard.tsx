@@ -1,7 +1,7 @@
 "use client";
 import React from "react";
 import type { TaskItem, AgentConfig } from "@/lib/types";
-import { CheckCircle2, Clock, PlayCircle, AlertCircle } from "lucide-react";
+import { CheckCircle2, Clock, PlayCircle, AlertCircle, Lock } from "lucide-react";
 
 interface Props {
   tasks: TaskItem[];
@@ -14,6 +14,7 @@ const COLUMNS = [
   { id: "in_progress", label: "In Progress", Icon: PlayCircle, color: "var(--accent-blue)" },
   { id: "review", label: "Review", Icon: AlertCircle, color: "var(--accent-orange)" },
   { id: "done", label: "Done", Icon: CheckCircle2, color: "var(--color-primary)" },
+  { id: "blocked", label: "Blocked", Icon: Lock, color: "var(--color-danger)" },
 ];
 
 export default function KanbanBoard({ tasks, agents }: Props) {
@@ -46,7 +47,12 @@ export default function KanbanBoard({ tasks, agents }: Props) {
                 {columnTasks.map(task => (
                   <div key={task.id} className="card" style={{ padding: "var(--sp-lg)", display: "flex", flexDirection: "column", gap: "var(--sp-sm)", cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <span className={`badge ${task.priority === "high" ? "badge-red" : task.priority === "medium" ? "badge-yellow" : "badge-blue"}`}>
+                      <span className={`badge ${
+                        task.priority === "critical" ? "badge-red" :
+                        task.priority === "high" ? "badge-red" :
+                        task.priority === "medium" ? "badge-yellow" :
+                        "badge-blue"
+                      }`}>
                         {task.priority}
                       </span>
                     </div>

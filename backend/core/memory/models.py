@@ -13,7 +13,7 @@ Multi-Tenant Hierarchical Architecture:
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Uuid
 from .database import Base
 
@@ -31,8 +31,8 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     avatar_url = Column(String(512), nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class Project(Base):
     __tablename__ = "projects"
@@ -44,8 +44,8 @@ class Project(Base):
     # Each Project belongs to a User Account
     owner_id = Column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class Team(Base):
     __tablename__ = "teams"
@@ -57,8 +57,8 @@ class Team(Base):
     # Each Team is scoped under a Project
     project_id = Column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class Agent(Base):
     __tablename__ = "agents"
@@ -85,8 +85,8 @@ class Agent(Base):
     
     is_active = Column(Boolean, default=True, nullable=False)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class Message(Base):
     __tablename__ = "messages"
@@ -106,7 +106,7 @@ class Message(Base):
     # Prevents duplicate lesson extraction across dream cycles.
     processed = Column(Boolean, default=False, nullable=False)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class Learning(Base):
     __tablename__ = "learnings"
@@ -127,7 +127,7 @@ class Learning(Base):
     task_summary = Column(Text, nullable=False)  # Context of what was executed
     lesson_rule = Column(Text, nullable=False)   # Concrete rule to avoid future mistakes
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -145,8 +145,8 @@ class Task(Base):
     parent_task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
     created_by = Column(String(100), nullable=False, default="human")  # agent_id or "human"
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class TokenUsage(Base):
@@ -170,7 +170,7 @@ class TokenUsage(Base):
     total_tokens = Column(String(20), nullable=True)
     estimated_cost_usd = Column(String(20), nullable=True)  # e.g. "0.0024"
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class McpServer(Base):
     __tablename__ = "mcp_servers"
@@ -184,4 +184,4 @@ class McpServer(Base):
     args = Column(JSON, nullable=False, default=list)
     env_vars = Column(JSON, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

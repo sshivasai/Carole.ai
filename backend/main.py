@@ -6,7 +6,7 @@ This is the main entrypoint for the FastAPI backend of Carole.ai.
 Responsibilities:
 1. Initialize the FastAPI application with lifespan events.
 2. Configure WebSocket endpoints for the EventBus (frontend <-> backend real-time communication).
-3. Initialize the database connection pool (PostgreSQL + pgvector).
+3. Initialize the database connection pool (SQLite + aiosqlite).
 4. Register HTTP API routes for Team Management, Agent Configuration, and Approvals.
 5. Startup background workers (AutoDream memory consolidation worker).
 6. Register built-in tools and load plugin tools from the /plugins/ directory.
@@ -15,7 +15,7 @@ Responsibilities:
 import json
 import asyncio
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, Depends, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -38,8 +38,9 @@ import logging
 import importlib
 from typing import Optional, List
 from core.auth.auth_middleware import require_auth
+from core.config import APPROVAL_TIMEOUT_SECS
 
-# Configure logging
+# Configure structured logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -51,30 +52,30 @@ logger = logging.getLogger("carole")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
-    print("🚀 [Lifespan] Initializing Database Connection Pool...")
+    logger.info("🚀 [Lifespan] Initializing Database Connection Pool...")
     try:
         await init_db()
-        print("✓ [Lifespan] Database initialized successfully!")
+        logger.info("✓ [Lifespan] Database initialized successfully!")
     except Exception as e:
-        print(f"✗ [Lifespan] Error initializing database: {str(e)}")
+        logger.error("✗ [Lifespan] Error initializing database: %s", e)
 
     # Register built-in tools with the dynamic ToolRegistry
-    print("🔧 [Lifespan] Registering built-in tools...")
+    logger.info("🔧 [Lifespan] Registering built-in tools...")
     register_builtin_tools()
 
     # Load plugin tools from the /plugins/ directory
     plugins_dir = str(Path(__file__).parent / "plugins")
-    print(f"🔌 [Lifespan] Loading plugins from {plugins_dir}...")
+    logger.info("🔌 [Lifespan] Loading plugins from %s...", plugins_dir)
     ToolRegistry.load_plugin_directory(plugins_dir)
 
     # Start background Dream Worker
-    print("🚀 [Lifespan] Starting Background 'Dream' Worker...")
+    logger.info("🚀 [Lifespan] Starting Background 'Dream' Worker...")
     dream_task = asyncio.create_task(dream_worker.start())
 
     yield  # Server is now running
 
     # --- SHUTDOWN ---
-    print("🛑 [Lifespan] Cleaning up resources...")
+    logger.info("🛑 [Lifespan] Cleaning up resources...")
     dream_worker.stop()
     dream_task.cancel()
 
@@ -89,7 +90,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Carole.ai Backend", version="0.2.0", lifespan=lifespan)
 
 # CORS middleware — origins configurable via ALLOWED_ORIGINS env var
-# Example: ALLOWED_ORIGINS=http://localhost:3000,https://carole.ai
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
 ALLOWED_ORIGINS: List[str] = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
@@ -176,8 +176,8 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
 
                 # Route the message through our MessageRouter (persists + triggers agents)
                 await message_router.route_message(text.strip(), sender_id.strip(), team_id, sender_name)
-        except asyncio.CancelledError:
-            logger.info("WebSocket receive task cancelled for team %s", team_id)
+        except (asyncio.CancelledError, WebSocketDisconnect):
+            logger.info("WebSocket receive task ended for team %s", team_id)
         except Exception as e:
             logger.exception("Unexpected error in receive_from_client for team %s: %s", team_id, e)
 
@@ -185,8 +185,14 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
         try:
             while True:
                 event = await event_queue.get()
-                await websocket.send_text(json.dumps(event, default=str))
-                event_queue.task_done()
+                try:
+                    await websocket.send_text(json.dumps(event, default=str))
+                except (WebSocketDisconnect, RuntimeError):
+                    # Client disconnected — stop sending; finally block will unsubscribe
+                    logger.info("WebSocket send failed (client disconnected) for team %s", team_id)
+                    break
+                finally:
+                    event_queue.task_done()
         except asyncio.CancelledError:
             logger.info("WebSocket send task cancelled for team %s", team_id)
         except Exception as e:
@@ -217,11 +223,12 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision, user: d
     if tx_id not in pending_approvals:
         raise HTTPException(status_code=404, detail=f"Transaction '{tx_id}' not found or already resolved.")
 
-    # Store the decision and release the blocked agent coroutine
+    # Store the decision and signal the waiting agent coroutine
     approval_results[tx_id] = decision.approved
     pending_approvals[tx_id].set()
 
     action = "APPROVED" if decision.approved else "DENIED"
+    logger.info("Human %s approval '%s' for tx_id=%s", action.lower(), tx_id, user.get("email", "unknown"))
     return {"status": "ok", "tx_id": tx_id, "action": action}
 
 
@@ -280,7 +287,6 @@ async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(
     try:
         module = importlib.import_module(body.handler_module)
         handler = getattr(module, body.handler_fn)
-        # Accept either async or sync callables; wrap sync in coroutine later if needed by executor
         if not callable(handler):
             raise AttributeError("handler is not callable")
     except Exception as e:

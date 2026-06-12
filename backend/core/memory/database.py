@@ -11,7 +11,7 @@ Responsibilities:
 """
 
 import os
-from sqlalchemy import text
+from sqlalchemy import text, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
@@ -23,12 +23,27 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     DATABASE_URL = "sqlite+aiosqlite:///.carole/carole.db"
 
+_is_sqlite = DATABASE_URL.startswith("sqlite")
+
 # Create async database engine
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,  # Set to True for debugging SQL queries
     future=True
 )
+
+# Enable WAL mode for SQLite — reduces lock contention between concurrent
+# readers and the single writer.  This is a no-op for PostgreSQL.
+if _is_sqlite:
+    from sqlalchemy import event as sa_event
+
+    @sa_event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 # Async session factory
 async_session = async_sessionmaker(

@@ -6,13 +6,26 @@ built-in modules, external plugin files, or at runtime via the REST API.
 
 The ToolExecutor delegates all lookups here instead of keeping a hardcoded dict.
 The ReACT agent pulls the current tool descriptions from here for LLM prompts.
+
+Plugin discovery:
+  Each plugin module MAY set a module-level list `__carole_tools__` containing
+  the ToolSpec objects it wants to export.  If the list is present the loader
+  uses it directly (O(1)).  Otherwise it falls back to scanning all module
+  attributes for `_carole_tool_spec` markers (legacy O(n) path).
+
+  Plugins can use the `carole_tool` decorator (defined below) to populate
+  `__carole_tools__` automatically.
 """
 
 import importlib
+import importlib.util
+import logging
 import os
 import sys
 from dataclasses import dataclass, field
 from typing import Callable, Awaitable, Dict, List, Optional, Any
+
+logger = logging.getLogger("carole.tool_registry")
 
 
 @dataclass
@@ -37,10 +50,14 @@ class ToolRegistry:
     # ---- core CRUD ----
 
     @classmethod
-    def register(cls, spec: ToolSpec) -> None:
+    def register(cls, spec: ToolSpec, force: bool = False) -> None:
         # Validate tool name, uniqueness, and handler
         import re
         if spec.name in cls._tools:
+            if force:
+                # Silent idempotent re-registration (e.g., plugin hot-reload)
+                cls._tools[spec.name] = spec
+                return
             raise ValueError(f"Tool '{spec.name}' already registered")
         if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_\-]*$', spec.name):
             raise ValueError(f"Invalid tool name: {spec.name}")
@@ -91,14 +108,63 @@ class ToolRegistry:
         lines.append("</available-tools>")
         return "\n".join(lines)
 
+    @classmethod
+    def to_function_schemas(cls, team_id: str = None, agent_id: str = None) -> List[dict]:
+        """Returns an OpenAI-spec 'tools' array for native function calling.
+
+        Each entry follows the format:
+          {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
+        """
+        schemas = []
+        for spec in cls._tools.values():
+            if spec.team_id is not None and spec.team_id != team_id:
+                continue
+            if spec.agent_id is not None and spec.agent_id != agent_id:
+                continue
+
+            # Build a minimal JSON-Schema object from spec.parameters
+            properties = {}
+            required = []
+            for param_name, param_info in (spec.parameters or {}).items():
+                properties[param_name] = {
+                    "type": param_info.get("type", "string"),
+                    "description": param_info.get("description", ""),
+                }
+                if param_info.get("required", False):
+                    required.append(param_name)
+
+            schemas.append({
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": f"{spec.description} [category={spec.category}, permission={spec.permission_default}]",
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                },
+            })
+        return schemas
+
     # ---- plugin loading ----
 
     @classmethod
     def load_plugin_directory(cls, directory: str) -> int:
-        """Scans *directory* for .py files, imports them, and collects any
-        functions decorated with @carole_tool.  Returns count of tools loaded."""
+        """Scans *directory* for .py files, imports them, and registers any
+        ToolSpecs they export via the `__carole_tools__` list or the
+        `@carole_tool` decorator.  Returns count of tools loaded.
+
+        Fast path (O(1) per module):
+          The module defines `__carole_tools__ = [spec1, spec2, ...]`.
+          The loader reads the list directly — no attribute scanning required.
+
+        Legacy fallback (O(n) per module):
+          If `__carole_tools__` is absent the loader scans all module attributes
+          for `._carole_tool_spec` markers (backward-compatible with old plugins).
+        """
         if not os.path.isdir(directory):
-            print(f"⚠ [ToolRegistry] Plugin directory '{directory}' not found — skipping.")
+            logger.warning("[ToolRegistry] Plugin directory '%s' not found — skipping.", directory)
             return 0
 
         loaded = 0
@@ -108,22 +174,41 @@ class ToolRegistry:
             filepath = os.path.join(directory, filename)
             module_name = f"plugins.{filename[:-3]}"
             try:
-                spec = importlib.util.spec_from_file_location(module_name, filepath)
-                mod = importlib.util.module_from_spec(spec)
+                mod_spec = importlib.util.spec_from_file_location(module_name, filepath)
+                mod = importlib.util.module_from_spec(mod_spec)
                 sys.modules[module_name] = mod
-                spec.loader.exec_module(mod)
+                mod_spec.loader.exec_module(mod)
 
-                # The @carole_tool decorator auto-registers, but we count
-                for attr_name in dir(mod):
-                    attr = getattr(mod, attr_name)
-                    if hasattr(attr, "_carole_tool_spec"):
-                        tool_spec: ToolSpec = attr._carole_tool_spec
-                        cls.register(tool_spec)
-                        loaded += 1
-                        print(f"  ✓ Loaded plugin tool: {tool_spec.name}")
+                # ── Fast path: module explicitly lists its tools ──────────────
+                if hasattr(mod, "__carole_tools__"):
+                    tool_specs: List[ToolSpec] = mod.__carole_tools__
+                    for tool_spec in tool_specs:
+                        try:
+                            cls.register(tool_spec, force=False)
+                            logger.info("  ✓ Loaded plugin tool: %s (from __carole_tools__)", tool_spec.name)
+                            loaded += 1
+                        except ValueError as dup:
+                            logger.debug("  ~ Plugin tool skipped (already registered): %s — %s", tool_spec.name, dup)
+
+                else:
+                    # ── Legacy fallback: scan all attributes for marker ───────
+                    for attr_name in dir(mod):
+                        attr = getattr(mod, attr_name, None)
+                        if attr is None:
+                            continue
+                        tool_spec = getattr(attr, "_carole_tool_spec", None)
+                        if isinstance(tool_spec, ToolSpec):
+                            try:
+                                cls.register(tool_spec, force=False)
+                                logger.info("  ✓ Loaded plugin tool: %s (legacy scan)", tool_spec.name)
+                                loaded += 1
+                            except ValueError as dup:
+                                logger.debug("  ~ Plugin tool skipped: %s — %s", tool_spec.name, dup)
+
             except Exception as e:
-                print(f"  ✗ Failed to load plugin '{filename}': {e}")
-        print(f"🔌 [ToolRegistry] Loaded {loaded} plugin tool(s) from '{directory}'.")
+                logger.exception("  ✗ Failed to load plugin '%s': %s", filename, e)
+
+        logger.info("🔌 [ToolRegistry] Loaded %d plugin tool(s) from '%s'.", loaded, directory)
         return loaded
 
     @classmethod
@@ -139,3 +224,60 @@ class ToolRegistry:
             }
             for s in cls._tools.values()
         ]
+
+
+# ─── Plugin Decorator ────────────────────────────────────────────────────────
+
+def carole_tool(
+    name: str,
+    description: str,
+    category: str = "custom",
+    parameters: Optional[Dict[str, Any]] = None,
+    permission_default: str = "safe",
+    team_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+):
+    """Decorator for plugin tool functions.  Populates the module-level
+    ``__carole_tools__`` list so the O(1) fast-path loader can find tools
+    without scanning all module attributes.
+
+    Usage in a plugin file::
+
+        from core.tools.tool_registry import carole_tool
+
+        @carole_tool(
+            name="my_tool",
+            description="Does something useful.",
+            category="custom",
+            parameters={"value": {"type": "string", "description": "The input value."}},
+            permission_default="safe",
+        )
+        async def my_tool(args: dict, team_id: str) -> str:
+            return f"Got: {args.get('value')}"
+
+        # The decorator auto-registers this into __carole_tools__ for fast loading.
+    """
+    def decorator(fn: Callable) -> Callable:
+        spec = ToolSpec(
+            name=name,
+            description=description,
+            category=category,
+            parameters=parameters or {},
+            permission_default=permission_default,
+            handler=fn,
+            team_id=team_id,
+            agent_id=agent_id,
+        )
+        # Attach legacy marker (backward-compat with old loader path)
+        fn._carole_tool_spec = spec  # type: ignore[attr-defined]
+
+        # Populate module-level __carole_tools__ for fast-path discovery
+        import sys
+        calling_module = sys.modules.get(fn.__module__)
+        if calling_module is not None:
+            if not hasattr(calling_module, "__carole_tools__"):
+                calling_module.__carole_tools__ = []
+            calling_module.__carole_tools__.append(spec)
+
+        return fn
+    return decorator

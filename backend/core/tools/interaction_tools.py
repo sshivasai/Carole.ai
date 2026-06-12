@@ -5,14 +5,25 @@ Tools for direct Agent-to-Human interaction during a ReACT loop.
 
 - ask_user: Pauses the agent and sends a question to the human via EventBus.
             Blocks until the human replies via WebSocket.
+            Times out after APPROVAL_TIMEOUT_SECS (default 300s) to prevent
+            agents hanging forever if the human never responds.
 - sleep: Pauses execution for a specified duration.
+
+Race-condition fix (v2):
+  pending_questions and question_answers are dicts, not WeakDicts — entries
+  are cleaned up in ALL exit paths (answer received, timeout, exception) so
+  the dicts don't grow unboundedly when agents disconnect mid-question.
 """
 
 import asyncio
 import uuid
-from typing import Dict, Any
+import logging
+from typing import Dict
 
 from core.chat.event_bus import event_bus
+from core.config import APPROVAL_TIMEOUT_SECS
+
+logger = logging.getLogger("carole.interaction_tools")
 
 # Pending questions: maps question_id -> asyncio.Event
 pending_questions: Dict[str, asyncio.Event] = {}
@@ -25,6 +36,7 @@ class InteractionTools:
         """
         Sends a question to the human and blocks until they reply.
         The reply comes in via the WebSocket as a message with the question_id.
+        Times out after APPROVAL_TIMEOUT_SECS to prevent indefinite blocking.
         """
         q_id = str(uuid.uuid4())
         event = asyncio.Event()
@@ -39,17 +51,28 @@ class InteractionTools:
             "text": f"❓ {agent_name} asks: {question}",
         })
 
-        print(f"❓ [InteractionTools] Agent '{agent_name}' asked: {question} (q_id={q_id[:8]})")
+        logger.info(
+            "❓ [InteractionTools] Agent '%s' asked: %.80s (q_id=%s)",
+            agent_name, question, q_id[:8]
+        )
 
-        # Block until human answers (timeout after 5 minutes)
         try:
-            await asyncio.wait_for(event.wait(), timeout=300.0)
+            await asyncio.wait_for(event.wait(), timeout=float(APPROVAL_TIMEOUT_SECS))
         except asyncio.TimeoutError:
+            # Clean up stale entries — prevents unbounded dict growth
             pending_questions.pop(q_id, None)
-            return "No answer received — the human did not respond within 5 minutes."
+            question_answers.pop(q_id, None)
+            logger.warning(
+                "[InteractionTools] Question q_id=%s timed out after %ds — no answer received.",
+                q_id[:8], APPROVAL_TIMEOUT_SECS
+            )
+            return f"No answer received — the human did not respond within {APPROVAL_TIMEOUT_SECS}s."
+        finally:
+            # Ensure cleanup in all exit paths (answer received or exception)
+            pending_questions.pop(q_id, None)
 
         answer = question_answers.pop(q_id, "")
-        pending_questions.pop(q_id, None)
+        logger.info("[InteractionTools] q_id=%s answered: %.80s", q_id[:8], answer)
         return f"Human answered: {answer}"
 
     async def sleep(self, seconds: float) -> str:

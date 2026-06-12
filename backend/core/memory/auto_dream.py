@@ -13,6 +13,7 @@ Responsibilities:
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +25,9 @@ from core.llm.multi_model_router import llm_router
 from core.config import CONSOLIDATION_PROMPT, DEFAULT_FAST_MODEL, DREAM_INTERVAL_MINUTES
 
 logger = logging.getLogger("carole.dream")
+
+# Limit concurrent team consolidations to avoid overwhelming the LLM API
+_CONSOLIDATION_SEMAPHORE = asyncio.Semaphore(3)
 
 
 class AutoDreamWorker:
@@ -50,13 +54,25 @@ class AutoDreamWorker:
         logger.info("💤 [Dream Worker] Stopped.")
 
     async def consolidate_all_teams(self):
-        """Iterates all teams and consolidates unprocessed messages."""
+        """Iterates all teams and consolidates unprocessed messages concurrently
+        (up to 3 teams in parallel via semaphore)."""
+        cycle_start = time.monotonic()
         async with async_session() as db:
             result = await db.execute(select(Team))
             teams = result.scalars().all()
 
-            for team in teams:
-                await self._consolidate_team(db, team)
+        team_count = len(teams)
+        logger.info("💤 [Dream] Starting consolidation cycle for %d team(s).", team_count)
+
+        async def _bounded_consolidate(team):
+            async with _CONSOLIDATION_SEMAPHORE:
+                async with async_session() as db:
+                    await self._consolidate_team(db, team)
+
+        await asyncio.gather(*[_bounded_consolidate(team) for team in teams])
+
+        elapsed = time.monotonic() - cycle_start
+        logger.info("💤 [Dream] Consolidation cycle complete. Processed %d team(s) in %.2fs.", team_count, elapsed)
 
     async def _consolidate_team(self, db: AsyncSession, team):
         """

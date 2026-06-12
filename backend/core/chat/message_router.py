@@ -15,7 +15,8 @@ import re
 import uuid
 import asyncio
 import logging
-from typing import Optional, List
+import weakref
+from typing import Optional, List, Set
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +29,9 @@ from core.memory.database import async_session
 
 class MessageRouter:
     def __init__(self):
-        pass
+        # Weak set — tasks are tracked here so the GC doesn't silently collect
+        # them before they finish, and we can log unhandled exceptions.
+        self._running_tasks: Set[asyncio.Task] = set()
 
     async def route_message(self, text: str, sender_id: str, team_id: str, sender_name: Optional[str] = None):
         """
@@ -38,7 +41,7 @@ class MessageRouter:
         """
         # Find all private mentions (/@name) and public mentions (@name)
         private_matches = re.findall(r"/\@(\w+)", text)
-        public_matches = re.findall(r"(?<!/)\@(\w+)", text)
+        public_matches = re.findall(r"(?<!/)@(\w+)", text)
 
         is_private = len(private_matches) > 0
         mentioned_names = private_matches if is_private else public_matches
@@ -69,7 +72,9 @@ class MessageRouter:
 
             resolved_sender_name = sender_name
             if sender_id == "human" and not resolved_sender_name:
-                stmt = select(Team).where(Team.id == team_id)
+                # FIX: use team_uuid (UUID type) — not the raw string — to match
+                # the Team.id column which is stored as Uuid.
+                stmt = select(Team).where(Team.id == team_uuid)
                 res = await db.execute(stmt)
                 team = res.scalar_one_or_none()
                 if team:
@@ -131,7 +136,8 @@ class MessageRouter:
     async def _trigger_agent(self, agent: Agent, prompt_text: str, db_session: AsyncSession):
         """
         Spawns the target agent's ReACT loop as a background asyncio task.
-        Uses CoordinatorAgent for Coordinator role, ReACTAgent for others.
+        Holds a strong reference to the task to prevent silent GC before completion.
+        Logs any unhandled exceptions that escape the agent loop.
         """
         # Resolve project_id through the team
         stmt = select(Team).where(Team.id == agent.team_id)
@@ -168,7 +174,20 @@ class MessageRouter:
             async with async_session() as agent_db:
                 await react.run_loop(agent_db, prompt_text)
 
-        asyncio.create_task(_run_agent())
+        task = asyncio.create_task(_run_agent())
+        # Hold a strong reference so the task is not silently GC'd
+        self._running_tasks.add(task)
+
+        def _on_task_done(t: asyncio.Task):
+            self._running_tasks.discard(t)
+            exc = t.exception() if not t.cancelled() else None
+            if exc:
+                logger.exception(
+                    "Unhandled exception in agent loop for agent '%s': %s",
+                    agent.name, exc, exc_info=exc
+                )
+
+        task.add_done_callback(_on_task_done)
 
 
 # Singleton

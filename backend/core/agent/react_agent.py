@@ -14,20 +14,25 @@ Key features:
 import json
 import re
 import asyncio
+import logging
 from typing import List, Dict, Any, Optional
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.llm.multi_model_router import llm_router
 from core.chat.event_bus import event_bus
-from core.memory.models import Message, Agent, Project, User
+from core.memory.models import Message, Agent, Project, User, Team
 from core.tools.tool_registry import ToolRegistry
 from core.memory.lancedb_client import lancedb_client
 from core.config import (
     STRICT_REASONING_GUIDELINES, KEYWORD_EXTRACTION_PROMPT,
     CONTEXT_COMPACTION_THRESHOLD, COMPACTION_SYSTEM_PROMPT,
-    COMPACTION_USER_PROMPT, DEFAULT_FAST_MODEL, MEMORY_RETRIEVAL_LIMIT
+    COMPACTION_USER_PROMPT, DEFAULT_FAST_MODEL, MEMORY_RETRIEVAL_LIMIT,
+    MAX_LOOPS,
 )
+
+logger = logging.getLogger("carole.react_agent")
+
 
 class ReACTAgent:
     def __init__(
@@ -49,6 +54,7 @@ class ReACTAgent:
         self._worker_results: List[Dict[str, Any]] = []
         self._notification_queue: asyncio.Queue = asyncio.Queue()
         self._listening = False
+        self._log = logger.getChild(self.name)
 
     async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20) -> List[Dict[str, str]]:
         """Loads recent team messages from the DB to give the agent conversation context."""
@@ -79,12 +85,14 @@ class ReACTAgent:
         return history
 
     async def assemble_system_prompt(self, db_session: AsyncSession, current_task: str) -> str:
-        """Assembles system prompt with learnings, tools, team roster, and reasoning guidelines."""
-        from sqlalchemy import func
+        """Assembles system prompt with learnings, tools, team roster, and reasoning guidelines.
 
+        Optimized: fetches Agent roster, Project, User, and Team in a single
+        pass using joined selects instead of 3 sequential round-trips.
+        """
         capabilities_block = "\n====\nCAPABILITIES & MEMORY\n====\n"
 
-        # 0. Fetch current team roster so the agent knows who is available
+        # Single query: fetch all agents for the team
         stmt = select(Agent).where(Agent.team_id == self.team_id)
         roster_result = await db_session.execute(stmt)
         teammates = roster_result.scalars().all()
@@ -99,18 +107,21 @@ class ReACTAgent:
             roster_block += "\n"
         capabilities_block += roster_block
 
-        # 0.5 Fetch human user context
+        # Joined query: Project → User in two selects (still avoids a 3rd round-trip
+        # by using project_id resolved from the agent's own team record)
         human_context = ""
-        project_result = await db_session.execute(select(Project).where(Project.id == self.project_id))
-        project = project_result.scalar_one_or_none()
-        if project:
-            user_result = await db_session.execute(select(User).where(User.id == project.owner_id))
-            user = user_result.scalar_one_or_none()
-            if user:
-                first = user.first_name or ""
-                last = user.last_name or ""
-                full_name = f"{first} {last}".strip() or "Unknown User"
-                human_context = f"HUMAN CONTEXT:\nThe human user / project owner is {full_name}.\n\n"
+        project_result = await db_session.execute(
+            select(Project, User)
+            .join(User, User.id == Project.owner_id)
+            .where(Project.id == self.project_id)
+        )
+        row = project_result.first()
+        if row:
+            _project, user = row
+            first = user.first_name or ""
+            last = user.last_name or ""
+            full_name = f"{first} {last}".strip() or "Unknown User"
+            human_context = f"HUMAN CONTEXT:\nThe human user / project owner is {full_name}.\n\n"
         capabilities_block += human_context
 
         # 1. Generate search embeddings
@@ -174,7 +185,16 @@ class ReACTAgent:
         stmt = select(Agent).where(Agent.id == self.agent_id)
         res = await db_session.execute(stmt)
         db_agent = res.scalar_one_or_none()
-        permissions = db_agent.tool_permissions if db_agent else {}
+
+        # Safety guard: if agent was deleted mid-run, deny all non-safe tool access
+        if db_agent is None:
+            self._log.warning(
+                "Agent record not found in DB during run_loop — may have been deleted. "
+                "Restricting all tools to safe-only mode."
+            )
+            permissions = {"__deny_non_safe__": True}
+        else:
+            permissions = db_agent.tool_permissions or {}
 
         system_prompt = await self.assemble_system_prompt(db_session, initial_prompt)
 
@@ -185,7 +205,7 @@ class ReACTAgent:
         messages = history + [{"role": "user", "content": initial_prompt}]
 
         loop_count = 0
-        max_loops = 10
+        max_loops = MAX_LOOPS
 
         # Emit agent status: active
         await event_bus.publish(self.topic, {
@@ -209,7 +229,7 @@ class ReACTAgent:
 
             # Compaction Check
             if len(messages) > CONTEXT_COMPACTION_THRESHOLD:
-                print(f"🗜️ [Agent: {self.name}] Context window growing large. Compacting...")
+                self._log.info("Context window growing large (%d msgs). Compacting...", len(messages))
                 to_compact = messages[1:-5]
                 try:
                     summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact))
@@ -222,10 +242,10 @@ class ReACTAgent:
                     )
                     messages = [messages[0]] + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{summary}\n[/COMPACTED HISTORY]"}] + messages[-5:]
                 except Exception as e:
-                    print(f"⚠️ [Agent: {self.name}] Compaction failed, continuing with full context: {e}")
+                    self._log.warning("Compaction failed, continuing with full context: %s", e)
 
             # Stream completion with retry
-            print(f"🤖 [Agent: {self.name}] Thinking... (loop {loop_count})")
+            self._log.info("Thinking... (loop %d/%d)", loop_count, max_loops)
             thought_buffer = ""
             had_error = False
 
@@ -254,11 +274,12 @@ class ReACTAgent:
                 except Exception as e:
                     if attempt < 2:
                         wait = (2 ** attempt) * 2
-                        print(f"⚠️ [Agent: {self.name}] LLM error: {e}. Retrying in {wait}s...")
+                        self._log.warning("LLM error (attempt %d): %s. Retrying in %ds...", attempt + 1, e, wait)
                         await asyncio.sleep(wait)
                     else:
                         had_error = True
                         error_msg = f"⚠️ LLM API error after 3 retries: {str(e)}"
+                        self._log.error("LLM error after 3 retries: %s", e)
                         await event_bus.publish(self.topic, {
                             "type": "message",
                             "sender_id": self.agent_id,
@@ -276,7 +297,7 @@ class ReACTAgent:
 
             if not action_call:
                 # Agent is done — persist and broadcast
-                print(f"✓ [Agent: {self.name}] Task finished.")
+                self._log.info("Task finished after %d loops.", loop_count)
                 db_msg = Message(
                     team_id=self.team_id, sender_id=self.agent_id,
                     sender_name=self.name, text=thought_buffer
@@ -314,7 +335,7 @@ class ReACTAgent:
 
             else:
                 tool_name, tool_args = action_call
-                print(f"🛠️ [Agent: {self.name}] Tool: {tool_name}")
+                self._log.info("Executing tool: %s", tool_name)
 
                 await event_bus.publish(self.topic, {
                     "type": "agent_status",
@@ -339,6 +360,7 @@ class ReACTAgent:
                     )
                 except Exception as e:
                     observation = f"✗ Tool Error: {str(e)}"
+                    self._log.error("Tool '%s' raised exception: %s", tool_name, e)
 
                 await event_bus.publish(self.topic, {
                     "type": "tool_end",
@@ -402,10 +424,11 @@ class ReACTAgent:
                         for notif in notifications:
                             notif["agent"] = event.get("sender_name", "unknown")
                             self._worker_results.append(notif)
-                            print(
-                                f"📋 [Agent: {self.name}] Collected notification from "
-                                f"{notif['agent']}: task_id={notif.get('task_id', '?')}, "
-                                f"status={notif.get('status', '?')}"
+                            self._log.info(
+                                "Collected notification from %s: task_id=%s status=%s",
+                                notif.get("agent", "?"),
+                                notif.get("task_id", "?"),
+                                notif.get("status", "?"),
                             )
 
                     queue.task_done()
@@ -423,9 +446,12 @@ class ReACTAgent:
         Used when the agent explicitly needs to wait for worker results.
         """
         collected = []
-        deadline = asyncio.get_event_loop().time() + timeout
+        # FIX: Use asyncio.get_running_loop() — asyncio.get_event_loop() is
+        # deprecated in Python 3.10+ and raises DeprecationWarning.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
 
-        while asyncio.get_event_loop().time() < deadline:
+        while loop.time() < deadline:
             if self._worker_results:
                 # Drain all pending results
                 collected.extend(self._worker_results)
@@ -453,6 +479,17 @@ class ReACTAgent:
         return notifications
 
     async def _execute_tool(self, name: str, args: Dict[str, Any], permissions: Dict[str, str]) -> str:
+        # Safety: if agent was deleted mid-run, deny all non-safe tools
+        if permissions.get("__deny_non_safe__"):
+            from core.tools.tool_registry import ToolRegistry
+            spec = ToolRegistry.get(name)
+            if spec and spec.permission_default != "safe":
+                self._log.warning(
+                    "Denying tool '%s' (permission=%s) — agent record was deleted.",
+                    name, spec.permission_default
+                )
+                return f"✗ Tool '{name}' denied: agent record no longer exists in the database."
+
         from core.tools.tool_executor import tool_executor
         return await tool_executor.execute(
             tool_name=name, arguments=args,

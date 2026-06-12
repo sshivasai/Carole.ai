@@ -21,6 +21,18 @@ DEFAULT_SMART_MODEL = os.getenv("DEFAULT_SMART_MODEL", "openrouter/free")
 DEFAULT_CODER_MODEL = os.getenv("DEFAULT_CODER_MODEL", "openrouter/free")
 
 # ==========================================
+# Agent Runtime Settings (env-configurable)
+# ==========================================
+# Maximum number of Thought-Action-Observation loops per agent run
+MAX_LOOPS = int(os.getenv("MAX_AGENT_LOOPS", "10"))
+
+# Seconds to wait for a human to approve a tool execution before timing out
+APPROVAL_TIMEOUT_SECS = int(os.getenv("APPROVAL_TIMEOUT_SECS", "300"))
+
+# Max events to buffer per EventBus topic queue before dropping (prevents OOM)
+MAX_QUEUE_SIZE = int(os.getenv("MAX_EVENT_QUEUE_SIZE", "500"))
+
+# ==========================================
 # Memory & Dream Settings
 # ==========================================
 DREAM_INTERVAL_MINUTES = 15

@@ -8,11 +8,23 @@ Responsibilities:
 2. Broadcast messages to the frontend via WebSockets.
 3. Maintain an event history buffer (last 100 events per topic) for late-joining clients.
 4. Support both topic-level (team) and agent-level (private) communication.
+
+Race-condition fixes (v2):
+- publish() copies the subscriber set *inside* the lock and does queue.put()
+  *outside* the lock so that slow consumers cannot block publishers.
+- History is no longer deleted when the last subscriber leaves — a reconnecting
+  client still gets the replay buffer.
+- Queues are bounded (maxsize from config) to prevent OOM under slow consumers.
 """
 
 import asyncio
+import logging
 from collections import deque
 from typing import Dict, Set, List
+
+from core.config import MAX_QUEUE_SIZE
+
+logger = logging.getLogger("carole.event_bus")
 
 
 class EventBus:
@@ -23,47 +35,63 @@ class EventBus:
         self._lock = asyncio.Lock()
 
     async def subscribe(self, topic: str) -> asyncio.Queue:
-        """Subscribe to a topic. Returns a queue to read streamed events from."""
-        queue = asyncio.Queue()
+        """Subscribe to a topic. Returns a bounded queue to read streamed events from."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         async with self._lock:
             if topic not in self._subscribers:
                 self._subscribers[topic] = set()
+            if topic not in self._history:
                 self._history[topic] = deque(maxlen=self._history_size)
             self._subscribers[topic].add(queue)
 
-            # Send recent history to new subscriber so they see what they missed
-            for event in self._history.get(topic, []):
-                await queue.put(event)
+            # Replay recent history to late-joining subscriber
+            for event in self._history[topic]:
+                try:
+                    queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    # Subscriber queue already full during replay — skip oldest events
+                    break
 
         return queue
 
     async def unsubscribe(self, topic: str, queue: asyncio.Queue):
-        """Unsubscribe a queue from a specific topic."""
+        """Unsubscribe a queue from a specific topic.
+
+        NOTE: history is intentionally kept so that a client reconnecting
+        immediately after the last subscriber leaves still gets a replay.
+        """
         async with self._lock:
             if topic in self._subscribers:
                 self._subscribers[topic].discard(queue)
+                # Clean up the subscriber set entry but preserve history
                 if not self._subscribers[topic]:
                     del self._subscribers[topic]
-                    # Clean up history to prevent memory growth for inactive topics
-                    if topic in self._history:
-                        del self._history[topic]
 
     async def publish(self, topic: str, message: dict):
-        """Publish a message to all subscribers of a topic and record in history."""
+        """Publish a message to all subscribers of a topic and record in history.
+
+        The subscriber set is copied *inside* the lock (to avoid a race with
+        concurrent unsubscribes) and the actual queue.put() calls happen
+        *outside* the lock so that a slow consumer never blocks the publisher.
+        """
         async with self._lock:
-            # Record in history (skip high-frequency events like thought_delta)
+            # Record in history (skip high-frequency noise events)
             if message.get("type") not in ("thought_delta", "typing"):
                 if topic not in self._history:
                     self._history[topic] = deque(maxlen=self._history_size)
                 self._history[topic].append(message)
 
-            queues = self._subscribers.get(topic, set()).copy()
+            queues = list(self._subscribers.get(topic, set()))
 
-        if not queues:
-            return
-
+        # Deliver outside the lock
         for queue in queues:
-            await queue.put(message)
+            try:
+                queue.put_nowait(message)
+            except asyncio.QueueFull:
+                logger.warning(
+                    "EventBus: dropped message for topic '%s' — subscriber queue full (maxsize=%d)",
+                    topic, MAX_QUEUE_SIZE
+                )
 
     async def publish_to_agent(self, agent_id: str, message: dict):
         """Publish a message to a specific agent's private topic."""

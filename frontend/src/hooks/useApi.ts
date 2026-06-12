@@ -4,10 +4,20 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 /**
  * Lightweight fetch wrapper for the Carole.ai REST API.
+ * Automatically injects the JWT from localStorage as a Bearer token on every
+ * request — callers no longer need to thread the token through manually.
  */
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  // Auto-inject auth token from localStorage (client-side only)
+  const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
+  const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeader,
+      ...(options?.headers || {}),
+    },
     ...options,
   });
   if (!res.ok) {
@@ -16,6 +26,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   }
   return res.json();
 }
+
 
 // ---- Projects ----
 export const api = {

@@ -8,15 +8,15 @@ interface Props {
 }
 
 export default function BrowserView({ screenshots }: Props) {
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
   // Filter agents that have sent screenshots
   const agentsWithScreenshots = Array.from(new Set(screenshots.map(s => s.sender_name || "Unknown Agent")));
   
-  // Get latest screenshot for the selected agent, or just the absolute latest if none selected
-  const activeScreenshot = selectedAgentId 
-    ? screenshots.find(s => s.sender_name === selectedAgentId)
-    : screenshots[0];
+  // FIX: use latest screenshot (last in array) not first
+  const activeScreenshot = selectedIndex !== null
+    ? screenshots[selectedIndex]
+    : screenshots[screenshots.length - 1];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "var(--sp-2xl)" }}>
@@ -32,16 +32,20 @@ export default function BrowserView({ screenshots }: Props) {
         {agentsWithScreenshots.length > 0 && (
           <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
             <button 
-              className={`btn ${!selectedAgentId ? "btn-primary" : "btn-outline"}`}
-              onClick={() => setSelectedAgentId(null)}
+              className={`btn ${selectedIndex === null ? "btn-primary" : "btn-outline"}`}
+              onClick={() => setSelectedIndex(null)}
             >
-              All Agents
+              Latest
             </button>
             {agentsWithScreenshots.map(name => (
               <button 
                 key={name}
-                className={`btn ${selectedAgentId === name ? "btn-primary" : "btn-outline"}`}
-                onClick={() => setSelectedAgentId(name)}
+                className={`btn btn-outline`}
+                onClick={() => {
+                  // Find latest screenshot from this agent
+                  const idx = screenshots.map(s => s.sender_name).lastIndexOf(name);
+                  setSelectedIndex(idx >= 0 ? idx : null);
+                }}
               >
                 {name}
               </button>
@@ -69,7 +73,31 @@ export default function BrowserView({ screenshots }: Props) {
             </div>
           </div>
           
-          {/* Browser Screen */}
+          {/* History thumbnail strip */}
+          {screenshots.length > 1 && (
+            <div style={{
+              display: "flex", gap: 6, padding: "var(--sp-sm) var(--sp-lg)",
+              overflowX: "auto", background: "var(--color-canvas)",
+              borderTop: "1px solid var(--color-hairline)",
+            }}>
+              {screenshots.map((s, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => setSelectedIndex(idx)}
+                  style={{
+                    flexShrink: 0, width: 64, height: 40, padding: 0,
+                    border: `2px solid ${selectedIndex === idx ? "var(--color-primary)" : "var(--color-hairline)"}`,
+                    borderRadius: "var(--radius-xs)", overflow: "hidden", cursor: "pointer", background: "#000",
+                  }}
+                >
+                  {s.image_base64 && (
+                    <img src={`data:image/jpeg;base64,${s.image_base64}`} alt={`Screenshot ${idx + 1}`}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ flex: 1, background: "#000", position: "relative", overflow: "auto", display: "flex", justifyContent: "center" }}>
             {activeScreenshot.image_base64 ? (
               <img 

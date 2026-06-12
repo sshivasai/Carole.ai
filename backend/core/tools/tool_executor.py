@@ -13,6 +13,7 @@ Permission Levels:
 
 import uuid
 import asyncio
+import logging
 from typing import Dict, Any, Callable, Awaitable
 
 from core.chat.event_bus import event_bus
@@ -29,13 +30,24 @@ from core.tools.memory_tools import memory_tools
 from core.tools.meeting_tool import meeting_tool
 from core.tools.google_workspace_tools import create_meeting, send_email
 from core.judge.judge_evaluator import judge_evaluator
+from core.config import APPROVAL_TIMEOUT_SECS
+
+logger = logging.getLogger("carole.tool_executor")
 
 # Global dictionaries to manage pending human approvals across concurrent agent loops
 pending_approvals: Dict[str, asyncio.Event] = {}
 approval_results: Dict[str, bool] = {}  # Maps tx_id to True (Approved) or False (Denied)
 
+# Idempotency guard — ensures register_builtin_tools() is a no-op if called twice
+_builtins_registered: bool = False
+
 
 def register_builtin_tools():
+    global _builtins_registered
+    if _builtins_registered:
+        logger.debug("[ToolRegistry] Built-in tools already registered — skipping.")
+        return
+    _builtins_registered = True
     """Registers all built-in tools with the ToolRegistry at startup.
     Called once from main.py lifespan."""
 
@@ -317,7 +329,7 @@ def register_builtin_tools():
     for spec in builtins:
         ToolRegistry.register(spec)
 
-    print(f"🔧 [ToolRegistry] Registered {len(builtins)} built-in tools.")
+    logger.info("🔧 [ToolRegistry] Registered %d built-in tools.", len(builtins))
 
 
 class ToolExecutor:
@@ -380,17 +392,31 @@ class ToolExecutor:
                 "text": f"🛑 Approval Required: Agent '{agent_name}' wants to execute '{tool_name}'."
             })
 
-            print(f"🛑 [Executor] Pausing agent '{agent_name}' loop. Awaiting human approval for Tx: {tx_id}...")
-            await event.wait()
+            logger.info(
+                "🛑 [Executor] Pausing agent '%s'. Awaiting human approval for tx_id=%s tool=%s",
+                agent_name, tx_id, tool_name
+            )
+
+            try:
+                await asyncio.wait_for(event.wait(), timeout=APPROVAL_TIMEOUT_SECS)
+            except asyncio.TimeoutError:
+                # Clean up stale entries on timeout
+                pending_approvals.pop(tx_id, None)
+                approval_results.pop(tx_id, None)
+                logger.warning(
+                    "[Executor] Approval for tx_id=%s timed out after %ds — denying.",
+                    tx_id, APPROVAL_TIMEOUT_SECS
+                )
+                return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
 
             approved = approval_results.pop(tx_id, False)
             pending_approvals.pop(tx_id, None)
 
             if approved:
-                print(f"✓ [Executor] Tx {tx_id} APPROVED. Resuming execution...")
+                logger.info("✓ [Executor] tx_id=%s APPROVED. Resuming execution...", tx_id)
                 return await self._run_tool(spec, arguments, agent_id, agent_name, team_id)
             else:
-                print(f"✗ [Executor] Tx {tx_id} DENIED. Cancelling execution...")
+                logger.info("✗ [Executor] tx_id=%s DENIED. Cancelling execution...", tx_id)
                 return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
 
         else:
