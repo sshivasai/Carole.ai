@@ -3,6 +3,7 @@ import sys
 import asyncio
 import uuid
 import json
+from pathlib import Path
 
 # Add backend directory to sys.path so we can import 'core'
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -17,10 +18,10 @@ async def main():
     print("--- Test 1: SQLite Initialization ---")
     await init_db(force_recreate=True)
     
-    db_path = ".carole/carole.db"
+    db_path = str(Path.home() / ".carole" / "carole.db")
     if not os.path.exists(db_path):
         # Maybe it was created relative to the root workspace
-        workspace_db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".carole/carole.db")
+        workspace_db = str(Path.home() / ".carole" / "carole.db")
         if os.path.exists(workspace_db):
             print(f"✅ SQLite initialized at {workspace_db}")
         else:
@@ -78,7 +79,7 @@ async def main():
         else:
             print("❌ LanceDB semantic retrieval failed to match!")
             
-        lancedb_path = ".carole/vector_store"
+        lancedb_path = str(Path.home() / ".carole" / "vector_store")
         if os.path.exists(lancedb_path):
             print(f"✅ LanceDB vector_store found at {lancedb_path}")
         else:
@@ -92,7 +93,7 @@ async def main():
         from core.knowledge.code_graph import code_graph
         code_graph.parse_file("backend/main.py")
         
-        graph_path = ".carole/code_graph.json"
+        graph_path = str(Path.home() / ".carole" / "code_graph.json")
         if os.path.exists(graph_path):
             with open(graph_path, "r") as f:
                 data = json.load(f)

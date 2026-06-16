@@ -167,20 +167,38 @@ class AutoDreamWorker:
         )
 
     def _parse_lessons(self, text: str):
-        """Parses TASK_SUMMARY/LESSON_RULE pairs from the LLM extraction output."""
-        lessons = []
-        lines = text.strip().split("\n")
-        current_task = None
+        """Parses JSON extraction output containing category, task_summary, and content."""
+        import json
+        
+        text = text.strip()
+        # Remove potential markdown code blocks
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
 
-        for line in lines:
-            line = line.strip()
-            if line.startswith("TASK_SUMMARY:"):
-                current_task = line[len("TASK_SUMMARY:"):].strip()
-            elif line.startswith("LESSON_RULE:") and current_task:
-                lesson_rule = line[len("LESSON_RULE:"):].strip()
-                if current_task and lesson_rule:
-                    lessons.append((current_task, lesson_rule))
-                current_task = None
+        lessons = []
+        try:
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                return lessons
+                
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                category = item.get("category", "MEMORY")
+                task_summary = item.get("task_summary")
+                content = item.get("content")
+                
+                if task_summary and content:
+                    # We store the category explicitly in the lesson_rule text
+                    lesson_rule = f"[{category.upper()}] {content}"
+                    lessons.append((task_summary, lesson_rule))
+        except json.JSONDecodeError as e:
+            logger.error("💤 [Dream] Failed to parse JSON extraction: %s\nText: %s", e, text)
 
         return lessons
 

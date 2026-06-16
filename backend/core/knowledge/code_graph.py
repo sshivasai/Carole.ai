@@ -11,7 +11,8 @@ import posixpath
 from pathlib import Path
 import asyncio
 import networkx as nx
-from typing import Dict, Set
+from typing import Dict, Set, Optional
+from core.config import CAROLE_HOME_DIR
 
 from core.chat.event_bus import event_bus
 
@@ -21,52 +22,73 @@ class CodeGraph:
             workspace_root = os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[3]))
         self.workspace_root = Path(workspace_root).resolve()
         
-        self.graph_file = Path(".carole/code_graph.json")
-        os.makedirs(".carole", exist_ok=True)
-        
-        if self.graph_file.exists():
-            try:
-                with open(self.graph_file, "r") as f:
-                    data = json.load(f)
-                    self.graph = nx.node_link_graph(data)
-            except Exception:
-                self.graph = nx.DiGraph()
-        else:
-            self.graph = nx.DiGraph()
-            
-        self.active_editors: Dict[str, Set[str]] = {}
+        self.graphs: Dict[str, nx.DiGraph] = {}
+        self.active_editors: Dict[str, Dict[str, Set[str]]] = {}
         self._lock = asyncio.Lock()
         
-        # Build initial graph synchronously or kick off task
-        if not self.graph_file.exists():
-            self.build_graph()
-            
         self.start_listening_task()
 
-    def _save_graph(self):
+    def get_project_root(self, project_id: Optional[str]) -> Path:
+        if project_id:
+            from core.tools.file_tools import file_tools
+            return file_tools.get_workspace_root(project_id)
+        return self.workspace_root
+
+    def get_graph_file(self, project_id: Optional[str]) -> Path:
+        if project_id:
+            root = self.get_project_root(project_id)
+            return root / "code_graph.json"
+        return CAROLE_HOME_DIR / "code_graph.json"
+
+    def get_graph(self, project_id: Optional[str]) -> nx.DiGraph:
+        pid = project_id or "default"
+        if pid not in self.graphs:
+            graph_file = self.get_graph_file(project_id)
+            if graph_file.exists():
+                try:
+                    with open(graph_file, "r") as f:
+                        data = json.load(f)
+                        self.graphs[pid] = nx.node_link_graph(data)
+                except Exception:
+                    self.graphs[pid] = nx.DiGraph()
+            else:
+                self.graphs[pid] = nx.DiGraph()
+        return self.graphs[pid]
+
+    def _save_graph(self, project_id: Optional[str]):
         try:
-            with open(self.graph_file, "w") as f:
-                json.dump(nx.node_link_data(self.graph), f)
+            graph_file = self.get_graph_file(project_id)
+            graph_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(graph_file, "w") as f:
+                json.dump(nx.node_link_data(self.get_graph(project_id)), f)
         except Exception as e:
-            print(f"Error saving code graph: {e}")
+            print(f"Error saving code graph for project {project_id}: {e}")
 
-    def mark_file_active(self, path: str, agent_name: str):
-        if path not in self.active_editors:
-            self.active_editors[path] = set()
-        self.active_editors[path].add(agent_name)
-        self._save_graph()
+    def mark_file_active(self, path: str, agent_name: str, project_id: Optional[str] = None):
+        pid = project_id or "default"
+        if pid not in self.active_editors:
+            self.active_editors[pid] = {}
+        if path not in self.active_editors[pid]:
+            self.active_editors[pid][path] = set()
+        self.active_editors[pid][path].add(agent_name)
+        self._save_graph(project_id)
         
-    def clear_file_active(self, path: str):
-        if path in self.active_editors:
-            self.active_editors.pop(path, None)
-            self._save_graph()
+    def clear_file_active(self, path: str, project_id: Optional[str] = None):
+        pid = project_id or "default"
+        if pid in self.active_editors and path in self.active_editors[pid]:
+            self.active_editors[pid].pop(path, None)
+            self._save_graph(project_id)
 
-    def parse_file(self, relative_path: str):
+    def parse_file(self, relative_path: str, project_id: Optional[str] = None):
         """Parses a file for dependencies and updates the graph."""
-        safe_path = (self.workspace_root / relative_path).resolve()
+        project_root = self.get_project_root(project_id)
+        safe_path = (project_root / relative_path).resolve()
+        
+        graph = self.get_graph(project_id)
+        
         if not safe_path.is_file():
-            if self.graph.has_node(relative_path):
-                self.graph.remove_node(relative_path)
+            if graph.has_node(relative_path):
+                graph.remove_node(relative_path)
             return
 
         try:
@@ -117,34 +139,32 @@ class CodeGraph:
                     dependencies.add(resolved_mod + "/index.js")
                     dependencies.add(resolved_mod)
         
-        # We only keep edges where the dependency actually exists in the workspace
-        # But for simplicity, we can just add the edge. Later we can filter valid nodes.
-        self.graph.add_node(relative_path)
+        graph.add_node(relative_path)
         
-        out_edges = list(self.graph.out_edges(relative_path))
-        self.graph.remove_edges_from(out_edges)
+        out_edges = list(graph.out_edges(relative_path))
+        graph.remove_edges_from(out_edges)
         
         for dep in dependencies:
-            self.graph.add_edge(relative_path, dep)
+            graph.add_edge(relative_path, dep)
             
-        self._save_graph()
+        self._save_graph(project_id)
 
-    def build_graph(self):
-        """Scans WORKSPACE_ROOT and maps all files."""
+    def build_graph(self, project_id: Optional[str] = None):
+        """Scans project root and maps all files."""
+        project_root = self.get_project_root(project_id)
         skip_dirs = {'.git', 'node_modules', '__pycache__', '.next', 'venv', '.venv', 'dist', 'build'}
-        for root, dirs, files in os.walk(self.workspace_root):
+        for root, dirs, files in os.walk(project_root):
             dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
             for file in files:
                 if file.endswith(('.py', '.js', '.ts', '.jsx', '.tsx')):
                     full_path = Path(root) / file
                     try:
-                        rel = full_path.relative_to(self.workspace_root)
-                        # Normalize backslash to forward slash for posixpath consistency
+                        rel = full_path.relative_to(project_root)
                         rel_str = str(rel).replace("\\", "/")
-                        self.parse_file(rel_str)
+                        self.parse_file(rel_str, project_id)
                     except ValueError:
                         pass
-        self._save_graph()
+        self._save_graph(project_id)
 
     async def _listen_for_file_changes(self):
         queue = await event_bus.subscribe("system:file_changes")
@@ -153,9 +173,10 @@ class CodeGraph:
                 event = await queue.get()
                 if event.get("type") == "file_change":
                     path = event.get("path")
+                    project_id = event.get("project_id")
                     if path:
                         path = path.replace("\\", "/")
-                        self.parse_file(path)
+                        self.parse_file(path, project_id)
             except Exception as e:
                 print(f"Error in CodeGraph listener: {e}")
 
@@ -164,7 +185,6 @@ class CodeGraph:
             loop = asyncio.get_running_loop()
             loop.create_task(self._listen_for_file_changes())
         except RuntimeError:
-            # No running loop, maybe we're just importing
             pass
 
 code_graph = CodeGraph()

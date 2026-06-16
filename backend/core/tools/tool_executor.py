@@ -340,7 +340,8 @@ class ToolExecutor:
         agent_id: str,
         agent_name: str,
         team_id: str,
-        permissions: Dict[str, str]
+        permissions: Dict[str, str],
+        active_message_id: str | None = None,
     ) -> str:
         """
         Gated Execution entrypoint.
@@ -355,7 +356,7 @@ class ToolExecutor:
 
         # 1. Safe — instant execution
         if gate_level == "safe":
-            return await self._run_tool(spec, arguments, agent_id, agent_name, team_id)
+            return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id)
 
         # 2. Judge — LLM-based review, then execute
         elif gate_level == "judge":
@@ -368,11 +369,50 @@ class ToolExecutor:
                 "arguments": arguments,
                 "text": f"⚠️ Agent '{agent_name}' wants to run '{tool_name}'. Awaiting Judge AI appraisal..."
             })
-            approved = await judge_evaluator.evaluate(tool_name, arguments, agent_name)
+            approved, reason = await judge_evaluator.evaluate(tool_name, arguments, agent_name, team_id=team_id)
             if approved:
-                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id)
+                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id)
             else:
-                return f"✗ Judge DENIED execution of '{tool_name}' for agent '{agent_name}'."
+                # Trigger human override flow
+                tx_id = str(uuid.uuid4())
+                event = asyncio.Event()
+                pending_approvals[tx_id] = event
+
+                await event_bus.publish(topic, {
+                    "type": "approval_request",
+                    "tx_id": tx_id,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "text": f"🛑 Judge DENIED execution: {reason}\nRequire human override to proceed."
+                })
+
+                logger.info(
+                    "🛑 [Executor] Judge denied agent '%s' tool=%s. Awaiting human override tx_id=%s",
+                    agent_name, tool_name, tx_id
+                )
+
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=APPROVAL_TIMEOUT_SECS)
+                except asyncio.TimeoutError:
+                    pending_approvals.pop(tx_id, None)
+                    approval_results.pop(tx_id, None)
+                    logger.warning(
+                        "[Executor] Override for tx_id=%s timed out after %ds — denying.",
+                        tx_id, APPROVAL_TIMEOUT_SECS
+                    )
+                    return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
+
+                override_approved = approval_results.pop(tx_id, False)
+                pending_approvals.pop(tx_id, None)
+
+                if override_approved:
+                    logger.info("✓ [Executor] tx_id=%s OVERRIDE APPROVED. Resuming execution...", tx_id)
+                    return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id)
+                else:
+                    logger.info("✗ [Executor] tx_id=%s OVERRIDE DENIED. Cancelling execution...", tx_id)
+                    return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}' after Judge rejection."
 
         # 3. Human — block until user approves via POST /api/tools/approve/{tx_id}
         elif gate_level == "human":
@@ -414,7 +454,7 @@ class ToolExecutor:
 
             if approved:
                 logger.info("✓ [Executor] tx_id=%s APPROVED. Resuming execution...", tx_id)
-                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id)
+                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id)
             else:
                 logger.info("✗ [Executor] tx_id=%s DENIED. Cancelling execution...", tx_id)
                 return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
@@ -424,12 +464,15 @@ class ToolExecutor:
 
     async def _run_tool(
         self, spec: ToolSpec, arguments: Dict[str, Any],
-        agent_id: str, agent_name: str, team_id: str
+        agent_id: str, agent_name: str, team_id: str,
+        active_message_id: str | None = None,
     ) -> str:
         """Executes the tool handler and emits file_change events for file operations."""
-        # Inject agent identity into args so tool wrappers can access it
+        # Inject agent identity + snapshot context into args
         arguments["_agent_id"] = agent_id
         arguments["_agent_name"] = agent_name
+        arguments["_active_message_id"] = active_message_id  # used by write_file / edit_file for FileBackup
+        arguments["_team_id"] = team_id
         result = await spec.handler(arguments, team_id)
 
         # If the tool returned a FileChangeResult, emit a file_change event
@@ -466,8 +509,11 @@ async def _wrap_write_file(args: Dict[str, Any], team_id: str):
     path = args.get("relative_path") or args.get("path")
     content = args.get("content")
     agent_name = args.get("_agent_name", "Unknown")
+    message_id = args.get("_active_message_id")
     if not path or content is None:
         return "Error: Missing parameter 'relative_path' or 'content'."
+    # ── Snapshot before write ────────────────────────────────────────────────
+    await _snapshot_file(path, team_id, message_id, operation="write_file")
     return await file_tools.write_file(path, content, agent_name)
 
 async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
@@ -475,9 +521,47 @@ async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
     target = args.get("target_content") or args.get("target")
     replacement = args.get("replacement_content") or args.get("replacement")
     agent_name = args.get("_agent_name", "Unknown")
+    message_id = args.get("_active_message_id")
     if not path or target is None or replacement is None:
         return "Error: Missing parameters for editing."
+    # ── Snapshot before edit ─────────────────────────────────────────────────
+    await _snapshot_file(path, team_id, message_id, operation="edit_file")
     return await file_tools.edit_file(path, target, replacement, agent_name)
+
+
+async def _snapshot_file(relative_path: str, team_id: str, message_id: str | None, operation: str = "write_file"):
+    """Save the current file content to FileBackup before it is modified.
+
+    If the file does not exist (newly created), `original_content` is saved as NULL.
+    If `message_id` is None, the snapshot is skipped (e.g. called from outside a ReACT loop).
+    """
+    if not message_id:
+        return
+    try:
+        import uuid as _uuid
+        from pathlib import Path
+        from core.memory.database import async_session
+        from core.memory.models import FileBackup
+        from core.tools.file_tools import file_tools as _ft
+
+        abs_path = str(_ft._resolve_safe_path(relative_path))
+        p = Path(abs_path)
+        original = p.read_text(encoding="utf-8") if p.exists() else None
+
+        async with async_session() as db:
+            backup = FileBackup(
+                id=_uuid.uuid4(),
+                team_id=_uuid.UUID(team_id) if isinstance(team_id, str) else team_id,
+                message_id=_uuid.UUID(message_id) if isinstance(message_id, str) else message_id,
+                file_path=abs_path,
+                original_content=original,
+                operation=operation,
+            )
+            db.add(backup)
+            await db.commit()
+    except Exception as e:
+        logger.warning("[FileBackup] Snapshot failed for %s: %s", relative_path, e)
+
 
 async def _wrap_list_directory(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path", ".") or args.get("path", ".")

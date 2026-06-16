@@ -14,14 +14,13 @@ import os
 from sqlalchemy import text, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-
-# Ensure .carole directory exists
-os.makedirs(".carole", exist_ok=True)
+from core.config import CAROLE_HOME_DIR
 
 # Read the database URL from environment
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    DATABASE_URL = "sqlite+aiosqlite:///.carole/carole.db"
+    _db_path = CAROLE_HOME_DIR / "carole.db"
+    DATABASE_URL = f"sqlite+aiosqlite:///{_db_path.as_posix()}"
 
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 
@@ -92,3 +91,10 @@ async def init_db(force_recreate: bool = False):
         
         # 3. Create all tables (additive — won't modify existing columns)
         await conn.run_sync(Base.metadata.create_all)
+        
+        # 4. Additive migration — add reasoning_text column if it doesn't exist yet
+        if _is_sqlite:
+            try:
+                await conn.execute(text("ALTER TABLE messages ADD COLUMN reasoning_text TEXT"))
+            except Exception:
+                pass  # Column already exists — safe to ignore

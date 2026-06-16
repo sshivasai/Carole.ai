@@ -12,16 +12,16 @@ import uuid
 import asyncio
 import logging
 from typing import List, Optional, Dict, Any
+from core.config import CAROLE_HOME_DIR
 
 logger = logging.getLogger("carole.lancedb")
 
-# Ensure .carole directory exists
-os.makedirs(".carole", exist_ok=True)
-
-
 class LanceDBClient:
-    def __init__(self, uri: str = ".carole/vector_store"):
-        self.uri = uri
+    def __init__(self, uri: str = None):
+        if uri is None:
+            self.uri = str(CAROLE_HOME_DIR / "vector_store")
+        else:
+            self.uri = uri
         self.table_name = "learnings"
         self._db = None  # lazy-initialise inside to_thread
 

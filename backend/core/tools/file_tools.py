@@ -6,6 +6,7 @@ Filesystem tools with sandbox enforcement, diff generation, and search capabilit
 
 import os
 import re
+from core.config import CAROLE_HOME_DIR
 import difflib
 import fnmatch
 import asyncio
@@ -33,12 +34,44 @@ class FileTools:
         self.workspace_root = Path(workspace_root).resolve()
         self._locks: Dict[str, asyncio.Lock] = {}
 
-    def _resolve_safe_path(self, relative_path: str) -> Path:
-        joined_path = Path(self.workspace_root / relative_path)
+    async def get_workspace_root(self, project_id: Optional[str] = None) -> Path:
+        workspaces_dir = CAROLE_HOME_DIR / "workspaces"
+        if not workspaces_dir.exists():
+            workspaces_dir.mkdir(parents=True, exist_ok=True)
+            
+        if project_id:
+            from core.memory.database import async_session
+            from core.memory.models import Project
+            from sqlalchemy import select
+            import uuid
+            import re
+            
+            try:
+                project_uuid = uuid.UUID(project_id)
+            except ValueError:
+                return workspaces_dir / project_id
+                
+            async with async_session() as db:
+                result = await db.execute(select(Project).where(Project.id == project_uuid))
+                project = result.scalar_one_or_none()
+                if project:
+                    slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
+                    if not slug:
+                        slug = str(project.id)[:8]
+                    return (workspaces_dir / slug).resolve()
+            
+            # Fallback if project not found
+            return (workspaces_dir / project_id).resolve()
+            
+        return workspaces_dir.resolve()
+
+    async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None) -> Path:
+        root = await self.get_workspace_root(project_id)
+        joined_path = Path(root / relative_path)
         resolved_path = joined_path.resolve()
-        if not str(resolved_path).startswith(str(self.workspace_root)):
+        if not str(resolved_path).startswith(str(root)):
             raise PermissionError(
-                f"Access Denied: Path traversal to '{resolved_path}' outside sandbox '{self.workspace_root}'."
+                f"Access Denied: Path traversal to '{resolved_path}' outside sandbox '{root}'."
             )
         return resolved_path
 
@@ -73,9 +106,9 @@ class FileTools:
         diff = difflib.unified_diff(before_lines, after_lines, fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="")
         return "\n".join(diff)
 
-    async def read_file(self, relative_path: str) -> str:
+    async def read_file(self, relative_path: str, project_id: Optional[str] = None) -> str:
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
             def _sync_read():
                 if not safe_path.is_file():
@@ -87,9 +120,9 @@ class FileTools:
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
-    async def write_file(self, relative_path: str, content: str, agent_name: str = "Unknown") -> FileChangeResult:
+    async def write_file(self, relative_path: str, content: str, agent_name: str = "Unknown", project_id: Optional[str] = None) -> FileChangeResult:
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
             def _sync_write():
                 before = ""
@@ -108,17 +141,17 @@ class FileTools:
                 )
             async with lock:
                 from core.knowledge.code_graph import code_graph
-                code_graph.mark_file_active(relative_path, agent_name)
+                code_graph.mark_file_active(relative_path, agent_name, project_id)
                 try:
                     return await asyncio.to_thread(_sync_write)
                 finally:
-                    code_graph.clear_file_active(relative_path)
+                    code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
             return FileChangeResult(message=f"Error writing file: {str(e)}")
 
-    async def edit_file(self, relative_path: str, target_content: str, replacement_content: str, agent_name: str = "Unknown") -> FileChangeResult:
+    async def edit_file(self, relative_path: str, target_content: str, replacement_content: str, agent_name: str = "Unknown", project_id: Optional[str] = None) -> FileChangeResult:
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
             def _sync_edit():
                 if not safe_path.is_file():
@@ -140,18 +173,18 @@ class FileTools:
                 )
             async with lock:
                 from core.knowledge.code_graph import code_graph
-                code_graph.mark_file_active(relative_path, agent_name)
+                code_graph.mark_file_active(relative_path, agent_name, project_id)
                 try:
                     return await asyncio.to_thread(_sync_edit)
                 finally:
-                    code_graph.clear_file_active(relative_path)
+                    code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
             return FileChangeResult(message=f"Error editing file: {str(e)}")
 
-    async def append_file(self, relative_path: str, content: str, agent_name: str = "Unknown") -> FileChangeResult:
+    async def append_file(self, relative_path: str, content: str, agent_name: str = "Unknown", project_id: Optional[str] = None) -> FileChangeResult:
         """Appends content to the end of an existing file."""
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
             def _sync_append():
                 before = ""
@@ -169,18 +202,18 @@ class FileTools:
                 )
             async with lock:
                 from core.knowledge.code_graph import code_graph
-                code_graph.mark_file_active(relative_path, agent_name)
+                code_graph.mark_file_active(relative_path, agent_name, project_id)
                 try:
                     return await asyncio.to_thread(_sync_append)
                 finally:
-                    code_graph.clear_file_active(relative_path)
+                    code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
             return FileChangeResult(message=f"Error appending to file: {str(e)}")
 
-    async def delete_file(self, relative_path: str, agent_name: str = "Unknown") -> str:
+    async def delete_file(self, relative_path: str, agent_name: str = "Unknown", project_id: Optional[str] = None) -> str:
         """Deletes a file inside the sandbox."""
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
             def _sync_delete():
                 if not safe_path.is_file():
@@ -189,17 +222,17 @@ class FileTools:
                 return f"Success: Deleted '{relative_path}'."
             async with lock:
                 from core.knowledge.code_graph import code_graph
-                code_graph.mark_file_active(relative_path, agent_name)
+                code_graph.mark_file_active(relative_path, agent_name, project_id)
                 try:
                     return await asyncio.to_thread(_sync_delete)
                 finally:
-                    code_graph.clear_file_active(relative_path)
+                    code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
             return f"Error deleting file: {str(e)}"
 
-    async def list_directory(self, relative_path: str = ".") -> str:
+    async def list_directory(self, relative_path: str = ".", project_id: Optional[str] = None) -> str:
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
             def _sync_list():
                 if not safe_path.is_dir():
                     return f"Error: '{relative_path}' is not a directory."
@@ -215,10 +248,11 @@ class FileTools:
         except Exception as e:
             return f"Error listing directory: {str(e)}"
 
-    async def grep_search(self, pattern: str, relative_path: str = ".", case_sensitive: bool = True) -> str:
+    async def grep_search(self, pattern: str, relative_path: str = ".", case_sensitive: bool = True, project_id: Optional[str] = None) -> str:
         """Searches file contents for a regex pattern. Returns matching lines with file:line references."""
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
+            root_path = await self.get_workspace_root(project_id)
             def _sync_grep():
                 flags = 0 if case_sensitive else re.IGNORECASE
                 compiled = re.compile(pattern, flags)
@@ -230,7 +264,7 @@ class FileTools:
                         with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                             for line_num, line in enumerate(f, 1):
                                 if compiled.search(line):
-                                    rel = fpath.relative_to(self.workspace_root)
+                                    rel = fpath.relative_to(root_path)
                                     results.append(f"{rel}:{line_num}: {line.rstrip()}")
                                     if len(results) >= max_results:
                                         return
@@ -258,20 +292,21 @@ class FileTools:
         except Exception as e:
             return f"Error during grep search: {str(e)}"
 
-    async def glob_search(self, pattern: str, relative_path: str = ".") -> str:
+    async def glob_search(self, pattern: str, relative_path: str = ".", project_id: Optional[str] = None) -> str:
         """Finds files matching a glob pattern (e.g. '**/*.py')."""
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
+            root_path = await self.get_workspace_root(project_id)
             def _sync_glob():
                 if not safe_path.is_dir():
                     return f"Error: '{relative_path}' is not a directory."
                 matches = []
                 for match in sorted(safe_path.glob(pattern)):
                     # Skip hidden and common noise directories
-                    parts = match.relative_to(self.workspace_root).parts
+                    parts = match.relative_to(root_path).parts
                     if any(p.startswith('.') or p in ('node_modules', '__pycache__', '.next', 'venv') for p in parts):
                         continue
-                    rel = match.relative_to(self.workspace_root)
+                    rel = match.relative_to(root_path)
                     if match.is_file():
                         matches.append(f"[FILE] {rel} ({match.stat().st_size} bytes)")
                     else:
@@ -286,12 +321,12 @@ class FileTools:
             return f"Error during glob search: {str(e)}"
 
 
-    async def copy_file(self, source: str, destination: str) -> str:
+    async def copy_file(self, source: str, destination: str, project_id: Optional[str] = None) -> str:
         """Copies a file within the sandbox."""
         import shutil
         try:
-            src = self._resolve_safe_path(source)
-            dst = self._resolve_safe_path(destination)
+            src = await self._resolve_safe_path(source, project_id)
+            dst = await self._resolve_safe_path(destination, project_id)
             
             def _sync_copy():
                 if not src.is_file():
@@ -305,12 +340,12 @@ class FileTools:
         except Exception as e:
             return f"Error copying file: {str(e)}"
 
-    async def move_file(self, source: str, destination: str) -> str:
+    async def move_file(self, source: str, destination: str, project_id: Optional[str] = None) -> str:
         """Moves/renames a file within the sandbox."""
         import shutil
         try:
-            src = self._resolve_safe_path(source)
-            dst = self._resolve_safe_path(destination)
+            src = await self._resolve_safe_path(source, project_id)
+            dst = await self._resolve_safe_path(destination, project_id)
             
             def _sync_move():
                 if not src.exists():
@@ -324,10 +359,10 @@ class FileTools:
         except Exception as e:
             return f"Error moving file: {str(e)}"
 
-    async def create_directory(self, relative_path: str) -> str:
+    async def create_directory(self, relative_path: str, project_id: Optional[str] = None) -> str:
         """Creates a directory (and parents) within the sandbox."""
         try:
-            safe_path = self._resolve_safe_path(relative_path)
+            safe_path = await self._resolve_safe_path(relative_path, project_id)
             def _sync_mkdir():
                 safe_path.mkdir(parents=True, exist_ok=True)
                 return f"Success: Directory '{relative_path}' created."

@@ -67,7 +67,10 @@ class Agent(Base):
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(100), nullable=False)
     role = Column(String(100), nullable=False)  # e.g. "Coder", "Reviewer", "Manager", or custom role
-    model = Column(String(50), nullable=False)   # e.g. "claude-sonnet-4", "gpt-4o-mini", "gemini-2.0-flash"
+    model = Column(String(100), nullable=False)  # e.g. "claude-sonnet-4", "gpt-4o-mini", "gemini-2.0-flash"
+    fallback_model = Column(String(100), nullable=True)  # Optional recovery model if primary fails
+    # Reasoning effort for reasoning-capable models: none | low | medium | high
+    reasoning_effort = Column(String(20), nullable=False, default="none")
     system_prompt = Column(Text, nullable=False)
     
     # Personality style: professional, casual, witty, mentor
@@ -101,6 +104,9 @@ class Message(Base):
     is_private = Column(Boolean, default=False, nullable=False) # True if sent via /@name
     
     text = Column(Text, nullable=False)
+    # Raw model reasoning / thinking trace (for DeepSeek R1, Claude thinking, etc.)
+    reasoning_text = Column(Text, nullable=True)
+    attachments = Column(JSON, nullable=True, default=list)
 
     # Tracks whether the AutoDream worker has processed this message for memory consolidation.
     # Prevents duplicate lesson extraction across dream cycles.
@@ -184,4 +190,35 @@ class McpServer(Base):
     args = Column(JSON, nullable=False, default=list)
     env_vars = Column(JSON, nullable=True)
     
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FileBackup(Base):
+    """
+    Stores a snapshot of a file's content BEFORE an agent modifies it.
+    This enables Chat Rewind: when a message is deleted or edited, all
+    FileBackup records linked to the deleted messages are replayed in
+    reverse order to restore the workspace to its pre-agent state.
+
+    - `original_content = None`  → file did not exist before; rollback should DELETE the file.
+    - `original_content = str`   → file existed; rollback should OVERWRITE with this content.
+    - `operation`                → 'write' or 'edit', for debugging/auditing.
+    """
+    __tablename__ = "file_backups"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+
+    # The chat message that triggered this file change
+    message_id = Column(Uuid, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False)
+
+    # Absolute path of the file that was modified
+    file_path = Column(Text, nullable=False)
+
+    # Content before the modification. NULL means the file was newly created.
+    original_content = Column(Text, nullable=True)
+
+    # Which tool created this backup: 'write_file' or 'edit_file'
+    operation = Column(String(20), nullable=False, default="write_file")
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

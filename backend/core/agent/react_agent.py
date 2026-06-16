@@ -11,6 +11,7 @@ Key features:
 5. Working memory persistence.
 """
 
+import uuid
 import json
 import re
 import asyncio
@@ -40,6 +41,8 @@ class ReACTAgent:
         name: str, role: str, model: str, system_prompt: str,
         parent_coordinator_id: Optional[str] = None,
         task_id: Optional[str] = None,
+        fallback_model: Optional[str] = None,
+        reasoning_effort: str = "none",
     ):
         self.agent_id = agent_id
         self.team_id = team_id
@@ -47,10 +50,14 @@ class ReACTAgent:
         self.name = name
         self.role = role
         self.model = model
+        self.fallback_model = fallback_model
+        self.reasoning_effort = reasoning_effort
         self.system_prompt = system_prompt
         self.topic = f"team:{self.team_id}"
         self.parent_coordinator_id = parent_coordinator_id
         self.task_id = task_id
+        # Tracks the DB id of the current response message (for file snapshotting)
+        self.active_message_id: str | None = None
         self._worker_results: List[Dict[str, Any]] = []
         self._notification_queue: asyncio.Queue = asyncio.Queue()
         self._listening = False
@@ -58,9 +65,10 @@ class ReACTAgent:
 
     async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20) -> List[Dict[str, str]]:
         """Loads recent team messages from the DB to give the agent conversation context."""
+        team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
         stmt = (
             select(Message)
-            .where(Message.team_id == self.team_id)
+            .where(Message.team_id == team_uuid)
             .where(
                 or_(
                     Message.is_private == False,
@@ -76,12 +84,17 @@ class ReACTAgent:
 
         history = []
         for msg in messages:
-            role = "assistant" if msg.sender_id == self.agent_id else "user"
-            sender_label = msg.sender_name or msg.sender_id
-            history.append({
-                "role": role,
-                "content": f"[{sender_label}]: {msg.text}"
-            })
+            is_self = msg.sender_id == self.agent_id
+            if is_self:
+                # Own past messages: keep raw — no prefix so the model
+                # doesn't learn to prepend "[Name]: " in new responses.
+                history.append({"role": "assistant", "content": msg.text})
+            else:
+                sender_label = msg.sender_name or msg.sender_id
+                history.append({
+                    "role": "user",
+                    "content": f"[{sender_label}]: {msg.text}"
+                })
         return history
 
     async def assemble_system_prompt(self, db_session: AsyncSession, current_task: str) -> str:
@@ -93,7 +106,8 @@ class ReACTAgent:
         capabilities_block = "\n====\nCAPABILITIES & MEMORY\n====\n"
 
         # Single query: fetch all agents for the team
-        stmt = select(Agent).where(Agent.team_id == self.team_id)
+        team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+        stmt = select(Agent).where(Agent.team_id == team_uuid)
         roster_result = await db_session.execute(stmt)
         teammates = roster_result.scalars().all()
 
@@ -113,7 +127,7 @@ class ReACTAgent:
         project_result = await db_session.execute(
             select(Project, User)
             .join(User, User.id == Project.owner_id)
-            .where(Project.id == self.project_id)
+            .where(Project.id == (uuid.UUID(self.project_id) if isinstance(self.project_id, str) else self.project_id))
         )
         row = project_result.first()
         if row:
@@ -164,14 +178,51 @@ class ReACTAgent:
         # 6. Reasoning guidelines
         return f"{self.system_prompt}\n{capabilities_block}{STRICT_REASONING_GUIDELINES}"
 
-    async def run_loop(self, db_session: AsyncSession, initial_prompt: str):
+    async def run_loop(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None):
         """Runs the core ReACT loop with conversation history and streaming."""
         
         self._listening = True
         listener_task = asyncio.create_task(self._listen_for_notifications())
         
         try:
-            await self._run_loop_inner(db_session, initial_prompt)
+            await self._run_loop_inner(db_session, initial_prompt, attachments)
+        except asyncio.CancelledError:
+            # User clicked "Stop Generating" — persist whatever was partially generated
+            partial = getattr(self, "_current_thought_buffer", "").strip()
+            stop_note = "\n\n*[Generation stopped by user]*"
+            final_text = (partial + stop_note) if partial else stop_note.strip()
+
+            try:
+                db_msg = Message(
+                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                    sender_id=self.agent_id,
+                    sender_name=self.name,
+                    text=final_text,
+                    reasoning_text=getattr(self, "_current_reasoning_buffer", None) or None,
+                )
+                db_session.add(db_msg)
+                await db_session.commit()
+                await event_bus.publish(self.topic, {
+                    "type": "message",
+                    "id": str(db_msg.id),
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "text": final_text,
+                })
+            except Exception as persist_err:
+                self._log.warning("Could not persist partial message after cancel: %s", persist_err)
+
+            # Signal idle so the UI clears the typing indicator
+            await event_bus.publish(self.topic, {
+                "type": "agent_status",
+                "sender_id": self.agent_id,
+                "sender_name": self.name,
+                "role": self.role,
+                "status": "idle",
+            })
+            self._log.info("Agent %s stopped by user request.", self.name)
+            raise  # re-raise so asyncio.Task knows it was cancelled
         finally:
             self._listening = False
             listener_task.cancel()
@@ -180,9 +231,10 @@ class ReACTAgent:
             except asyncio.CancelledError:
                 pass
 
-    async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str):
+    async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None):
         # Fetch agent config
-        stmt = select(Agent).where(Agent.id == self.agent_id)
+        agent_uuid = uuid.UUID(self.agent_id) if isinstance(self.agent_id, str) else self.agent_id
+        stmt = select(Agent).where(Agent.id == agent_uuid)
         res = await db_session.execute(stmt)
         db_agent = res.scalar_one_or_none()
 
@@ -202,7 +254,13 @@ class ReACTAgent:
         history = await self._load_conversation_history(db_session)
 
         # Build messages: history + new prompt
-        messages = history + [{"role": "user", "content": initial_prompt}]
+        content = [{"type": "text", "text": initial_prompt}]
+        if attachments:
+            for att in attachments:
+                if att.get("type", "").startswith("image/"):
+                    content.append({"type": "image_url", "image_url": {"url": att["url"]}})
+        
+        messages = history + [{"role": "user", "content": content if attachments else initial_prompt}]
 
         loop_count = 0
         max_loops = MAX_LOOPS
@@ -246,13 +304,31 @@ class ReACTAgent:
 
             # Stream completion with retry
             self._log.info("Thinking... (loop %d/%d)", loop_count, max_loops)
+
+            # Emit explicit "thinking" status so the UI can show the indicator
+            # before the first streamed chunk arrives.
+            await event_bus.publish(self.topic, {
+                "type": "agent_status",
+                "sender_id": self.agent_id,
+                "sender_name": self.name,
+                "role": self.role,
+                "status": "thinking",
+            })
+
             thought_buffer = ""
+            reasoning_buffer = ""
+            # Mirror buffers onto self so CancelledError handler can persist partial output
+            self._current_thought_buffer = ""
+            self._current_reasoning_buffer = ""
             had_error = False
 
             for attempt in range(3):
                 try:
                     thought_buffer = ""
-                    async for chunk in llm_router.generate_stream(
+                    reasoning_buffer = ""
+                    self._current_thought_buffer = ""
+                    self._current_reasoning_buffer = ""
+                    async for chunk in llm_router.generate_stream_with_reasoning(
                         model=self.model,
                         system_prompt=system_prompt,
                         messages=messages,
@@ -260,16 +336,34 @@ class ReACTAgent:
                         project_id=self.project_id,
                         team_id=self.team_id,
                         agent_id=self.agent_id,
-                        agent_name=self.name
+                        agent_name=self.name,
+                        fallback_model=self.fallback_model,
+                        reasoning_effort=self.reasoning_effort,
                     ):
-                        thought_buffer += chunk
-                        await event_bus.publish(self.topic, {
-                            "type": "thought_delta",
-                            "sender_id": self.agent_id,
-                            "sender_name": self.name,
-                            "role": self.role,
-                            "delta": chunk
-                        })
+                        content_chunk = chunk.get("content", "")
+                        reasoning_chunk = chunk.get("reasoning", "")
+
+                        if reasoning_chunk:
+                            reasoning_buffer += reasoning_chunk
+                            self._current_reasoning_buffer = reasoning_buffer
+                            await event_bus.publish(self.topic, {
+                                "type": "stream_reasoning",
+                                "sender_id": self.agent_id,
+                                "sender_name": self.name,
+                                "role": self.role,
+                                "chunk": reasoning_chunk,
+                            })
+
+                        if content_chunk:
+                            thought_buffer += content_chunk
+                            self._current_thought_buffer = thought_buffer
+                            await event_bus.publish(self.topic, {
+                                "type": "thought_delta",
+                                "sender_id": self.agent_id,
+                                "sender_name": self.name,
+                                "role": self.role,
+                                "delta": content_chunk
+                            })
                     break  # Success
                 except Exception as e:
                     if attempt < 2:
@@ -293,24 +387,35 @@ class ReACTAgent:
 
             messages.append({"role": "assistant", "content": thought_buffer})
 
+            # Strip any accidental "[Name]: " prefix the model may have
+            # hallucinated at the start of its response.
+            import re as _re
+            thought_buffer = _re.sub(r'^\[[^\]]+\]:\s*', '', thought_buffer, count=1)
+
             action_call = self._parse_action(thought_buffer)
 
             if not action_call:
                 # Agent is done — persist and broadcast
                 self._log.info("Task finished after %d loops.", loop_count)
                 db_msg = Message(
-                    team_id=self.team_id, sender_id=self.agent_id,
-                    sender_name=self.name, text=thought_buffer
+                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                    sender_id=self.agent_id,
+                    sender_name=self.name, text=thought_buffer,
+                    reasoning_text=reasoning_buffer or None,
                 )
                 db_session.add(db_msg)
                 await db_session.commit()
+                # Track the persisted message id for future file snapshots in this loop
+                self.active_message_id = str(db_msg.id)
 
                 await event_bus.publish(self.topic, {
                     "type": "message",
+                    "id": str(db_msg.id),
                     "sender_id": self.agent_id,
                     "sender_name": self.name,
                     "role": self.role,
-                    "text": thought_buffer
+                    "text": thought_buffer,
+                    "has_reasoning": bool(reasoning_buffer),
                 })
 
                 if self.parent_coordinator_id:
@@ -376,17 +481,24 @@ class ReACTAgent:
                 })
 
     def _parse_action(self, text: str) -> Any:
-        """Parses [ACTION]tool_name(args)[/ACTION] from generated text."""
-        match = re.search(r"\[ACTION\](\w+)\((.*?)\)\[/ACTION\]", text, re.DOTALL)
-        if match:
-            tool_name = match.group(1)
-            raw_args = match.group(2).strip()
-            try:
-                arguments = json.loads(raw_args)
-            except json.JSONDecodeError:
-                arguments = {"value": raw_args}
-            return tool_name, arguments
-        return None
+        """Parses [ACTION]tool_name(args)[/ACTION] or <tool_call>tool_name(args) even if truncated."""
+        # Find the start of a tool call
+        match = re.search(r"(?:\[(?:ACTION|TOOL)\]|<tool_call>)\s*(\w+)\s*\(", text, re.DOTALL)
+        if not match:
+            return None
+        
+        tool_name = match.group(1)
+        start_idx = match.end()
+        raw_args = text[start_idx:]
+        
+        # Clean up any trailing closing tags or parentheses
+        raw_args = re.sub(r"\)\s*(?:\[/(?:ACTION|TOOL)\]|</tool_call>)?\s*$", "", raw_args).strip()
+        
+        try:
+            arguments = json.loads(raw_args)
+        except json.JSONDecodeError:
+            arguments = {"value": raw_args}
+        return tool_name, arguments
 
     def _build_task_notification(self, result_text: str, status: str) -> str:
         task_id = self.task_id or "unknown"
@@ -494,5 +606,6 @@ class ReACTAgent:
         return await tool_executor.execute(
             tool_name=name, arguments=args,
             agent_id=self.agent_id, agent_name=self.name,
-            team_id=self.team_id, permissions=permissions
+            team_id=self.team_id, permissions=permissions,
+            active_message_id=self.active_message_id,
         )

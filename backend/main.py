@@ -22,6 +22,7 @@ from pydantic import BaseModel
 import uvicorn
 import dotenv
 import os
+dotenv.load_dotenv()
 
 from core.memory.database import init_db, get_db, async_session
 from core.chat.event_bus import event_bus
@@ -31,8 +32,11 @@ from core.tools.tool_executor import register_builtin_tools
 from core.tools.tool_registry import ToolRegistry
 from core.api.crud_routes import router as crud_router
 from core.api.auth_routes import router as auth_router
-
-dotenv.load_dotenv()
+from core.api.google_auth_routes import router as google_auth_router
+from core.api.file_routes import router as file_router
+from core.api.terminal_ws import router as terminal_router
+from core.api.git_routes import router as git_router
+from core.api.search_routes import router as search_router
 
 import logging
 import importlib
@@ -102,8 +106,20 @@ app.add_middleware(
 )
 
 # Register API routes
+from fastapi.staticfiles import StaticFiles
+import os
+
+UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
 app.include_router(crud_router)
 app.include_router(auth_router)
+app.include_router(google_auth_router)
+app.include_router(file_router)
+app.include_router(terminal_router)
+app.include_router(git_router)
+app.include_router(search_router)
 
 
 # ============================================================
@@ -162,6 +178,11 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
                 except json.JSONDecodeError:
                     payload = {"text": data, "sender_id": "human"}
 
+                # Handle heartbeat pings
+                if payload.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+                    continue
+
                 # Basic validation to avoid injection/spoofing
                 text = payload.get("text", data if isinstance(data, str) else "")
                 sender_id = payload.get("sender_id", "human")
@@ -175,7 +196,10 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
                     continue
 
                 # Route the message through our MessageRouter (persists + triggers agents)
-                await message_router.route_message(text.strip(), sender_id.strip(), team_id, sender_name)
+                try:
+                    await message_router.route_message(text.strip(), sender_id.strip(), team_id, sender_name)
+                except Exception as e:
+                    logger.error("Failed to route message for team %s: %s", team_id, e)
         except (asyncio.CancelledError, WebSocketDisconnect):
             logger.info("WebSocket receive task ended for team %s", team_id)
         except Exception as e:

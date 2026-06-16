@@ -16,7 +16,7 @@ import uuid
 import asyncio
 import logging
 import weakref
-from typing import Optional, List, Set
+from typing import Optional, List, Set, Dict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,11 +29,22 @@ from core.memory.database import async_session
 
 class MessageRouter:
     def __init__(self):
-        # Weak set — tasks are tracked here so the GC doesn't silently collect
-        # them before they finish, and we can log unhandled exceptions.
-        self._running_tasks: Set[asyncio.Task] = set()
+        # Dict of agent_id -> set of running tasks.
+        # Tracked so we can cancel specific agents on demand.
+        self._running_tasks: Dict[str, Set[asyncio.Task]] = {}
 
-    async def route_message(self, text: str, sender_id: str, team_id: str, sender_name: Optional[str] = None):
+    def cancel_agent(self, agent_id: str) -> int:
+        """Cancel all active tasks for the given agent. Returns number of tasks cancelled."""
+        tasks = self._running_tasks.get(agent_id, set())
+        count = 0
+        for task in list(tasks):
+            if not task.done():
+                task.cancel()
+                count += 1
+        logger.info("Cancelled %d task(s) for agent %s", count, agent_id)
+        return count
+
+    async def route_message(self, text: str, sender_id: str, team_id: str, sender_name: Optional[str] = None, attachments: Optional[List[Dict]] = None):
         """
         Parses a raw incoming message, persists it, and triggers agent ReACT loops
         based on @mention and /@private mention patterns.
@@ -48,7 +59,6 @@ class MessageRouter:
 
         # Persist message to database
         async with async_session() as db:
-            # Resolve all mentioned agents
             target_agents: List[Agent] = []
             recipient_id = None
 
@@ -58,37 +68,40 @@ class MessageRouter:
                 logger.error("Invalid team_id in route_message: %s", team_id)
                 return
 
-            for name in mentioned_names:
+            # Verify the team actually exists in the database
+            stmt = select(Team.id).where(Team.id == team_uuid)
+            result = await db.execute(stmt)
+            if result.scalar_one_or_none() is None:
+                logger.warning("Team %s not found. Dropping message from %s.", team_id, sender_id)
+                return
+
+            # OPTIMIZATION: Resolve all mentioned agents in a single query
+            if mentioned_names:
                 stmt = select(Agent).where(
                     Agent.team_id == team_uuid,
-                    Agent.name == name
+                    Agent.name.in_(mentioned_names)
                 )
                 result = await db.execute(stmt)
-                agent = result.scalar_one_or_none()
-                if agent:
-                    target_agents.append(agent)
-                    if len(mentioned_names) == 1:
-                        recipient_id = str(agent.id)
+                agents = result.scalars().all()
+                target_agents.extend(agents)
+                if len(mentioned_names) == 1 and agents:
+                    recipient_id = str(agents[0].id)
 
             resolved_sender_name = sender_name
             if sender_id == "human" and not resolved_sender_name:
-                # FIX: use team_uuid (UUID type) — not the raw string — to match
-                # the Team.id column which is stored as Uuid.
-                stmt = select(Team).where(Team.id == team_uuid)
+                # OPTIMIZATION: Single joined query to resolve user's full name from team_uuid
+                stmt = (
+                    select(User)
+                    .join(Project, Project.owner_id == User.id)
+                    .join(Team, Team.project_id == Project.id)
+                    .where(Team.id == team_uuid)
+                )
                 res = await db.execute(stmt)
-                team = res.scalar_one_or_none()
-                if team:
-                    stmt = select(Project).where(Project.id == team.project_id)
-                    res = await db.execute(stmt)
-                    project = res.scalar_one_or_none()
-                    if project:
-                        stmt = select(User).where(User.id == project.owner_id)
-                        res = await db.execute(stmt)
-                        user = res.scalar_one_or_none()
-                        if user:
-                            first = user.first_name or ""
-                            last = user.last_name or ""
-                            resolved_sender_name = f"{first} {last}".strip()
+                user = res.scalar_one_or_none()
+                if user:
+                    first = user.first_name or ""
+                    last = user.last_name or ""
+                    resolved_sender_name = f"{first} {last}".strip()
 
             if not resolved_sender_name and sender_id == "human":
                 resolved_sender_name = "You"
@@ -100,11 +113,17 @@ class MessageRouter:
                 stmt = select(Agent).where(
                     Agent.team_id == team_uuid,
                     Agent.role == "Coordinator"
-                )
+                ).limit(1)
                 result = await db.execute(stmt)
                 coordinator = result.scalar_one_or_none()
                 if coordinator:
                     target_agents.append(coordinator)
+                else:
+                    # Fallback: if no coordinator, route to all agents in the team
+                    stmt = select(Agent).where(Agent.team_id == team_uuid)
+                    result = await db.execute(stmt)
+                    agents = result.scalars().all()
+                    target_agents.extend(agents)
 
             # Save message to short-term memory
             db_msg = Message(
@@ -113,7 +132,8 @@ class MessageRouter:
                 sender_name=resolved_sender_name,
                 recipient_id=recipient_id,
                 is_private=is_private,
-                text=text
+                text=text,
+                attachments=attachments or []
             )
             db.add(db_msg)
             await db.commit()
@@ -122,18 +142,20 @@ class MessageRouter:
             topic = f"team:{team_id}"
             await event_bus.publish(topic, {
                 "type": "message",
+                "id": str(db_msg.id),
                 "sender_id": sender_id,
                 "sender_name": resolved_sender_name,
                 "recipient_id": recipient_id,
                 "text": text,
                 "is_private": is_private,
+                "attachments": attachments or []
             })
 
             # Trigger all mentioned agents' ReACT loops
             for agent in target_agents:
-                await self._trigger_agent(agent, text, db)
+                await self._trigger_agent(agent, text, db, attachments)
 
-    async def _trigger_agent(self, agent: Agent, prompt_text: str, db_session: AsyncSession):
+    async def _trigger_agent(self, agent: Agent, prompt_text: str, db_session: AsyncSession, attachments: Optional[List[Dict]] = None):
         """
         Spawns the target agent's ReACT loop as a background asyncio task.
         Holds a strong reference to the task to prevent silent GC before completion.
@@ -156,6 +178,8 @@ class MessageRouter:
                 role=agent.role,
                 model=agent.model,
                 system_prompt=agent.system_prompt,
+                fallback_model=agent.fallback_model,
+                reasoning_effort=getattr(agent, "reasoning_effort", "none") or "none",
             )
         else:
             from core.agent.react_agent import ReACTAgent
@@ -167,25 +191,30 @@ class MessageRouter:
                 role=agent.role,
                 model=agent.model,
                 system_prompt=agent.system_prompt,
+                fallback_model=agent.fallback_model,
+                reasoning_effort=getattr(agent, "reasoning_effort", "none") or "none",
             )
 
         # Run the agent loop in a fresh database session (separate transaction scope)
         async def _run_agent():
             async with async_session() as agent_db:
-                await react.run_loop(agent_db, prompt_text)
+                await react.run_loop(agent_db, prompt_text, attachments)
 
+        agent_id_str = str(agent.id)
         task = asyncio.create_task(_run_agent())
-        # Hold a strong reference so the task is not silently GC'd
-        self._running_tasks.add(task)
+
+        # Track task per agent so it can be cancelled on demand
+        self._running_tasks.setdefault(agent_id_str, set()).add(task)
 
         def _on_task_done(t: asyncio.Task):
-            self._running_tasks.discard(t)
-            exc = t.exception() if not t.cancelled() else None
-            if exc:
-                logger.exception(
-                    "Unhandled exception in agent loop for agent '%s': %s",
-                    agent.name, exc, exc_info=exc
-                )
+            self._running_tasks.get(agent_id_str, set()).discard(t)
+            if not t.cancelled():
+                exc = t.exception()
+                if exc:
+                    logger.exception(
+                        "Unhandled exception in agent loop for agent '%s': %s",
+                        agent.name, exc, exc_info=exc
+                    )
 
         task.add_done_callback(_on_task_done)
 

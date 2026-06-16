@@ -1,98 +1,90 @@
+"use client";
 import React, { useState, useEffect, useCallback } from "react";
 import { api } from "@/hooks/useApi";
 import { AgentConfig } from "@/lib/types";
+import { Plus, X, Loader2, Server, Trash2 } from "lucide-react";
 
-interface McpIntegrationProps {
+interface Props {
   teamId: string | null;
   agents: AgentConfig[];
+  onToast?: (msg: string, type: "success"|"error") => void;
 }
 
-export default function McpIntegration({ teamId, agents }: McpIntegrationProps) {
-  const [servers, setServers] = useState<any[]>([]);
+export default function McpIntegration({ teamId, agents, onToast }: Props) {
+  const [servers,    setServers]    = useState<any[]>([]);
   const [serverName, setServerName] = useState("");
-  const [command, setCommand] = useState("");
-  const [args, setArgs] = useState("");
-  const [agentId, setAgentId] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [command,    setCommand]    = useState("");
+  const [args,       setArgs]       = useState("");
+  const [agentId,    setAgentId]    = useState("");
+  const [loading,    setLoading]    = useState(false);
+  const [fetching,   setFetching]   = useState(false);
 
   const loadServers = useCallback(async () => {
     if (!teamId) return;
-    try {
-      const data = await api.listMcpServers(teamId);
-      setServers(data);
-    } catch (e) {
-      console.error(e);
-    }
+    setFetching(true);
+    try { setServers(await api.listMcpServers(teamId)); }
+    catch { /* ignore */ }
+    finally { setFetching(false); }
   }, [teamId]);
 
-  useEffect(() => {
-    if (teamId) {
-      loadServers();
-    } else {
-      setServers([]);
-    }
-  }, [teamId, loadServers]);
+  useEffect(() => { if (teamId) loadServers(); else setServers([]); }, [teamId, loadServers]);
 
-  const handleAddServer = async () => {
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!teamId || !serverName || !command) return;
     setLoading(true);
     try {
-      await api.createMcpServer({
-        team_id: teamId,
-        server_name: serverName,
-        command,
-        args,
-        agent_id: agentId || undefined
-      });
+      await api.createMcpServer({ team_id: teamId, server_name: serverName, command, args, agent_id: agentId || undefined });
       await loadServers();
-      setServerName("");
-      setCommand("");
-      setArgs("");
-      setAgentId("");
-    } catch (e) {
-      console.error(e);
-    }
-    setLoading(false);
+      setServerName(""); setCommand(""); setArgs(""); setAgentId("");
+      onToast?.("MCP server added", "success");
+    } catch { onToast?.("Failed to add server", "error"); }
+    finally { setLoading(false); }
   };
 
-  if (!teamId) {
-    return <div style={{ padding: "12px", color: "var(--text-tertiary)", fontSize: "13px", textAlign: "center" }}>Select a team to view MCP servers.</div>;
-  }
+  if (!teamId) return <p className="caption" style={{ padding: "var(--sp-md)", textAlign: "center" }}>Select a team to manage MCP servers.</p>;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      <div style={{ padding: "12px", background: "var(--bg-surface)", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)" }}>
-        <h4 style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-primary)", marginBottom: "8px" }}>Add New MCP Server</h4>
-        <input className="input" placeholder="Server Name (e.g. github)" value={serverName} onChange={e => setServerName(e.target.value)} style={{ fontSize: "12px", marginBottom: "8px", width: "100%" }} />
-        <input className="input" placeholder="Command (e.g. npx)" value={command} onChange={e => setCommand(e.target.value)} style={{ fontSize: "12px", marginBottom: "8px", width: "100%" }} />
-        <input className="input" placeholder="Args (comma separated, e.g. -y,@modelcontextprotocol/server-github)" value={args} onChange={e => setArgs(e.target.value)} style={{ fontSize: "12px", marginBottom: "8px", width: "100%" }} />
-        <select className="input" value={agentId} onChange={e => setAgentId(e.target.value)} style={{ fontSize: "12px", marginBottom: "8px", width: "100%" }}>
-          <option value="">Global (All Agents)</option>
-          {agents.map(a => (
-            <option key={a.id} value={a.id}>{a.name} ({a.role})</option>
-          ))}
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
+      {/* Add form */}
+      <form onSubmit={handleAdd} style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
+        <h4 className="label">Add New MCP Server</h4>
+        <input className="input" placeholder="Server name (e.g. github)" value={serverName} onChange={e => setServerName(e.target.value)} style={{ fontSize: 12 }} />
+        <input className="input" placeholder="Command (e.g. npx)" value={command} onChange={e => setCommand(e.target.value)} style={{ fontSize: 12 }} />
+        <input className="input" placeholder="Args comma-separated (e.g. -y,@mcp/server-github)" value={args} onChange={e => setArgs(e.target.value)} style={{ fontSize: 12 }} />
+        <select className="input" value={agentId} onChange={e => setAgentId(e.target.value)} style={{ fontSize: 12 }}>
+          <option value="">Global (all agents)</option>
+          {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.role})</option>)}
         </select>
-        <button className="btn btn-primary" onClick={handleAddServer} disabled={loading} style={{ width: "100%", fontSize: "12px" }}>
-          {loading ? "Connecting..." : "Add & Connect Server"}
+        <button type="submit" className="btn btn-primary btn-sm" disabled={loading || !serverName || !command} style={{ justifyContent: "center" }}>
+          {loading ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Add Server
         </button>
-      </div>
+      </form>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-        <h4 style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: "4px" }}>Connected Servers</h4>
-        {servers.length === 0 ? (
-          <div style={{ color: "var(--text-tertiary)", fontSize: "12px", textAlign: "center", padding: "12px 0" }}>No MCP servers connected to this team.</div>
+      {/* List */}
+      <div>
+        <h4 className="label" style={{ marginBottom: "var(--sp-sm)" }}>Connected Servers</h4>
+        {fetching ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {[1,2].map(i => <div key={i} className="skeleton" style={{ height: 60 }} />)}
+          </div>
+        ) : servers.length === 0 ? (
+          <p className="caption" style={{ textAlign: "center", padding: "var(--sp-lg) 0" }}>No MCP servers connected.</p>
         ) : (
-          servers.map(s => (
-            <div key={s.id} style={{ background: "rgba(255,255,255,0.02)", border: "1px solid var(--border-subtle)", borderRadius: "6px", padding: "12px" }}>
-              <div style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-primary)" }}>{s.server_name}</div>
-              <div style={{ fontSize: "10px", color: "var(--text-tertiary)", marginTop: "4px", background: "rgba(0,0,0,0.2)", padding: "4px", borderRadius: "4px" }}>
-                <code>{s.command} {s.args?.join(", ")}</code>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
+            {servers.map(s => (
+              <div key={s.id} style={{ background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)", padding: "var(--sp-md)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                  <Server size={12} color="var(--color-primary)" />
+                  <span className="body-sm-strong">{s.server_name}</span>
+                </div>
+                <code style={{ fontSize: 10, color: "var(--color-mute)", display: "block", marginTop: 4 }}>{s.command} {s.args?.join(" ")}</code>
+                <div className="caption" style={{ marginTop: 4 }}>
+                  {s.agent_id ? agents.find(a => a.id === s.agent_id)?.name || "Unknown agent" : "Global"}
+                </div>
               </div>
-              <div style={{ fontSize: "10px", color: "var(--text-secondary)", marginTop: "6px" }}>
-                Assigned to: {s.agent_id ? agents.find(a => a.id === s.agent_id)?.name || s.agent_id : "Global"}
-              </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </div>
     </div>

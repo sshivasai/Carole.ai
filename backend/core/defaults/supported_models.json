@@ -1,0 +1,103 @@
+{
+  "openrouter": {
+    "label": "OpenRouter",
+    "key_name": "openrouter",
+    "models": [
+      { "value": "openrouter/auto", "label": "⚡ Auto — NotDiamond best model", "special": true },
+      { "value": "openrouter/free", "label": "🆓 Auto Free — random free model", "special": true },
+
+      { "value": "openrouter/anthropic/claude-opus-4-8",         "label": "Claude 4.8 Opus" },
+      { "value": "openrouter/anthropic/claude-opus-4-7",         "label": "Claude 4.7 Opus" },
+      { "value": "openrouter/anthropic/claude-opus-4-6",         "label": "Claude 4.6 Opus" },
+      { "value": "openrouter/anthropic/claude-opus-4-5-20251101", "label": "Claude 4.5 Opus" },
+      { "value": "openrouter/anthropic/claude-opus-4-1-20250805", "label": "Claude 4.1 Opus" },
+      { "value": "openrouter/anthropic/claude-sonnet-4-6",       "label": "Claude 4.6 Sonnet" },
+      { "value": "openrouter/anthropic/claude-sonnet-4-5-20250929", "label": "Claude 4.5 Sonnet" },
+      { "value": "openrouter/anthropic/claude-haiku-4-5-20251001", "label": "Claude 4.5 Haiku" },
+
+      { "value": "openrouter/openai/o3",                       "label": "o3 (best reasoning / $10/M)" },
+      { "value": "openrouter/openai/gpt-4.5-preview",          "label": "GPT-4.5 Preview (latest / $75/M)" },
+      { "value": "openrouter/openai/gpt-4o",                   "label": "GPT-4o (advanced / $2.5/M)" },
+      { "value": "openrouter/openai/gpt-4o-mini",              "label": "GPT-4o Mini (balanced / $0.15/M)" },
+      { "value": "openrouter/openai/o4-mini",                  "label": "o4-mini (reasoning / $1.1/M)" },
+      { "value": "openrouter/openai/gpt-3.5-turbo",            "label": "GPT-3.5 Turbo (budget / $0.5/M)" },
+
+      { "value": "openrouter/google/gemini-2.5-pro",           "label": "Gemini 2.5 Pro (top / $1.25/M)" },
+      { "value": "openrouter/google/gemini-2.0-flash-001",     "label": "Gemini 2.0 Flash (fast / $0.1/M)" },
+
+      { "value": "openrouter/deepseek/deepseek-r1",            "label": "DeepSeek R1 (reasoning / $0.55/M)" },
+      { "value": "openrouter/meta-llama/llama-3.3-70b-instruct", "label": "Llama 3.3 70B (open / $0.59/M)" },
+      { "value": "openrouter/mistralai/mistral-large",         "label": "Mistral Large (balanced / $2/M)" },
+      { "value": "openrouter/xai/grok-3-beta",                 "label": "Grok 3 Beta (advanced / $3/M)" },
+
+      { "value": "openrouter/google/gemini-2.0-flash-exp:free",        "label": "Gemini 2.0 Flash (FREE)" },
+      { "value": "openrouter/meta-llama/llama-3.1-8b-instruct:free",   "label": "Llama 3.1 8B (FREE)" },
+      { "value": "openrouter/deepseek/deepseek-chat-v3-0324:free",     "label": "DeepSeek v3 (FREE)" },
+      { "value": "openrouter/microsoft/phi-4-reasoning:free",           "label": "Phi-4 Reasoning (FREE)" },
+      { "value": "openrouter/mistralai/mistral-7b-instruct:free",       "label": "Mistral 7B (FREE)" },
+      { "value": "openrouter/qwen/qwen3-8b:free",                       "label": "Qwen3 8B (FREE)" },
+      { "value": "openrouter/google/gemma-3-27b-it:free",               "label": "Gemma 3 27B (FREE)" }
+    ]
+  },
+  "anthropic": {
+    "label": "Anthropic",
+    "key_name": "anthropic",
+    "models": [
+      { "value": "claude-opus-4-8",                "label": "Claude 4.8 Opus" },
+      { "value": "claude-opus-4-7",                "label": "Claude 4.7 Opus" },
+      { "value": "claude-opus-4-6",                "label": "Claude 4.6 Opus" },
+      { "value": "claude-opus-4-5-20251101",       "label": "Claude 4.5 Opus" },
+      { "value": "claude-opus-4-1-20250805",       "label": "Claude 4.1 Opus" },
+      { "value": "claude-sonnet-4-6",              "label": "Claude 4.6 Sonnet" },
+      { "value": "claude-sonnet-4-5-20250929",     "label": "Claude 4.5 Sonnet" },
+      { "value": "claude-haiku-4-5-20251001",      "label": "Claude 4.5 Haiku" }
+    ]
+  },
+  "openai": {
+    "label": "OpenAI",
+    "key_name": "openai",
+    "models": [
+      { "value": "gpt-5.5-pro",     "label": "GPT-5.5 Pro" },
+      { "value": "gpt-5.5",         "label": "GPT-5.5" },
+      { "value": "o4-mini",         "label": "o4-mini" },
+      { "value": "o3",              "label": "o3" },
+      { "value": "gpt-4o",          "label": "GPT-4o" }
+    ]
+  },
+  "google": {
+    "label": "Google Gemini",
+    "key_name": "google",
+    "models": [
+      { "value": "gemini-2.5-pro",        "label": "Gemini 2.5 Pro      — top          · $5/M out" },
+      { "value": "gemini-2.5-flash",      "label": "Gemini 2.5 Flash    — fast+think   · $0.6/M out" },
+      { "value": "gemini-2.0-flash",      "label": "Gemini 2.0 Flash    — balanced     · $0.3/M out" },
+      { "value": "gemini-2.0-flash-lite", "label": "Gemini 2.0 Flash Lite— cheapest    · $0.075/M out" },
+      { "value": "gemini-1.5-pro",        "label": "Gemini 1.5 Pro      — large ctx    · $5/M out" },
+      { "value": "gemini-1.5-flash",      "label": "Gemini 1.5 Flash    — budget       · $0.3/M out" },
+      { "value": "gemini-1.5-flash-8b",   "label": "Gemini 1.5 Flash 8B — ultra cheap · $0.075/M out" }
+    ]
+  },
+  "nvidia": {
+    "label": "NVIDIA NIM",
+    "key_name": "nvidia",
+    "models": [
+      { "value": "nvidia/meta/llama-3.3-70b-instruct",   "label": "Llama 3.3 70B (balanced)" },
+      { "value": "nvidia/meta/llama-3.1-405b-instruct",  "label": "Llama 3.1 405B (flagship)" },
+      { "value": "nvidia/mistralai/mistral-large-2-instruct", "label": "Mistral Large 2 (capable)" },
+      { "value": "nvidia/google/gemma-3-12b-it",         "label": "Gemma 3 12B (open)" }
+    ]
+  },
+  "ollama": {
+    "label": "Ollama (local)",
+    "key_name": null,
+    "models": [
+      { "value": "ollama/llama3.2",  "label": "Llama 3.2  (latest)" },
+      { "value": "ollama/llama3",    "label": "Llama 3    (stable)" },
+      { "value": "ollama/mistral",   "label": "Mistral    (fast)" },
+      { "value": "ollama/codellama", "label": "CodeLlama  (code)" },
+      { "value": "ollama/phi3",      "label": "Phi-3      (tiny)" },
+      { "value": "ollama/gemma2",    "label": "Gemma 2    (Google)" },
+      { "value": "ollama/qwen2.5",   "label": "Qwen 2.5   (multilingual)" }
+    ]
+  }
+}

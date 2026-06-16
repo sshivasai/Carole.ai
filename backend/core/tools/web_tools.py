@@ -12,11 +12,21 @@ Responsibilities:
 import os
 import httpx
 from typing import List, Dict, Any
+from core.llm.config_manager import load_config, get_key
 
 
 class WebTools:
     def __init__(self):
-        self.tavily_key = os.getenv("TAVILY_API_KEY")
+        self._load_keys()
+
+    def _load_keys(self):
+        """Loads API keys from ~/.carole/config.json with env var fallback."""
+        cfg = load_config()
+        self.tavily_key = get_key(cfg, "tavily", "TAVILY_API_KEY")
+
+    def reload_config(self):
+        """Hot-reload keys after settings are saved."""
+        self._load_keys()
 
     async def web_search(self, query: str, max_results: int = 5) -> str:
         """

@@ -41,6 +41,9 @@ class ProjectCreate(BaseModel):
     name: str
     owner_id: Optional[str] = None
 
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+
 class TeamCreate(BaseModel):
     name: str
     project_id: str
@@ -50,6 +53,8 @@ class AgentCreate(BaseModel):
     name: str
     role: str
     model: str = DEFAULT_FAST_MODEL
+    fallback_model: Optional[str] = None
+    reasoning_effort: str = "none"  # none | low | medium | high
     system_prompt: str = ""
     personality: str = "professional"  # professional, casual, witty, mentor
     tool_permissions: dict = {}
@@ -60,6 +65,8 @@ class AgentUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     model: Optional[str] = None
+    fallback_model: Optional[str] = None
+    reasoning_effort: Optional[str] = None  # none | low | medium | high
     system_prompt: Optional[str] = None
     personality: Optional[str] = None
     tool_permissions: Optional[dict] = None
@@ -136,12 +143,48 @@ async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)
     project = Project(name=body.name, owner_id=owner_uuid)
     db.add(project)
     await db.flush()
+
+    # Provision project workspace folder using exactly the slugified name
+    import re
+    from core.config import CAROLE_HOME_DIR
+    slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
+    if not slug:
+        slug = str(project.id)[:8]
+    workspace_dir = CAROLE_HOME_DIR / "workspaces" / slug
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
     return {"id": str(project.id), "name": project.name}
 
 @router.get("/projects")
 async def list_projects(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Project).order_by(Project.created_at.desc()))
     return [{"id": str(p.id), "name": p.name, "owner_id": str(p.owner_id)} for p in result.scalars().all()]
+
+@router.put("/projects/{project_id}")
+async def update_project(project_id: str, body: ProjectUpdate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Project).where(Project.id == uuid.UUID(project_id)))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    if body.name is not None and body.name != project.name:
+        project.name = body.name
+        
+        # Rename workspace folder if it exists
+        import re
+        from core.tools.file_tools import file_tools
+        old_dir = await file_tools.get_workspace_root(project_id)
+        
+        if old_dir.exists() and old_dir.name != "workspaces":
+            new_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', body.name).strip('-')
+            if not new_slug:
+                new_slug = str(project.id)[:8]
+            new_dir = old_dir.parent / new_slug
+            if old_dir != new_dir and not new_dir.exists():
+                old_dir.rename(new_dir)
+                
+    await db.flush()
+    return {"status": "updated", "id": project_id}
 
 
 # ============================================================
@@ -257,6 +300,8 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
         name=body.name,
         role=body.role,
         model=body.model,
+        fallback_model=body.fallback_model or None,
+        reasoning_effort=body.reasoning_effort or "none",
         system_prompt=prompt,
         personality=body.personality,
         custom_instructions=body.custom_instructions,
@@ -267,7 +312,9 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
     await db.flush()
     return {
         "id": str(agent.id), "name": agent.name, "role": agent.role,
-        "model": agent.model, "team_id": str(agent.team_id),
+        "model": agent.model, "fallback_model": agent.fallback_model,
+        "reasoning_effort": agent.reasoning_effort,
+        "team_id": str(agent.team_id),
         "personality": agent.personality, "skills": agent.skills,
         "custom_instructions": agent.custom_instructions,
     }
@@ -280,7 +327,9 @@ async def list_agents(team_id: str, db: AsyncSession = Depends(get_db)):
     return [
         {
             "id": str(a.id), "name": a.name, "role": a.role,
-            "model": a.model, "tool_permissions": a.tool_permissions,
+            "model": a.model, "fallback_model": a.fallback_model,
+            "reasoning_effort": a.reasoning_effort or "none",
+            "tool_permissions": a.tool_permissions,
             "personality": a.personality, "skills": a.skills or [],
             "custom_instructions": a.custom_instructions,
         }
@@ -299,6 +348,11 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
         agent.role = body.role
     if body.model is not None:
         agent.model = body.model
+    if body.fallback_model is not None:
+        # Allow clearing the fallback by sending empty string
+        agent.fallback_model = body.fallback_model.strip() or None
+    if body.reasoning_effort is not None:
+        agent.reasoning_effort = body.reasoning_effort
     if body.tool_permissions is not None:
         agent.tool_permissions = body.tool_permissions
     if body.personality is not None:
@@ -321,7 +375,15 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
                 prompt += f"\n\nSPECIALIZED SKILLS & TOOLKITS:\n{skills_text}"
             agent.system_prompt = prompt
     await db.flush()
-    return {"status": "updated", "id": agent_id}
+    return {
+        "id": str(agent.id), "name": agent.name, "role": agent.role,
+        "model": agent.model, "fallback_model": agent.fallback_model,
+        "reasoning_effort": agent.reasoning_effort,
+        "team_id": str(agent.team_id),
+        "personality": agent.personality, "skills": agent.skills,
+        "custom_instructions": agent.custom_instructions,
+        "tool_permissions": agent.tool_permissions,
+    }
 
 @router.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
@@ -386,11 +448,175 @@ async def list_messages(team_id: str, limit: int = 50, db: AsyncSession = Depend
     return [
         {
             "id": str(m.id), "sender_id": m.sender_id,
+            "sender_name": getattr(m, "sender_name", None),
             "recipient_id": m.recipient_id, "text": m.text,
             "created_at": m.created_at.isoformat() if m.created_at else None,
+            "reasoning": getattr(m, "reasoning_text", None),
+            "attachments": getattr(m, "attachments", []),
         }
         for m in reversed(messages)  # chronological order
     ]
+
+
+from fastapi import UploadFile, File
+import os
+
+UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@router.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """Handles file uploads for multimodal chat support."""
+    import uuid
+    file_id = str(uuid.uuid4())
+    ext = os.path.splitext(file.filename)[1] if file.filename else ""
+    filename = f"{file_id}{ext}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+        
+    return {"id": file_id, "url": f"http://localhost:8000/uploads/{filename}", "name": file.filename, "type": file.content_type}
+
+class MessageEdit(BaseModel):
+    text: str
+
+
+@router.put("/messages/{message_id}")
+async def edit_message(message_id: str, body: MessageEdit, db: AsyncSession = Depends(get_db)):
+    """Edit a single message's text only. No deletion, no rollback."""
+    msg = await db.get(Message, uuid.UUID(message_id))
+    if not msg:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Message not found")
+    msg.text = body.text.strip()
+    await db.commit()
+    return {"ok": True, "id": message_id, "text": msg.text}
+
+
+@router.delete("/messages/{message_id}")
+async def delete_message(message_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a single message only. No rollback, no cascade to later messages."""
+    msg = await db.get(Message, uuid.UUID(message_id))
+    if not msg:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Message not found")
+    team_id = str(msg.team_id)
+    await db.delete(msg)
+    await db.commit()
+
+    from core.chat.event_bus import event_bus
+    await event_bus.publish(f"team:{team_id}", {
+        "type": "message_deleted",
+        "message_id": message_id,
+    })
+    return {"ok": True}
+
+
+@router.delete("/messages/{message_id}/rollback")
+async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Rollback: delete this message AND all messages that came after it in the
+    same team, then replay FileBackup records in reverse to restore the workspace.
+    """
+    from fastapi import HTTPException
+    from sqlalchemy import delete as sa_delete
+    from pathlib import Path
+
+    msg = await db.get(Message, uuid.UUID(message_id))
+    if not msg:
+        raise HTTPException(404, "Message not found")
+
+    team_id_uuid = msg.team_id
+    team_id_str = str(team_id_uuid)
+    pivot_time = msg.created_at
+
+    # 1. Find all messages >= pivot time (inclusive of this message)
+    later_msgs = (await db.execute(
+        select(Message)
+        .where(Message.team_id == team_id_uuid)
+        .where(Message.created_at >= pivot_time)
+        .order_by(Message.created_at.desc())  # newest first for rollback order
+    )).scalars().all()
+
+    later_ids = [m.id for m in later_msgs]
+
+    # 2. Collect file backups for those messages, oldest-first so we replay in
+    #    correct chronological order (but we restore in reverse = newest first)
+    if later_ids:
+        from core.memory.models import FileBackup
+        backups = (await db.execute(
+            select(FileBackup)
+            .where(FileBackup.message_id.in_(later_ids))
+            .order_by(FileBackup.created_at.desc())  # newest change first = undo order
+        )).scalars().all()
+
+        # 3. Restore files (newest change undone first)
+        restored, deleted_files = [], []
+        seen_paths = set()
+        for bk in backups:
+            if bk.file_path in seen_paths:
+                # Only restore the OLDEST backup per file path (original state)
+                continue
+            seen_paths.add(bk.file_path)
+            p = Path(bk.file_path)
+            try:
+                if bk.original_content is None:
+                    # File was newly created — delete it
+                    if p.exists():
+                        p.unlink()
+                    deleted_files.append(bk.file_path)
+                else:
+                    # File was modified — restore original
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_text(bk.original_content, encoding="utf-8")
+                    restored.append(bk.file_path)
+            except Exception as e:
+                import logging
+                logging.getLogger("carole.rollback").warning("Rollback failed for %s: %s", bk.file_path, e)
+
+        # 4. Delete FileBackup records
+        await db.execute(
+            sa_delete(FileBackup).where(FileBackup.message_id.in_(later_ids))
+        )
+
+    # 5. Delete the messages themselves
+    for m in later_msgs:
+        await db.delete(m)
+    await db.commit()
+
+    # 6. Broadcast rewind event
+    from core.chat.event_bus import event_bus
+    await event_bus.publish(f"team:{team_id_str}", {
+        "type": "message_rewind",
+        "from_message_id": message_id,
+        "from_timestamp": pivot_time.isoformat() if pivot_time else None,
+        "restored_files": restored if later_ids else [],
+        "deleted_files": deleted_files if later_ids else [],
+    })
+
+    return {
+        "ok": True,
+        "deleted_count": len(later_msgs),
+        "restored_files": restored if later_ids else [],
+        "deleted_files": deleted_files if later_ids else [],
+    }
+
+
+
+# ============================================================
+# Agent Stop (Cancel streaming generation)
+# ============================================================
+
+@router.post("/agents/{agent_id}/stop")
+async def stop_agent(agent_id: str):
+    """
+    Cancel all active background tasks for the given agent,
+    terminating its LLM stream and saving tokens.
+    """
+    from core.chat.message_router import message_router
+    cancelled = message_router.cancel_agent(agent_id)
+    return {"ok": True, "cancelled_tasks": cancelled}
 
 
 # ============================================================
@@ -481,6 +707,98 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
     task.updated_at = datetime.utcnow()
     await db.flush()
     return {"status": "updated", "id": task_id}
+
+
+# ============================================================
+# LLM Model Catalog
+# ============================================================
+
+@router.get("/models")
+async def list_models():
+    """
+    Returns the model catalog filtered to providers with active API keys.
+    Used by AgentPanel to populate provider/model dropdowns.
+    """
+    from core.llm.model_catalog import get_active_catalog
+    from core.llm.config_manager import load_config
+    cfg = load_config()
+    return get_active_catalog(cfg)
+
+
+@router.get("/models/catalog")
+async def get_model_catalog():
+    """Full (unfiltered) catalog — used by Settings → Model Catalog editor."""
+    from core.llm.model_catalog import load_model_catalog
+    return load_model_catalog()
+
+
+@router.get("/models/catalog/defaults")
+async def get_default_model_catalog():
+    """Returns ONLY the factory-shipped defaults (no user overrides)."""
+    from core.llm.model_catalog import load_default_model_catalog
+    return load_default_model_catalog()
+
+
+@router.post("/models/catalog")
+async def save_model_catalog_endpoint(body: dict):
+    """
+    Saves the model catalog to ~/.carole/supported_models.json.
+    Accepts the full catalog object (same shape as GET response).
+    """
+    from core.llm.model_catalog import save_model_catalog
+    save_model_catalog(body)
+    return {"status": "saved"}
+
+
+@router.post("/models/catalog/reset")
+async def reset_model_catalog_endpoint():
+    """
+    Deletes ~/.carole/supported_models.json so factory defaults take effect.
+    Returns the factory defaults so the UI can refresh immediately.
+    """
+    from core.llm.model_catalog import reset_model_catalog, load_default_model_catalog
+    reset_model_catalog()
+    return load_default_model_catalog()
+
+
+# ============================================================
+# Prompts
+# ============================================================
+
+@router.get("/prompts")
+async def get_prompts():
+    """Returns all prompts (merged defaults + user overrides)."""
+    from core.prompts import load_prompts
+    return load_prompts()
+
+
+@router.get("/prompts/defaults")
+async def get_default_prompts():
+    """Returns ONLY the factory-shipped prompt defaults (no user overrides)."""
+    from core.prompts import load_default_prompts
+    return load_default_prompts()
+
+
+@router.post("/prompts")
+async def save_prompts_endpoint(body: dict):
+    """
+    Saves prompts to ~/.carole/prompts.json.
+    Accepts a flat dict of { slug: template_string }.
+    """
+    from core.prompts import save_prompts
+    save_prompts(body)
+    return {"status": "saved"}
+
+
+@router.post("/prompts/reset")
+async def reset_prompts_endpoint():
+    """
+    Deletes ~/.carole/prompts.json so factory defaults take effect.
+    Returns the factory defaults so the UI can refresh immediately.
+    """
+    from core.prompts import reset_prompts, load_default_prompts
+    reset_prompts()
+    return load_default_prompts()
 
 
 # ============================================================
@@ -658,66 +976,12 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
 # ============================================================
 
 def _default_system_prompt(name: str, role: str, personality: str = "professional") -> str:
-    """Generates a human-like system prompt so agents talk like real devs."""
-
-    personality_traits = {
-        "professional": (
-            f"You are {name}, a {role} on this engineering team. "
-            "You communicate clearly and directly, like a senior engineer in a Slack channel. "
-            "Keep messages concise. Use casual technical language — say 'looks good', 'let me check', "
-            "'hmm that's a bit off', 'on it', 'done ✓'. Never be robotic or overly formal. "
-            "When you spot issues, be direct: 'this will break because...' not 'I would suggest considering...'. "
-            "Share your reasoning briefly. Use emoji sparingly but naturally (✓, 🔥, 👀, 🐛)."
-        ),
-        "casual": (
-            f"You are {name}, the {role} of this team. You're the one who keeps things moving. "
-            "Talk like you're in a team standup — relaxed, direct, no fluff. "
-            "Say things like 'yo, let me handle that', 'alright so here's the plan', "
-            "'heads up — this needs attention', 'shipped it 🚀'. "
-            "You delegate clearly: 'Hey @Nova, can you take the API routes? I'll handle the schema.' "
-            "When things go wrong, stay calm: 'okay that broke, let me figure out why'. "
-            "You think out loud briefly before acting."
-        ),
-        "witty": (
-            f"You are {name}, a {role} who writes clean code and occasionally drops a dry one-liner. "
-            "You're the dev who names variables well and leaves helpful comments. "
-            "Talk naturally: 'alright, writing the handler now', 'this function is doing too much, "
-            "let me split it', 'tests passing ✓', 'found the bug — it was a classic off-by-one 🤦'. "
-            "Be helpful and proactive. When you finish something, share what you did concisely. "
-            "If you hit an error, say what happened and what you're trying next."
-        ),
-        "mentor": (
-            f"You are {name}, a senior {role} who reviews code thoughtfully. "
-            "You're the teammate who catches edge cases and suggests better patterns. "
-            "Talk like a senior dev in a PR review: 'nice approach, but consider using X here', "
-            "'this works but it'll be hard to test — what about...', 'lgtm 👍', "
-            "'one nit: the naming could be clearer'. "
-            "Be constructive, never condescending. When you approve something, be genuine: "
-            "'solid work, this is clean'. When something needs changes, be specific about why."
-        ),
-    }
-
-    base = personality_traits.get(personality, personality_traits["professional"])
-
-    return (
-        f"{base}\n\n"
-        "====\n"
-        "MARKDOWN RULES\n"
-        "====\n"
-        "ALL responses MUST show ANY `language construct` OR filename reference as clickable, "
-        "exactly as [`filename OR language.declaration()`](relative/file/path.ext:line); line is required for `syntax` and optional for filename links. "
-        "This applies to ALL markdown responses.\n\n"
-        "====\n"
-        "BEHAVIORAL RULES\n"
-        "====\n"
-        "1. You are part of a real engineering team. Address teammates by name when relevant.\n"
-        "2. Think step by step but share only the key reasoning, not every thought.\n"
-        "3. When you use a tool, briefly say what you're doing: 'let me read that file first' or 'running the tests now'.\n"
-        "4. After completing work, summarize what you did in 1-2 sentences.\n"
-        "5. If you're unsure, say so honestly: 'not 100% sure about this, let me check'.\n"
-        "6. Coordinate with teammates — if a task isn't yours, suggest who should handle it.\n"
-        "7. When you see a file change or code, give concrete feedback, not generic praise.\n"
-    )
+    """
+    Assembles the full agent system prompt from modular prompt slugs.
+    Text is loaded from defaults/prompts.json (overridable via ~/.carole/prompts.json).
+    """
+    from core.prompts import build_agent_system_prompt
+    return build_agent_system_prompt(name=name, role=role, personality=personality)
 
 
 # ============================================================
@@ -854,3 +1118,69 @@ async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db)):
     ]
 
 
+# ============================================================
+# App Settings (API Keys & Provider Config)
+# ============================================================
+
+class AppSettings(BaseModel):
+    api_keys: dict = {}
+    providers: dict = {}
+
+
+@router.get("/settings")
+async def get_settings():
+    """
+    Returns the current application settings from ~/.carole/config.json.
+    API key values are masked (last 4 chars visible) for security.
+    """
+    from core.llm.config_manager import load_config
+    cfg = load_config()
+
+    # Mask keys so they never leave the backend in plaintext
+    masked_keys = {}
+    for k, v in cfg.get("api_keys", {}).items():
+        if v and len(v) > 8:
+            masked_keys[k] = f"{'*' * (len(v) - 4)}{v[-4:]}"
+        elif v:
+            masked_keys[k] = "****"
+        else:
+            masked_keys[k] = ""
+
+    return {
+        "api_keys": masked_keys,
+        "providers": cfg.get("providers", {}),
+    }
+
+
+@router.post("/settings")
+async def save_settings(body: AppSettings):
+    """
+    Saves API keys and provider config to ~/.carole/config.json and hot-reloads
+    the LLM router so changes take effect immediately without a server restart.
+    Ignores keys where the value is all asterisks (masked / unchanged).
+    """
+    from core.llm.config_manager import load_config, save_config
+    from core.llm.multi_model_router import llm_router
+
+    # Load current config so we can do a partial update (masked keys = unchanged)
+    current = load_config()
+
+    new_keys = dict(current.get("api_keys", {}))
+    for k, v in body.api_keys.items():
+        # Skip masked placeholder values sent back from the UI
+        if v and not all(c == "*" for c in v.replace("-", "").replace("_", "")):
+            new_keys[k] = v.strip()
+
+    new_providers = {**current.get("providers", {}), **body.providers}
+
+    updated_cfg = {"api_keys": new_keys, "providers": new_providers}
+    save_config(updated_cfg)
+
+    # Hot-reload the LLM router so new keys are used immediately
+    llm_router.reload_config()
+
+    # Hot-reload web_tools so Tavily key is picked up
+    from core.tools.web_tools import web_tools
+    web_tools.reload_config()
+
+    return {"status": "saved", "reloaded": True}

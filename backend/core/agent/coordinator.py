@@ -33,8 +33,10 @@ class CoordinatorAgent(ReACTAgent):
         base_prompt = await super().assemble_system_prompt(db_session, current_task)
 
         # Fetch active tasks
+        import uuid
+        team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
         task_stmt = select(Task).where(
-            Task.team_id == self.team_id,
+            Task.team_id == team_uuid,
             Task.status.in_(["todo", "in_progress", "review"])
         )
         task_result = await db_session.execute(task_stmt)

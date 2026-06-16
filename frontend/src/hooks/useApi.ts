@@ -2,134 +2,254 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-/**
- * Lightweight fetch wrapper for the Carole.ai REST API.
- * Automatically injects the JWT from localStorage as a Bearer token on every
- * request — callers no longer need to thread the token through manually.
- */
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  // Auto-inject auth token from localStorage (client-side only)
-  const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
-  const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+// Simple in-flight deduplication map for GET requests
+const _inflight = new Map<string, Promise<any>>();
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeader,
-      ...(options?.headers || {}),
-    },
-    ...options,
-  });
+async function apiFetch<T>(path: string, options?: RequestInit, retry = 1): Promise<T> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
+  const isFormData = options?.body instanceof FormData;
+  const headers: Record<string, string> = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
+    ...((options?.headers as Record<string, string>) || {}),
+  };
+
+  const key = `${options?.method || "GET"}:${path}`;
+  const isGet = !options?.method || options.method === "GET";
+
+  const execute = async (): Promise<T> => {
+    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "Unknown error");
+      const err: any = new Error(`API ${res.status}: ${text}`);
+      err.status = res.status;
+      err.endpoint = path;
+      err.body = text;
+      throw err;
+    }
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    return res.text() as any;
+  };
+
+  if (isGet) {
+    if (_inflight.has(key)) return _inflight.get(key)!;
+    const p = execute().catch(async (e) => {
+      _inflight.delete(key);
+      if (retry > 0 && (e.status === undefined || e.status >= 500)) {
+        await new Promise(r => setTimeout(r, 500));
+        return apiFetch<T>(path, options, retry - 1);
+      }
+      throw e;
+    }).finally(() => _inflight.delete(key));
+    _inflight.set(key, p);
+    return p;
+  }
+
+  return execute();
+}
+
+// Helper for Next.js internal API routes (without API_BASE)
+async function nextApiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
+  const headers: Record<string, string> = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    "Content-Type": "application/json",
+    ...((options?.headers as Record<string, string>) || {}),
+  };
+
+  const res = await fetch(path, { ...options, headers });
   if (!res.ok) {
-    const text = await res.text();
+    const text = await res.text().catch(() => "Unknown error");
     throw new Error(`API ${res.status}: ${text}`);
   }
   return res.json();
 }
 
-
-// ---- Projects ----
 export const api = {
-  seedDemo: () => apiFetch<any>("/api/seed", { method: "POST" }),
-  
-  // ---- Users / Tenants ----
+  // ── Auth ──
+  signup: (email: string, password: string, firstName?: string, lastName?: string) =>
+    apiFetch<{ user: any; token: string }>("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
+    }),
+  login: (email: string, password: string) =>
+    apiFetch<{ user: any; token: string }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  getMe: () => apiFetch<any>("/api/auth/me"),
+
+  // ── Users ──
   listUsers: () => apiFetch<any[]>("/api/users"),
   createUser: (email: string, firstName?: string, lastName?: string) =>
     apiFetch<any>("/api/users", { method: "POST", body: JSON.stringify({ email, first_name: firstName, last_name: lastName }) }),
   deleteUser: (userId: string) => apiFetch<any>(`/api/users/${userId}`, { method: "DELETE" }),
 
-  // ---- Projects ----
+  // ── Projects ──
   listProjects: () => apiFetch<any[]>("/api/projects"),
   getProject: (projectId: string) => apiFetch<any>(`/api/projects/single/${projectId}`),
   createProject: (name: string, ownerId?: string) =>
     apiFetch<any>("/api/projects", { method: "POST", body: JSON.stringify({ name, owner_id: ownerId }) }),
   deleteProject: (projectId: string) => apiFetch<any>(`/api/projects/${projectId}`, { method: "DELETE" }),
 
-  // ---- Learnings / Knowledge ----
-  listLearnings: (projectId: string) => apiFetch<any[]>(`/api/learnings/${projectId}`),
-  createLearning: (data: { project_id: string, task_summary: string, lesson_rule: string, team_id?: string }) =>
-    apiFetch<any>("/api/learnings", { method: "POST", body: JSON.stringify(data) }),
-
-  // ---- Teams ----
+  // ── Teams ──
   listTeams: (projectId: string) => apiFetch<any[]>(`/api/teams/${projectId}`),
   getTeam: (teamId: string) => apiFetch<any>(`/api/teams/single/${teamId}`),
   createTeam: (name: string, projectId: string) =>
     apiFetch<any>("/api/teams", { method: "POST", body: JSON.stringify({ name, project_id: projectId }) }),
   deleteTeam: (teamId: string) => apiFetch<any>(`/api/teams/${teamId}`, { method: "DELETE" }),
 
-  // ---- Agents ----
+  // ── Models & Catalog ──
+  listModels: () => apiFetch<Record<string, any>>("/api/models"),
+  getModelCatalog: () => apiFetch<Record<string, any>>("/api/models/catalog"),
+  saveModelCatalog: (data: any) =>
+    apiFetch<any>("/api/models/catalog", { method: "POST", body: JSON.stringify(data) }),
+  resetModelCatalog: () =>
+    apiFetch<Record<string, any>>("/api/models/catalog/reset", { method: "POST" }),
+
+  // ── Prompts ──
+  getPrompts: () => apiFetch<Record<string, string>>("/api/prompts"),
+  savePrompts: (data: Record<string, string>) =>
+    apiFetch<any>("/api/prompts", { method: "POST", body: JSON.stringify(data) }),
+  resetPrompts: () =>
+    apiFetch<Record<string, string>>("/api/prompts/reset", { method: "POST" }),
+
+  // ── Agents ──
   listAgents: (teamId: string) => apiFetch<any[]>(`/api/agents/${teamId}`),
   createAgent: (data: any) => apiFetch<any>("/api/agents", { method: "POST", body: JSON.stringify(data) }),
   updateAgent: (agentId: string, data: any) =>
     apiFetch<any>(`/api/agents/${agentId}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteAgent: (agentId: string) => apiFetch<any>(`/api/agents/${agentId}`, { method: "DELETE" }),
+  stopAgent: (agentId: string) => apiFetch<any>(`/api/agents/${agentId}/stop`, { method: "POST" }),
 
-  // ---- Messages ----
+  // 💬 Messages 💬
+  uploadFile: (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return apiFetch<any>("/api/upload", { method: "POST", body: formData });
+  },
   listMessages: (teamId: string, limit = 50) => apiFetch<any[]>(`/api/messages/${teamId}?limit=${limit}`),
   searchMessages: (teamId: string, query: string, limit = 10) =>
     apiFetch<any[]>(`/api/messages/search/${teamId}?q=${encodeURIComponent(query)}&limit=${limit}`),
+  editMessage: (messageId: string, text: string) =>
+    apiFetch<any>(`/api/messages/${messageId}`, { method: "PUT", body: JSON.stringify({ text }) }),
+  deleteMessage: (messageId: string) =>
+    apiFetch<any>(`/api/messages/${messageId}`, { method: "DELETE" }),
+  rollbackFromMessage: (messageId: string) =>
+    apiFetch<any>(`/api/messages/${messageId}/rollback`, { method: "DELETE" }),
 
-  // ---- MCP ----
-  listMcpServers: (teamId: string) => apiFetch<any[]>(`/api/mcp/${teamId}`),
-  createMcpServer: (data: { team_id: string, server_name: string, command: string, args: string, agent_id?: string }) =>
-    apiFetch<any>("/api/mcp", { method: "POST", body: JSON.stringify(data) }),
-
-  // ---- Tasks ----
+  // ── Tasks ──
   listTasks: (teamId: string, status?: string) =>
     apiFetch<any[]>(`/api/tasks/${teamId}${status ? `?status=${status}` : ""}`),
   createTask: (data: any) => apiFetch<any>("/api/tasks", { method: "POST", body: JSON.stringify(data) }),
   updateTask: (taskId: string, data: any) =>
     apiFetch<any>(`/api/tasks/${taskId}`, { method: "PUT", body: JSON.stringify(data) }),
 
-  // ---- Tools ----
-  listTools: () => apiFetch<any[]>("/api/tools"),
+  // ── Learnings ──
+  listLearnings: (projectId: string) => apiFetch<any[]>(`/api/learnings/${projectId}`),
+  createLearning: (data: { project_id: string; task_summary: string; lesson_rule: string; team_id?: string }) =>
+    apiFetch<any>("/api/learnings", { method: "POST", body: JSON.stringify(data) }),
+  updateLearning: (learningId: string, data: { task_summary?: string; lesson_rule?: string }) =>
+    apiFetch<any>(`/api/learnings/${learningId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteLearning: (learningId: string) => apiFetch<any>(`/api/learnings/${learningId}`, { method: "DELETE" }),
 
-  // ---- Approvals ----
+  // ── Tools ──
+  listTools: () => apiFetch<any[]>("/api/tools"),
   approveToolExecution: (txId: string, approved: boolean) =>
     apiFetch<any>(`/api/tools/approve/${txId}`, { method: "POST", body: JSON.stringify({ approved }) }),
+  registerTool: (data: { name: string; description: string; parameters: any; endpoint_url: string }) =>
+    apiFetch<any>("/api/tools/register", { method: "POST", body: JSON.stringify(data) }),
 
-  // ---- Agent Questions ----
+  // ── Agent Questions ──
   answerAgentQuestion: (questionId: string, answer: string) =>
     apiFetch<any>(`/api/agent/answer/${questionId}`, { method: "POST", body: JSON.stringify({ answer }) }),
 
-  // ---- Role Templates ----
+  // ── Role Templates ──
   listRoleTemplates: () => apiFetch<any[]>("/api/role-templates"),
   getRoleTemplate: (role: string) => apiFetch<any>(`/api/role-templates/${role}`),
 
-  // ---- Auth ----
-  signup: (email: string, password: string, firstName?: string, lastName?: string) =>
-    apiFetch<any>("/api/auth/signup", {
-      method: "POST",
-      body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
-    }),
-  login: (email: string, password: string) =>
-    apiFetch<any>("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    }),
-  getMe: (token: string) =>
-    apiFetch<any>("/api/auth/me", {
-      headers: { Authorization: `Bearer ${token}` },
-    }),
+  // ── MCP ──
+  listMcpServers: (teamId: string) => apiFetch<any[]>(`/api/mcp/${teamId}`),
+  createMcpServer: (data: { team_id: string; server_name: string; command: string; args: string; agent_id?: string }) =>
+    apiFetch<any>("/api/mcp", { method: "POST", body: JSON.stringify(data) }),
 
-  // ---- Knowledge File Upload & Usage ----
+  // ── Knowledge ──
   uploadKnowledgeFile: async (projectId: string, teamId: string | null, file: File) => {
     const formData = new FormData();
     formData.append("file", file);
     const path = `/api/knowledge/upload?project_id=${projectId}${teamId ? `&team_id=${teamId}` : ""}`;
+    const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
     const res = await fetch(`${API_BASE}${path}`, {
       method: "POST",
       body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Upload failed ${res.status}: ${text}`);
-    }
+    if (!res.ok) throw new Error(`Upload failed ${res.status}`);
     return res.json();
   },
+
+  // ── Audio Transcription ──
+  transcribeAudio: async (teamId: string, audioBlob: Blob) => {
+    const formData = new FormData();
+    formData.append("file", audioBlob, "recording.webm");
+    const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
+    const res = await fetch(`${API_BASE}/api/audio/transcribe/${teamId}`, {
+      method: "POST",
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`Transcription failed ${res.status}`);
+    return res.json();
+  },
+
+  // ── Usage & Health ──
   getProjectUsage: (projectId: string) => apiFetch<any>(`/api/usage/${projectId}`),
-
-  // ---- Health ----
+  wsStatus: (teamId: string) => apiFetch<any>(`/api/ws/status/${teamId}`),
   healthCheck: () => apiFetch<any>("/health"),
-};
+  seedDemo: () => apiFetch<any>("/api/seed", { method: "POST" }),
 
+  // ── Files ──
+  listFiles: (path: string = ".", projectId?: string) => 
+    apiFetch<any[]>(`/api/files/list?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
+  readFile: (path: string, projectId?: string) => 
+    apiFetch<{ content: string }>(`/api/files/read?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
+  writeFile: (path: string, content: string, projectId?: string) =>
+    apiFetch<any>("/api/files/write", { method: "POST", body: JSON.stringify({ path, content, project_id: projectId }) }),
+  createFolder: (path: string, projectId?: string) =>
+    apiFetch<any>("/api/files/create_folder", { method: "POST", body: JSON.stringify({ path, project_id: projectId }) }),
+  renameFile: (source: string, destination: string, projectId?: string) =>
+    apiFetch<any>("/api/files/rename", { method: "POST", body: JSON.stringify({ source, destination, project_id: projectId }) }),
+  deleteFile: (path: string, projectId?: string) =>
+    apiFetch<any>(`/api/files/delete?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`, { method: "DELETE" }),
+
+  // ── Terminal ──
+  executeTerminal: (command: string, projectId?: string, timeout: number = 60.0) => 
+    apiFetch<any>("/api/terminal/execute", { method: "POST", body: JSON.stringify({ command, project_id: projectId, timeout }) }),
+
+
+
+  // ── Git ──
+  getGitStatus: (projectSlug: string) =>
+    nextApiFetch<{ status: string; changes: { file: string; status: string }[]; message?: string }>(`/api/git/status?slug=${projectSlug}`),
+  commitChanges: (message: string, projectSlug: string) =>
+    nextApiFetch<any>(`/api/git/commit?slug=${projectSlug}`, { method: "POST", body: JSON.stringify({ message }) }),
+  initGit: (projectSlug: string) =>
+    nextApiFetch<any>(`/api/git/init?slug=${projectSlug}`, { method: "POST" }),
+  getGitFileContent: (filepath: string, projectSlug: string) =>
+    nextApiFetch<{ status: string; content: string; message?: string }>(`/api/git/show?slug=${projectSlug}&file=${encodeURIComponent(filepath)}`),
+
+  // ── Search ──
+  searchFiles: (query: string, projectId?: string) =>
+    apiFetch<{ status: string; results: { file: string; line: string; content: string }[]; message?: string }>(`/api/search/grep?q=${encodeURIComponent(query)}${projectId ? `&project_id=${projectId}` : ""}`),
+
+  // ── App Settings ──
+  getAppConfig: () => apiFetch<any>("/api/settings"),
+  updateAppConfig: (config: { api_keys?: Record<string, string>; providers?: Record<string, string> }) =>
+    apiFetch<any>("/api/settings", { method: "POST", body: JSON.stringify(config) }),
+
+  // ── Google OAuth ──
+  getGoogleStatus: () => apiFetch<any>("/api/auth/google/status"),
+  disconnectGoogle: () => apiFetch<any>("/api/auth/google/disconnect", { method: "POST" }),
+  getGoogleAuthUrl: () => `${API_BASE}/api/auth/google/authorize`,
+};

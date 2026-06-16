@@ -105,9 +105,9 @@ export function useWebSocket(teamId: string | null) {
     };
   }, [connect, stopHeartbeat]);
 
-  const sendMessage = useCallback((text: string, senderId: string = "human") => {
+  const sendMessage = useCallback((text: string, senderId: string = "human", senderName?: string, attachments?: any[]) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ text, sender_id: senderId }));
+      wsRef.current.send(JSON.stringify({ text, sender_id: senderId, sender_name: senderName, attachments }));
     }
   }, []);
 

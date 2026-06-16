@@ -37,7 +37,8 @@ class AgentTools:
         a <task-notification> XML back to the coordinator upon completion.
         """
         async with async_session() as db:
-            stmt = select(Agent).where(Agent.team_id == team_id, Agent.name == agent_name)
+            team_uuid = uuid.UUID(team_id) if isinstance(team_id, str) else team_id
+            stmt = select(Agent).where(Agent.team_id == team_uuid, Agent.name == agent_name)
             result = await db.execute(stmt)
             agent = result.scalar_one_or_none()
 
@@ -45,7 +46,7 @@ class AgentTools:
                 return f"Error: No agent named '{agent_name}' found in this team."
 
             # Resolve project_id
-            team_stmt = select(Team).where(Team.id == team_id)
+            team_stmt = select(Team).where(Team.id == team_uuid)
             team_result = await db.execute(team_stmt)
             team = team_result.scalar_one_or_none()
             project_id = str(team.project_id) if team else ""
@@ -66,6 +67,8 @@ class AgentTools:
             system_prompt=agent.system_prompt,
             parent_coordinator_id=parent_coordinator_id,
             task_id=task_id,
+            fallback_model=agent.fallback_model,
+            reasoning_effort=getattr(agent, "reasoning_effort", "none") or "none",
         )
 
         async def _run():
@@ -87,7 +90,8 @@ class AgentTools:
         recipient_id = None
         if recipient_name:
             async with async_session() as db:
-                stmt = select(Agent).where(Agent.team_id == team_id, Agent.name == recipient_name)
+                team_uuid = uuid.UUID(team_id) if isinstance(team_id, str) else team_id
+                stmt = select(Agent).where(Agent.team_id == team_uuid, Agent.name == recipient_name)
                 result = await db.execute(stmt)
                 agent = result.scalar_one_or_none()
                 if agent:
@@ -96,7 +100,7 @@ class AgentTools:
         # Persist
         async with async_session() as db:
             db.add(Message(
-                team_id=team_id,
+                team_id=uuid.UUID(team_id) if isinstance(team_id, str) else team_id,
                 sender_id=sender_id,
                 recipient_id=recipient_id,
                 text=text,
@@ -122,7 +126,8 @@ class AgentTools:
         
         async with async_session() as db:
             # Check for existing agent just in case (optional, we could generate unique names)
-            stmt = select(Agent).where(Agent.team_id == team_id, Agent.name == subagent_name)
+            team_uuid = uuid.UUID(team_id) if isinstance(team_id, str) else team_id
+            stmt = select(Agent).where(Agent.team_id == team_uuid, Agent.name == subagent_name)
             result = await db.execute(stmt)
             existing = result.scalar_one_or_none()
             if existing:
@@ -130,7 +135,7 @@ class AgentTools:
                 subagent_name = f"{subagent_name}-{str(uuid.uuid4())[:4]}"
 
             new_agent = Agent(
-                team_id=team_id,
+                team_id=team_uuid,
                 name=subagent_name,
                 role=role,
                 system_prompt=sys_prompt,
