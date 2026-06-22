@@ -1,8 +1,6 @@
-import asyncio
 from contextlib import AsyncExitStack
-from typing import Dict, Any, List
 
-from backend.core.tools.tool_registry import ToolRegistry, ToolSpec
+from core.tools.tool_registry import ToolRegistry, ToolSpec
 
 try:
     from mcp import ClientSession, StdioServerParameters
@@ -23,12 +21,16 @@ class MCPManager:
             cls._instance.sessions = {}
         return cls._instance
     
-    async def connect_stdio_server(self, server_name: str, command: str, args: list[str], team_id: str = None, agent_id: str = None):
+    async def connect_stdio_server(self, server_name: str, command: str, args: list[str], team_id: str = None, agent_id: str = None, env_vars: dict = None):
         """
         Connects to an MCP server via stdio, extracts its tools, 
         and registers them in the Carole ToolRegistry.
         """
-        server_parameters = StdioServerParameters(command=command, args=args)
+        import os
+        merged_env = os.environ.copy()
+        if env_vars:
+            merged_env.update(env_vars)
+        server_parameters = StdioServerParameters(command=command, args=args, env=merged_env)
         
         # Connect to stdio server
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_parameters))
@@ -38,7 +40,9 @@ class MCPManager:
         session = await self.exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
         await session.initialize()
         
-        self.sessions[server_name] = session
+        # Key matches the format expected by delete_mcp_server
+        key = (str(team_id) if team_id else "None", str(agent_id) if agent_id else "global", server_name)
+        self.sessions[key] = session
         
         # List tools and register
         tools_response = await session.list_tools()

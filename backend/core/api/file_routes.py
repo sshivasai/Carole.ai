@@ -135,3 +135,90 @@ async def delete_file_endpoint(path: str = Query(...), project_id: str | None = 
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from core.memory.database import get_db
+
+@router.get("/logs/{team_id}")
+async def get_file_logs(team_id: str, db: AsyncSession = Depends(get_db)):
+    from core.memory.models import FileBackup, Message
+    from sqlalchemy import select
+    import uuid
+    
+    stmt = (
+        select(FileBackup, Message.sender_name)
+        .join(Message, Message.id == FileBackup.message_id)
+        .where(FileBackup.team_id == uuid.UUID(team_id))
+        .order_by(FileBackup.created_at.desc())
+        .limit(100)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+    
+    logs = []
+    from core.config import CAROLE_HOME_DIR
+    for backup, sender_name in rows:
+        current_content = ""
+        try:
+            with open(backup.file_path, "r", encoding="utf-8") as f:
+                current_content = f.read()
+        except Exception:
+            current_content = "[File Deleted or Binary]"
+
+        # try to make path relative to workspace
+        rel_path = backup.file_path
+        try:
+            rel_path = str(Path(backup.file_path).relative_to(CAROLE_HOME_DIR / "workspaces")).replace("\\", "/")
+        except ValueError:
+            pass
+
+        original_content = ""
+        if backup.backup_file_name:
+            history_dir = CAROLE_HOME_DIR / "file-history" / str(team_id)
+            backup_path = history_dir / backup.backup_file_name
+            try:
+                if backup_path.exists():
+                    with open(backup_path, "r", encoding="utf-8") as f:
+                        original_content = f.read()
+            except Exception:
+                original_content = "[Binary Backup]"
+
+        logs.append({
+            "id": str(backup.id),
+            "file_path": rel_path,
+            "operation": backup.operation,
+            "agent_name": sender_name or "Agent",
+            "original_content": original_content,
+            "new_content": current_content,
+            "timestamp": backup.created_at.isoformat() + "Z"
+        })
+    return logs
+
+@router.delete("/logs/{log_id}")
+async def delete_file_log(log_id: str, db: AsyncSession = Depends(get_db)):
+    from core.memory.models import FileBackup
+    from sqlalchemy import select
+    import uuid
+    import os
+    from core.config import CAROLE_HOME_DIR
+    
+    stmt = select(FileBackup).where(FileBackup.id == uuid.UUID(log_id))
+    result = await db.execute(stmt)
+    backup = result.scalar_one_or_none()
+    
+    if not backup:
+        raise HTTPException(status_code=404, detail="Log not found")
+        
+    # Delete the physical backup file if it exists
+    if backup.backup_file_name:
+        history_dir = CAROLE_HOME_DIR / "file-history" / str(backup.team_id)
+        backup_path = history_dir / backup.backup_file_name
+        try:
+            if backup_path.exists():
+                os.remove(backup_path)
+        except Exception as e:
+            print(f"Warning: Failed to delete physical backup file: {e}")
+            
+    await db.delete(backup)
+    await db.commit()
+    return {"status": "success", "message": "File activity log deleted"}

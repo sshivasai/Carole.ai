@@ -6,9 +6,7 @@ Tools for managing an agent's long-term memory (Learning records).
 
 import uuid
 import logging
-from typing import Dict, Any
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import async_session
 from core.memory.models import Learning

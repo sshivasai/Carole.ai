@@ -44,7 +44,6 @@ function providerColor(id: string) {
 function ModelRow({
   model,
   index,
-  providerId,
   onChange,
   onDelete,
 }: {
@@ -222,7 +221,7 @@ function ProviderCard({
 
           {data.models.length === 0 ? (
             <p className="caption" style={{ padding: "var(--sp-lg)", textAlign: "center", color: "var(--color-mute)" }}>
-              No models — click "Add model" to add one.
+              No models — click &quot;Add model&quot; to add one.
             </p>
           ) : (
             data.models.map((m, i) => (
@@ -449,7 +448,7 @@ export default function ModelCatalogEditor({ onToast }: Props) {
           ))}
           {Object.keys(catalog).length === 0 && (
             <p className="caption" style={{ padding: "var(--sp-2xl)", textAlign: "center", color: "var(--color-mute)" }}>
-              No providers configured. Click "Add Provider" to start.
+              No providers configured. Click &quot;Add Provider&quot; to start.
             </p>
           )}
         </div>

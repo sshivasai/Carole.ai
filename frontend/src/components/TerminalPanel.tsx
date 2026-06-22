@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useRef, useEffect } from "react";
-import { api } from "@/hooks/useApi";
 import { Terminal as TerminalIcon, Trash2, X } from "lucide-react";
 import type { Terminal as TerminalType } from "@xterm/xterm";
 import type { FitAddon as FitAddonType } from "@xterm/addon-fit";
@@ -17,7 +16,6 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
   const xtermRef = useRef<TerminalType | null>(null);
   const fitAddonRef = useRef<FitAddonType | null>(null);
   
-  const commandBuffer = useRef("");
   const isRunning = useRef(false);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -45,9 +43,10 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
         cursorBlink: true,
         fontFamily: "var(--font-mono, monospace)",
         fontSize: 13,
+        allowTransparency: true,
         theme: {
-          background: "#1e1e1e",
-          foreground: "#d4d4d4",
+          background: "transparent",
+          foreground: "var(--color-ink)",
         }
       });
       
@@ -122,7 +121,6 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
        executeCmd(triggerCommand.cmd);
        isRunning.current = true;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [triggerCommand]);
 
   const handleClear = () => {
@@ -132,27 +130,27 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1e1e1e", color: "#d4d4d4" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 12px", background: "#2d2d2d", borderBottom: "1px solid #3c3c3c" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "transparent", color: "var(--color-ink)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 12px", background: "var(--bg-glass-card)", borderBottom: "1px solid var(--border-glass)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <TerminalIcon size={14} className="text-gray-400" />
+          <TerminalIcon size={14} style={{ color: "var(--color-mute)" }} />
           <span style={{ fontWeight: 600, fontSize: 12 }}>Terminal</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button 
             onClick={handleClear}
-            className="text-gray-400 hover:text-white"
+            style={{ color: "var(--color-mute)", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}
+            className="hover:text-white"
             title="Clear Terminal"
-            style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}
           >
             <Trash2 size={14} />
           </button>
           {onClose && (
             <button 
               onClick={onClose}
-              className="text-gray-400 hover:text-white"
+              style={{ color: "var(--color-mute)", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}
+              className="hover:text-white"
               title="Close Terminal"
-              style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}
             >
               <X size={14} />
             </button>

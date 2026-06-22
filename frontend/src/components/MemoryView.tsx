@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState } from "react";
 import type { LearningItem } from "@/lib/types";
 import { BrainCircuit, Database, Search, Edit2, Trash2, Plus, Loader2, X, Check } from "lucide-react";
 import { api } from "@/hooks/useApi";

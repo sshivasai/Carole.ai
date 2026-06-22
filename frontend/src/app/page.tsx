@@ -8,6 +8,9 @@ import BrowserView from "@/components/BrowserView";
 import MemoryView from "@/components/MemoryView";
 import AgentPanel from "@/components/AgentPanel";
 import SettingsPanel from "@/components/SettingsPanel";
+import PluginStudio from "@/components/PluginStudio";
+import SkillsStudio from "@/components/SkillsStudio";
+import McpIntegration from "@/components/McpIntegration";
 import LoadingScreen from "@/components/LoadingScreen";
 import AuthPage from "@/components/AuthPage";
 import ToastContainer from "@/components/Toast";
@@ -25,33 +28,53 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
   switch (evt.type) {
     case "thought_delta": {
       const sid = `streaming-${evt.sender_id}`;
-      const ex = prev.find(m => m.id === sid);
-      if (ex) return prev.map(m => m.id === sid ? { ...m, text: m.text + (evt.delta || "") } : m);
-      return [...prev, { id: sid, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, role: evt.role, text: evt.delta || "", type: "streaming", timestamp: ts }];
+      const tid = `thinking-${evt.sender_id}`;
+      let filtered = prev;
+      if (prev.some(m => m.id === tid)) filtered = prev.filter(m => m.id !== tid);
+
+      const ex = filtered.find(m => m.id === sid);
+      if (ex) return filtered.map(m => m.id === sid ? { ...m, text: m.text + (evt.delta || "") } : m);
+      return [...filtered, { id: sid, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, role: evt.role, text: evt.delta || "", type: "streaming", timestamp: ts }];
     }
     case "stream_reasoning": {
       // Append reasoning chunk to the streaming bubble for this agent
       const sid = `streaming-${evt.sender_id}`;
-      const ex = prev.find(m => m.id === sid);
+      const tid = `thinking-${evt.sender_id}`;
+      let filtered = prev;
+      if (prev.some(m => m.id === tid)) filtered = prev.filter(m => m.id !== tid);
+
+      const ex = filtered.find(m => m.id === sid);
       const appended = (ex?.reasoning || "") + (evt.chunk || "");
-      if (ex) return prev.map(m => m.id === sid ? { ...m, reasoning: appended } : m);
+      if (ex) return filtered.map(m => m.id === sid ? { ...m, reasoning: appended } : m);
       // No streaming bubble yet — create one to hold the reasoning
-      return [...prev, { id: sid, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, role: evt.role, text: "", reasoning: appended, type: "streaming", timestamp: ts }];
+      return [...filtered, { id: sid, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, role: evt.role, text: "", reasoning: appended, type: "streaming", timestamp: ts }];
     }
     case "tool_start": {
       // Append a tool-call entry to the streaming agent's reasoning trace
       const sid = `streaming-${evt.sender_id}`;
+      const tid = `thinking-${evt.sender_id}`;
+      let filtered = prev;
+      if (prev.some(m => m.id === tid)) filtered = prev.filter(m => m.id !== tid);
+
       const args = evt.arguments ? JSON.stringify(evt.arguments, null, 2) : "";
       const entry = `\n🛠️ **${evt.tool_name}**\n\`\`\`json\n${args}\n\`\`\`\n`;
-      const ex = prev.find(m => m.id === sid);
-      if (ex) return prev.map(m => m.id === sid ? { ...m, reasoning: (m.reasoning || "") + entry } : m);
-      return [...prev, { id: sid, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, role: evt.role, text: "", reasoning: entry, type: "streaming", timestamp: ts }];
+      const ex = filtered.find(m => m.id === sid);
+      if (ex) return filtered.map(m => m.id === sid ? { ...m, reasoning: (m.reasoning || "") + entry } : m);
+      return [...filtered, { id: sid, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, role: evt.role, text: "", reasoning: entry, type: "streaming", timestamp: ts }];
     }
     case "tool_end": {
       // Append tool result to the streaming agent's reasoning trace
       const sid = `streaming-${evt.sender_id}`;
       const obs = (evt.observation || "").slice(0, 1000);
       const entry = `📄 **Result:**\n\`\`\`\n${obs}\n\`\`\`\n`;
+      return prev.map(m => m.id === sid ? { ...m, reasoning: (m.reasoning || "") + entry } : m);
+    }
+    case "tool_progress": {
+      // Append mid-execution progress text to the active streaming agent's reasoning trace
+      const sid = `streaming-${evt.sender_id}`;
+      const progress = evt.progress || evt.text || "";
+      if (!progress) return prev;
+      const entry = `⏳ ${progress}\n`;
       return prev.map(m => m.id === sid ? { ...m, reasoning: (m.reasoning || "") + entry } : m);
     }
     case "message": {
@@ -61,7 +84,7 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
       // Preserve the accumulated reasoning into the final message, and remove existing duplicate IDs
       return [...prev.filter(m => m.id !== sid && m.id !== `thinking-${evt.sender_id}` && m.id !== newId), {
         id: newId, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name,
-        role: evt.role, text: evt.text || "", type: "message", timestamp: ts,
+        role: evt.role, text: evt.text || "", type: "message", timestamp: evt.timestamp || ts,
         reasoning: streamingMsg?.reasoning || undefined,
       }];
     }
@@ -77,12 +100,28 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
       }
       return prev;
     }
-    case "approval_request":
+    case "approval_request": {
+      const sid = `streaming-${evt.agent_id || evt.sender_id}`;
+      const hasStream = prev.some(m => m.id === sid);
+      if (hasStream) {
+        return prev.map(m => m.id === sid ? { ...m, pending_approval: { tx_id: evt.tx_id, tool_name: evt.tool_name, arguments: evt.arguments, text: evt.text || "" } } : m);
+      }
       return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "approval_request", tx_id: evt.tx_id, tool_name: evt.tool_name, arguments: evt.arguments, timestamp: ts }];
+    }
     case "file_change":
       return [...prev, { id: makeId(), sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, type: "file_change", path: evt.path, action: evt.action, diff: evt.diff, text: evt.text || "", timestamp: ts }];
     case "agent_question":
       return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "agent_question", question_id: evt.question_id, question: evt.question, timestamp: ts }];
+    case "collapse_to_reasoning": {
+      const sid = `streaming-${evt.sender_id}`;
+      return prev.map(m => {
+        if (m.id === sid) {
+          const newReasoning = (m.reasoning || "") + "\n\n" + (m.text || "");
+          return { ...m, text: "", reasoning: newReasoning };
+        }
+        return m;
+      });
+    }
     case "message_deleted":
       return prev.filter(m => m.id !== evt.message_id);
     case "message_rewind":
@@ -102,20 +141,24 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
 function AppShell() {
   const { user } = useAuth();
   const toast = useToast();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const lastEventIndex = useRef(0);
 
-  const [activeView,  setActiveView]  = useState("chat");
-  const [projects,    setProjects]    = useState<any[]>([]);
-  const [projectId,   setProjectId]   = useState<string | null>(null);
-  const [teams,       setTeams]       = useState<any[]>([]);
-  const [teamId,      setTeamId]      = useState<string | null>(null);
-  const [agents,      setAgents]      = useState<AgentConfig[]>([]);
-  const [messages,    setMessages]    = useState<ChatMessage[]>([]);
-  const [tasks,       setTasks]       = useState<TaskItem[]>([]);
-  const [learnings,   setLearnings]   = useState<LearningItem[]>([]);
+  const [activeView, setActiveView] = useState("chat");
+  const [projects, setProjects] = useState<any[]>([]);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [teams, setTeams] = useState<any[]>([]);
+  const [teamId, setTeamId] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentConfig[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [learnings, setLearnings] = useState<LearningItem[]>([]);
   const [screenshots, setScreenshots] = useState<BrowserScreenshotEvent[]>([]);
-  const [appLoading,  setAppLoading]  = useState(true);
+  const [appLoading, setAppLoading] = useState(true);
   const [streamingAgents, setStreamingAgents] = useState<Set<string>>(new Set());
   const [explorerOpen, setExplorerOpen] = useState(false);
+  // Queue depth per agent — { [agent_id]: number }
+  const [agentQueues, setAgentQueues] = useState<Record<string, number>>({});
 
   const { connected, events, sendMessage } = useWebSocket(teamId);
 
@@ -134,7 +177,7 @@ function AppShell() {
   useEffect(() => {
     async function init() {
       try {
-        await api.seedDemo();
+        try { await api.seedDemo(); } catch (e) { console.warn("Seed demo non-fatal:", e); }
         const [projs] = await Promise.all([api.listProjects()]);
         setProjects(projs);
         if (projs.length > 0) setProjectId(projs[0].id);
@@ -162,23 +205,53 @@ function AppShell() {
       .then(([ags, tks, msgs]) => {
         setAgents(ags);
         setTasks(tks);
-        setMessages(msgs.map((m: any) => ({ ...m, id: m.id || makeId(), type: "message", timestamp: m.created_at })));
+        setMessages(msgs.map((m: any) => ({
+          ...m,
+          id: m.id || makeId(),
+          type: m.is_intermediate ? "tool_trace" : "message",
+          timestamp: m.created_at,
+          reasoning: m.reasoning ?? undefined,
+          is_intermediate: m.is_intermediate ?? false,
+        })));
       }).catch(console.error);
   }, [teamId]);
 
   // WebSocket event handler
   useEffect(() => {
-    if (events.length === 0) return;
-    const evt = events[events.length - 1];
-    if (["thought_delta","stream_reasoning","message","approval_request","agent_question","tool_start","tool_end","agent_status","message_deleted","message_rewind", "file_change"].includes(evt.type)) {
-      setMessages(prev => applyWSEvent(prev, evt));
+    if (events.length === 0) {
+      lastEventIndex.current = 0;
+      return;
     }
-    if (evt.type === "browser_screenshot") {
-      setScreenshots(prev => [...prev, evt as BrowserScreenshotEvent].slice(-50));
-    }
-    if (evt.type === "task_update" && evt.task) {
-      if (evt.action === "created") setTasks(prev => [evt.task!, ...prev]);
-      else if (evt.action === "updated") setTasks(prev => prev.map(t => t.id === evt.task!.id ? { ...t, ...evt.task! } : t));
+
+    if (lastEventIndex.current < events.length) {
+      const newEvents = events.slice(lastEventIndex.current);
+
+      // Batch process messages to avoid multiple state updates
+      setMessages(prev => {
+        let currentMsgs = prev;
+        for (const evt of newEvents) {
+          if (["thought_delta", "stream_reasoning", "message", "approval_request", "agent_question", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "file_change", "collapse_to_reasoning"].includes(evt.type)) {
+            currentMsgs = applyWSEvent(currentMsgs, evt);
+          }
+        }
+        return currentMsgs;
+      });
+
+      // Process other events
+      for (const evt of newEvents) {
+        if (evt.type === "browser_screenshot") {
+          setScreenshots(prev => [...prev, evt as BrowserScreenshotEvent].slice(-50));
+        }
+        if (evt.type === "task_update" && evt.task) {
+          if (evt.action === "created") setTasks(prev => [evt.task!, ...prev]);
+          else if (evt.action === "updated") setTasks(prev => prev.map(t => t.id === evt.task!.id ? { ...t, ...evt.task! } : t));
+        }
+        if (evt.type === "agent_queue_update" && evt.agent_id != null) {
+          setAgentQueues(prev => ({ ...prev, [evt.agent_id]: evt.queue_depth ?? 0 }));
+        }
+      }
+
+      lastEventIndex.current = events.length;
     }
   }, [events]);
 
@@ -236,12 +309,16 @@ function AppShell() {
         {activeView === "chat" && (
           <div style={{ display: "flex", height: "100%", width: "100%" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <ChatInterface 
-                messages={messages} 
-                agents={agents} 
-                onSendMessage={handleSendMessage} 
-                onDeleteMessage={(id) => setMessages(prev => prev.filter(m => m.id !== id))}
+              <ChatInterface
+                messages={messages}
+                agents={agents}
+                onSendMessage={handleSendMessage}
+                onDeleteMessage={(id) => {
+                  api.deleteMessage(id).catch(console.error);
+                  setMessages(prev => prev.filter(m => m.id !== id));
+                }}
                 onRollbackMessage={(id) => {
+                  api.rollbackFromMessage(id).catch(console.error);
                   const pivotMsg = messages.find(m => m.id === id);
                   if (pivotMsg && pivotMsg.timestamp) {
                     const pivot = new Date(pivotMsg.timestamp).getTime();
@@ -256,7 +333,7 @@ function AppShell() {
               />
             </div>
             {explorerOpen && (
-              <FileExplorerPanel onClose={() => setExplorerOpen(false)} projectId={projectId || undefined} />
+              <FileExplorerPanel onClose={() => setExplorerOpen(false)} projectId={projectId || undefined} teamId={teamId || undefined} />
             )}
           </div>
         )}
@@ -265,6 +342,7 @@ function AppShell() {
         )}
         {activeView === "agents" && (
           <AgentPanel agents={agents} teamId={teamId} streamingAgents={streamingAgents}
+            agentQueues={agentQueues}
             onAgentsChange={setAgents} onToast={(msg, type) => toast.show(msg, type)} />
         )}
         {activeView === "browser" && (
@@ -280,6 +358,25 @@ function AppShell() {
             onTeamDeleted={handleTeamDeleted}
             onProjectDeleted={handleProjectDeleted} />
         )}
+        {activeView === "plugins" && (
+          <PluginStudio onToast={(msg, type) => toast.show(msg, type as any)} />
+        )}
+        {activeView === "skills" && (
+          <SkillsStudio teamId={teamId} onToast={(msg, type) => toast.show(msg, type as any)} />
+        )}
+        {activeView === "mcp" && (
+          <div style={{ padding: "var(--sp-xl)", height: "100%", overflowY: "auto" }}>
+            <div className="card">
+              <div style={{ padding: "var(--sp-lg) var(--sp-2xl)", borderBottom: "1px solid var(--color-hairline)" }}>
+                <h3 className="display-sm">MCP Servers</h3>
+                <p className="caption">Model Context Protocol server integrations for this team.</p>
+              </div>
+              <div style={{ padding: "var(--sp-lg)" }}>
+                <McpIntegration teamId={teamId} agents={agents} onToast={(msg, type) => toast.show(msg, type as any)} />
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
       <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
@@ -290,7 +387,7 @@ function AppShell() {
 function AppContent() {
   const { user, loading } = useAuth();
   if (loading) return <LoadingScreen steps={["Checking authentication…"]} />;
-  if (!user)   return <AuthPage />;
+  if (!user) return <AuthPage />;
   return <AppShell />;
 }
 

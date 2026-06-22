@@ -35,7 +35,7 @@ class GoogleMeetTool:
             # Use try-except in case it's already bound from a previous join
             try:
                 await page.expose_binding("onMeetCaption", handle_meet_caption)
-            except Exception as e:
+            except Exception:
                 # If it's already exposed, it will throw an error. We can ignore it.
                 pass
 

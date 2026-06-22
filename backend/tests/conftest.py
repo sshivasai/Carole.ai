@@ -48,6 +48,12 @@ async def setup_db():
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    # Dispose both the test engine and the production engine so aiosqlite's
+    # non-daemon worker threads shut down; otherwise the interpreter hangs at
+    # exit waiting to join them.
+    await test_engine.dispose()
+    from core.memory.database import engine as prod_engine
+    await prod_engine.dispose()
 
 
 @pytest.fixture
@@ -68,7 +74,7 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides[get_db] = override_get_db
 
     # Use ASGITransport to test ASGI app directly
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", follow_redirects=True) as ac:
         yield ac
 
     app.dependency_overrides.clear()

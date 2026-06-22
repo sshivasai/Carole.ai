@@ -124,10 +124,11 @@ export const api = {
   stopAgent: (agentId: string) => apiFetch<any>(`/api/agents/${agentId}/stop`, { method: "POST" }),
 
   // 💬 Messages 💬
-  uploadFile: (file: File) => {
+  uploadFile: (teamId: string | null, file: File) => {
     const formData = new FormData();
     formData.append("file", file);
-    return apiFetch<any>("/api/upload", { method: "POST", body: formData });
+    const qs = teamId ? `?team_id=${teamId}` : "";
+    return apiFetch<any>(`/api/upload${qs}`, { method: "POST", body: formData });
   },
   listMessages: (teamId: string, limit = 50) => apiFetch<any[]>(`/api/messages/${teamId}?limit=${limit}`),
   searchMessages: (teamId: string, query: string, limit = 10) =>
@@ -145,6 +146,13 @@ export const api = {
   createTask: (data: any) => apiFetch<any>("/api/tasks", { method: "POST", body: JSON.stringify(data) }),
   updateTask: (taskId: string, data: any) =>
     apiFetch<any>(`/api/tasks/${taskId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteTask: (taskId: string) => apiFetch<any>(`/api/tasks/${taskId}`, { method: "DELETE" }),
+  getTaskComments: (taskId: string) => apiFetch<any[]>(`/api/tasks/${taskId}/comments`),
+  addTaskComment: (taskId: string, authorId: string, authorName: string, text: string) =>
+    apiFetch<any>(`/api/tasks/${taskId}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ author_id: authorId, author_name: authorName, text }),
+    }),
 
   // ── Learnings ──
   listLearnings: (projectId: string) => apiFetch<any[]>(`/api/learnings/${projectId}`),
@@ -154,12 +162,28 @@ export const api = {
     apiFetch<any>(`/api/learnings/${learningId}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteLearning: (learningId: string) => apiFetch<any>(`/api/learnings/${learningId}`, { method: "DELETE" }),
 
-  // ── Tools ──
+  // ── Tools & Plugins ──
   listTools: () => apiFetch<any[]>("/api/tools"),
   approveToolExecution: (txId: string, approved: boolean) =>
     apiFetch<any>(`/api/tools/approve/${txId}`, { method: "POST", body: JSON.stringify({ approved }) }),
   registerTool: (data: { name: string; description: string; parameters: any; endpoint_url: string }) =>
     apiFetch<any>("/api/tools/register", { method: "POST", body: JSON.stringify(data) }),
+  listPlugins: () => apiFetch<any[]>("/api/plugins"),
+  savePlugin: (filename: string, code: string) =>
+    apiFetch<any>(`/api/plugins/${filename}`, { method: "POST", body: JSON.stringify({ code }) }),
+  deletePlugin: (filename: string) =>
+    apiFetch<any>(`/api/plugins/${filename}`, { method: "DELETE" }),
+  generatePlugin: (prompt: string) =>
+    apiFetch<any>("/api/plugins/action/generate", { method: "POST", body: JSON.stringify({ prompt }) }),
+
+  // ── Skills ──
+  listSkills: (teamId: string) => apiFetch<any[]>(`/api/skills/${teamId}`),
+  createSkill: (data: { team_id: string; name: string; description?: string; system_prompt_addendum?: string; tools?: string[]; mcp_servers?: string[] }) =>
+    apiFetch<any>("/api/skills", { method: "POST", body: JSON.stringify(data) }),
+  updateSkill: (skillId: string, data: { name?: string; description?: string; system_prompt_addendum?: string; tools?: string[]; mcp_servers?: string[]; is_active?: boolean }) =>
+    apiFetch<any>(`/api/skills/${skillId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteSkill: (skillId: string) =>
+    apiFetch<any>(`/api/skills/${skillId}`, { method: "DELETE" }),
 
   // ── Agent Questions ──
   answerAgentQuestion: (questionId: string, answer: string) =>
@@ -171,8 +195,10 @@ export const api = {
 
   // ── MCP ──
   listMcpServers: (teamId: string) => apiFetch<any[]>(`/api/mcp/${teamId}`),
-  createMcpServer: (data: { team_id: string; server_name: string; command: string; args: string; agent_id?: string }) =>
+  createMcpServer: (data: { team_id: string; server_name: string; command: string; args: string; agent_id?: string; env_vars?: Record<string, string> }) =>
     apiFetch<any>("/api/mcp", { method: "POST", body: JSON.stringify(data) }),
+  deleteMcpServer: (serverId: string) =>
+    apiFetch<any>(`/api/mcp/${serverId}`, { method: "DELETE" }),
 
   // ── Knowledge ──
   uploadKnowledgeFile: async (projectId: string, teamId: string | null, file: File) => {
@@ -210,9 +236,9 @@ export const api = {
   seedDemo: () => apiFetch<any>("/api/seed", { method: "POST" }),
 
   // ── Files ──
-  listFiles: (path: string = ".", projectId?: string) => 
+  listFiles: (path: string = ".", projectId?: string) =>
     apiFetch<any[]>(`/api/files/list?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
-  readFile: (path: string, projectId?: string) => 
+  readFile: (path: string, projectId?: string) =>
     apiFetch<{ content: string }>(`/api/files/read?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
   writeFile: (path: string, content: string, projectId?: string) =>
     apiFetch<any>("/api/files/write", { method: "POST", body: JSON.stringify({ path, content, project_id: projectId }) }),
@@ -222,9 +248,11 @@ export const api = {
     apiFetch<any>("/api/files/rename", { method: "POST", body: JSON.stringify({ source, destination, project_id: projectId }) }),
   deleteFile: (path: string, projectId?: string) =>
     apiFetch<any>(`/api/files/delete?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`, { method: "DELETE" }),
+  getFileLogs: (teamId: string) => apiFetch<any[]>(`/api/files/logs/${teamId}`),
+  deleteFileLog: (logId: string) => apiFetch<any>(`/api/files/logs/${logId}`, { method: "DELETE" }),
 
   // ── Terminal ──
-  executeTerminal: (command: string, projectId?: string, timeout: number = 60.0) => 
+  executeTerminal: (command: string, projectId?: string, timeout: number = 60.0) =>
     apiFetch<any>("/api/terminal/execute", { method: "POST", body: JSON.stringify({ command, project_id: projectId, timeout }) }),
 
 
@@ -243,9 +271,15 @@ export const api = {
   searchFiles: (query: string, projectId?: string) =>
     apiFetch<{ status: string; results: { file: string; line: string; content: string }[]; message?: string }>(`/api/search/grep?q=${encodeURIComponent(query)}${projectId ? `&project_id=${projectId}` : ""}`),
 
+  // ── Cost Management ──
+  getCostStats: (projectId: string) =>
+    apiFetch<any>(`/api/cost/stats?project_id=${encodeURIComponent(projectId)}`),
+  updateBudget: (data: { project_id: string; budget_limit_usd: number | null }) =>
+    apiFetch<any>("/api/cost/budget", { method: "POST", body: JSON.stringify(data) }),
+
   // ── App Settings ──
   getAppConfig: () => apiFetch<any>("/api/settings"),
-  updateAppConfig: (config: { api_keys?: Record<string, string>; providers?: Record<string, string> }) =>
+  updateAppConfig: (config: { api_keys?: Record<string, string>; providers?: Record<string, string>; default_models?: Record<string, string>; agent_settings?: Record<string, unknown> }) =>
     apiFetch<any>("/api/settings", { method: "POST", body: JSON.stringify(config) }),
 
   // ── Google OAuth ──

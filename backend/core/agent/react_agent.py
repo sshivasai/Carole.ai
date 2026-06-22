@@ -16,20 +16,20 @@ import json
 import re
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.llm.multi_model_router import llm_router
 from core.chat.event_bus import event_bus
-from core.memory.models import Message, Agent, Project, User, Team
+from core.memory.models import Message, Agent, Project, User
 from core.tools.tool_registry import ToolRegistry
+from core.tools.context import CancellationToken, ToolExecutionContext, ToolPermissionContext
 from core.memory.lancedb_client import lancedb_client
+import core.config
 from core.config import (
-    STRICT_REASONING_GUIDELINES, KEYWORD_EXTRACTION_PROMPT,
-    CONTEXT_COMPACTION_THRESHOLD, COMPACTION_SYSTEM_PROMPT,
-    COMPACTION_USER_PROMPT, DEFAULT_FAST_MODEL, MEMORY_RETRIEVAL_LIMIT,
-    MAX_LOOPS,
+    STRICT_REASONING_GUIDELINES, COMPACTION_SYSTEM_PROMPT, COMPACTION_USER_PROMPT,
 )
 
 logger = logging.getLogger("carole.react_agent")
@@ -76,6 +76,7 @@ class ReACTAgent:
                     Message.sender_id == self.agent_id
                 )
             )
+            .where(Message.sender_id != "system")
             .order_by(Message.created_at.desc())
             .limit(limit)
         )
@@ -85,16 +86,30 @@ class ReACTAgent:
         history = []
         for msg in messages:
             is_self = msg.sender_id == self.agent_id
+            
+            content_list = []
+            
             if is_self:
-                # Own past messages: keep raw — no prefix so the model
-                # doesn't learn to prepend "[Name]: " in new responses.
-                history.append({"role": "assistant", "content": msg.text})
+                content_list.append({"type": "text", "text": msg.text})
             else:
                 sender_label = msg.sender_name or msg.sender_id
-                history.append({
-                    "role": "user",
-                    "content": f"[{sender_label}]: {msg.text}"
-                })
+                content_list.append({"type": "text", "text": f"[{sender_label}]: {msg.text}"})
+                
+            if msg.attachments:
+                for att in msg.attachments:
+                    if att.get("type", "").startswith("image/"):
+                        content_list.append({
+                            "type": "image",
+                            "local_path": att.get("local_path"),
+                            "mime_type": att.get("type")
+                        })
+                        
+            final_content = content_list[0]["text"] if len(content_list) == 1 else content_list
+                
+            history.append({
+                "role": "assistant" if is_self else "user",
+                "content": final_content
+            })
         return history
 
     async def assemble_system_prompt(self, db_session: AsyncSession, current_task: str) -> str:
@@ -146,7 +161,7 @@ class ReACTAgent:
             vector=query_vector,
             project_id=self.project_id,
             team_id=self.team_id,
-            limit=MEMORY_RETRIEVAL_LIMIT
+            limit=getattr(core.config, "MEMORY_RETRIEVAL_LIMIT", 3)
         )
 
         # 3. Format past learnings
@@ -162,6 +177,24 @@ class ReACTAgent:
         tools_block = "AVAILABLE TOOLS:\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n\n"
         capabilities_block += tools_block
 
+        # 4.5 Dynamic Skills
+        from core.skills.skill_manager import SkillManager
+        active_skills = await SkillManager.get_team_skills(db_session, str(self.team_id), active_only=True)
+        skill_addendums = ""
+        for skill in active_skills:
+            if skill.system_prompt_addendum:
+                skill_addendums += f"\n[SKILL: {skill.name}]\n{skill.system_prompt_addendum}\n"
+            if skill.tools:
+                # Append skill tools to the tools block if not already present
+                # Note: Tool descriptions should already be in ToolRegistry, but this makes the agent
+                # explicitly aware it has these tools specifically enabled by the skill.
+                skill_addendums += f"Skill specific tools allowed: {', '.join(skill.tools)}\n"
+            if skill.mcp_servers:
+                skill_addendums += f"Skill MCP servers available: {', '.join(skill.mcp_servers)}\n"
+                
+        if skill_addendums:
+            capabilities_block += f"\nACTIVE SKILLS:\n{skill_addendums}\n"
+
         # 5. Worker reports
         worker_results_block = ""
         if self._worker_results:
@@ -175,52 +208,82 @@ class ReACTAgent:
             worker_results_block += "\n"
         capabilities_block += worker_results_block
 
-        # 6. Reasoning guidelines
-        return f"{self.system_prompt}\n{capabilities_block}{STRICT_REASONING_GUIDELINES}"
+        # Temporal awareness — agents always know the current date/time
+        now = datetime.now(timezone.utc)
+        temporal_block = (
+            f"CURRENT DATE/TIME: {now.strftime('%A, %B %d, %Y %H:%M UTC')}\n"
+            f"(Timezone: UTC — adjust to user's local time if mentioned)\n\n"
+        )
+        capabilities_block = temporal_block + capabilities_block
 
-    async def run_loop(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None):
+        # Scratchpad awareness
+        scratchpad_block = (
+            "SCRATCHPADS:\n"
+            f"- Your personal scratchpad: use read_scratchpad(target='personal') / write_scratchpad(content=..., target='personal')\n"
+            f"- Shared team scratchpad: use read_scratchpad(target='team') / write_scratchpad(content=..., target='team')\n"
+            "Use your personal pad for notes, partial plans, and cross-session memory. "
+            "Write to the team pad to share discoveries, breadcrumbs, or decisions your teammates need to know.\n\n"
+        )
+        capabilities_block += scratchpad_block
+
+        # Reasoning guidelines
+        identity_rule = f"\n\nCRITICAL IDENTITY RULE: You are {self.name} ({self.role}). You MUST speak in the first person ('I', 'me'). NEVER refer to {self.name} in the third person. NEVER pretend to be someone else."
+        return f"{self.system_prompt}{identity_rule}\n{capabilities_block}{STRICT_REASONING_GUIDELINES}"
+
+    async def run_loop(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None):
         """Runs the core ReACT loop with conversation history and streaming."""
         
         self._listening = True
         listener_task = asyncio.create_task(self._listen_for_notifications())
         
         try:
-            await self._run_loop_inner(db_session, initial_prompt, attachments)
+            await self._run_loop_inner(db_session, initial_prompt, attachments, token)
         except asyncio.CancelledError:
             # User clicked "Stop Generating" — persist whatever was partially generated
             partial = getattr(self, "_current_thought_buffer", "").strip()
-            stop_note = "\n\n*[Generation stopped by user]*"
-            final_text = (partial + stop_note) if partial else stop_note.strip()
-
-            try:
-                db_msg = Message(
-                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
-                    sender_id=self.agent_id,
-                    sender_name=self.name,
-                    text=final_text,
-                    reasoning_text=getattr(self, "_current_reasoning_buffer", None) or None,
-                )
-                db_session.add(db_msg)
-                await db_session.commit()
-                await event_bus.publish(self.topic, {
-                    "type": "message",
-                    "id": str(db_msg.id),
-                    "sender_id": self.agent_id,
-                    "sender_name": self.name,
-                    "role": self.role,
-                    "text": final_text,
-                })
-            except Exception as persist_err:
-                self._log.warning("Could not persist partial message after cancel: %s", persist_err)
-
-            # Signal idle so the UI clears the typing indicator
-            await event_bus.publish(self.topic, {
-                "type": "agent_status",
-                "sender_id": self.agent_id,
-                "sender_name": self.name,
-                "role": self.role,
-                "status": "idle",
-            })
+            reasoning = getattr(self, "_current_reasoning_buffer", None) or None
+            
+            async def _cleanup_cancelled_task():
+                # We must use a new session because the task is cancelled,
+                # and awaiting on the existing db_session might raise CancelledError.
+                from core.memory.database import async_session
+                async with async_session() as cleanup_db:
+                    stop_note = "\n\n*[Generation stopped by user]*"
+                    final_text = (partial + stop_note) if partial else stop_note.strip()
+        
+                    try:
+                        db_msg = Message(
+                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            sender_id=self.agent_id,
+                            sender_name=self.name,
+                            text=final_text,
+                            reasoning_text=reasoning,
+                        )
+                        cleanup_db.add(db_msg)
+                        await cleanup_db.commit()
+                        await event_bus.publish(self.topic, {
+                            "type": "message",
+                            "id": str(db_msg.id),
+                            "sender_id": self.agent_id,
+                            "sender_name": self.name,
+                            "role": self.role,
+                            "text": final_text,
+                            "has_reasoning": bool(reasoning),
+                        })
+                    except Exception as persist_err:
+                        self._log.warning("Could not persist partial message after cancel: %s", persist_err)
+        
+                    # Signal idle so the UI clears the typing indicator
+                    await event_bus.publish(self.topic, {
+                        "type": "agent_status",
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "status": "idle",
+                    })
+                    
+            # Launch cleanup as a background task so it isn't aborted by the current task's cancellation
+            asyncio.create_task(_cleanup_cancelled_task())
             self._log.info("Agent %s stopped by user request.", self.name)
             raise  # re-raise so asyncio.Task knows it was cancelled
         finally:
@@ -231,7 +294,7 @@ class ReACTAgent:
             except asyncio.CancelledError:
                 pass
 
-    async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None):
+    async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None):
         # Fetch agent config
         agent_uuid = uuid.UUID(self.agent_id) if isinstance(self.agent_id, str) else self.agent_id
         stmt = select(Agent).where(Agent.id == agent_uuid)
@@ -258,12 +321,16 @@ class ReACTAgent:
         if attachments:
             for att in attachments:
                 if att.get("type", "").startswith("image/"):
-                    content.append({"type": "image_url", "image_url": {"url": att["url"]}})
+                    content.append({
+                        "type": "image",
+                        "local_path": att.get("local_path"),
+                        "mime_type": att.get("type")
+                    })
         
         messages = history + [{"role": "user", "content": content if attachments else initial_prompt}]
 
         loop_count = 0
-        max_loops = MAX_LOOPS
+        max_loops = getattr(core.config, "MAX_LOOPS", 10)
 
         # Emit agent status: active
         await event_bus.publish(self.topic, {
@@ -273,6 +340,9 @@ class ReACTAgent:
             "role": self.role,
             "status": "active",
         })
+
+        self._current_thought_buffer = ""
+        self._current_reasoning_buffer = ""
 
         while loop_count < max_loops:
             loop_count += 1
@@ -286,13 +356,14 @@ class ReACTAgent:
             })
 
             # Compaction Check
-            if len(messages) > CONTEXT_COMPACTION_THRESHOLD:
+            compaction_threshold = getattr(core.config, "CONTEXT_COMPACTION_THRESHOLD", 15)
+            if len(messages) > compaction_threshold:
                 self._log.info("Context window growing large (%d msgs). Compacting...", len(messages))
                 to_compact = messages[1:-5]
                 try:
                     summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact))
                     summary = await llm_router.generate_completion(
-                        model=DEFAULT_FAST_MODEL,
+                        model=getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free"),
                         system_prompt=COMPACTION_SYSTEM_PROMPT,
                         messages=[{"role": "user", "content": summary_prompt}],
                         temperature=0.3,
@@ -316,18 +387,17 @@ class ReACTAgent:
             })
 
             thought_buffer = ""
-            reasoning_buffer = ""
             # Mirror buffers onto self so CancelledError handler can persist partial output
-            self._current_thought_buffer = ""
-            self._current_reasoning_buffer = ""
+            # We save the reasoning trace accumulated so far (from previous loops) to restore it on retries
+            saved_reasoning_buffer = self._current_reasoning_buffer
             had_error = False
 
             for attempt in range(3):
                 try:
                     thought_buffer = ""
-                    reasoning_buffer = ""
                     self._current_thought_buffer = ""
-                    self._current_reasoning_buffer = ""
+                    self._current_reasoning_buffer = saved_reasoning_buffer
+                    
                     async for chunk in llm_router.generate_stream_with_reasoning(
                         model=self.model,
                         system_prompt=system_prompt,
@@ -344,8 +414,7 @@ class ReACTAgent:
                         reasoning_chunk = chunk.get("reasoning", "")
 
                         if reasoning_chunk:
-                            reasoning_buffer += reasoning_chunk
-                            self._current_reasoning_buffer = reasoning_buffer
+                            self._current_reasoning_buffer += reasoning_chunk
                             await event_bus.publish(self.topic, {
                                 "type": "stream_reasoning",
                                 "sender_id": self.agent_id,
@@ -374,12 +443,25 @@ class ReACTAgent:
                         had_error = True
                         error_msg = f"⚠️ LLM API error after 3 retries: {str(e)}"
                         self._log.error("LLM error after 3 retries: %s", e)
+                        
+                        db_msg = Message(
+                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            sender_id=self.agent_id,
+                            sender_name=self.name,
+                            text=error_msg,
+                            reasoning_text=self._current_reasoning_buffer or None,
+                        )
+                        db_session.add(db_msg)
+                        await db_session.commit()
+                        
                         await event_bus.publish(self.topic, {
                             "type": "message",
+                            "id": str(db_msg.id),
                             "sender_id": self.agent_id,
                             "sender_name": self.name,
                             "role": self.role,
-                            "text": error_msg
+                            "text": error_msg,
+                            "has_reasoning": bool(self._current_reasoning_buffer)
                         })
 
             if had_error:
@@ -401,7 +483,7 @@ class ReACTAgent:
                     team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
                     sender_id=self.agent_id,
                     sender_name=self.name, text=thought_buffer,
-                    reasoning_text=reasoning_buffer or None,
+                    reasoning_text=self._current_reasoning_buffer or None,
                 )
                 db_session.add(db_msg)
                 await db_session.commit()
@@ -415,7 +497,7 @@ class ReACTAgent:
                     "sender_name": self.name,
                     "role": self.role,
                     "text": thought_buffer,
-                    "has_reasoning": bool(reasoning_buffer),
+                    "has_reasoning": bool(self._current_reasoning_buffer),
                 })
 
                 if self.parent_coordinator_id:
@@ -442,6 +524,14 @@ class ReACTAgent:
                 tool_name, tool_args = action_call
                 self._log.info("Executing tool: %s", tool_name)
 
+                # Move intermediate text to the reasoning trace
+                self._current_reasoning_buffer += f"\n\n{thought_buffer}\n"
+                
+                await event_bus.publish(self.topic, {
+                    "type": "collapse_to_reasoning",
+                    "sender_id": self.agent_id,
+                })
+
                 await event_bus.publish(self.topic, {
                     "type": "agent_status",
                     "sender_id": self.agent_id,
@@ -460,8 +550,14 @@ class ReACTAgent:
                 })
 
                 try:
+                    args_str = json.dumps(tool_args, indent=2)
+                except Exception:
+                    args_str = str(tool_args)
+                self._current_reasoning_buffer += f"\n🛠️ **{tool_name}**\n```json\n{args_str}\n```\n"
+
+                try:
                     observation = await self._execute_tool(
-                        name=tool_name, args=tool_args, permissions=permissions
+                        name=tool_name, args=tool_args, permissions=permissions, token=token
                     )
                 except Exception as e:
                     observation = f"✗ Tool Error: {str(e)}"
@@ -474,25 +570,80 @@ class ReACTAgent:
                     "tool_name": tool_name,
                     "observation": observation[:500]
                 })
+                
+                self._current_reasoning_buffer += f"\n📄 **Result:**\n```\n{observation[:1000]}\n```\n"
+
+                # Broadcast the intermediate trace row over WebSocket ONLY (no DB persistence)
+                # is_intermediate=True so the UI renders it as a compact trace row while streaming
+                intermediate_trace = (
+                    f"🛠️ **{tool_name}**\n"
+                    f"```json\n{args_str}\n```\n"
+                    f"📄 **Result:**\n```\n{observation[:500]}\n```"
+                )
+                await event_bus.publish(self.topic, {
+                    "type": "tool_trace",
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "text": intermediate_trace,
+                    "is_intermediate": True
+                })
 
                 messages.append({
                     "role": "user",
                     "content": f"[OBSERVATION] Tool output:\n{observation}\n[/OBSERVATION]"
                 })
+        
+        # If we exited the loop by hitting max_loops, we still need to publish a final message
+        if loop_count >= max_loops and action_call:
+            self._log.warning("Agent hit max loop limit (%d). Terminating.", max_loops)
+            final_note = f"\n\n*[System: Agent reached maximum loop limit of {max_loops}.]*"
+            thought_buffer = self._current_thought_buffer + final_note
+            
+            db_msg = Message(
+                team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                sender_id=self.agent_id,
+                sender_name=self.name,
+                text=thought_buffer,
+                reasoning_text=self._current_reasoning_buffer or None,
+            )
+            db_session.add(db_msg)
+            await db_session.commit()
+            
+            await event_bus.publish(self.topic, {
+                "type": "message",
+                "id": str(db_msg.id),
+                "sender_id": self.agent_id,
+                "sender_name": self.name,
+                "role": self.role,
+                "text": thought_buffer,
+                "has_reasoning": bool(self._current_reasoning_buffer),
+            })
+            await event_bus.publish(self.topic, {
+                "type": "agent_status",
+                "sender_id": self.agent_id,
+                "sender_name": self.name,
+                "role": self.role,
+                "status": "idle",
+            })
 
     def _parse_action(self, text: str) -> Any:
         """Parses [ACTION]tool_name(args)[/ACTION] or <tool_call>tool_name(args) even if truncated."""
-        # Find the start of a tool call
-        match = re.search(r"(?:\[(?:ACTION|TOOL)\]|<tool_call>)\s*(\w+)\s*\(", text, re.DOTALL)
-        if not match:
-            return None
+        # First try to find a completed block
+        match = re.search(r"(?:\[(?:ACTION|TOOL)\]|<tool_call>)\s*(\w+)\s*\((.*?)\)(?:\s*\[/(?:ACTION|TOOL)\]|\s*</tool_call>)", text, re.DOTALL)
         
-        tool_name = match.group(1)
-        start_idx = match.end()
-        raw_args = text[start_idx:]
-        
-        # Clean up any trailing closing tags or parentheses
-        raw_args = re.sub(r"\)\s*(?:\[/(?:ACTION|TOOL)\]|</tool_call>)?\s*$", "", raw_args).strip()
+        if match:
+            tool_name = match.group(1)
+            raw_args = match.group(2).strip()
+        else:
+            # Fallback for truncated streams (end of text)
+            match = re.search(r"(?:\[(?:ACTION|TOOL)\]|<tool_call>)\s*(\w+)\s*\((.*)", text, re.DOTALL)
+            if not match:
+                return None
+            tool_name = match.group(1)
+            raw_args = match.group(2).strip()
+            # Clean up trailing closing parens/tags if any
+            raw_args = re.sub(r"\)\s*(?:\[/(?:ACTION|TOOL)\]|</tool_call>)?\s*$", "", raw_args).strip()
         
         try:
             arguments = json.loads(raw_args)
@@ -590,7 +741,7 @@ class ReACTAgent:
 
         return notifications
 
-    async def _execute_tool(self, name: str, args: Dict[str, Any], permissions: Dict[str, str]) -> str:
+    async def _execute_tool(self, name: str, args: Dict[str, Any], permissions: Dict[str, str], token: Optional[CancellationToken] = None) -> str:
         # Safety: if agent was deleted mid-run, deny all non-safe tools
         if permissions.get("__deny_non_safe__"):
             from core.tools.tool_registry import ToolRegistry
@@ -602,10 +753,41 @@ class ReACTAgent:
                 )
                 return f"✗ Tool '{name}' denied: agent record no longer exists in the database."
 
+        async def emit_progress(msg: str):
+            await event_bus.publish(self.topic, {
+                "type": "tool_progress",
+                "sender_id": self.agent_id,
+                "sender_name": self.name,
+                "tool_name": name,
+                "progress": msg
+            })
+
+        exec_context = ToolExecutionContext(
+            agent_id=self.agent_id,
+            agent_name=self.name,
+            team_id=self.team_id,
+            cancellation_token=token or CancellationToken(),
+            emit_progress=emit_progress,
+            active_message_id=self.active_message_id
+        )
+        
+        # Build permission context
+        perm_context = ToolPermissionContext(
+            always_allow=set(),
+            always_deny=set()
+        )
+        # Assuming permissions dict could have always_allow/always_deny lists
+        if "always_allow" in permissions:
+            perm_context.always_allow = set(permissions["always_allow"]) # type: ignore
+        if "always_deny" in permissions:
+            perm_context.always_deny = set(permissions["always_deny"]) # type: ignore
+
         from core.tools.tool_executor import tool_executor
         return await tool_executor.execute(
             tool_name=name, arguments=args,
             agent_id=self.agent_id, agent_name=self.name,
             team_id=self.team_id, permissions=permissions,
             active_message_id=self.active_message_id,
+            context=exec_context,
+            permission_context=perm_context
         )

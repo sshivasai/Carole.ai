@@ -21,7 +21,7 @@ a literal brace in the prompt text.
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 logger = logging.getLogger("carole.prompts")
 
@@ -125,5 +125,13 @@ def build_agent_system_prompt(name: str, role: str, personality: str = "professi
 
     markdown_rules   = get_prompt("system.markdown_rules")
     behavioral_rules = get_prompt("system.behavioral_rules")
+    tool_use         = get_prompt("system.tool_use")
+    reasoning_rules  = get_prompt("system.reasoning_rules")
 
-    return f"{base}\n\n{markdown_rules}\n\n{behavioral_rules}\n"
+    prompt = f"{base}\n\n{markdown_rules}\n\n{behavioral_rules}\n\n{tool_use}\n\n{reasoning_rules}\n"
+    
+    if role.lower() in ["coordinator", "orchestrator"]:
+        coordinator_directives = get_prompt("system.coordinator_directives")
+        prompt += f"\n{coordinator_directives}\n"
+        
+    return prompt

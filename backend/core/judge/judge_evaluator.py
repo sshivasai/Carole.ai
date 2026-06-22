@@ -11,7 +11,6 @@ When a tool is gated at "judge" level, the ToolExecutor publishes a
 4. Publishes an approval or denial result.
 """
 
-from core.chat.event_bus import event_bus
 from core.llm.multi_model_router import llm_router
 from core.config import JUDGE_SYSTEM_PROMPT, DEFAULT_JUDGE_MODEL
 import re
@@ -70,11 +69,14 @@ class JudgeEvaluator:
         if r_match:
             reasoning = r_match.group(1).strip()
         else:
-            reasoning = response.strip()
+            reason = re.sub(r"<VERDICT>.*?</VERDICT>", "", response, flags=re.IGNORECASE).strip()
+            reasoning = reason if reason else "No explanation provided by the Judge."
 
         verdict_text = response.upper()
         approved = "APPROVE" in verdict_text
-        print(f"⚖️ [Judge] Tool '{tool_name}' by '{agent_name}' → {'APPROVED' if approved else 'DENIED'}")
+        print(f"[Judge] Tool '{tool_name}' by '{agent_name}' -> {'APPROVED' if approved else 'DENIED'}")
+        if not reasoning:
+            print(f"[Judge] WARNING: Empty reasoning. Raw response: {response}")
         
         return approved, reasoning
 

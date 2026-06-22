@@ -7,7 +7,6 @@ All LanceDB operations are synchronous (C-backed) and MUST be executed via
 asyncio.to_thread() to avoid blocking the FastAPI event loop.
 """
 
-import os
 import uuid
 import asyncio
 import logging

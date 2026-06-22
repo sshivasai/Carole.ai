@@ -10,8 +10,7 @@ Tokens are persisted at ~/.carole/google_token.json and auto-refreshed.
 import os
 import base64
 from email.message import EmailMessage
-from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError

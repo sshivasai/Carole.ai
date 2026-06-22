@@ -29,7 +29,7 @@ import os
 import json
 import asyncio
 import httpx
-from typing import AsyncGenerator, List, Dict, Optional
+from typing import AsyncGenerator, List, Dict, Optional, Any
 from core.llm.config_manager import load_config, get_key
 
 
@@ -167,14 +167,18 @@ class MultiModelRouter:
                 use_special = model in ("openrouter/free", "openrouter/auto")
                 if use_special:
                     extra = {"reasoning": {"enabled": True}}
-                elif _effort:
-                    extra = {"reasoning": {"effort": _effort}}
+                    target_model = model  # /free and /auto are OpenRouter meta-routes, keep as-is
                 else:
-                    extra = None
+                    if _effort:
+                        extra = {"reasoning": {"effort": _effort}}
+                    else:
+                        extra = None
+                    # Strip the "openrouter/" prefix — the raw vendor/model goes to the API
+                    target_model = model[len("openrouter/"):]
                 async for chunk in self._stream_openai_compatible(
                     url="https://openrouter.ai/api/v1/chat/completions",
                     key=self.openrouter_key,
-                    model=model,
+                    model=target_model,
                     system_prompt=system_prompt,
                     messages=messages,
                     temp=temperature,
@@ -345,11 +349,12 @@ class MultiModelRouter:
         if key:
             headers["Authorization"] = f"Bearer {key}"
 
-        formatted_messages = [{"role": "system", "content": system_prompt}] + messages
+        formatted_messages = self._format_messages_for_provider(messages, "openai")
+        final_messages = [{"role": "system", "content": system_prompt}] + formatted_messages
 
         payload: dict = {
             "model": model,
-            "messages": formatted_messages,
+            "messages": final_messages,
             "temperature": temp,
             "max_tokens": max_tokens,
             "stream": True,
@@ -374,7 +379,14 @@ class MultiModelRouter:
         agent_name: Optional[str]
     ):
         try:
-            prompt_chars = len(system_prompt) + sum(len(m.get("content", "")) for m in messages)
+            def _get_len(c):
+                if isinstance(c, str):
+                    return len(c)
+                elif isinstance(c, list):
+                    return sum(len(str(item)) for item in c)
+                return 0
+
+            prompt_chars = len(system_prompt) + sum(_get_len(m.get("content", "")) for m in messages)
             prompt_tokens = int(prompt_chars / 4)
             completion_tokens = int(len(response_text) / 4)
             total_tokens = prompt_tokens + completion_tokens
@@ -382,23 +394,28 @@ class MultiModelRouter:
             # Pricing mappings (per 1M tokens)
             pricing = {
                 "gpt-4o-mini": (0.15, 0.60),
+                "openai/gpt-4o-mini": (0.15, 0.60),
                 "gpt-4o": (2.50, 10.00),
+                "openai/gpt-4o": (2.50, 10.00),
                 "o4-mini": (1.15, 4.50),
                 "claude-sonnet-4": (3.00, 15.00),
                 "claude-opus-4": (15.00, 75.00),
                 "claude-3-5-sonnet-20241022": (3.00, 15.00),
                 "gemini-2.0-flash": (0.075, 0.30),
                 "gemini-2.5-pro": (1.25, 5.00),
+                "anthropic/claude-3.5-sonnet": (3.00, 15.00),
             }
 
-            rate_in, rate_out = pricing.get(model, (0.0, 0.0))
+            clean_model = model.replace("openrouter/", "", 1) if model.startswith("openrouter/") else model
+            rate_in, rate_out = pricing.get(clean_model, pricing.get(model, (0.0, 0.0)))
             if "free" in model.lower() and provider in ["openrouter", "nvidia", "ollama"]:
                 rate_in, rate_out = 0.0, 0.0
 
             cost = (prompt_tokens * rate_in + completion_tokens * rate_out) / 1_000_000
 
             from core.memory.database import async_session
-            from core.memory.models import TokenUsage
+            from core.memory.models import TokenUsage, Project
+            from sqlalchemy import select
             import uuid
 
             async with async_session() as session:
@@ -415,9 +432,21 @@ class MultiModelRouter:
                     estimated_cost_usd=f"{cost:.6f}"
                 )
                 session.add(usage)
+                
+                # Update Project total spend
+                if project_id:
+                    proj_uuid = uuid.UUID(project_id) if isinstance(project_id, str) else project_id
+                    stmt = select(Project).where(Project.id == proj_uuid)
+                    result = await session.execute(stmt)
+                    project = result.scalars().first()
+                    if project:
+                        current_spend = float(project.total_spend_usd) if project.total_spend_usd else 0.0
+                        project.total_spend_usd = f"{current_spend + cost:.6f}"
+                
                 await session.commit()
         except Exception as e:
-            print(f"✗ [Router] Token usage tracking failed: {e}")
+            import logging as _logging
+            _logging.getLogger("carole.router").warning("Token usage tracking failed: %s", e)
 
     # ================================================================
     # Anthropic (Claude)
@@ -441,10 +470,12 @@ class MultiModelRouter:
         # Map reasoning effort levels to Anthropic budget_tokens
         _ANTHROPIC_BUDGETS = {"low": 1024, "medium": 4096, "high": 8192}
 
+        formatted_messages = self._format_messages_for_provider(messages, "anthropic")
+
         payload: dict = {
             "model": model,
             "system": system_prompt,
-            "messages": messages,
+            "messages": formatted_messages,
             "max_tokens": max_tokens,
             "stream": True,
         }
@@ -478,13 +509,7 @@ class MultiModelRouter:
             return
 
         # Build Gemini-format contents array
-        contents = []
-        for msg in messages:
-            role = "user" if msg["role"] == "user" else "model"
-            contents.append({
-                "role": role,
-                "parts": [{"text": msg["content"]}]
-            })
+        contents = self._format_messages_for_provider(messages, "google")
 
         payload = {
             "contents": contents,
@@ -672,7 +697,8 @@ class MultiModelRouter:
             headers = {"Content-Type": "application/json"}
             if key:
                 headers["Authorization"] = f"Bearer {key}"
-            formatted = [{"role": "system", "content": system_prompt}] + messages
+            formatted_msgs = self._format_messages_for_provider(messages, "openai")
+            formatted = [{"role": "system", "content": system_prompt}] + formatted_msgs
             payload: dict = {
                 "model": mdl, "messages": formatted,
                 "temperature": temperature, "max_tokens": max_tokens, "stream": True
@@ -691,8 +717,9 @@ class MultiModelRouter:
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
             }
+            formatted_msgs = self._format_messages_for_provider(messages, "anthropic")
             payload: dict = {
-                "model": mdl, "system": system_prompt, "messages": messages,
+                "model": mdl, "system": system_prompt, "messages": formatted_msgs,
                 "max_tokens": max_tokens, "stream": True
             }
             if _effort and _effort in _BUDGETS:
@@ -710,8 +737,9 @@ class MultiModelRouter:
             if model.startswith("openrouter/"):
                 provider = "openrouter"
                 use_special = model in ("openrouter/free", "openrouter/auto")
+                target = model if use_special else model[len("openrouter/"):]
                 extra = {"reasoning": {"enabled": True}} if use_special else ({"reasoning": {"effort": _effort}} if _effort else None)
-                async for c in _wrap_openai_compatible("https://openrouter.ai/api/v1/chat/completions", self.openrouter_key, model, extra): yield c
+                async for c in _wrap_openai_compatible("https://openrouter.ai/api/v1/chat/completions", self.openrouter_key, target, extra): yield c
 
             elif model.startswith("nvidia/"):
                 provider = "nvidia"
@@ -900,6 +928,100 @@ class MultiModelRouter:
 
     # Alias for compatibility with older code paths
     get_embedding = generate_embeddings
+
+    def _format_messages_for_provider(self, messages: List[Dict[str, Any]], provider: str) -> List[Dict[str, Any]]:
+        """Converts the internal message format (with local_path images) into provider-specific payloads.
+        
+        File I/O is done synchronously here because this runs in an async context only during
+        stream setup — not inside a hot loop. For very large images, consider offloading via
+        asyncio.to_thread if needed in the future.
+        """
+        import base64
+        import os
+        import logging as _logging
+        _log = _logging.getLogger("carole.router.formatter")
+        
+        formatted = []
+        for msg in messages:
+            content = msg["content"]
+            if isinstance(content, str):
+                if provider == "google":
+                    role = "user" if msg["role"] == "user" else "model"
+                    formatted.append({"role": role, "parts": [{"text": content}]})
+                else:
+                    formatted.append({"role": msg["role"], "content": content})
+                continue
+                
+            # Content is a list (multimodal)
+            if provider == "google":
+                role = "user" if msg["role"] == "user" else "model"
+                parts = []
+                for item in content:
+                    if item["type"] == "text":
+                        parts.append({"text": item["text"]})
+                    elif item["type"] == "image":
+                        local_path = item.get("local_path")
+                        if local_path and os.path.exists(local_path):
+                            with open(local_path, "rb") as f:
+                                b64 = base64.b64encode(f.read()).decode("utf-8")
+                            parts.append({
+                                "inlineData": {
+                                    "mimeType": item.get("mime_type", "image/jpeg"),
+                                    "data": b64
+                                }
+                            })
+                        else:
+                            _log.warning("Image local_path not found or missing, skipping: %s", local_path)
+                if parts:
+                    formatted.append({"role": role, "parts": parts})
+                
+            elif provider == "anthropic":
+                parts = []
+                for item in content:
+                    if item["type"] == "text":
+                        parts.append({"type": "text", "text": item["text"]})
+                    elif item["type"] == "image":
+                        local_path = item.get("local_path")
+                        if local_path and os.path.exists(local_path):
+                            with open(local_path, "rb") as f:
+                                b64 = base64.b64encode(f.read()).decode("utf-8")
+                            parts.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": item.get("mime_type", "image/jpeg"),
+                                    "data": b64
+                                }
+                            })
+                        else:
+                            _log.warning("Image local_path not found or missing, skipping: %s", local_path)
+                if parts:
+                    formatted.append({"role": msg["role"], "content": parts})
+                
+            else:
+                # OpenAI / OpenRouter format
+                parts = []
+                for item in content:
+                    if item["type"] == "text":
+                        parts.append({"type": "text", "text": item["text"]})
+                    elif item["type"] == "image":
+                        local_path = item.get("local_path")
+                        if local_path and os.path.exists(local_path):
+                            with open(local_path, "rb") as f:
+                                b64 = base64.b64encode(f.read()).decode("utf-8")
+                            mime = item.get("mime_type", "image/jpeg")
+                            parts.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime};base64,{b64}"
+                                }
+                            })
+                        else:
+                            _log.warning("Image local_path not found or missing, skipping: %s", local_path)
+                if parts:
+                    formatted.append({"role": msg["role"], "content": parts})
+                
+        return formatted
 
 
 # Global singleton router

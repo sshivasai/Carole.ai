@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Folder, File, ChevronRight, ChevronDown, RefreshCw, X, Terminal as TerminalIcon, Maximize2, Minimize2, Search, GitBranch, LayoutList } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Folder, File, ChevronRight, ChevronDown, RefreshCw, X, Terminal as TerminalIcon, Maximize2, Minimize2, Search, GitBranch, LayoutList, Activity } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Editor from "@monaco-editor/react";
 import TerminalPanel from "./TerminalPanel";
 import GitPanel from "./GitPanel";
 import SearchPanel from "./SearchPanel";
+import ActivityLogPanel from "./ActivityLogPanel";
 import Modal from "./Modal";
+import { useToast } from "@/hooks/useToast";
 
 function getLanguageFromPath(path: string): string {
   const extension = path.split('.').pop()?.toLowerCase();
@@ -57,6 +59,7 @@ interface FileItem {
 interface FileExplorerPanelProps {
   onClose?: () => void;
   projectId?: string;
+  teamId?: string;
 }
 
 interface ContextMenuState {
@@ -72,9 +75,10 @@ interface OpenFile {
   isDirty: boolean;
 }
 
-export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPanelProps) {
+export default function FileExplorerPanel({ onClose, projectId, teamId }: FileExplorerPanelProps) {
+  const { addToast } = useToast();
   // Tabs and Layout State
-  const [activeLeftTab, setActiveLeftTab] = useState<"explorer" | "search" | "git">("explorer");
+  const [activeLeftTab, setActiveLeftTab] = useState<"explorer" | "search" | "git" | "activity">("explorer");
   const [isFullScreen, setIsFullScreen] = useState(false);
   
   // Editor State
@@ -138,7 +142,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
       setActiveFilePath(path);
     } catch (error) {
       const err = error as Error;
-      alert(`Error reading file: ${err.message}`);
+      addToast({ type: "error", message: `Error reading file: ${err.message}` });
     } finally {
       setLoadingContent(false);
     }
@@ -182,7 +186,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
       setRefreshKey(k => k + 1);
     } catch (error) {
       const err = error as Error;
-      alert(`Failed to save: ${err.message}`);
+      addToast({ type: "error", message: `Failed to save: ${err.message}` });
     } finally {
       setSaving(false);
     }
@@ -221,7 +225,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
         setRefreshKey(k => k + 1);
       } catch (error) {
         const err = error as Error;
-        alert(`Failed to delete: ${err.message}`);
+        addToast({ type: "error", message: `Failed to delete: ${err.message}` });
       }
     } else if (type === "rename") {
       if (inputValue && inputValue !== path) {
@@ -237,7 +241,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
           setRefreshKey(k => k + 1);
         } catch (error) {
           const err = error as Error;
-          alert(`Failed to rename: ${err.message}`);
+          addToast({ type: "error", message: `Failed to rename: ${err.message}` });
         }
       }
     } else if (type === "new_file") {
@@ -249,7 +253,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
           setRefreshKey(k => k + 1);
         } catch (error) {
           const err = error as Error;
-          alert(`Failed to create file: ${err.message}`);
+          addToast({ type: "error", message: `Failed to create file: ${err.message}` });
         }
       }
     } else if (type === "new_folder") {
@@ -260,7 +264,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
           setRefreshKey(k => k + 1);
         } catch (error) {
           const err = error as Error;
-          alert(`Failed to create folder: ${err.message}`);
+          addToast({ type: "error", message: `Failed to create folder: ${err.message}` });
         }
       }
     }
@@ -276,7 +280,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
     else if (ext === 'rb') cmd = `ruby ${path}`;
     else if (ext === 'php') cmd = `php ${path}`;
     else {
-      alert(`Execution not supported for .${ext} files yet.`);
+      addToast({ type: "warning", message: `Execution not supported for .${ext} files yet.` });
       return;
     }
     
@@ -319,8 +323,10 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
     : {
         display: "flex",
         height: "100%",
-        borderLeft: "1px solid var(--color-hairline)",
-        background: "var(--color-canvas)",
+        borderLeft: "1px solid var(--border-glass)",
+        background: "var(--bg-glass-panel)",
+        backdropFilter: "var(--blur-md)",
+        WebkitBackdropFilter: "var(--blur-md)",
         width: "100%",
         maxWidth: 800,
       };
@@ -328,10 +334,10 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
   return (
     <div style={containerStyle}>
       {/* Activity Bar */}
-      <div style={{ width: 48, borderRight: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 8 }}>
+      <div style={{ width: 48, borderRight: "1px solid var(--color-hairline)", background: "var(--bg-glass-card)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 8, gap: 8 }}>
         <button 
           onClick={() => setActiveLeftTab("explorer")}
-          style={{ padding: 12, color: activeLeftTab === "explorer" ? "var(--color-primary)" : "var(--color-mute)" }}
+          style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "explorer" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "explorer" ? "var(--color-primary-glow-sm)" : "transparent" }}
           className="hover:text-white transition-colors"
           title="Explorer"
         >
@@ -339,7 +345,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
         </button>
         <button 
           onClick={() => setActiveLeftTab("search")}
-          style={{ padding: 12, color: activeLeftTab === "search" ? "var(--color-primary)" : "var(--color-mute)" }}
+          style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "search" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "search" ? "var(--color-primary-glow-sm)" : "transparent" }}
           className="hover:text-white transition-colors"
           title="Search"
         >
@@ -347,16 +353,24 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
         </button>
         <button 
           onClick={() => setActiveLeftTab("git")}
-          style={{ padding: 12, color: activeLeftTab === "git" ? "var(--color-primary)" : "var(--color-mute)" }}
+          style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "git" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "git" ? "var(--color-primary-glow-sm)" : "transparent" }}
           className="hover:text-white transition-colors"
           title="Source Control"
         >
           <GitBranch size={20} />
         </button>
+        <button 
+          onClick={() => setActiveLeftTab("activity")}
+          style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "activity" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "activity" ? "var(--color-primary-glow-sm)" : "transparent" }}
+          className="hover:text-white transition-colors"
+          title="Activity Log"
+        >
+          <Activity size={20} />
+        </button>
       </div>
 
       {/* Left Pane - Sidebar Content */}
-      <div style={{ width: 250, borderRight: "1px solid var(--color-hairline)", display: "flex", flexDirection: "column", background: "var(--color-canvas-soft)" }}>
+      <div style={{ width: 250, borderRight: "1px solid var(--color-hairline)", display: "flex", flexDirection: "column", background: "var(--bg-glass-panel)" }}>
         {activeLeftTab === "explorer" && (
           <>
             <div style={{ padding: "var(--sp-sm) var(--sp-md)", borderBottom: "1px solid var(--color-hairline)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -380,9 +394,9 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
                 <>
                   <div style={{ display: "flex", alignItems: "center", padding: "2px 8px", color: "var(--color-body)", userSelect: "none" }}>
                     <span style={{ width: 16, display: "flex", justifyContent: "center", marginRight: 2 }}>
-                      <ChevronDown size={14} className="text-mute" />
+                      <ChevronDown size={14} color="var(--color-mute)" />
                     </span>
-                    <Folder size={14} className="text-blue-400 mr-2" />
+                    <Folder size={14} color="var(--color-primary-soft)" style={{ marginRight: 8 }} />
                     <span className="body-sm truncate" style={{ fontSize: "13px", fontWeight: "bold" }}>workspaces</span>
                   </div>
                   <div style={{ paddingLeft: 12 }}>
@@ -421,14 +435,17 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
         {activeLeftTab === "git" && (
           <GitPanel projectId={projectId} />
         )}
+        {activeLeftTab === "activity" && teamId && (
+          <ActivityLogPanel teamId={teamId} />
+        )}
       </div>
 
       {/* Right Pane - Content View */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "#1e1e1e" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "transparent" }}>
         {openFiles.length > 0 ? (
           <>
             {/* Editor Tabs */}
-            <div style={{ display: "flex", background: "#252526", overflowX: "auto", overflowY: "hidden", height: 35, flexShrink: 0 }} className="scrollbar-hide">
+            <div style={{ display: "flex", background: "var(--bg-glass-card)", overflowX: "auto", overflowY: "hidden", height: 35, flexShrink: 0 }} className="scrollbar-hide">
               {openFiles.map(file => {
                 const isActive = file.path === activeFilePath;
                 const fileName = file.path.split('/').pop() || file.path;
@@ -440,10 +457,10 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
                       display: "flex",
                       alignItems: "center",
                       padding: "0 10px 0 16px",
-                      background: isActive ? "#1e1e1e" : "#2d2d2d",
-                      color: isActive ? "#ffffff" : "#969696",
-                      borderRight: "1px solid #252526",
-                      borderTop: isActive ? "1px solid #007acc" : "1px solid transparent",
+                      background: isActive ? "var(--bg-glass-panel)" : "transparent",
+                      color: isActive ? "var(--color-primary)" : "var(--color-mute)",
+                      borderRight: "1px solid var(--color-hairline)",
+                      borderTop: isActive ? "1px solid var(--color-primary)" : "1px solid transparent",
                       cursor: "pointer",
                       minWidth: 120,
                       maxWidth: 200,
@@ -452,7 +469,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
                     }}
                     className="hover:bg-[#2a2d2e] transition-colors"
                   >
-                    <File size={12} className={isActive ? "text-blue-400" : "text-gray-500"} style={{ marginRight: 6 }} />
+                    <File size={12} color={isActive ? "var(--color-primary)" : "var(--color-body)"} style={{ marginRight: 6 }} />
                     <span className="truncate body-sm font-mono" style={{ fontSize: "12px", flex: 1, marginRight: 6 }}>
                       {fileName}
                     </span>
@@ -473,7 +490,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
 
             {/* Editor Toolbar */}
             {activeFile && (
-              <div style={{ padding: "4px 16px", borderBottom: "1px solid #3c3c3c", background: "#1e1e1e", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+              <div style={{ padding: "4px 16px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-glass-panel)", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
                 <div style={{ display: "flex", alignItems: "center" }}>
                   <span className="body-sm text-mute" style={{ fontFamily: "var(--font-mono)", fontSize: "11px" }}>{activeFile.path}</span>
                 </div>
@@ -541,7 +558,7 @@ export default function FileExplorerPanel({ onClose, projectId }: FileExplorerPa
           </>
         ) : (
           <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "8px 16px", borderBottom: "1px solid #3c3c3c", background: "#1e1e1e", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
+            <div style={{ padding: "8px 16px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-glass-panel)", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
               <button
                 className={`btn btn-sm ${showTerminal ? "btn-secondary" : "btn-ghost"}`}
                 onClick={() => setShowTerminal(s => !s)}
@@ -738,12 +755,12 @@ function TreeNode({ path, name, isDir, onFileSelect, selectedPath, defaultExpand
       >
         <span style={{ width: 16, display: "flex", justifyContent: "center", marginRight: 2 }}>
           {isDir ? (
-            expanded ? <ChevronDown size={14} className="text-mute" /> : <ChevronRight size={14} className="text-mute" />
+            expanded ? <ChevronDown size={14} color="var(--color-mute)" /> : <ChevronRight size={14} color="var(--color-mute)" />
           ) : (
             <span />
           )}
         </span>
-        {isDir ? <Folder size={14} className="text-blue-400 mr-2" /> : <File size={14} className="text-gray-400 mr-2" />}
+        {isDir ? <Folder size={14} color="var(--color-primary-soft)" style={{ marginRight: 8 }} /> : <File size={14} color="var(--color-body)" style={{ marginRight: 8 }} />}
         <span className="body-sm truncate" style={{ fontSize: "13px" }}>{name}</span>
         {loading && <RefreshCw size={10} className="animate-spin ml-2 text-mute" />}
       </div>

@@ -14,7 +14,6 @@ import os
 import re
 import ast
 from pathlib import Path
-from typing import List
 
 
 class CodeAnalysisTools:
@@ -27,7 +26,7 @@ class CodeAnalysisTools:
         joined = Path(self.workspace_root / relative_path)
         resolved = joined.resolve()
         if not str(resolved).startswith(str(self.workspace_root)):
-            raise PermissionError(f"Access Denied: Path outside sandbox.")
+            raise PermissionError("Access Denied: Path outside sandbox.")
         return resolved
 
     _SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.next', 'venv', '.venv', 'dist', 'build'}
@@ -164,7 +163,7 @@ class CodeAnalysisTools:
             if not safe_path.is_file():
                 return f"Error: '{relative_path}' is not a file."
             if not safe_path.suffix == ".py":
-                return f"Error: check_syntax only supports .py files."
+                return "Error: check_syntax only supports .py files."
 
             with open(safe_path, "r", encoding="utf-8") as f:
                 source = f.read()
@@ -201,15 +200,17 @@ class CodeAnalysisTools:
                 output.append("  No internal files depend on this.")
 
             # Check active editors
+            pid = "default"
             warnings = []
-            active_target = code_graph.active_editors.get(path_str)
-            if active_target:
-                warnings.append(f"⚠️ TARGET FILE actively edited by: {', '.join(active_target)}")
-            
-            for dep in dependent_files:
-                active_dep = code_graph.active_editors.get(dep)
-                if active_dep:
-                    warnings.append(f"⚠️ DEPENDENT FILE '{dep}' actively edited by: {', '.join(active_dep)}")
+            if pid in code_graph.active_editors:
+                active_target = code_graph.active_editors[pid].get(path_str)
+                if active_target:
+                    warnings.append(f"⚠️ TARGET FILE actively edited by: {', '.join(active_target)}")
+                
+                for dep in dependent_files:
+                    active_dep = code_graph.active_editors[pid].get(dep)
+                    if active_dep:
+                        warnings.append(f"⚠️ DEPENDENT FILE '{dep}' actively edited by: {', '.join(active_dep)}")
                     
             if warnings:
                 output.append("\n" + "\n".join(warnings))

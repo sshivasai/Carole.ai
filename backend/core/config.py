@@ -17,27 +17,23 @@ from pathlib import Path
 CAROLE_HOME_DIR = Path.home() / ".carole"
 CAROLE_HOME_DIR.mkdir(parents=True, exist_ok=True)
 
+PLUGINS_DIR = CAROLE_HOME_DIR / "plugins"
+PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+
 # ==========================================
 # Global Model Settings  (env-configurable)
 # ==========================================
-DEFAULT_FAST_MODEL  = os.getenv("DEFAULT_FAST_MODEL",  "openrouter/free")
-DEFAULT_SMART_MODEL = os.getenv("DEFAULT_SMART_MODEL", "openrouter/free")
-DEFAULT_CODER_MODEL = os.getenv("DEFAULT_CODER_MODEL", "openrouter/free")
-DEFAULT_JUDGE_MODEL = os.getenv("DEFAULT_JUDGE_MODEL", "openrouter/free")
+# Values are now dynamically loaded from __getattr__ so they update without restart
 
 # ==========================================
 # Agent Runtime Settings (env-configurable)
 # ==========================================
-MAX_LOOPS            = int(os.getenv("MAX_AGENT_LOOPS",       "10"))
-APPROVAL_TIMEOUT_SECS = int(os.getenv("APPROVAL_TIMEOUT_SECS", "300"))
-MAX_QUEUE_SIZE       = int(os.getenv("MAX_EVENT_QUEUE_SIZE",  "500"))
+# Values are now dynamically loaded from __getattr__ so they update without restart
 
 # ==========================================
 # Memory & Dream Settings
 # ==========================================
-DREAM_INTERVAL_MINUTES        = 15
-MEMORY_RETRIEVAL_LIMIT        = 3
-CONTEXT_COMPACTION_THRESHOLD  = 15   # messages before compaction triggers
+# Values are now dynamically loaded from __getattr__ so they update without restart
 
 
 # ==========================================
@@ -73,6 +69,22 @@ _PROMPT_ALIASES = {
 }
 
 
+_MODEL_DEFAULTS = {
+    "DEFAULT_FAST_MODEL": "openrouter/free",
+    "DEFAULT_SMART_MODEL": "openrouter/free",
+    "DEFAULT_CODER_MODEL": "openrouter/free",
+    "DEFAULT_JUDGE_MODEL": "openrouter/free",
+}
+
+_AGENT_SETTINGS_DEFAULTS = {
+    "MAX_LOOPS": 10,
+    "APPROVAL_TIMEOUT_SECS": 300,
+    "MAX_QUEUE_SIZE": 500,
+    "DREAM_INTERVAL_MINUTES": 15,
+    "MEMORY_RETRIEVAL_LIMIT": 3,
+    "CONTEXT_COMPACTION_THRESHOLD": 15,
+}
+
 def __getattr__(name: str) -> str:
     """
     Module-level __getattr__ so old-style `from core.config import JUDGE_SYSTEM_PROMPT`
@@ -81,6 +93,41 @@ def __getattr__(name: str) -> str:
     if name in _PROMPT_ALIASES:
         from core.prompts import get_prompt
         return get_prompt(_PROMPT_ALIASES[name])
+    
+    if name in _MODEL_DEFAULTS:
+        from core.llm.config_manager import load_config
+        cfg = load_config()
+        # 1. Check user config file (~/.carole/config.json)
+        from_cfg = cfg.get("default_models", {}).get(name)
+        if from_cfg:
+            return from_cfg
+        # 2. Check environment variable
+        from_env = os.getenv(name)
+        if from_env:
+            return from_env
+        # 3. Fallback
+        return _MODEL_DEFAULTS[name]
+
+    if name in _AGENT_SETTINGS_DEFAULTS:
+        from core.llm.config_manager import load_config
+        cfg = load_config()
+        # 1. Check user config file
+        from_cfg = cfg.get("agent_settings", {}).get(name)
+        if from_cfg is not None:
+            return int(from_cfg)
+        # 2. Check env variables (for some)
+        env_map = {
+            "MAX_LOOPS": "MAX_AGENT_LOOPS",
+            "APPROVAL_TIMEOUT_SECS": "APPROVAL_TIMEOUT_SECS",
+            "MAX_QUEUE_SIZE": "MAX_EVENT_QUEUE_SIZE"
+        }
+        if name in env_map:
+            from_env = os.getenv(env_map[name])
+            if from_env is not None:
+                return int(from_env)
+        # 3. Fallback
+        return int(_AGENT_SETTINGS_DEFAULTS[name])
+
     raise AttributeError(f"module 'core.config' has no attribute {name!r}")
 
 

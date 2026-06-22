@@ -28,6 +28,9 @@ export function useWebSocket(teamId: string | null) {
   const heartbeatTimer = useRef<NodeJS.Timeout | null>(null);
   const attemptRef = useRef(0);
   const isMounted = useRef(true);
+  // Holds the latest `connect` so the reconnect timer always calls the current
+  // version (avoids a stale closure and the use-before-declaration warning).
+  const connectRef = useRef<() => void>(() => {});
 
   const stopHeartbeat = useCallback(() => {
     if (heartbeatTimer.current) {
@@ -87,12 +90,15 @@ export function useWebSocket(teamId: string | null) {
 
       console.log(`🔴 WebSocket disconnected. Reconnecting in ${delay}ms (attempt ${attempt + 1})...`);
       reconnectTimer.current = setTimeout(() => {
-        if (isMounted.current) connect();
+        if (isMounted.current) connectRef.current();
       }, delay);
     };
 
     ws.onerror = () => ws.close();
   }, [teamId, startHeartbeat, stopHeartbeat]);
+
+  // Keep the ref pointed at the latest connect implementation.
+  connectRef.current = connect;
 
   useEffect(() => {
     isMounted.current = true;

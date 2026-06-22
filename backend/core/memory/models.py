@@ -14,7 +14,7 @@ Multi-Tenant Hierarchical Architecture:
 
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Uuid
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Uuid, Integer
 from .database import Base
 
 class User(Base):
@@ -43,6 +43,10 @@ class Project(Base):
     
     # Each Project belongs to a User Account
     owner_id = Column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    
+    # Cost Management
+    budget_limit_usd = Column(String(20), nullable=True)
+    total_spend_usd = Column(String(20), nullable=False, default="0.00")
     
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -111,7 +115,15 @@ class Message(Base):
     # Tracks whether the AutoDream worker has processed this message for memory consolidation.
     # Prevents duplicate lesson extraction across dream cycles.
     processed = Column(Boolean, default=False, nullable=False)
-    
+
+    # Monotonically increasing integer for stable sub-second ordering (tiebreaker after created_at).
+    # SQLite/Postgres autoincrement ensures globally unique order even within the same second.
+    sequence = Column(Integer, autoincrement=True, nullable=True, index=True)
+
+    # True for intermediate per-loop rows (thought + tool trace). False for final agent responses.
+    # Lets the UI render intermediate steps as compact collapsed rows vs full chat bubbles.
+    is_intermediate = Column(Boolean, default=False, nullable=False)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class Learning(Base):
@@ -149,10 +161,24 @@ class Task(Base):
     
     assigned_agent_id = Column(Uuid, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
     parent_task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
+    blocked_by_task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
     created_by = Column(String(100), nullable=False, default="human")  # agent_id or "human"
     
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class TaskComment(Base):
+    __tablename__ = "task_comments"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    
+    author_id = Column(String(100), nullable=False)  # "human" or agent_id
+    author_name = Column(String(100), nullable=False)
+    text = Column(Text, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class TokenUsage(Base):
@@ -195,13 +221,11 @@ class McpServer(Base):
 
 class FileBackup(Base):
     """
-    Stores a snapshot of a file's content BEFORE an agent modifies it.
-    This enables Chat Rewind: when a message is deleted or edited, all
-    FileBackup records linked to the deleted messages are replayed in
-    reverse order to restore the workspace to its pre-agent state.
-
-    - `original_content = None`  → file did not exist before; rollback should DELETE the file.
-    - `original_content = str`   → file existed; rollback should OVERWRITE with this content.
+    Stores a snapshot of a file's state BEFORE an agent modifies it.
+    Uses an append-only, copy-on-write file backup strategy similar to Claude Code.
+    
+    - `backup_file_name = None`  → file did not exist before; rollback should unlink/delete the file.
+    - `backup_file_name = str`   → SHA-256 hash filename in `~/.carole/file-history/{team_id}/`. Rollback should copy this over the live file.
     - `operation`                → 'write' or 'edit', for debugging/auditing.
     """
     __tablename__ = "file_backups"
@@ -212,13 +236,39 @@ class FileBackup(Base):
     # The chat message that triggered this file change
     message_id = Column(Uuid, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False)
 
-    # Absolute path of the file that was modified
+    # Absolute path of the live file that was modified
     file_path = Column(Text, nullable=False)
 
-    # Content before the modification. NULL means the file was newly created.
-    original_content = Column(Text, nullable=True)
+    # Name of the backup file in the file-history directory. NULL means file did not exist.
+    backup_file_name = Column(String(255), nullable=True)
 
     # Which tool created this backup: 'write_file' or 'edit_file'
     operation = Column(String(20), nullable=False, default="write_file")
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Skill(Base):
+    """
+    Modular skill package that provides an agent with additional prompt instructions
+    and specific tools/MCP servers to execute a particular workflow.
+    """
+    __tablename__ = "skills"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    
+    system_prompt_addendum = Column(Text, nullable=True)
+    
+    # List of tool names (e.g., built-in tools or plugin tools)
+    tools = Column(JSON, nullable=True, default=list)
+    # List of associated MCP server config IDs or names
+    mcp_servers = Column(JSON, nullable=True, default=list)
+    
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

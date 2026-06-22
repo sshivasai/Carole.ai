@@ -1,8 +1,7 @@
 "use client";
 import React, { useState, useEffect, useCallback } from "react";
-import { Settings, Trash2, Upload, Loader2, AlertTriangle, CheckCircle, RefreshCw, Key, Eye, EyeOff, Save, MessageSquare, Layers } from "lucide-react";
+import { Settings, Trash2, Upload, Loader2, AlertTriangle, CheckCircle, RefreshCw, Key, Eye, EyeOff, Save, MessageSquare, Layers, DollarSign } from "lucide-react";
 import { api } from "@/hooks/useApi";
-import McpIntegration from "./McpIntegration";
 import PromptsEditor from "./settings/PromptsEditor";
 import ModelCatalogEditor from "./settings/ModelCatalogEditor";
 import type { AgentConfig } from "@/lib/types";
@@ -13,7 +12,7 @@ interface Props {
   teamId: string | null;
   projectId: string | null;
   agents: AgentConfig[];
-  onToast: (msg: string, type: "success"|"error"|"info") => void;
+  onToast: (msg: string, type: "success" | "error" | "info") => void;
   onTeamDeleted: () => void;
   onProjectDeleted: () => void;
 }
@@ -24,9 +23,9 @@ interface UsageData { total_messages?: number; total_tasks?: number; total_agent
 // ── Google Account Card ───────────────────────────────────────────────────────
 
 function GoogleAccountCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [status, setStatus]         = useState<any>(null);
-  const [loading, setLoading]       = useState(true);
-  const [disconnecting, setDiscon]  = useState(false);
+  const [status, setStatus] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [disconnecting, setDiscon] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     setLoading(true);
@@ -66,10 +65,10 @@ function GoogleAccountCard({ onToast }: { onToast: (msg: string, type: any) => v
       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-lg)" }}>
         {/* Google G icon */}
         <svg width="18" height="18" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
-          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
         </svg>
         <h3 className="display-sm">Google Account</h3>
       </div>
@@ -111,7 +110,7 @@ function GoogleAccountCard({ onToast }: { onToast: (msg: string, type: any) => v
             <button id="connect-google" className="btn btn-primary btn-sm" onClick={handleConnect}
               style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
               <svg width="14" height="14" viewBox="0 0 48 48">
-                <path fill="#fff" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                <path fill="#fff" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
               </svg>
               Connect Google Account
             </button>
@@ -125,25 +124,25 @@ function GoogleAccountCard({ onToast }: { onToast: (msg: string, type: any) => v
 // ── API Keys Card ─────────────────────────────────────────────────────────────
 
 const PROVIDER_FIELDS = [
-  { key: "openai",     label: "OpenAI",       placeholder: "sk-proj-..." },
-  { key: "anthropic",  label: "Anthropic",    placeholder: "sk-ant-api03-..." },
-  { key: "google",     label: "Google Gemini",placeholder: "AIzaSy..." },
-  { key: "openrouter", label: "OpenRouter",   placeholder: "sk-or-v1-..." },
-  { key: "nvidia",     label: "NVIDIA",       placeholder: "nvapi-..." },
-  { key: "tavily",     label: "Tavily (Web Search)", placeholder: "tvly-..." },
+  { key: "openai", label: "OpenAI", placeholder: "sk-proj-..." },
+  { key: "anthropic", label: "Anthropic", placeholder: "sk-ant-api03-..." },
+  { key: "google", label: "Google Gemini", placeholder: "AIzaSy..." },
+  { key: "openrouter", label: "OpenRouter", placeholder: "sk-or-v1-..." },
+  { key: "nvidia", label: "NVIDIA", placeholder: "nvapi-..." },
+  { key: "tavily", label: "Tavily (Web Search)", placeholder: "tvly-..." },
 ];
 
 function ApiKeysCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [keys, setKeys]           = useState<Record<string, string>>({});
+  const [keys, setKeys] = useState<Record<string, string>>({});
   const [ollamaUrl, setOllamaUrl] = useState("");
-  const [visible, setVisible]     = useState<Record<string, boolean>>({});
-  const [loading, setLoading]     = useState(true);
-  const [saving, setSaving]       = useState(false);
+  const [visible, setVisible] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.getAppConfig()
       .then((cfg: any) => { setKeys(cfg.api_keys || {}); setOllamaUrl(cfg.providers?.ollama_base_url || ""); })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setLoading(false));
   }, []);
 
@@ -171,7 +170,7 @@ function ApiKeysCard({ onToast }: { onToast: (msg: string, type: any) => void })
 
       {loading ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {[1,2,3].map(i => <div key={i} className="skeleton skeleton-text" />)}
+          {[1, 2, 3].map(i => <div key={i} className="skeleton skeleton-text" />)}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
@@ -219,7 +218,7 @@ function ApiKeysCard({ onToast }: { onToast: (msg: string, type: any) => void })
 // ── Health Card ───────────────────────────────────────────────────────────────
 
 function HealthCard({ teamId }: { teamId: string | null }) {
-  const [health, setHealth]   = useState<HealthData | null>(null);
+  const [health, setHealth] = useState<HealthData | null>(null);
   const [wsStatus, setWsStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -275,12 +274,12 @@ function HealthCard({ teamId }: { teamId: string | null }) {
 
 function UsageCard({ projectId }: { projectId: string }) {
   const [usage, setUsage] = useState<UsageData | null>(null);
-  useEffect(() => { api.getProjectUsage(projectId).then(setUsage).catch(() => {}); }, [projectId]);
+  useEffect(() => { api.getProjectUsage(projectId).then(setUsage).catch(() => { }); }, [projectId]);
   if (!usage) return null;
   const stats = [
     { label: "Messages", value: usage.total_messages ?? 0 },
-    { label: "Tasks",    value: usage.total_tasks    ?? 0 },
-    { label: "Agents",   value: usage.total_agents   ?? 0 },
+    { label: "Tasks", value: usage.total_tasks ?? 0 },
+    { label: "Agents", value: usage.total_agents ?? 0 },
   ];
   return (
     <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
@@ -326,6 +325,253 @@ function KnowledgeUpload({ projectId, teamId, onToast }: { projectId: string; te
   );
 }
 
+// ── Agent Runtime Settings Card ────────────────────────────────────────────────
+function AgentRuntimeCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
+  const [settings, setSettings] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.getAppConfig()
+      .then((cfg: any) => setSettings(cfg.agent_settings || {}))
+      .catch(() => { })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateAppConfig({ agent_settings: settings });
+      onToast("Agent runtime settings saved ✓", "success");
+    } catch {
+      onToast("Failed to save agent runtime settings", "error");
+    } finally { setSaving(false); }
+  };
+
+  const fields = [
+    { key: "MAX_LOOPS", label: "Max Agent Loops", default: 10 },
+    { key: "APPROVAL_TIMEOUT_SECS", label: "Approval Timeout (sec)", default: 300 },
+    { key: "MAX_QUEUE_SIZE", label: "Max Event Queue Size", default: 500 },
+    { key: "DREAM_INTERVAL_MINUTES", label: "Dream Interval (min)", default: 15 },
+    { key: "MEMORY_RETRIEVAL_LIMIT", label: "Memory Retrieval Limit", default: 3 },
+    { key: "CONTEXT_COMPACTION_THRESHOLD", label: "Context Compaction Threshold", default: 15 },
+  ];
+
+  return (
+    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
+      <h3 className="display-sm" style={{ marginBottom: "var(--sp-lg)" }}>Agent Runtime & Memory Settings</h3>
+      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-xl)" }}>
+        Configure execution limits, timeouts, and background processing intervals. Leave blank to use defaults.
+      </p>
+
+      {loading ? (
+        <div className="skeleton skeleton-text" style={{ width: "60%" }} />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-md)" }}>
+            {fields.map(f => (
+              <div key={f.key} className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">{f.label}</label>
+                <input
+                  type="number"
+                  className="input"
+                  placeholder={`Default: ${f.default}`}
+                  value={settings[f.key] || ""}
+                  onChange={e => setSettings(d => ({ ...d, [f.key]: parseInt(e.target.value) || f.default }))}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
+            <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Settings
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Cost Management Card ────────────────────────────────────────────────────────
+
+function CostManagementCard({ projectId, onToast }: { projectId: string; onToast: (msg: string, type: any) => void }) {
+  const [costStats, setCostStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [budgetLimit, setBudgetLimit] = useState<string>("");
+
+  const fetchCostStats = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.getCostStats(projectId);
+      setCostStats(data);
+      setBudgetLimit(data.budget_limit_usd !== null && data.budget_limit_usd !== undefined ? String(data.budget_limit_usd) : "");
+    } catch {
+      // Ignore errors
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    fetchCostStats();
+  }, [fetchCostStats]);
+
+  const handleSaveBudget = async () => {
+    setSaving(true);
+    try {
+      await api.updateBudget({
+        project_id: projectId,
+        budget_limit_usd: budgetLimit ? parseFloat(budgetLimit) : null
+      });
+      onToast("Budget limit updated", "success");
+      fetchCostStats();
+    } catch {
+      onToast("Failed to update budget limit", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-lg)" }}>
+        <DollarSign size={16} color="var(--color-primary)" />
+        <h3 className="display-sm">Cost Management & Tracking</h3>
+      </div>
+      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-xl)" }}>
+        Track real-time API token usage and total expenditure across all models in this project.
+      </p>
+
+      {loading ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {[1, 2, 3].map(i => <div key={i} className="skeleton skeleton-text" />)}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+          {costStats && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--sp-md)", marginBottom: "var(--sp-md)" }}>
+              <div style={{ padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
+                <div className="caption">Total Spend</div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: "var(--color-primary)" }}>${costStats.total_spend_usd?.toFixed(4) || "0.0000"}</div>
+              </div>
+              <div style={{ padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
+                <div className="caption">Total Tokens</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{costStats.total_tokens?.toLocaleString() || "0"}</div>
+              </div>
+              <div style={{ padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
+                <div className="caption">Prompt Tokens</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{costStats.total_prompt_tokens?.toLocaleString() || "0"}</div>
+              </div>
+              <div style={{ padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
+                <div className="caption">Completion Tokens</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{costStats.total_completion_tokens?.toLocaleString() || "0"}</div>
+              </div>
+            </div>
+          )}
+
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Budget Limit (USD)</label>
+            <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
+              <input
+                className="input"
+                type="number"
+                step="0.01"
+                placeholder="No limit"
+                value={budgetLimit}
+                onChange={e => setBudgetLimit(e.target.value)}
+                style={{ maxWidth: 200 }}
+              />
+              <button className="btn btn-primary btn-sm" onClick={handleSaveBudget} disabled={saving}>
+                {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Budget
+              </button>
+            </div>
+          </div>
+          {costStats?.budget_limit_usd && costStats.total_spend_usd > costStats.budget_limit_usd && (
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", padding: "var(--sp-md)", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "var(--radius-sm)", color: "var(--color-danger)" }}>
+              <AlertTriangle size={14} />
+              <div className="body-sm-strong">Warning: Budget Limit Exceeded!</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Default Models Card ────────────────────────────────────────────────────────
+
+function DefaultModelsCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
+  const [defaults, setDefaults] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [catalog, setCatalog] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    Promise.all([api.getAppConfig(), api.getModelCatalog()])
+      .then(([cfg, cat]: [any, any]) => {
+        setDefaults(cfg.default_models || {});
+        setCatalog(cat);
+      })
+      .catch(() => { })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateAppConfig({ default_models: defaults });
+      onToast("Default models saved ✓", "success");
+    } catch {
+      onToast("Failed to save defaults", "error");
+    } finally { setSaving(false); }
+  };
+
+  const modelOptions = Array.from(new Set(
+    Object.values(catalog).flatMap((provider: any) =>
+      provider.models?.map((m: any) => m.id) || []
+    )
+  ));
+  return (
+    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
+      <h3 className="display-sm" style={{ marginBottom: "var(--sp-lg)" }}>Global Model Defaults</h3>
+      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-xl)" }}>
+        These models are used as system-wide defaults (e.g. for the Judge agent, or fallback generation).
+      </p>
+
+      {loading ? (
+        <div className="skeleton skeleton-text" style={{ width: "60%" }} />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+          {["DEFAULT_FAST_MODEL", "DEFAULT_SMART_MODEL", "DEFAULT_CODER_MODEL", "DEFAULT_JUDGE_MODEL"].map(key => (
+            <div key={key} className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">{key.replace("DEFAULT_", "").replace("_MODEL", "")} Model</label>
+              <select
+                className="input"
+                value={defaults[key] || ""}
+                onChange={e => setDefaults(d => ({ ...d, [key]: e.target.value }))}
+              >
+                <option value="">-- Use Environment Variable --</option>
+                {modelOptions.map((m: any, idx: number) => (
+                  <option key={`${m}-${idx}`} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+          ))}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
+            <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Defaults
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── AI Configuration Card (Prompts + Model Catalog) ──────────────────────────
 
 function AiConfigCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
@@ -351,8 +597,8 @@ function AiConfigCard({ onToast }: { onToast: (msg: string, type: any) => void }
         </button>
       </div>
       <div style={{ marginTop: "var(--sp-lg)" }}>
-        {tab === "prompts"  && <PromptsEditor onToast={onToast} />}
-        {tab === "catalog"  && <ModelCatalogEditor onToast={onToast} />}
+        {tab === "prompts" && <PromptsEditor onToast={onToast} />}
+        {tab === "catalog" && <ModelCatalogEditor onToast={onToast} />}
       </div>
     </div>
   );
@@ -360,9 +606,9 @@ function AiConfigCard({ onToast }: { onToast: (msg: string, type: any) => void }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-export default function SettingsPanel({ teamId, projectId, agents, onToast, onTeamDeleted, onProjectDeleted }: Props) {
+export default function SettingsPanel({ teamId, projectId, onToast, onTeamDeleted, onProjectDeleted }: Props) {
   const { user } = useAuth();
-  const [confirmDelete, setConfirmDelete] = useState<"team"|"project"|null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<"team" | "project" | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const handleDeleteTeam = async () => {
@@ -397,23 +643,18 @@ export default function SettingsPanel({ teamId, projectId, agents, onToast, onTe
 
       <GoogleAccountCard onToast={onToast} />
       <ApiKeysCard onToast={onToast} />
+      <DefaultModelsCard onToast={onToast} />
+      <AgentRuntimeCard onToast={onToast} />
 
       {/* ── AI Configuration (Prompts + Model Catalog) ── */}
       <AiConfigCard onToast={onToast} />
 
       <HealthCard teamId={teamId} />
       {projectId && <UsageCard projectId={projectId} />}
+      {projectId && <CostManagementCard projectId={projectId} onToast={onToast} />}
       {projectId && <KnowledgeUpload projectId={projectId} teamId={teamId} onToast={onToast} />}
 
-      <div className="card" style={{ marginBottom: "var(--sp-xl)", padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "var(--sp-lg) var(--sp-2xl)", borderBottom: "1px solid var(--color-hairline)" }}>
-          <h3 className="display-sm">MCP Servers</h3>
-          <p className="caption">Model Context Protocol server integrations for this team.</p>
-        </div>
-        <div style={{ padding: "var(--sp-lg)" }}>
-          <McpIntegration teamId={teamId} agents={agents} onToast={onToast} />
-        </div>
-      </div>
+
 
       <div className="card card-danger" style={{ marginBottom: "var(--sp-xl)", borderRadius: "var(--radius-md)", padding: "var(--sp-2xl)" }}>
         <h3 className="display-sm text-danger" style={{ marginBottom: "var(--sp-md)" }}>Danger Zone</h3>

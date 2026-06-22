@@ -14,7 +14,6 @@ Responsibilities:
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +21,8 @@ from core.memory.database import async_session
 from core.memory.models import Message, Learning, Team
 from core.memory.lancedb_client import lancedb_client
 from core.llm.multi_model_router import llm_router
-from core.config import CONSOLIDATION_PROMPT, DEFAULT_FAST_MODEL, DREAM_INTERVAL_MINUTES
+import core.config
+from core.config import CONSOLIDATION_PROMPT
 
 logger = logging.getLogger("carole.dream")
 
@@ -31,9 +31,18 @@ _CONSOLIDATION_SEMAPHORE = asyncio.Semaphore(3)
 
 
 class AutoDreamWorker:
-    def __init__(self, interval_minutes: int = DREAM_INTERVAL_MINUTES):
-        self.interval = interval_minutes
+    """
+    Background worker that runs periodically to consolidate old un-processed
+    messages into dense vector embeddings (the 'Dream' cycle).
+    """
+
+    def __init__(self, interval_minutes: int = -1):
+        self._interval_minutes = interval_minutes
         self._running = False
+
+    @property
+    def interval(self):
+        return self._interval_minutes if self._interval_minutes > 0 else core.config.DREAM_INTERVAL_MINUTES
 
     async def start(self):
         """Starts the periodic consolidation loop as a background coroutine."""
@@ -104,7 +113,7 @@ class AutoDreamWorker:
         prompt = CONSOLIDATION_PROMPT.format(conversation=conversation_text)
         try:
             extraction = await llm_router.generate_completion(
-                model=DEFAULT_FAST_MODEL,
+                model=getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free"),
                 system_prompt="You are a precise knowledge extraction engine.",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,

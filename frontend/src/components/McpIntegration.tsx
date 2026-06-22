@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { api } from "@/hooks/useApi";
 import { AgentConfig } from "@/lib/types";
-import { Plus, X, Loader2, Server, Trash2 } from "lucide-react";
+import { Plus, Loader2, Server, Trash2 } from "lucide-react";
 
 interface Props {
   teamId: string | null;
@@ -15,6 +15,7 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
   const [serverName, setServerName] = useState("");
   const [command,    setCommand]    = useState("");
   const [args,       setArgs]       = useState("");
+  const [envVars,    setEnvVars]    = useState("");
   const [agentId,    setAgentId]    = useState("");
   const [loading,    setLoading]    = useState(false);
   const [fetching,   setFetching]   = useState(false);
@@ -34,9 +35,17 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
     if (!teamId || !serverName || !command) return;
     setLoading(true);
     try {
-      await api.createMcpServer({ team_id: teamId, server_name: serverName, command, args, agent_id: agentId || undefined });
+      // Parse env vars from KEY=VALUE format
+      const parsedEnv: Record<string, string> = {};
+      if (envVars.trim()) {
+        envVars.split("\n").forEach(line => {
+          const idx = line.indexOf("=");
+          if (idx > 0) parsedEnv[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
+        });
+      }
+      await api.createMcpServer({ team_id: teamId, server_name: serverName, command, args, agent_id: agentId || undefined, env_vars: Object.keys(parsedEnv).length > 0 ? parsedEnv : undefined });
       await loadServers();
-      setServerName(""); setCommand(""); setArgs(""); setAgentId("");
+      setServerName(""); setCommand(""); setArgs(""); setAgentId(""); setEnvVars("");
       onToast?.("MCP server added", "success");
     } catch { onToast?.("Failed to add server", "error"); }
     finally { setLoading(false); }
@@ -52,6 +61,7 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
         <input className="input" placeholder="Server name (e.g. github)" value={serverName} onChange={e => setServerName(e.target.value)} style={{ fontSize: 12 }} />
         <input className="input" placeholder="Command (e.g. npx)" value={command} onChange={e => setCommand(e.target.value)} style={{ fontSize: 12 }} />
         <input className="input" placeholder="Args comma-separated (e.g. -y,@mcp/server-github)" value={args} onChange={e => setArgs(e.target.value)} style={{ fontSize: 12 }} />
+        <textarea className="input" placeholder="Environment Variables (optional)&#10;e.g. GITHUB_PERSONAL_ACCESS_TOKEN=xxx" value={envVars} onChange={e => setEnvVars(e.target.value)} style={{ fontSize: 12, minHeight: "60px", resize: "vertical" }} />
         <select className="input" value={agentId} onChange={e => setAgentId(e.target.value)} style={{ fontSize: 12 }}>
           <option value="">Global (all agents)</option>
           {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.role})</option>)}
@@ -74,9 +84,26 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
             {servers.map(s => (
               <div key={s.id} style={{ background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)", padding: "var(--sp-md)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-                  <Server size={12} color="var(--color-primary)" />
-                  <span className="body-sm-strong">{s.server_name}</span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                    <Server size={12} color="var(--color-primary)" />
+                    <span className="body-sm-strong">{s.server_name}</span>
+                  </div>
+                  <button 
+                    className="btn btn-icon-sm btn-ghost text-danger" 
+                    title="Delete Server"
+                    onClick={async () => {
+                      try {
+                        await api.deleteMcpServer(s.id);
+                        onToast?.("Server deleted", "success");
+                        loadServers();
+                      } catch {
+                        onToast?.("Failed to delete server", "error");
+                      }
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
                 </div>
                 <code style={{ fontSize: 10, color: "var(--color-mute)", display: "block", marginTop: 4 }}>{s.command} {s.args?.join(" ")}</code>
                 <div className="caption" style={{ marginTop: 4 }}>

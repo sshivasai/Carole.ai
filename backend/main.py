@@ -14,7 +14,6 @@ Responsibilities:
 
 import json
 import asyncio
-from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -24,25 +23,28 @@ import dotenv
 import os
 dotenv.load_dotenv()
 
-from core.memory.database import init_db, get_db, async_session
+from core.memory.database import init_db, async_session
 from core.chat.event_bus import event_bus
 from core.chat.message_router import message_router
 from core.memory.auto_dream import dream_worker
 from core.tools.tool_executor import register_builtin_tools
 from core.tools.tool_registry import ToolRegistry
 from core.api.crud_routes import router as crud_router
+from core.api.cost_routes import router as cost_router
 from core.api.auth_routes import router as auth_router
 from core.api.google_auth_routes import router as google_auth_router
 from core.api.file_routes import router as file_router
 from core.api.terminal_ws import router as terminal_router
 from core.api.git_routes import router as git_router
 from core.api.search_routes import router as search_router
+from core.api.plugin_routes import router as plugin_router
+from core.api.skill_routes import router as skill_router
+from core.api.model_routes import router as model_router
 
 import logging
 import importlib
 from typing import Optional, List
 from core.auth.auth_middleware import require_auth
-from core.config import APPROVAL_TIMEOUT_SECS
 
 # Configure structured logging
 logging.basicConfig(
@@ -67,10 +69,56 @@ async def lifespan(app: FastAPI):
     logger.info("🔧 [Lifespan] Registering built-in tools...")
     register_builtin_tools()
 
-    # Load plugin tools from the /plugins/ directory
-    plugins_dir = str(Path(__file__).parent / "plugins")
-    logger.info("🔌 [Lifespan] Loading plugins from %s...", plugins_dir)
-    ToolRegistry.load_plugin_directory(plugins_dir)
+    # Load plugin tools from ~/.carole/plugins and backend/plugins
+    from core.config import PLUGINS_DIR
+    import os
+    import shutil
+    
+    repo_plugins_dir = os.path.join(os.path.dirname(__file__), "plugins")
+    
+    # Copy example_tool.py if it doesn't exist in the user's plugin dir
+    example_tool_src = os.path.join(repo_plugins_dir, "example_tool.py")
+    example_tool_dst = PLUGINS_DIR / "example_tool.py"
+    if os.path.exists(example_tool_src) and not example_tool_dst.exists():
+        try:
+            shutil.copy2(example_tool_src, example_tool_dst)
+            logger.info("🔌 [Lifespan] Copied example_tool.py to user plugins directory.")
+        except Exception as e:
+            logger.error("✗ [Lifespan] Failed to copy example_tool.py: %s", e)
+
+    # Load user plugins
+    logger.info("🔌 [Lifespan] Loading user plugins from %s...", PLUGINS_DIR)
+    ToolRegistry.load_plugin_directory(str(PLUGINS_DIR))
+    
+    # Load built-in repository plugins
+    if os.path.exists(repo_plugins_dir):
+        logger.info("🔌 [Lifespan] Loading repository plugins from %s...", repo_plugins_dir)
+        ToolRegistry.load_plugin_directory(repo_plugins_dir)
+
+    # Restore persistent MCP servers from the database
+    logger.info("🔌 [Lifespan] Restoring persistent MCP servers...")
+    from core.memory.models import McpServer
+    from core.tools.mcp_client import mcp_manager
+    from sqlalchemy import select
+    
+    try:
+        async with async_session() as db:
+            result = await db.execute(select(McpServer))
+            mcp_servers = result.scalars().all()
+            for server in mcp_servers:
+                logger.info("  -> Reconnecting MCP server: %s", server.server_name)
+                asyncio.create_task(
+                    mcp_manager.connect_stdio_server(
+                        server_name=server.server_name,
+                        command=server.command,
+                        args=server.args,
+                        team_id=str(server.team_id),
+                        agent_id=str(server.agent_id) if server.agent_id else None,
+                        env_vars=server.env_vars
+                    )
+                )
+    except Exception as e:
+        logger.error("✗ [Lifespan] Failed to restore MCP servers: %s", e)
 
     # Start background Dream Worker
     logger.info("🚀 [Lifespan] Starting Background 'Dream' Worker...")
@@ -114,12 +162,16 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 app.include_router(crud_router)
+app.include_router(cost_router)
 app.include_router(auth_router)
 app.include_router(google_auth_router)
 app.include_router(file_router)
 app.include_router(terminal_router)
 app.include_router(git_router)
 app.include_router(search_router)
+app.include_router(plugin_router)
+app.include_router(skill_router, prefix="/api/skills")
+app.include_router(model_router)
 
 
 # ============================================================

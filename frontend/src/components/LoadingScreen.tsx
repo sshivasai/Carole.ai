@@ -1,7 +1,6 @@
 "use client";
 import React, { useEffect, useState } from "react";
 
-interface Step { label: string; done: boolean }
 interface Props { steps?: string[] }
 
 export default function LoadingScreen({ steps = [] }: Props) {

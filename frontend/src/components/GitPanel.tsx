@@ -28,7 +28,11 @@ export default function GitPanel({ projectId, onClose }: GitPanelProps) {
   useEffect(() => {
     if (projectId) {
       api.getProject(projectId)
-        .then(res => setProjectName(res.name))
+        .then(res => {
+          let slug = res.name.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+          if (!slug) slug = projectId.substring(0, 8);
+          setProjectName(slug);
+        })
         .catch(() => setProjectName("project"));
     } else {
       setProjectName(null);
@@ -109,9 +113,9 @@ export default function GitPanel({ projectId, onClose }: GitPanelProps) {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1e1e1e", color: "#d4d4d4", fontFamily: "var(--font-mono, monospace)", fontSize: 13 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "transparent", color: "var(--color-ink)", fontFamily: "var(--font-mono, monospace)", fontSize: 13 }}>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 12px", background: "#2d2d2d", borderBottom: "1px solid #3c3c3c" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 12px", background: "var(--bg-glass-card)", borderBottom: "1px solid var(--border-glass)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {selectedDiffFile ? (
             <button 
@@ -184,9 +188,9 @@ export default function GitPanel({ projectId, onClose }: GitPanelProps) {
             style={{
               width: "100%",
               minHeight: "60px",
-              background: "#3c3c3c",
-              border: "1px solid #555",
-              color: "#d4d4d4",
+              background: "var(--bg-glass-panel)",
+              border: "1px solid var(--border-glass)",
+              color: "var(--color-ink)",
               padding: "8px",
               borderRadius: "4px",
               resize: "vertical",
@@ -205,9 +209,9 @@ export default function GitPanel({ projectId, onClose }: GitPanelProps) {
             onClick={() => void handleCommit()}
             disabled={loading || changes.length === 0 || !commitMessage.trim()}
             style={{
-              background: changes.length === 0 || !commitMessage.trim() ? "#444" : "#0e639c",
-              color: changes.length === 0 || !commitMessage.trim() ? "#888" : "#fff",
-              border: "none",
+              background: changes.length === 0 || !commitMessage.trim() ? "var(--bg-glass-panel)" : "var(--color-primary)",
+              color: changes.length === 0 || !commitMessage.trim() ? "var(--color-mute)" : "#051a10",
+              border: "1px solid var(--border-glass)",
               padding: "6px 12px",
               borderRadius: "4px",
               cursor: changes.length === 0 || !commitMessage.trim() ? "not-allowed" : "pointer",
@@ -235,7 +239,7 @@ export default function GitPanel({ projectId, onClose }: GitPanelProps) {
                 onClick={() => void handleInit()}
                 disabled={loading}
                 style={{
-                  background: "#0e639c", color: "#fff", border: "none", padding: "6px 12px",
+                  background: "var(--color-primary)", color: "#051a10", border: "1px solid var(--border-glass)", padding: "6px 12px",
                   borderRadius: "4px", cursor: "pointer", fontWeight: "bold"
                 }}
               >
@@ -289,7 +293,7 @@ export default function GitPanel({ projectId, onClose }: GitPanelProps) {
                        setLoadingDiff(false);
                     }
                   }}
-                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: "#2d2d2d", borderRadius: "4px", cursor: "pointer" }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: "var(--bg-glass-card)", border: "1px solid var(--border-glass)", borderRadius: "4px", cursor: "pointer" }}
                   className="hover:bg-gray-700"
                 >
                   <span style={{ 

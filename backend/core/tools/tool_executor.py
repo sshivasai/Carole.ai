@@ -14,7 +14,7 @@ Permission Levels:
 import uuid
 import asyncio
 import logging
-from typing import Dict, Any, Callable, Awaitable
+from typing import Dict, Any
 
 from core.chat.event_bus import event_bus
 from core.tools.tool_registry import ToolRegistry, ToolSpec
@@ -31,6 +31,8 @@ from core.tools.meeting_tool import meeting_tool
 from core.tools.google_workspace_tools import create_meeting, send_email
 from core.judge.judge_evaluator import judge_evaluator
 from core.config import APPROVAL_TIMEOUT_SECS
+
+from core.tools.context import ToolExecutionContext, ToolPermissionContext
 
 logger = logging.getLogger("carole.tool_executor")
 
@@ -266,20 +268,27 @@ def register_builtin_tools():
                  "safe", _wrap_send_message),
 
         # ---- Tasks ----
-        ToolSpec("create_task", "Create a task on the team board", "task",
+        ToolSpec("create_task", "Create a task on the team board. NOTE: This ONLY adds the task to the UI board. To actually make an agent start working on it, you MUST follow up by using the `spawn_agent` tool or `send_message` tool.", "task",
                  {"title": {"type": "string", "required": True},
                   "description": {"type": "string", "required": False},
                   "priority": {"type": "string", "required": False},
-                  "assignee": {"type": "string", "required": False}},
+                  "assignee": {"type": "string", "required": False},
+                  "blocked_by_task_id": {"type": "string", "required": False, "description": "ID of a task that must be completed before this task can start"}},
                  "safe", _wrap_create_task),
         ToolSpec("list_tasks", "List tasks on the team board", "task",
                  {"status": {"type": "string", "required": False}},
                  "safe", _wrap_list_tasks),
-        ToolSpec("update_task", "Update a task's status", "task",
+        ToolSpec("update_task", "Update a task's status and/or assign it to a teammate by name", "task",
                  {"task_id": {"type": "string", "required": True},
                   "status": {"type": "string", "required": False},
-                  "notes": {"type": "string", "required": False}},
+                  "notes": {"type": "string", "required": False},
+                  "assignee_name": {"type": "string", "required": False, "description": "Name of the agent to assign the task to"},
+                  "blocked_by_task_id": {"type": "string", "required": False, "description": "ID of a task that must be completed before this task can start"}},
                  "safe", _wrap_update_task),
+        ToolSpec("comment_on_task", "Add a comment to a task", "task",
+                 {"task_id": {"type": "string", "required": True},
+                  "text": {"type": "string", "required": True}},
+                 "safe", _wrap_comment_on_task),
 
         # ---- Interaction ----
         ToolSpec("ask_user", "Ask the human a clarifying question and wait for their answer", "interaction",
@@ -324,6 +333,16 @@ def register_builtin_tools():
         ToolSpec("generate_mom", "Generate structured Minutes of Meeting from a transcription", "workspace",
                  {"transcription": {"type": "string", "required": True}},
                  "safe", _wrap_generate_mom),
+
+        # ---- Scratchpad ----
+        ToolSpec("read_scratchpad", "Read your personal scratchpad or the shared team scratchpad", "memory",
+                 {"target": {"type": "string", "required": False, "description": "'personal' (default) or 'team'"}},
+                 "safe", _wrap_read_scratchpad),
+        ToolSpec("write_scratchpad", "Write notes to your personal scratchpad or the shared team scratchpad", "memory",
+                 {"content": {"type": "string", "required": True},
+                  "target": {"type": "string", "required": False, "description": "'personal' (default) or 'team'"},
+                  "mode": {"type": "string", "required": False, "description": "'append' (default) or 'overwrite'"}},
+                 "safe", _wrap_write_scratchpad),
     ]
 
     for spec in builtins:
@@ -342,6 +361,8 @@ class ToolExecutor:
         team_id: str,
         permissions: Dict[str, str],
         active_message_id: str | None = None,
+        context: ToolExecutionContext | None = None,
+        permission_context: ToolPermissionContext | None = None,
     ) -> str:
         """
         Gated Execution entrypoint.
@@ -354,9 +375,18 @@ class ToolExecutor:
         # Permission level: agent-specific override → tool default
         gate_level = permissions.get(tool_name, spec.permission_default)
 
+        # Apply granular permissions if provided
+        if permission_context:
+            if tool_name in permission_context.always_deny:
+                logger.info("🛑 [Executor] Tool '%s' execution automatically denied by always_deny rule.", tool_name)
+                return f"✗ Execution Cancelled: '{tool_name}' is explicitly denied by permission context."
+            if tool_name in permission_context.always_allow:
+                logger.info("✓ [Executor] Tool '%s' execution automatically allowed by always_allow rule.", tool_name)
+                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
+
         # 1. Safe — instant execution
         if gate_level == "safe":
-            return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id)
+            return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
 
         # 2. Judge — LLM-based review, then execute
         elif gate_level == "judge":
@@ -371,7 +401,7 @@ class ToolExecutor:
             })
             approved, reason = await judge_evaluator.evaluate(tool_name, arguments, agent_name, team_id=team_id)
             if approved:
-                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id)
+                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
             else:
                 # Trigger human override flow
                 tx_id = str(uuid.uuid4())
@@ -409,7 +439,7 @@ class ToolExecutor:
 
                 if override_approved:
                     logger.info("✓ [Executor] tx_id=%s OVERRIDE APPROVED. Resuming execution...", tx_id)
-                    return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id)
+                    return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
                 else:
                     logger.info("✗ [Executor] tx_id=%s OVERRIDE DENIED. Cancelling execution...", tx_id)
                     return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}' after Judge rejection."
@@ -454,7 +484,7 @@ class ToolExecutor:
 
             if approved:
                 logger.info("✓ [Executor] tx_id=%s APPROVED. Resuming execution...", tx_id)
-                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id)
+                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
             else:
                 logger.info("✗ [Executor] tx_id=%s DENIED. Cancelling execution...", tx_id)
                 return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
@@ -466,6 +496,7 @@ class ToolExecutor:
         self, spec: ToolSpec, arguments: Dict[str, Any],
         agent_id: str, agent_name: str, team_id: str,
         active_message_id: str | None = None,
+        context: ToolExecutionContext | None = None,
     ) -> str:
         """Executes the tool handler and emits file_change events for file operations."""
         # Inject agent identity + snapshot context into args
@@ -473,6 +504,8 @@ class ToolExecutor:
         arguments["_agent_name"] = agent_name
         arguments["_active_message_id"] = active_message_id  # used by write_file / edit_file for FileBackup
         arguments["_team_id"] = team_id
+        if context:
+            arguments["_context"] = context
         result = await spec.handler(arguments, team_id)
 
         # If the tool returned a FileChangeResult, emit a file_change event
@@ -505,6 +538,62 @@ async def _wrap_read_file(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing parameter 'relative_path'."
     return await file_tools.read_file(path)
 
+async def _check_active_editor_conflicts(relative_path: str, agent_name: str) -> None:
+    from core.knowledge.code_graph import code_graph
+    from core.memory.database import async_session
+    from core.memory.models import Agent, Task
+    from sqlalchemy import select
+    import posixpath
+    
+    path_str = posixpath.normpath(relative_path).replace("\\", "/")
+    pid = "default"
+    if pid not in code_graph.active_editors:
+        return
+        
+    graph = code_graph.get_graph(None)
+    dependent_files = list(graph.predecessors(path_str)) if graph.has_node(path_str) else []
+    
+    files_to_check = [path_str] + dependent_files
+    conflicting_agents = set()
+    for f in files_to_check:
+        editors = code_graph.active_editors[pid].get(f, set())
+        for ed in editors:
+            if ed != agent_name:
+                conflicting_agents.add(ed)
+                
+    if not conflicting_agents:
+        return
+        
+    async with async_session() as db:
+        curr_stmt = select(Task).join(Agent, Agent.id == Task.assigned_agent_id).where(
+            Agent.name == agent_name, Task.status == "in_progress"
+        )
+        curr_res = await db.execute(curr_stmt)
+        curr_tasks = curr_res.scalars().all()
+        
+        if not curr_tasks:
+            raise Exception(f"Access Denied. {', '.join(conflicting_agents)} is currently actively modifying this dependent file. You must back off and wait for them to finish.")
+            
+        curr_task = curr_tasks[0]
+        
+        exempt = False
+        for c_agent_name in conflicting_agents:
+            c_stmt = select(Task).join(Agent, Agent.id == Task.assigned_agent_id).where(
+                Agent.name == c_agent_name, Task.status == "in_progress"
+            )
+            c_res = await db.execute(c_stmt)
+            c_tasks = c_res.scalars().all()
+            for c_task in c_tasks:
+                if c_task.parent_task_id == curr_task.id or curr_task.parent_task_id == c_task.id or (curr_task.parent_task_id and curr_task.parent_task_id == c_task.parent_task_id) or c_task.id == curr_task.id:
+                    exempt = True
+                    break
+            if exempt:
+                break
+                
+        if not exempt:
+            raise Exception(f"Access Denied. {', '.join(conflicting_agents)} is currently actively modifying this dependent file. You must back off and wait for them to finish.")
+
+
 async def _wrap_write_file(args: Dict[str, Any], team_id: str):
     path = args.get("relative_path") or args.get("path")
     content = args.get("content")
@@ -512,6 +601,10 @@ async def _wrap_write_file(args: Dict[str, Any], team_id: str):
     message_id = args.get("_active_message_id")
     if not path or content is None:
         return "Error: Missing parameter 'relative_path' or 'content'."
+    try:
+        await _check_active_editor_conflicts(path, agent_name)
+    except Exception as e:
+        return f"Error: {str(e)}"
     # ── Snapshot before write ────────────────────────────────────────────────
     await _snapshot_file(path, team_id, message_id, operation="write_file")
     return await file_tools.write_file(path, content, agent_name)
@@ -524,6 +617,10 @@ async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
     message_id = args.get("_active_message_id")
     if not path or target is None or replacement is None:
         return "Error: Missing parameters for editing."
+    try:
+        await _check_active_editor_conflicts(path, agent_name)
+    except Exception as e:
+        return f"Error: {str(e)}"
     # ── Snapshot before edit ─────────────────────────────────────────────────
     await _snapshot_file(path, team_id, message_id, operation="edit_file")
     return await file_tools.edit_file(path, target, replacement, agent_name)
@@ -532,21 +629,39 @@ async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
 async def _snapshot_file(relative_path: str, team_id: str, message_id: str | None, operation: str = "write_file"):
     """Save the current file content to FileBackup before it is modified.
 
-    If the file does not exist (newly created), `original_content` is saved as NULL.
-    If `message_id` is None, the snapshot is skipped (e.g. called from outside a ReACT loop).
+    If the file does not exist (newly created), `backup_file_name` is saved as NULL.
+    If `message_id` is None, the snapshot is skipped.
     """
     if not message_id:
         return
     try:
         import uuid as _uuid
+        import shutil
+        import hashlib
         from pathlib import Path
         from core.memory.database import async_session
         from core.memory.models import FileBackup
         from core.tools.file_tools import file_tools as _ft
+        from core.config import CAROLE_HOME_DIR
 
         abs_path = str(_ft._resolve_safe_path(relative_path))
         p = Path(abs_path)
-        original = p.read_text(encoding="utf-8") if p.exists() else None
+        
+        backup_file_name = None
+        if p.exists():
+            path_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
+            history_dir = CAROLE_HOME_DIR / "file-history" / str(team_id)
+            history_dir.mkdir(parents=True, exist_ok=True)
+            
+            version = 1
+            while True:
+                backup_file_name = f"{path_hash}@v{version}"
+                backup_path = history_dir / backup_file_name
+                if not backup_path.exists():
+                    break
+                version += 1
+                
+            shutil.copy2(abs_path, backup_path)
 
         async with async_session() as db:
             backup = FileBackup(
@@ -554,7 +669,7 @@ async def _snapshot_file(relative_path: str, team_id: str, message_id: str | Non
                 team_id=_uuid.UUID(team_id) if isinstance(team_id, str) else team_id,
                 message_id=_uuid.UUID(message_id) if isinstance(message_id, str) else message_id,
                 file_path=abs_path,
-                original_content=original,
+                backup_file_name=backup_file_name,
                 operation=operation,
             )
             db.add(backup)
@@ -572,7 +687,8 @@ async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
     if not command:
         return "Error: Missing parameter 'command'."
     timeout = float(args.get("timeout", 60.0))
-    return await shell_tools.execute_command(command, team_id, timeout)
+    context = args.get("_context")
+    return await shell_tools.execute_command(command, team_id, timeout, context=context)
 
 async def _wrap_git_status(args: Dict[str, Any], team_id: str) -> str:
     return await git_tools.status()
@@ -842,8 +958,8 @@ async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
 
 async def _wrap_hire_subagent(args: Dict[str, Any], team_id: str) -> str:
     agent_name = args.get("_agent_name", "")
-    # Enforce 1-Level Only Guardrail
-    if agent_name.startswith("Subagent-"):
+    # Enforce 1-Level Only Guardrail (check new prefix format too)
+    if agent_name.startswith("Subagent-") or agent_name.startswith("Sub-"):
         return "Error: Subagents are not permitted to hire further subagents (Maximum depth of 1 reached)."
     
     role = args.get("role", "")
@@ -871,9 +987,10 @@ async def _wrap_create_task(args: Dict[str, Any], team_id: str) -> str:
     description = args.get("description", "")
     priority = args.get("priority", "medium")
     assignee = args.get("assignee")
+    blocked_by_task_id = args.get("blocked_by_task_id")
     if not title:
         return "Error: Missing 'title'."
-    return await task_tools.create_task(team_id, title, description, priority, assignee)
+    return await task_tools.create_task(team_id, title, description, priority, assignee, blocked_by_task_id)
 
 async def _wrap_list_tasks(args: Dict[str, Any], team_id: str) -> str:
     from core.tools.task_tools import task_tools
@@ -885,9 +1002,86 @@ async def _wrap_update_task(args: Dict[str, Any], team_id: str) -> str:
     task_id = args.get("task_id", "")
     status = args.get("status")
     notes = args.get("notes")
+    assignee_name = args.get("assignee_name")
+    blocked_by_task_id = args.get("blocked_by_task_id")
+    agent_name = args.get("_agent_name")
     if not task_id:
         return "Error: Missing 'task_id'."
-    return await task_tools.update_task(task_id, status, notes)
+    return await task_tools.update_task(task_id, status, notes, assignee_name, agent_name, blocked_by_task_id)
+
+async def _wrap_comment_on_task(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.task_tools import task_tools
+    task_id = args.get("task_id", "")
+    text = args.get("text", "")
+    if not task_id or not text:
+        return "Error: Missing 'task_id' or 'text'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    return await task_tools.comment_on_task(task_id, text, agent_id, agent_name)
+
+
+# ---- Scratchpad Wrappers ----
+
+async def _wrap_read_scratchpad(args: Dict[str, Any], team_id: str) -> str:
+    """Read the agent's personal scratchpad or the shared team scratchpad."""
+    import os, aiofiles
+    target = args.get("target", "personal")
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "agent")
+
+    from core.config import CAROLE_HOME_DIR
+    base = os.path.join(CAROLE_HOME_DIR, "scratchpads", team_id)
+    os.makedirs(base, exist_ok=True)
+
+    if target == "team":
+        pad_path = os.path.join(base, "TEAM_NOTES.md")
+        label = "Team Scratchpad"
+    else:
+        safe_name = agent_name.replace(" ", "_").replace("/", "_")
+        pad_path = os.path.join(base, f"{safe_name}.md")
+        label = f"{agent_name}'s Personal Scratchpad"
+
+    if not os.path.exists(pad_path):
+        return f"{label} is empty."
+
+    async with aiofiles.open(pad_path, "r", encoding="utf-8") as f:
+        content = await f.read()
+    return f"=== {label} ===\n{content}" if content.strip() else f"{label} is empty."
+
+
+async def _wrap_write_scratchpad(args: Dict[str, Any], team_id: str) -> str:
+    """Write to the agent's personal scratchpad or the shared team scratchpad."""
+    import os, aiofiles
+    target = args.get("target", "personal")
+    content = args.get("content", "")
+    mode = args.get("mode", "append")  # 'append' or 'overwrite'
+    agent_name = args.get("_agent_name", "agent")
+
+    if not content:
+        return "Error: 'content' is required."
+
+    from core.config import CAROLE_HOME_DIR
+    base = os.path.join(CAROLE_HOME_DIR, "scratchpads", team_id)
+    os.makedirs(base, exist_ok=True)
+
+    if target == "team":
+        pad_path = os.path.join(base, "TEAM_NOTES.md")
+        label = "Team Scratchpad"
+    else:
+        safe_name = agent_name.replace(" ", "_").replace("/", "_")
+        pad_path = os.path.join(base, f"{safe_name}.md")
+        label = f"{agent_name}'s Personal Scratchpad"
+
+    file_mode = "w" if mode == "overwrite" else "a"
+    async with aiofiles.open(pad_path, file_mode, encoding="utf-8") as f:
+        if mode == "append":
+            from datetime import datetime
+            timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            await f.write(f"\n<!-- {agent_name} @ {timestamp} -->\n{content}\n")
+        else:
+            await f.write(content)
+
+    return f"✓ Written to {label}."
 
 
 async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:

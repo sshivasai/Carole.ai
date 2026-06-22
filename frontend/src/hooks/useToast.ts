@@ -33,5 +33,11 @@ export function useToast() {
   const info    = useCallback((msg: string) => show(msg, "info"), [show]);
   const warning = useCallback((msg: string) => show(msg, "warning"), [show]);
 
-  return { toasts, show, dismiss, success, error, info, warning };
+  // Object-form convenience: addToast({ type, message })
+  const addToast = useCallback(
+    ({ type, message }: { type?: ToastType; message: string }) => show(message, type ?? "info"),
+    [show]
+  );
+
+  return { toasts, show, dismiss, success, error, info, warning, addToast };
 }

@@ -11,7 +11,7 @@ Responsibilities:
 """
 
 import os
-from sqlalchemy import text, event
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from core.config import CAROLE_HOME_DIR
@@ -82,7 +82,6 @@ async def init_db(force_recreate: bool = False):
 
     async with engine.begin() as conn:
         # 1. Dynamically import models to register with Base metadata
-        from . import models
         
         # 2. Optionally drop all tables first (dev convenience)
         if force_recreate:
@@ -98,3 +97,8 @@ async def init_db(force_recreate: bool = False):
                 await conn.execute(text("ALTER TABLE messages ADD COLUMN reasoning_text TEXT"))
             except Exception:
                 pass  # Column already exists — safe to ignore
+                
+            try:
+                await conn.execute(text("ALTER TABLE file_backups ADD COLUMN backup_file_name VARCHAR(255)"))
+            except Exception:
+                pass

@@ -14,7 +14,7 @@ Key design decisions:
 
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict
 
 logger = logging.getLogger("carole.browser_pool")
 

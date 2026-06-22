@@ -9,9 +9,7 @@ Responsibilities:
 3. Both tools are critical for the confidence-based research loop in the ReACT agent.
 """
 
-import os
 import httpx
-from typing import List, Dict, Any
 from core.llm.config_manager import load_config, get_key
 
 

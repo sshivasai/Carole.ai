@@ -14,7 +14,6 @@ that are uploaded via the REST API.
 """
 
 import base64
-from typing import Optional
 
 from core.chat.event_bus import event_bus
 from core.tools.voice_stt_tts import voice_service

@@ -13,7 +13,6 @@ Responsibilities:
 import os
 import asyncio
 from pathlib import Path
-from typing import Dict, Any
 
 
 class GitTools:
@@ -51,7 +50,7 @@ class GitTools:
 
     async def log(self, count: int = 10) -> str:
         """Returns the last N commit log entries."""
-        return await self._run_git("log", f"--oneline", f"-{count}")
+        return await self._run_git("log", "--oneline", f"-{count}")
 
     async def add(self, paths: str = ".") -> str:
         """Stages files for commit. Defaults to staging all changes."""

@@ -14,7 +14,9 @@ Responsibilities:
 import os
 import asyncio
 from pathlib import Path
-from typing import Dict, Any
+from typing import Optional
+
+from core.tools.context import ToolExecutionContext
 
 class ShellTools:
     def __init__(self, workspace_root: str = None):
@@ -23,10 +25,11 @@ class ShellTools:
             workspace_root = os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[3]))
         self.workspace_root = Path(workspace_root).resolve()
 
-    async def execute_command(self, command: str, team_id: str, timeout: float = 60.0) -> str:
+    async def execute_command(self, command: str, team_id: str, timeout: float = 60.0, context: Optional[ToolExecutionContext] = None) -> str:
         """
         Executes a shell command inside the workspace directory asynchronously.
         Streams standard output and standard error line-by-line to the EventBus.
+        Respects CancellationToken for aborts.
         """
         print(f"🐚 [Shell] Executing: '{command}' (Timeout: {timeout}s)")
         
@@ -45,6 +48,8 @@ class ShellTools:
         async def read_stream(stream, is_stderr: bool):
             """Concurrently reads and streams stdout/stderr lines."""
             while True:
+                if context and context.cancellation_token and context.cancellation_token.is_cancelled:
+                    break
                 line = await stream.readline()
                 if not line:
                     break
@@ -54,6 +59,10 @@ class ShellTools:
                     stderr_chunks.append(decoded_line)
                 else:
                     stdout_chunks.append(decoded_line)
+
+                # Broadcast to progress stream if context provides it
+                if context and context.emit_progress:
+                    await context.emit_progress(f"[{'stderr' if is_stderr else 'stdout'}] {decoded_line.strip()}")
 
                 # Dynamically broadcast each output line to the WebSocket event bus!
                 # Allows the frontend to render a scrolling, live terminal interface.
@@ -66,15 +75,36 @@ class ShellTools:
 
         try:
             # Read stdout and stderr concurrently with a timeout constraint
-            await asyncio.wait_for(
-                asyncio.gather(
-                    read_stream(process.stdout, False),
-                    read_stream(process.stderr, True)
-                ),
-                timeout=timeout
+            monitor_task = asyncio.gather(
+                read_stream(process.stdout, False),
+                read_stream(process.stderr, True)
             )
+
+            async def cancel_watcher():
+                """Polls the cancellation token to kill process early."""
+                if not context or not context.cancellation_token:
+                    return
+                while not monitor_task.done():
+                    if context.cancellation_token.is_cancelled:
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+                        break
+                    await asyncio.sleep(0.5)
+
+            watcher_task = asyncio.create_task(cancel_watcher())
+
+            await asyncio.wait_for(monitor_task, timeout=timeout)
+            
+            if not watcher_task.done():
+                watcher_task.cancel()
+
             # Wait for process exit status
             await process.wait()
+            
+            if context and context.cancellation_token and context.cancellation_token.is_cancelled:
+                return "✗ Command Cancelled: Process was aborted by user request."
         except asyncio.TimeoutError:
             try:
                 process.kill()

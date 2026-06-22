@@ -8,11 +8,10 @@ import os
 import re
 from core.config import CAROLE_HOME_DIR
 import difflib
-import fnmatch
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 from contextlib import asynccontextmanager
 
 
@@ -62,8 +61,9 @@ class FileTools:
             
             # Fallback if project not found
             return (workspaces_dir / project_id).resolve()
-            
-        return workspaces_dir.resolve()
+
+        # No project scope: fall back to the configured workspace root.
+        return self.workspace_root
 
     async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None) -> Path:
         root = await self.get_workspace_root(project_id)

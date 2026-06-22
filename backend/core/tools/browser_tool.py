@@ -27,7 +27,6 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Dict, Any, Optional, List
 
 from core.chat.event_bus import event_bus
 
@@ -527,7 +526,7 @@ class BrowserTool:
         try:
             from core.tools.browser_pool import close_agent_browser
             closed = await close_agent_browser(agent_id)
-            return f"✓ Browser session closed for agent." if closed else "No browser session to close."
+            return "✓ Browser session closed for agent." if closed else "No browser session to close."
         except Exception as e:
             return f"Error closing browser: {str(e)}"
 

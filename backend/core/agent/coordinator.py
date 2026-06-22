@@ -11,17 +11,11 @@ Key differences from a Worker:
 4. Never delegates understanding — reads worker output and synthesizes.
 """
 
-import json
-import re
-import asyncio
-from typing import List, Dict, Any, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.agent.react_agent import ReACTAgent
-from core.chat.event_bus import event_bus
-from core.memory.models import Agent, Task, Message
-from core.memory.database import async_session
+from core.memory.models import Task
 from core.config import COORDINATOR_DIRECTIVES
 
 

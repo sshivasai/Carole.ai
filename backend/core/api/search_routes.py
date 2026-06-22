@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 import subprocess
-from typing import Optional, List
 
 from core.auth.auth_middleware import require_auth
 from core.tools.file_tools import file_tools

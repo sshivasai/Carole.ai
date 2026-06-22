@@ -3,6 +3,7 @@ import React, { useState, useCallback } from "react";
 import type { TaskItem, AgentConfig } from "@/lib/types";
 import { CheckCircle2, Clock, PlayCircle, AlertCircle, Lock, Plus, X, Loader2 } from "lucide-react";
 import { api } from "@/hooks/useApi";
+import TaskDetailModal from "./TaskDetailModal";
 
 interface Props { tasks: TaskItem[]; agents: AgentConfig[]; teamId: string | null; onTasksChange: (tasks: TaskItem[]) => void; }
 
@@ -63,6 +64,7 @@ function AddTaskForm({ colId, teamId, agents, onAdded, onCancel }: {
 export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Props) {
   const [addingCol, setAddingCol] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
 
   const getAgentName = (id?: string) => agents.find(a => a.id === id)?.name || "Unassigned";
 
@@ -92,7 +94,6 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
       <div style={{ display: "flex", gap: "var(--sp-lg)", flex: 1, overflowX: "auto", paddingBottom: "var(--sp-sm)" }}>
         {COLS.map(col => {
           const colTasks = tasks.filter(t => t.status === col.id);
-          const isDropTarget = true;
 
           return (
             <div key={col.id}
@@ -130,10 +131,11 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
                 {colTasks.map(task => (
                   <div key={task.id}
                     draggable onDragStart={() => setDraggingId(task.id)}
+                    onClick={() => setSelectedTask(task)}
                     style={{
                       background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)",
                       borderRadius: "var(--radius-sm)", padding: "var(--sp-md)",
-                      cursor: "grab", display: "flex", flexDirection: "column", gap: "var(--sp-sm)",
+                      cursor: "pointer", display: "flex", flexDirection: "column", gap: "var(--sp-sm)",
                       transition: "transform var(--t-fast), border-color var(--t-fast)",
                       opacity: draggingId === task.id ? 0.5 : 1,
                     }}
@@ -142,6 +144,9 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                       <span className={`badge ${PRIORITY_BADGE[task.priority] || "badge-gray"}`}>{task.priority}</span>
+                      {task.blocked_by_task_id && (
+                        <span className="badge badge-warn" style={{ fontSize: 9 }}>Blocked</span>
+                      )}
                     </div>
                     <span className="body-sm-strong">{task.title}</span>
                     {task.description && (
@@ -165,6 +170,21 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
           );
         })}
       </div>
+
+      <TaskDetailModal 
+        task={selectedTask} 
+        agents={agents} 
+        allTasks={tasks}
+        onClose={() => setSelectedTask(null)} 
+        onUpdate={(t) => {
+          onTasksChange(tasks.map(task => task.id === t.id ? t : task));
+          setSelectedTask(t);
+        }}
+        onDelete={(taskId) => {
+          onTasksChange(tasks.filter(t => t.id !== taskId));
+          setSelectedTask(null);
+        }}
+      />
     </div>
   );
 }

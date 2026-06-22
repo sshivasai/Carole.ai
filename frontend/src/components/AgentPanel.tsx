@@ -1,7 +1,7 @@
 "use client";
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import type { AgentConfig } from "@/lib/types";
-import { Zap, Plus, Edit2, Trash2, Loader2, X, Bot, ChevronDown, ChevronUp, Cpu } from "lucide-react";
+import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 
@@ -9,6 +9,7 @@ interface Props {
   agents: AgentConfig[];
   teamId: string | null;
   streamingAgents: Set<string>; // agent IDs currently streaming/thinking
+  agentQueues?: Record<string, number>; // agent_id -> pending task count
   onAgentsChange: (agents: AgentConfig[]) => void;
   onToast: (msg: string, type: "success" | "error") => void;
 }
@@ -18,8 +19,8 @@ const ROLE_COLORS: Record<string, string> = {
   writer: "#fb923c", analyst: "#fbbf24", default: "#6b7280",
 };
 
-function AgentCard({ agent, isThinking, onEdit, onDelete }: {
-  agent: AgentConfig; isThinking: boolean;
+function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
+  agent: AgentConfig; isThinking: boolean; queueDepth: number;
   onEdit: () => void; onDelete: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -40,6 +41,15 @@ function AgentCard({ agent, isThinking, onEdit, onDelete }: {
           <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
             <span className="body-sm-strong">{agent.name}</span>
             {isThinking && <span className="pill pill-thinking" style={{ fontSize: 10 }}><span className="animate-pulse" style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} /> thinking</span>}
+            {!isThinking && queueDepth > 0 && (
+              <span style={{
+                fontSize: 10, padding: "1px 6px", borderRadius: 8,
+                background: "rgba(251,191,36,0.15)", color: "#FBBF24",
+                border: "1px solid rgba(251,191,36,0.3)", fontWeight: 600,
+              }}>
+                ⏳ {queueDepth} queued
+              </span>
+            )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginTop: 2 }}>
             <span className="badge badge-gray" style={{ fontSize: 9 }}>{agent.role}</span>
@@ -89,15 +99,6 @@ function detectProvider(model: string, catalog: Record<string, any>): string {
   if (model.startsWith("claude"))      return "anthropic";
   if (model.startsWith("gpt") || model.startsWith("o4") || model.startsWith("o3")) return "openai";
   return Object.keys(catalog)[0] || "openrouter";
-}
-
-/** Label badge for special OpenRouter router models */
-function SpecialBadge({ value }: { value: string }) {
-  if (value === "openrouter/auto")
-    return <span style={{ fontSize: 10, background: "#7c3aed22", color: "#a78bfa", border: "1px solid #7c3aed44", borderRadius: 4, padding: "1px 5px", marginLeft: 4 }}>NotDiamond</span>;
-  if (value === "openrouter/free")
-    return <span style={{ fontSize: 10, background: "#05966922", color: "#00d992", border: "1px solid #05966944", borderRadius: 4, padding: "1px 5px", marginLeft: 4 }}>Reasoning</span>;
-  return null;
 }
 
 /** Single model selector (provider dropdown + model select + custom text input) */
@@ -385,11 +386,11 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   );
 }
 
-export default function AgentPanel({ agents, teamId, streamingAgents, onAgentsChange, onToast }: Props) {
+export default function AgentPanel({ agents, teamId, streamingAgents, agentQueues = {}, onAgentsChange, onToast }: Props) {
   const [modalOpen,    setModalOpen]    = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | undefined>(undefined);
   const [templates,    setTemplates]    = useState<any[]>([]);
-  const [deletingId,   setDeletingId]   = useState<string | null>(null);
+  const [, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => { api.listRoleTemplates().then(setTemplates).catch(() => {}); }, []);
 
@@ -448,6 +449,7 @@ export default function AgentPanel({ agents, teamId, streamingAgents, onAgentsCh
               key={agent.id}
               agent={agent}
               isThinking={streamingAgents.has(agent.id)}
+              queueDepth={agentQueues[agent.id] ?? 0}
               onEdit={() => { setEditingAgent(agent); setModalOpen(true); }}
               onDelete={() => handleDelete(agent.id)}
             />

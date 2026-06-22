@@ -1,6 +1,6 @@
 "use client";
-import React, { useState, useCallback, useEffect } from "react";
-import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu } from "lucide-react";
+import React, { useState, useCallback } from "react";
+import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu, Code2, Server, BookOpen } from "lucide-react";
 import styles from "./Sidebar.module.css";
 import { api } from "@/hooks/useApi";
 import { useAuth } from "@/hooks/useAuth";
@@ -20,15 +20,18 @@ interface Props {
 }
 
 const NAV = [
-  { id: "chat",     label: "Chat Room",     Icon: MessageSquare },
-  { id: "tasks",    label: "Task Board",    Icon: LayoutGrid },
-  { id: "agents",   label: "Agents",        Icon: Zap },
-  { id: "browser",  label: "Browser View",  Icon: Globe },
-  { id: "memory",   label: "Memory & Logs", Icon: Brain },
-  { id: "settings", label: "Settings",      Icon: Settings },
+  { id: "chat", label: "Chat Room", Icon: MessageSquare },
+  { id: "tasks", label: "Task Board", Icon: LayoutGrid },
+  { id: "agents", label: "Agents", Icon: Zap },
+  { id: "browser", label: "Browser View", Icon: Globe },
+  { id: "memory", label: "Memory & Logs", Icon: Brain },
+  { id: "plugins", label: "Plugin Studio", Icon: Code2 },
+  { id: "skills", label: "Skills Studio", Icon: BookOpen },
+  { id: "mcp", label: "MCP Servers", Icon: Server },
+  { id: "settings", label: "Settings", Icon: Settings },
 ];
 
-function InlineForm({ label, placeholder, onSubmit, onCancel }: {
+function InlineForm({ placeholder, onSubmit, onCancel }: {
   label: string; placeholder: string; onSubmit: (val: string) => Promise<void>; onCancel: () => void;
 }) {
   const [val, setVal] = useState("");
@@ -182,7 +185,7 @@ export default function Sidebar({
             </div>
             <button className={`btn btn-icon-sm btn-ghost ${styles.logoutBtn}`} onClick={logout} title="Sign out">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
               </svg>
             </button>
           </div>
