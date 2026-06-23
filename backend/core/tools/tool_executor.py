@@ -36,6 +36,29 @@ from core.tools.context import ToolExecutionContext, ToolPermissionContext
 
 logger = logging.getLogger("carole.tool_executor")
 
+# Tools that mutate files but are safe to auto-approve when the target is a
+# documentation file (markdown / plain-text notes like implementation.md or
+# taskstracker.md). Letting agents create and edit docs without Judge review
+# keeps planning/notetaking frictionless — these files cannot execute and are
+# sandboxed to the workspace, so the risk surface is minimal.
+_DOC_WRITE_TOOLS = {"write_file", "edit_file", "append_file"}
+_DOC_EXTENSIONS = (".md", ".markdown", ".txt")
+
+
+def _is_doc_write(tool_name: str, arguments: Dict[str, Any]) -> bool:
+    """True when a file-write tool targets a documentation path (.md/.txt).
+
+    Used to fast-path doc writes past the Judge gate so agents can keep
+    implementation.md / taskstracker.md style notes without approval friction.
+    """
+    if tool_name not in _DOC_WRITE_TOOLS:
+        return False
+    rel = arguments.get("relative_path") or arguments.get("path")
+    if not isinstance(rel, str) or not rel:
+        return False
+    return rel.lower().endswith(_DOC_EXTENSIONS)
+
+
 # Global dictionaries to manage pending human approvals across concurrent agent loops
 pending_approvals: Dict[str, asyncio.Event] = {}
 approval_results: Dict[str, bool] = {}  # Maps tx_id to True (Approved) or False (Denied)
@@ -338,11 +361,18 @@ def register_builtin_tools():
         ToolSpec("read_scratchpad", "Read your personal scratchpad or the shared team scratchpad", "memory",
                  {"target": {"type": "string", "required": False, "description": "'personal' (default) or 'team'"}},
                  "safe", _wrap_read_scratchpad),
-        ToolSpec("write_scratchpad", "Write notes to your personal scratchpad or the shared team scratchpad", "memory",
+        ToolSpec("write_scratchpad", "Append (or overwrite) notes on your personal scratchpad or the shared team scratchpad", "memory",
                  {"content": {"type": "string", "required": True},
                   "target": {"type": "string", "required": False, "description": "'personal' (default) or 'team'"},
                   "mode": {"type": "string", "required": False, "description": "'append' (default) or 'overwrite'"}},
                  "safe", _wrap_write_scratchpad),
+        ToolSpec("update_scratchpad", "Replace the full contents of your personal scratchpad or the shared team scratchpad", "memory",
+                 {"content": {"type": "string", "required": True},
+                  "target": {"type": "string", "required": False, "description": "'personal' (default) or 'team'"}},
+                 "safe", _wrap_update_scratchpad),
+        ToolSpec("clear_scratchpad", "Delete/clear your personal scratchpad or the shared team scratchpad", "memory",
+                 {"target": {"type": "string", "required": False, "description": "'personal' (default) or 'team'"}},
+                 "safe", _wrap_clear_scratchpad),
     ]
 
     for spec in builtins:
@@ -383,6 +413,15 @@ class ToolExecutor:
             if tool_name in permission_context.always_allow:
                 logger.info("✓ [Executor] Tool '%s' execution automatically allowed by always_allow rule.", tool_name)
                 return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
+
+        # 0. Documentation fast-path — writing/editing .md/.txt notes (e.g.
+        # implementation.md, taskstracker.md) is always frictionless. These are
+        # non-executable, workspace-sandboxed files, so we skip the Judge/human
+        # gate entirely. Applies regardless of the configured gate level so the
+        # user never has to approve an agent's planning notes.
+        if _is_doc_write(tool_name, arguments):
+            logger.info("📝 [Executor] Frictionless doc write for '%s' (tool=%s).", agent_name, tool_name)
+            return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
 
         # 1. Safe — instant execution
         if gate_level == "safe":
@@ -536,7 +575,8 @@ async def _wrap_read_file(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path") or args.get("path") or args.get("value")
     if not path:
         return "Error: Missing parameter 'relative_path'."
-    return await file_tools.read_file(path)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.read_file(path, project_id=project_id)
 
 async def _check_active_editor_conflicts(relative_path: str, agent_name: str) -> None:
     from core.knowledge.code_graph import code_graph
@@ -607,7 +647,8 @@ async def _wrap_write_file(args: Dict[str, Any], team_id: str):
         return f"Error: {str(e)}"
     # ── Snapshot before write ────────────────────────────────────────────────
     await _snapshot_file(path, team_id, message_id, operation="write_file")
-    return await file_tools.write_file(path, content, agent_name)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.write_file(path, content, agent_name, project_id=project_id)
 
 async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
     path = args.get("relative_path") or args.get("path")
@@ -623,7 +664,8 @@ async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
         return f"Error: {str(e)}"
     # ── Snapshot before edit ─────────────────────────────────────────────────
     await _snapshot_file(path, team_id, message_id, operation="edit_file")
-    return await file_tools.edit_file(path, target, replacement, agent_name)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.edit_file(path, target, replacement, agent_name, project_id=project_id)
 
 
 async def _snapshot_file(relative_path: str, team_id: str, message_id: str | None, operation: str = "write_file"):
@@ -680,7 +722,55 @@ async def _snapshot_file(relative_path: str, team_id: str, message_id: str | Non
 
 async def _wrap_list_directory(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path", ".") or args.get("path", ".")
-    return await file_tools.list_directory(path)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.list_directory(path, project_id=project_id)
+
+async def _team_cwd(team_id: str) -> str | None:
+    """Resolve the project workspace directory for a team.
+
+    Shell and git tools run with this as their cwd so agents operate inside
+    their own project workspace rather than the shared backend root. Returns
+    None on failure (callers fall back to the default workspace root).
+    """
+    try:
+        from core.tools.file_tools import file_tools as _ft
+        return str(await _ft.get_workspace_root_for_team(team_id))
+    except Exception as e:
+        logger.debug("workspace root resolution failed for team %s: %s", team_id, e)
+        return None
+
+
+_team_project_cache: dict = {}
+
+
+async def _team_project_id(team_id: str) -> str | None:
+    """Resolve a team_id to its project_id (cached in-process).
+
+    File tools need the project_id to scope reads/writes to the agent's own
+    project workspace. Without it they fall back to the backend root — a
+    sandbox hole. Returns None only if team_id is missing/invalid.
+    """
+    if not team_id:
+        return None
+    cached = _team_project_cache.get(team_id)
+    if cached is not None:
+        return cached
+    project_id: str | None = None
+    try:
+        import uuid as _uuid
+        from core.memory.database import async_session
+        from core.memory.models import Team
+        from sqlalchemy import select
+        team_uuid = _uuid.UUID(team_id)
+        async with async_session() as db:
+            team = (await db.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
+            if team:
+                project_id = str(team.project_id)
+    except Exception as e:
+        logger.debug("project resolution failed for team %s: %s", team_id, e)
+    _team_project_cache[team_id] = project_id
+    return project_id
+
 
 async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
     command = args.get("command") or args.get("value")
@@ -688,36 +778,37 @@ async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing parameter 'command'."
     timeout = float(args.get("timeout", 60.0))
     context = args.get("_context")
-    return await shell_tools.execute_command(command, team_id, timeout, context=context)
+    cwd = await _team_cwd(team_id)
+    return await shell_tools.execute_command(command, team_id, timeout, context=context, cwd=cwd)
 
 async def _wrap_git_status(args: Dict[str, Any], team_id: str) -> str:
-    return await git_tools.status()
+    return await git_tools.status(cwd=await _team_cwd(team_id))
 
 async def _wrap_git_diff(args: Dict[str, Any], team_id: str) -> str:
     staged = args.get("staged", False)
-    return await git_tools.diff(staged=staged)
+    return await git_tools.diff(staged=staged, cwd=await _team_cwd(team_id))
 
 async def _wrap_git_add(args: Dict[str, Any], team_id: str) -> str:
     paths = args.get("paths", ".") or args.get("value", ".")
-    return await git_tools.add(paths)
+    return await git_tools.add(paths, cwd=await _team_cwd(team_id))
 
 async def _wrap_git_commit(args: Dict[str, Any], team_id: str) -> str:
     message = args.get("message") or args.get("value", "")
-    return await git_tools.commit(message)
+    return await git_tools.commit(message, cwd=await _team_cwd(team_id))
 
 async def _wrap_git_log(args: Dict[str, Any], team_id: str) -> str:
     count = int(args.get("count", 10))
-    return await git_tools.log(count=count)
+    return await git_tools.log(count=count, cwd=await _team_cwd(team_id))
 
 async def _wrap_git_checkout(args: Dict[str, Any], team_id: str) -> str:
     branch = args.get("branch") or args.get("value", "")
     create = args.get("create", False)
-    return await git_tools.checkout_branch(branch, create=create)
+    return await git_tools.checkout_branch(branch, create=create, cwd=await _team_cwd(team_id))
 
 async def _wrap_git_push(args: Dict[str, Any], team_id: str) -> str:
     remote = args.get("remote", "origin")
     branch = args.get("branch")
-    return await git_tools.push(remote, branch)
+    return await git_tools.push(remote, branch, cwd=await _team_cwd(team_id))
 
 async def _wrap_web_search(args: Dict[str, Any], team_id: str) -> str:
     query = args.get("query") or args.get("value", "")
@@ -1024,64 +1115,50 @@ async def _wrap_comment_on_task(args: Dict[str, Any], team_id: str) -> str:
 
 async def _wrap_read_scratchpad(args: Dict[str, Any], team_id: str) -> str:
     """Read the agent's personal scratchpad or the shared team scratchpad."""
-    import os, aiofiles
+    from core.memory.scratchpad import scratchpad_store
     target = args.get("target", "personal")
-    agent_id = args.get("_agent_id", "unknown")
     agent_name = args.get("_agent_name", "agent")
-
-    from core.config import CAROLE_HOME_DIR
-    base = os.path.join(CAROLE_HOME_DIR, "scratchpads", team_id)
-    os.makedirs(base, exist_ok=True)
-
-    if target == "team":
-        pad_path = os.path.join(base, "TEAM_NOTES.md")
-        label = "Team Scratchpad"
-    else:
-        safe_name = agent_name.replace(" ", "_").replace("/", "_")
-        pad_path = os.path.join(base, f"{safe_name}.md")
-        label = f"{agent_name}'s Personal Scratchpad"
-
-    if not os.path.exists(pad_path):
-        return f"{label} is empty."
-
-    async with aiofiles.open(pad_path, "r", encoding="utf-8") as f:
-        content = await f.read()
+    result = await scratchpad_store.read(team_id, target, agent_name)
+    content = result.get("content", "")
+    label = result.get("label", "Scratchpad")
     return f"=== {label} ===\n{content}" if content.strip() else f"{label} is empty."
 
 
 async def _wrap_write_scratchpad(args: Dict[str, Any], team_id: str) -> str:
-    """Write to the agent's personal scratchpad or the shared team scratchpad."""
-    import os, aiofiles
+    """Append (or overwrite) the agent's personal scratchpad or the shared team scratchpad."""
+    from core.memory.scratchpad import scratchpad_store
     target = args.get("target", "personal")
     content = args.get("content", "")
     mode = args.get("mode", "append")  # 'append' or 'overwrite'
     agent_name = args.get("_agent_name", "agent")
+    agent_id = args.get("_agent_id", "unknown")
+    result = await scratchpad_store.write(team_id, target, agent_name, content, mode=mode, agent_id=agent_id)
+    if result.get("status") == "error":
+        return f"Error: {result.get('error')}"
+    return f"✓ Written to {result.get('label')}."
 
-    if not content:
-        return "Error: 'content' is required."
 
-    from core.config import CAROLE_HOME_DIR
-    base = os.path.join(CAROLE_HOME_DIR, "scratchpads", team_id)
-    os.makedirs(base, exist_ok=True)
+async def _wrap_update_scratchpad(args: Dict[str, Any], team_id: str) -> str:
+    """Replace the full contents of the agent's personal or shared team scratchpad."""
+    from core.memory.scratchpad import scratchpad_store
+    target = args.get("target", "personal")
+    content = args.get("content", "")
+    agent_name = args.get("_agent_name", "agent")
+    agent_id = args.get("_agent_id", "unknown")
+    result = await scratchpad_store.update(team_id, target, agent_name, content, agent_id=agent_id)
+    if result.get("status") == "error":
+        return f"Error: {result.get('error')}"
+    return f"✓ Updated {result.get('label')}."
 
-    if target == "team":
-        pad_path = os.path.join(base, "TEAM_NOTES.md")
-        label = "Team Scratchpad"
-    else:
-        safe_name = agent_name.replace(" ", "_").replace("/", "_")
-        pad_path = os.path.join(base, f"{safe_name}.md")
-        label = f"{agent_name}'s Personal Scratchpad"
 
-    file_mode = "w" if mode == "overwrite" else "a"
-    async with aiofiles.open(pad_path, file_mode, encoding="utf-8") as f:
-        if mode == "append":
-            from datetime import datetime
-            timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-            await f.write(f"\n<!-- {agent_name} @ {timestamp} -->\n{content}\n")
-        else:
-            await f.write(content)
-
-    return f"✓ Written to {label}."
+async def _wrap_clear_scratchpad(args: Dict[str, Any], team_id: str) -> str:
+    """Delete/clear the agent's personal or shared team scratchpad."""
+    from core.memory.scratchpad import scratchpad_store
+    target = args.get("target", "personal")
+    agent_name = args.get("_agent_name", "agent")
+    agent_id = args.get("_agent_id", "unknown")
+    result = await scratchpad_store.delete(team_id, target, agent_name, agent_id=agent_id)
+    return f"✓ Cleared {result.get('label')}."
 
 
 async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
@@ -1133,7 +1210,8 @@ async def _wrap_append_file(args: Dict[str, Any], team_id: str):
     agent_name = args.get("_agent_name", "Unknown")
     if not path or content is None:
         return "Error: Missing 'relative_path' or 'content'."
-    return await file_tools.append_file(path, content, agent_name)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.append_file(path, content, agent_name, project_id=project_id)
 
 
 async def _wrap_delete_file(args: Dict[str, Any], team_id: str) -> str:
@@ -1141,7 +1219,8 @@ async def _wrap_delete_file(args: Dict[str, Any], team_id: str) -> str:
     agent_name = args.get("_agent_name", "Unknown")
     if not path:
         return "Error: Missing 'relative_path'."
-    return await file_tools.delete_file(path, agent_name)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.delete_file(path, agent_name, project_id=project_id)
 
 
 async def _wrap_grep_search(args: Dict[str, Any], team_id: str) -> str:
@@ -1150,7 +1229,8 @@ async def _wrap_grep_search(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'pattern'."
     path = args.get("path", ".")
     case_sensitive = args.get("case_sensitive", True)
-    return await file_tools.grep_search(pattern, path, case_sensitive)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.grep_search(pattern, path, case_sensitive, project_id=project_id)
 
 
 async def _wrap_glob_search(args: Dict[str, Any], team_id: str) -> str:
@@ -1158,7 +1238,8 @@ async def _wrap_glob_search(args: Dict[str, Any], team_id: str) -> str:
     if not pattern:
         return "Error: Missing 'pattern'."
     path = args.get("path", ".")
-    return await file_tools.glob_search(pattern, path)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.glob_search(pattern, path, project_id=project_id)
 
 
 # Singleton global executor
@@ -1172,20 +1253,23 @@ async def _wrap_copy_file(args: Dict[str, Any], team_id: str) -> str:
     dst = args.get("destination", "")
     if not src or not dst:
         return "Error: Missing 'source' or 'destination'."
-    return await file_tools.copy_file(src, dst)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.copy_file(src, dst, project_id=project_id)
 
 async def _wrap_move_file(args: Dict[str, Any], team_id: str) -> str:
     src = args.get("source", "")
     dst = args.get("destination", "")
     if not src or not dst:
         return "Error: Missing 'source' or 'destination'."
-    return await file_tools.move_file(src, dst)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.move_file(src, dst, project_id=project_id)
 
 async def _wrap_create_directory(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("path") or args.get("relative_path", "")
     if not path:
         return "Error: Missing 'path'."
-    return await file_tools.create_directory(path)
+    project_id = await _team_project_id(team_id)
+    return await file_tools.create_directory(path, project_id=project_id)
 
 
 # ---- Git Extras ----
@@ -1193,14 +1277,14 @@ async def _wrap_create_directory(args: Dict[str, Any], team_id: str) -> str:
 async def _wrap_git_stash(args: Dict[str, Any], team_id: str) -> str:
     action = args.get("action", "push")
     message = args.get("message")
-    return await git_tools.stash(action, message)
+    return await git_tools.stash(action, message, cwd=await _team_cwd(team_id))
 
 async def _wrap_git_clone(args: Dict[str, Any], team_id: str) -> str:
     url = args.get("url", "")
     if not url:
         return "Error: Missing 'url'."
     directory = args.get("directory")
-    return await git_tools.clone(url, directory)
+    return await git_tools.clone(url, directory, cwd=await _team_cwd(team_id))
 
 
 # ---- Code Analysis Wrappers ----

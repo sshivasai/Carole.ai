@@ -11,6 +11,7 @@ import SettingsPanel from "@/components/SettingsPanel";
 import PluginStudio from "@/components/PluginStudio";
 import SkillsStudio from "@/components/SkillsStudio";
 import McpIntegration from "@/components/McpIntegration";
+import ScratchpadPanel from "@/components/ScratchpadPanel";
 import LoadingScreen from "@/components/LoadingScreen";
 import AuthPage from "@/components/AuthPage";
 import ToastContainer from "@/components/Toast";
@@ -19,7 +20,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/hooks/useApi";
 import FileExplorerPanel from "@/components/FileExplorerPanel";
-import type { AgentConfig, ChatMessage, TaskItem, BrowserScreenshotEvent, LearningItem } from "@/lib/types";
+import type { AgentConfig, ChatMessage, TaskItem, BrowserScreenshotEvent, LearningItem, ScratchpadItem } from "@/lib/types";
 
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -157,8 +158,14 @@ function AppShell() {
   const [appLoading, setAppLoading] = useState(true);
   const [streamingAgents, setStreamingAgents] = useState<Set<string>>(new Set());
   const [explorerOpen, setExplorerOpen] = useState(false);
+  // Latest file_change WS event, fed to the FileExplorerPanel for realtime sync.
+  const [lastFileChange, setLastFileChange] = useState<any | null>(null);
+  // A file path the explorer should open automatically (set when the user
+  // clicks a file-change card in chat).
+  const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null);
   // Queue depth per agent — { [agent_id]: number }
   const [agentQueues, setAgentQueues] = useState<Record<string, number>>({});
+  const [scratchpads, setScratchpads] = useState<ScratchpadItem[]>([]);
 
   const { connected, events, sendMessage } = useWebSocket(teamId);
 
@@ -200,11 +207,12 @@ function AppShell() {
 
   // Load team data when team changes
   useEffect(() => {
-    if (!teamId) { setAgents([]); setMessages([]); setTasks([]); setScreenshots([]); return; }
-    Promise.all([api.listAgents(teamId), api.listTasks(teamId), api.listMessages(teamId)])
-      .then(([ags, tks, msgs]) => {
+    if (!teamId) { setAgents([]); setMessages([]); setTasks([]); setScreenshots([]); setScratchpads([]); return; }
+    Promise.all([api.listAgents(teamId), api.listTasks(teamId), api.listMessages(teamId), api.listScratchpads(teamId)])
+      .then(([ags, tks, msgs, pads]) => {
         setAgents(ags);
         setTasks(tks);
+        setScratchpads(pads);
         setMessages(msgs.map((m: any) => ({
           ...m,
           id: m.id || makeId(),
@@ -239,6 +247,10 @@ function AppShell() {
 
       // Process other events
       for (const evt of newEvents) {
+        if (evt.type === "file_change") {
+          // Feed the latest file_change to the explorer for realtime sync.
+          setLastFileChange({ ...evt, _seq: events.length });
+        }
         if (evt.type === "browser_screenshot") {
           setScreenshots(prev => [...prev, evt as BrowserScreenshotEvent].slice(-50));
         }
@@ -248,6 +260,30 @@ function AppShell() {
         }
         if (evt.type === "agent_queue_update" && evt.agent_id != null) {
           setAgentQueues(prev => ({ ...prev, [evt.agent_id]: evt.queue_depth ?? 0 }));
+        }
+        if (evt.type === "scratchpad_updated") {
+          const target = (evt.target === "team" ? "team" : "personal") as "team" | "personal";
+          const agentName = evt.agent_name || "";
+          const content = evt.content ?? "";
+          const updated_at = evt.timestamp;
+          setScratchpads(prev => {
+            const idx = prev.findIndex(p => p.target === target && (target === "team" || p.agent_name === agentName));
+            const entry: ScratchpadItem = {
+              target,
+              agent_name: target === "team" ? "Team" : agentName,
+              agent_id: evt.agent_id,
+              label: evt.label || (target === "team" ? "Team Scratchpad" : `${agentName}'s Scratchpad`),
+              content,
+              updated_at,
+              size_bytes: content.length,
+            };
+            if (idx >= 0) {
+              const copy = [...prev];
+              copy[idx] = { ...copy[idx], ...entry };
+              return copy;
+            }
+            return [...prev, entry];
+          });
         }
       }
 
@@ -329,11 +365,23 @@ function AppShell() {
                   }
                 }}
                 teamId={teamId}
+                projectId={projectId}
                 onToggleExplorer={() => setExplorerOpen(o => !o)}
+                onOpenFile={(path: string) => {
+                  setExplorerOpen(true);
+                  setPendingOpenFile(path);
+                }}
               />
             </div>
             {explorerOpen && (
-              <FileExplorerPanel onClose={() => setExplorerOpen(false)} projectId={projectId || undefined} teamId={teamId || undefined} />
+              <FileExplorerPanel
+                onClose={() => setExplorerOpen(false)}
+                projectId={projectId || undefined}
+                teamId={teamId || undefined}
+                lastFileChange={lastFileChange}
+                pendingOpenFile={pendingOpenFile}
+                onPendingOpenConsumed={() => setPendingOpenFile(null)}
+              />
             )}
           </div>
         )}
@@ -351,6 +399,11 @@ function AppShell() {
         {activeView === "memory" && (
           <MemoryView learnings={learnings} projectId={projectId} teamId={teamId}
             onLearningsChange={setLearnings} onToast={(msg, type) => toast.show(msg, type)} />
+        )}
+        {activeView === "scratchpad" && (
+          <ScratchpadPanel teamId={teamId} agents={agents} scratchpads={scratchpads}
+            onScratchpadsChange={setScratchpads}
+            onToast={(msg, type) => toast.show(msg, type as any)} />
         )}
         {activeView === "settings" && (
           <SettingsPanel teamId={teamId} projectId={projectId} agents={agents}

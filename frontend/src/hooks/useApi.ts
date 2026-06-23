@@ -35,8 +35,12 @@ async function apiFetch<T>(path: string, options?: RequestInit, retry = 1): Prom
   if (isGet) {
     if (_inflight.has(key)) return _inflight.get(key)!;
     const p = execute().catch(async (e) => {
-      _inflight.delete(key);
-      if (retry > 0 && (e.status === undefined || e.status >= 500)) {
+      // Only retry on HTTP 5xx — a network-level TypeError (e.status ===
+      // undefined) means the backend is unreachable, so retrying just delays
+      // the inevitable and spams the server. Fail fast and let the caller
+      // surface a retry affordance.
+      if (retry > 0 && typeof e.status === "number" && e.status >= 500) {
+        _inflight.delete(key);
         await new Promise(r => setTimeout(r, 500));
         return apiFetch<T>(path, options, retry - 1);
       }
@@ -162,6 +166,20 @@ export const api = {
     apiFetch<any>(`/api/learnings/${learningId}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteLearning: (learningId: string) => apiFetch<any>(`/api/learnings/${learningId}`, { method: "DELETE" }),
 
+  // ── Scratchpads ──
+  listScratchpads: (teamId: string) =>
+    apiFetch<import("../lib/types").ScratchpadItem[]>(`/api/scratchpad/${teamId}`),
+  readScratchpad: (teamId: string, target: "team" | "personal", agentName: string) =>
+    apiFetch<import("../lib/types").ScratchpadItem>(
+      `/api/scratchpad/${teamId}/${target}${target === "personal" ? `?agent_name=${encodeURIComponent(agentName)}` : ""}`,
+    ),
+  writeScratchpad: (teamId: string, body: { content: string; target?: "team" | "personal"; mode?: "append" | "overwrite"; agent_name: string; agent_id?: string; author?: string }) =>
+    apiFetch<any>(`/api/scratchpad/${teamId}`, { method: "POST", body: JSON.stringify(body) }),
+  updateScratchpad: (teamId: string, body: { content: string; target?: "team" | "personal"; agent_name: string; agent_id?: string; author?: string }) =>
+    apiFetch<any>(`/api/scratchpad/${teamId}`, { method: "PUT", body: JSON.stringify(body) }),
+  clearScratchpad: (teamId: string, target: "team" | "personal", agentName: string) =>
+    apiFetch<any>(`/api/scratchpad/${teamId}?target=${target}${target === "personal" ? `&agent_name=${encodeURIComponent(agentName)}` : ""}`, { method: "DELETE" }),
+
   // ── Tools & Plugins ──
   listTools: () => apiFetch<any[]>("/api/tools"),
   approveToolExecution: (txId: string, approved: boolean) =>
@@ -238,6 +256,8 @@ export const api = {
   // ── Files ──
   listFiles: (path: string = ".", projectId?: string) =>
     apiFetch<any[]>(`/api/files/list?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
+  listFileTree: (projectId?: string) =>
+    apiFetch<{ files: string[]; truncated?: boolean }>(`/api/files/tree${projectId ? `?project_id=${projectId}` : ""}`),
   readFile: (path: string, projectId?: string) =>
     apiFetch<{ content: string }>(`/api/files/read?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
   writeFile: (path: string, content: string, projectId?: string) =>

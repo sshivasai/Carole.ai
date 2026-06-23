@@ -529,11 +529,6 @@ function DefaultModelsCard({ onToast }: { onToast: (msg: string, type: any) => v
     } finally { setSaving(false); }
   };
 
-  const modelOptions = Array.from(new Set(
-    Object.values(catalog).flatMap((provider: any) =>
-      provider.models?.map((m: any) => m.id) || []
-    )
-  ));
   return (
     <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
       <h3 className="display-sm" style={{ marginBottom: "var(--sp-lg)" }}>Global Model Defaults</h3>
@@ -554,8 +549,14 @@ function DefaultModelsCard({ onToast }: { onToast: (msg: string, type: any) => v
                 onChange={e => setDefaults(d => ({ ...d, [key]: e.target.value }))}
               >
                 <option value="">-- Use Environment Variable --</option>
-                {modelOptions.map((m: any, idx: number) => (
-                  <option key={`${m}-${idx}`} value={m}>{m}</option>
+                {Object.entries(catalog).map(([providerId, provider]: [string, any]) => (
+                  <optgroup key={providerId} label={provider.label || providerId}>
+                    {provider.models?.map((m: any, idx: number) => (
+                      <option key={`${m.value}-${idx}`} value={m.value}>
+                        {m.label || m.value}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </div>

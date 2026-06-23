@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useCallback } from "react";
-import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu, Code2, Server, BookOpen } from "lucide-react";
+import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu, Code2, Server, BookOpen, StickyNote } from "lucide-react";
 import styles from "./Sidebar.module.css";
 import { api } from "@/hooks/useApi";
 import { useAuth } from "@/hooks/useAuth";
@@ -25,6 +25,7 @@ const NAV = [
   { id: "agents", label: "Agents", Icon: Zap },
   { id: "browser", label: "Browser View", Icon: Globe },
   { id: "memory", label: "Memory & Logs", Icon: Brain },
+  { id: "scratchpad", label: "Scratchpad", Icon: StickyNote },
   { id: "plugins", label: "Plugin Studio", Icon: Code2 },
   { id: "skills", label: "Skills Studio", Icon: BookOpen },
   { id: "mcp", label: "MCP Servers", Icon: Server },

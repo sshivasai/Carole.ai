@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { ChatMessage, AgentConfig } from "@/lib/types";
 import { Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion, Loader2, ChevronDown, ChevronUp, ChevronRight, Mic, MicOff, Search, Edit2, Trash2, History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode, Terminal } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -14,7 +14,9 @@ interface Props {
   onDeleteMessage?: (id: string) => void;
   onRollbackMessage?: (id: string) => void;
   teamId: string | null;
+  projectId?: string | null;
   onToggleExplorer?: () => void;
+  onOpenFile?: (path: string) => void;
 }
 
 const AVATAR_COLORS = ["#3b82f6","#8b5cf6","#00d992","#f97316","#ef4444","#eab308"];
@@ -138,7 +140,6 @@ function ToolRow({ msg }: { msg: ChatMessage }) {
 function ThoughtsPanel({ reasoning, isStreaming }: { reasoning?: string; isStreaming?: boolean }) {
   const [open, setOpen] = useState(false);
   if (!reasoning) return null;
-  console.log("THOUGHTS PANEL REASONING:", reasoning);
   return (
     <div style={{ marginTop: "var(--sp-sm)", borderTop: "1px dashed var(--color-hairline)", paddingTop: "var(--sp-sm)" }}>
       <button
@@ -169,7 +170,7 @@ function ThoughtsPanel({ reasoning, isStreaming }: { reasoning?: string; isStrea
   );
 }
 
-export default function ChatInterface({ messages, agents, onSendMessage, onDeleteMessage, onRollbackMessage, teamId, onToggleExplorer }: Props) {
+export default function ChatInterface({ messages, agents, onSendMessage, onDeleteMessage, onRollbackMessage, teamId, projectId, onToggleExplorer, onOpenFile }: Props) {
   const [inputText, setInputText] = useState("");
   const [recording, setRecording]   = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -189,55 +190,120 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Mention state
+  // Mention state — @ triggers a combined picker of agents + project files.
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
 
+  // File tree for @file mentions (cached per project).
+  const [fileTree, setFileTree] = useState<string[]>([]);
+  const [fileTreeLoadedFor, setFileTreeLoadedFor] = useState<string | null>(null);
+
   // Intermediate trace expansion state
   const [expandedTraces, setExpandedTraces] = useState<Set<string>>(new Set());
-
-  const filteredAgents = agents.filter(a => a.name.toLowerCase().includes(mentionQuery.toLowerCase()));
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
+  // Lazy-load the project file tree once (and when the project changes).
+  const ensureFileTree = useCallback(async () => {
+    if (!projectId) return;
+    if (fileTreeLoadedFor === projectId) return;
+    try {
+      const res = await api.listFileTree(projectId);
+      setFileTree(res.files || []);
+    } catch (e) {
+      console.warn("Failed to load file tree for mentions", e);
+      setFileTree([]);
+    } finally {
+      setFileTreeLoadedFor(projectId);
+    }
+  }, [projectId, fileTreeLoadedFor]);
+
+  // Build the combined, query-filtered mention list. Agents first, then files
+  // (files capped to keep the dropdown snappy). Each item knows how to insert
+  // itself.
+  type MentionItem =
+    | { kind: "agent"; name: string; role?: string; id: string }
+    | { kind: "file"; path: string };
+
+  const mentionItems: MentionItem[] = useMemo(() => {
+    const q = mentionQuery.toLowerCase();
+    const agentItems: MentionItem[] = agents
+      .filter(a => a.name.toLowerCase().includes(q))
+      .map(a => ({ kind: "agent" as const, name: a.name, role: a.role, id: a.id }));
+    const fileItems: MentionItem[] = fileTree
+      .filter(p => {
+        if (!q) return true;
+        const base = p.split("/").pop()!.toLowerCase();
+        return base.includes(q) || p.toLowerCase().includes(q);
+      })
+      // Prefer basename matches, then alphabetical.
+      .sort((a, b) => {
+        const ba = a.split("/").pop()!, bb = b.split("/").pop()!;
+        const ma = ba.toLowerCase().includes(q) ? 0 : 1;
+        const mb = bb.toLowerCase().includes(q) ? 0 : 1;
+        if (ma !== mb) return ma - mb;
+        return a.localeCompare(b);
+      })
+      .slice(0, 12)
+      .map(p => ({ kind: "file" as const, path: p }));
+    return [...agentItems, ...fileItems];
+  }, [agents, fileTree, mentionQuery]);
+
+  const insertMention = (item: MentionItem) => {
+    const sel = inputRef.current?.selectionStart ?? inputText.length;
+    const textBefore = inputText.slice(0, sel);
+    const atIndex = textBefore.lastIndexOf("@");
+    if (atIndex === -1) { setMentionOpen(false); return; }
+    const token = item.kind === "agent" ? `@${item.name} ` : `@file:${item.path} `;
+    const newText = inputText.slice(0, atIndex) + token + inputText.slice(sel);
+    setInputText(newText);
+    setMentionOpen(false);
+    setTimeout(() => {
+      inputRef.current?.focus();
+      const pos = atIndex + token.length;
+      inputRef.current?.setSelectionRange(pos, pos);
+    }, 10);
+  };
+
   const handleSend = useCallback(() => {
     if (!inputText.trim() && attachments.length === 0) return;
-    onSendMessage(inputText.trim(), attachments);
+    // Extract @file:path references and pass them as structured file_ref
+    // attachments so the backend injects their contents into agent context
+    // (sandboxed to the agent's project). The visible @file:path text is kept
+    // so humans and other agents can see what was referenced.
+    const fileRefRegex = /@file:(\S+)/g;
+    const seen = new Set<string>();
+    const fileRefs: any[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = fileRefRegex.exec(inputText)) !== null) {
+      const p = m[1].replace(/[),.;]+$/, ""); // strip trailing punctuation
+      if (!seen.has(p)) { seen.add(p); fileRefs.push({ type: "file_ref", path: p }); }
+    }
+    onSendMessage(inputText.trim(), [...attachments, ...fileRefs]);
     setInputText("");
     setAttachments([]);
     setMentionOpen(false);
   }, [inputText, attachments, onSendMessage]);
 
-  const insertMention = (agentName: string) => {
-    const textBefore = inputText.slice(0, inputRef.current?.selectionStart || inputText.length);
-    const atIndex = textBefore.lastIndexOf("@");
-    if (atIndex !== -1) {
-      const newText = inputText.slice(0, atIndex) + "@" + agentName + " " + inputText.slice(textBefore.length);
-      setInputText(newText);
-      setMentionOpen(false);
-      setTimeout(() => inputRef.current?.focus(), 10);
-    }
-  };
-
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (mentionOpen) {
+    if (mentionOpen && mentionItems.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setMentionIndex(i => (i + 1) % filteredAgents.length);
+        setMentionIndex(i => (i + 1) % mentionItems.length);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setMentionIndex(i => (i - 1 + filteredAgents.length) % filteredAgents.length);
+        setMentionIndex(i => (i - 1 + mentionItems.length) % mentionItems.length);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        if (filteredAgents.length > 0) insertMention(filteredAgents[mentionIndex].name);
+        insertMention(mentionItems[mentionIndex]);
         return;
       }
       if (e.key === "Escape") {
@@ -247,7 +313,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
     }
 
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
-  }, [handleSend, mentionOpen, filteredAgents, mentionIndex]);
+  }, [handleSend, mentionOpen, mentionItems, mentionIndex]);
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
@@ -257,11 +323,12 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
     const sel = e.target.selectionStart;
     const textBefore = val.slice(0, sel);
-    const atMatch = textBefore.match(/@(\w*)$/);
+    const atMatch = textBefore.match(/@([^\s]*)$/);
     if (atMatch) {
       setMentionOpen(true);
       setMentionQuery(atMatch[1]);
       setMentionIndex(0);
+      void ensureFileTree();
     } else {
       setMentionOpen(false);
     }
@@ -469,16 +536,28 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
             );
           }
           if (isFileChange) return (
-            <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "center", background: "var(--bg-glass-panel)", padding: "10px 14px", borderRadius: 8, margin: "8px 0" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1 }}>
+            <div
+              key={msg.id}
+              onClick={() => msg.path && onOpenFile?.(msg.path)}
+              style={{
+                display: "flex", gap: "var(--sp-md)", alignItems: "center", background: "var(--bg-glass-panel)",
+                padding: "10px 14px", borderRadius: 8, margin: "8px 0",
+                cursor: msg.path && onOpenFile ? "pointer" : "default",
+                border: "1px solid var(--color-hairline)",
+                transition: "background 0.15s, border-color 0.15s",
+              }}
+              className="hover:bg-[var(--color-surface)]"
+              title={msg.path && onOpenFile ? `Open ${msg.path} in editor` : undefined}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
                 <div style={{ background: "var(--color-surface)", padding: 6, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <FileCode size={16} color="var(--color-brand)" />
                 </div>
-                <div style={{ display: "flex", flexDirection: "column" }}>
-                  <span className="body-sm">
+                <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                  <span className="body-sm" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <strong style={{color: "var(--color-body)"}}>{msg.sender_name || "Agent"}</strong> modified <strong style={{color: "var(--color-body)"}}>{msg.path?.split('/').pop() || msg.path}</strong>
                   </span>
-                  <span className="caption" style={{color: "var(--color-mute)"}}>View details in the Activity Log tab</span>
+                  <span className="caption" style={{color: "var(--color-mute)"}}>{msg.path && onOpenFile ? "Click to open in editor" : "View details in the Activity Log tab"}</span>
                 </div>
               </div>
               {msg.timestamp && <span className="caption" style={{ opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
@@ -529,6 +608,18 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
           const finalReasoning = msg.reasoning ? (msg.reasoning + "\n\n" + embeddedReasoning).trim() : embeddedReasoning.trim();
 
           let markdownText = cleanText;
+          // Render @file:path references as clickable chips that open the file
+          // in the explorer (instead of raw @file:... text).
+          if (onOpenFile) {
+            markdownText = markdownText.replace(
+              /(^|[^`])@file:(\S+)/g,
+              (_m, pre, p) => {
+                const path = p.replace(/[),.;]+$/, "");
+                const base = path.split("/").pop() || path;
+                return `${pre}[\`📄 ${base}\`](file:${path})`;
+              }
+            );
+          }
           if (searchMode && searchQuery.trim()) {
             const safeQuery = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const regex = new RegExp(`(${safeQuery})`, 'gi');
@@ -605,6 +696,25 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                         <ReactMarkdown 
                           remarkPlugins={[remarkGfm]}
                           components={{
+                            a: ({href, children, ...props}) => {
+                              // Intercept @file:path chips to open the file in the
+                              // explorer instead of navigating away.
+                              if (href && href.startsWith("file:") && onOpenFile) {
+                                const path = href.slice("file:".length);
+                                return (
+                                  <a
+                                    {...props}
+                                    href="#"
+                                    onClick={(e) => { e.preventDefault(); onOpenFile(path); }}
+                                    style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 7px", margin: "0 2px", background: "var(--color-primary-glow-sm)", border: "1px solid var(--color-primary-soft)", borderRadius: 4, color: "var(--color-primary)", textDecoration: "none", fontFamily: "var(--font-mono)", fontSize: "0.9em", cursor: "pointer" }}
+                                    title={`Open ${path}`}
+                                  >
+                                    {children}
+                                  </a>
+                                );
+                              }
+                              return <a href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
+                            },
                             table: ({...props}) => <div style={{overflowX: 'auto', margin: 'var(--sp-md) 0'}}><table style={{borderCollapse: 'collapse', width: '100%'}} {...props} /></div>,
                             th: ({...props}) => <th style={{border: '1px solid var(--color-hairline)', padding: 'var(--sp-sm)', background: 'var(--color-canvas-raised)'}} {...props} />,
                             td: ({...props}) => <td style={{border: '1px solid var(--color-hairline)', padding: 'var(--sp-sm)'}} {...props} />,
@@ -730,36 +840,61 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
             {uploading ? <Loader2 size={16} className="animate-spin" /> : <Folder size={16} />}
           </button>
           
-          {/* Mention Dropdown */}
-          {mentionOpen && filteredAgents.length > 0 && (
+          {/* Mention Dropdown — agents + project files */}
+          {mentionOpen && mentionItems.length > 0 && (
             <div style={{
               position: "absolute", bottom: "100%", left: 0, marginBottom: "var(--sp-sm)",
               background: "var(--bg-glass-card)", backdropFilter: "var(--blur-lg)", WebkitBackdropFilter: "var(--blur-lg)", border: "1px solid var(--border-glass)",
               borderRadius: "var(--radius-md)", boxShadow: "var(--shadow-clay)",
-              maxHeight: 200, overflowY: "auto", minWidth: 200, zIndex: 10
+              maxHeight: 240, overflowY: "auto", minWidth: 240, maxWidth: 360, zIndex: 10
             }}>
-              {filteredAgents.map((agent, i) => (
-                <div key={agent.id} 
-                  style={{
-                    padding: "var(--sp-sm) var(--sp-md)", cursor: "pointer",
-                    background: i === mentionIndex ? "var(--color-canvas-raised)" : "transparent",
-                    display: "flex", alignItems: "center", gap: "var(--sp-sm)"
-                  }}
-                  onMouseEnter={() => setMentionIndex(i)}
-                  onClick={() => insertMention(agent.name)}
-                >
-                  <div style={{ width: 16, height: 16, borderRadius: "50%", background: avatarColor(agent.name) }} />
-                  <span className="body-sm-strong">{agent.name}</span>
-                  <span className="caption" style={{ marginLeft: "auto" }}>{agent.role}</span>
-                </div>
-              ))}
+              {mentionItems.map((item, i) => {
+                const isActive = i === mentionIndex;
+                if (item.kind === "agent") {
+                  return (
+                    <div key={"a:" + item.id}
+                      style={{
+                        padding: "var(--sp-sm) var(--sp-md)", cursor: "pointer",
+                        background: isActive ? "var(--color-canvas-raised)" : "transparent",
+                        display: "flex", alignItems: "center", gap: "var(--sp-sm)"
+                      }}
+                      onMouseEnter={() => setMentionIndex(i)}
+                      onClick={() => insertMention(item)}
+                    >
+                      <div style={{ width: 16, height: 16, borderRadius: "50%", background: avatarColor(item.name), flexShrink: 0 }} />
+                      <span className="body-sm-strong">{item.name}</span>
+                      <span className="caption" style={{ marginLeft: "auto" }}>{item.role}</span>
+                    </div>
+                  );
+                }
+                const base = item.path.split("/").pop();
+                const dir = item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "";
+                return (
+                  <div key={"f:" + item.path}
+                    style={{
+                      padding: "var(--sp-sm) var(--sp-md)", cursor: "pointer",
+                      background: isActive ? "var(--color-canvas-raised)" : "transparent",
+                      display: "flex", alignItems: "center", gap: "var(--sp-sm)"
+                    }}
+                    onMouseEnter={() => setMentionIndex(i)}
+                    onClick={() => insertMention(item)}
+                  >
+                    <FileCode size={15} color="var(--color-brand)" style={{ flexShrink: 0 }} />
+                    <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
+                      <span className="body-sm" style={{ fontWeight: 500 }}>{base}</span>
+                      {dir && <span className="caption" style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{dir}</span>}
+                    </div>
+                    <span className="caption" style={{ marginLeft: "auto", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.5 }}>file</span>
+                  </div>
+                );
+              })}
             </div>
           )}
 
           <textarea 
             ref={inputRef}
             className="input" style={{ flex: 1, resize: "none", minHeight: 40, maxHeight: 160, lineHeight: 1.5, padding: "9px var(--sp-md)" }}
-            placeholder="Instruct your agents... (Enter to send, Shift+Enter for newline)"
+            placeholder="Message your team... (@ to mention an agent or a file · Enter to send, Shift+Enter for newline)"
             value={inputText} rows={1}
             onChange={handleChange}
             onKeyDown={handleKeyDown}

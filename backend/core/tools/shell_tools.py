@@ -25,20 +25,27 @@ class ShellTools:
             workspace_root = os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[3]))
         self.workspace_root = Path(workspace_root).resolve()
 
-    async def execute_command(self, command: str, team_id: str, timeout: float = 60.0, context: Optional[ToolExecutionContext] = None) -> str:
+    async def execute_command(self, command: str, team_id: str, timeout: float = 60.0, context: Optional[ToolExecutionContext] = None, cwd: Optional[str] = None) -> str:
         """
         Executes a shell command inside the workspace directory asynchronously.
         Streams standard output and standard error line-by-line to the EventBus.
         Respects CancellationToken for aborts.
+
+        `cwd` scopes the command to a specific directory (the agent's project
+        workspace when provided by the executor). When omitted, falls back to
+        the shared workspace root. Note: the OS shell can still escape the cwd
+        via absolute paths / `..`, so this is a *default-context* sandbox, not
+        a hard jail; destructive system commands are still gated by the Judge.
         """
-        print(f"🐚 [Shell] Executing: '{command}' (Timeout: {timeout}s)")
-        
+        workdir = cwd or str(self.workspace_root)
+        print(f"🐚 [Shell] Executing in {workdir}: '{command}' (Timeout: {timeout}s)")
+
         # Spawn subprocess safely inside the defined workspace directory
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(self.workspace_root)
+            cwd=workdir
         )
 
         topic = f"team:{team_id}"
@@ -109,6 +116,11 @@ class ShellTools:
             try:
                 process.kill()
             except ProcessLookupError:
+                pass
+            # Reap the killed process to avoid zombie/defunct accumulation.
+            try:
+                await process.wait()
+            except Exception:
                 pass
             return f"✗ Subprocess Error: Command exceeded time constraint of {timeout} seconds and was killed."
 

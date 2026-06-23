@@ -239,3 +239,13 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .markdown-body h1 { font-size: 1.5em; }
 .markdown-body h2 { font-size: 1.3em; }
 .markdown-body h3 { font-size: 1.1em; }
+.markdown-body a { color: var(--color-primary); text-decoration: underline; }
+.markdown-body code { font-family: var(--font-mono); font-size: 0.9em; background: var(--color-surface); padding: 1px 5px; border-radius: 3px; }
+.markdown-body pre { background: var(--color-surface); padding: var(--sp-sm) var(--sp-md); border-radius: 6px; overflow-x: auto; margin-bottom: var(--sp-sm); border: 1px solid var(--color-hairline); }
+.markdown-body pre code { background: transparent; padding: 0; font-size: 12px; }
+.markdown-body blockquote { border-left: 3px solid var(--color-primary-soft); margin: 0 0 var(--sp-sm) 0; padding: 2px var(--sp-md); color: var(--color-mute); }
+.markdown-body table { border-collapse: collapse; margin-bottom: var(--sp-sm); width: 100%; }
+.markdown-body th, .markdown-body td { border: 1px solid var(--color-hairline); padding: 4px 10px; text-align: left; }
+.markdown-body th { background: var(--color-surface); font-weight: 600; }
+.markdown-body hr { border: none; border-top: 1px solid var(--color-hairline); margin: var(--sp-md) 0; }
+.markdown-body img { max-width: 100%; border-radius: 4px; }

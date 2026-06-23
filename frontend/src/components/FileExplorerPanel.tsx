@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { Folder, File, ChevronRight, ChevronDown, RefreshCw, X, Terminal as TerminalIcon, Maximize2, Minimize2, Search, GitBranch, LayoutList, Activity } from "lucide-react";
+import { Folder, File, ChevronRight, ChevronDown, RefreshCw, X, Terminal as TerminalIcon, Maximize2, Minimize2, Search, GitBranch, LayoutList, Activity, Eye, Pencil, RefreshCcwDot } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Editor from "@monaco-editor/react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import TerminalPanel from "./TerminalPanel";
 import GitPanel from "./GitPanel";
 import SearchPanel from "./SearchPanel";
@@ -60,6 +62,12 @@ interface FileExplorerPanelProps {
   onClose?: () => void;
   projectId?: string;
   teamId?: string;
+  /** Latest file_change WS event (agent wrote a file). Drives realtime sync. */
+  lastFileChange?: { path: string; after_content?: string; action?: string; sender_name?: string; _seq?: number } | null;
+  /** A path to open automatically (e.g. user clicked a file-change card in chat). */
+  pendingOpenFile?: string | null;
+  /** Called after pendingOpenFile has been consumed. */
+  onPendingOpenConsumed?: () => void;
 }
 
 interface ContextMenuState {
@@ -73,19 +81,26 @@ interface OpenFile {
   path: string;
   content: string;
   isDirty: boolean;
+  /** When a remote update arrives while the file is dirty, stash it here. */
+  staleRemote?: { content: string; sender: string } | null;
 }
 
-export default function FileExplorerPanel({ onClose, projectId, teamId }: FileExplorerPanelProps) {
+const isMarkdownPath = (path: string) => /\.(md|markdown|txt)$/i.test(path);
+
+export default function FileExplorerPanel({ onClose, projectId, teamId, lastFileChange, pendingOpenFile, onPendingOpenConsumed }: FileExplorerPanelProps) {
   const { addToast } = useToast();
   // Tabs and Layout State
   const [activeLeftTab, setActiveLeftTab] = useState<"explorer" | "search" | "git" | "activity">("explorer");
   const [isFullScreen, setIsFullScreen] = useState(false);
-  
+
   // Editor State
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
   const [saving, setSaving] = useState(false);
+  // "preview" renders rendered markdown; "edit" shows the Monaco editor. Only
+  // meaningful for .md/.txt files — code files always use the editor.
+  const [viewMode, setViewMode] = useState<"preview" | "edit">("preview");
   
   // Explorer State
   const [refreshKey, setRefreshKey] = useState(0);
@@ -127,11 +142,44 @@ export default function FileExplorerPanel({ onClose, projectId, teamId }: FileEx
     return () => document.removeEventListener("click", closeContextMenu);
   }, []);
 
+  // Realtime sync: when an agent (or another client) writes a file, the
+  // backend broadcasts a file_change event with the full after_content. If that
+  // file is open here, refresh it — unless the user has unsaved edits, in which
+  // case stash the remote update and surface a "reload" banner so we never
+  // clobber in-progress work. Also bump the tree so newly created files appear.
+  useEffect(() => {
+    if (!lastFileChange?.path) return;
+    const remotePath = lastFileChange.path.replace(/\\/g, "/");
+    const newContent = lastFileChange.after_content ?? "";
+    const sender = lastFileChange.sender_name || "Agent";
+
+    setOpenFiles(prev => prev.map(f => {
+      if (f.path.replace(/\\/g, "/") !== remotePath) return f;
+      if (f.isDirty) {
+        // Don't clobber unsaved local edits — stash and notify.
+        return { ...f, staleRemote: { content: newContent, sender } };
+      }
+      return { ...f, content: newContent, isDirty: false, staleRemote: null };
+    }));
+
+    // Refresh the tree so newly created/changed files show up.
+    setRefreshKey(k => k + 1);
+  }, [lastFileChange]);
+
+  // Open a file requested from outside (e.g. clicked a file-change card in chat).
+  useEffect(() => {
+    if (!pendingOpenFile) return;
+    void openFile(pendingOpenFile);
+    onPendingOpenConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOpenFile]);
+
   const openFile = async (path: string) => {
     // Check if already open
     const existing = openFiles.find(f => f.path === path);
     if (existing) {
       setActiveFilePath(path);
+      setViewMode(isMarkdownPath(path) ? "preview" : "edit");
       return;
     }
 
@@ -140,12 +188,20 @@ export default function FileExplorerPanel({ onClose, projectId, teamId }: FileEx
       const res = await api.readFile(path, projectId);
       setOpenFiles(prev => [...prev, { path, content: res.content, isDirty: false }]);
       setActiveFilePath(path);
+      setViewMode(isMarkdownPath(path) ? "preview" : "edit");
     } catch (error) {
       const err = error as Error;
       addToast({ type: "error", message: `Error reading file: ${err.message}` });
     } finally {
       setLoadingContent(false);
     }
+  };
+
+  const applyStaleRemote = (path: string) => {
+    setOpenFiles(prev => prev.map(f => {
+      if (f.path !== path || !f.staleRemote) return f;
+      return { ...f, content: f.staleRemote.content, isDirty: false, staleRemote: null };
+    }));
   };
 
   const closeFile = (path: string, e?: React.MouseEvent) => {
@@ -491,8 +547,28 @@ export default function FileExplorerPanel({ onClose, projectId, teamId }: FileEx
             {/* Editor Toolbar */}
             {activeFile && (
               <div style={{ padding: "4px 16px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-glass-panel)", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <span className="body-sm text-mute" style={{ fontFamily: "var(--font-mono)", fontSize: "11px" }}>{activeFile.path}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <span className="body-sm text-mute" style={{ fontFamily: "var(--font-mono)", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeFile.path}</span>
+                  {isMarkdownPath(activeFile.path) && (
+                    <div style={{ display: "flex", gap: 2, background: "var(--color-surface)", borderRadius: 4, padding: 2 }}>
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => setViewMode("preview")}
+                        style={{ padding: "1px 8px", fontSize: 11, background: viewMode === "preview" ? "var(--color-primary)" : "transparent", color: viewMode === "preview" ? "#fff" : "var(--color-body)", border: "none" }}
+                        title="Rendered markdown preview"
+                      >
+                        <Eye size={11} className="mr-1" />Preview
+                      </button>
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => setViewMode("edit")}
+                        style={{ padding: "1px 8px", fontSize: 11, background: viewMode === "edit" ? "var(--color-primary)" : "transparent", color: viewMode === "edit" ? "#fff" : "var(--color-body)", border: "none" }}
+                        title="Edit raw markdown"
+                      >
+                        <Pencil size={11} className="mr-1" />Edit
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <button
@@ -504,15 +580,27 @@ export default function FileExplorerPanel({ onClose, projectId, teamId }: FileEx
                     <TerminalIcon size={12} className="mr-1" />
                     Terminal
                   </button>
-                  <button 
-                    className="btn btn-primary btn-sm" 
-                    onClick={handleSave} 
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={handleSave}
                     disabled={saving || !activeFile.isDirty}
                     style={{ padding: "2px 8px", fontSize: 11 }}
                   >
                     {saving ? "Saving..." : "Save"}
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Stale remote-update banner — don't clobber unsaved edits. */}
+            {activeFile?.staleRemote && (
+              <div style={{ padding: "6px 16px", borderBottom: "1px solid var(--color-hairline)", background: "var(--color-warning-bg, rgba(234,179,8,0.12))", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexShrink: 0 }}>
+                <span className="caption" style={{ color: "var(--color-warning, #eab308)" }}>
+                  ⚠ {activeFile.staleRemote.sender} updated this file remotely. Reload to see it (your unsaved edits will be discarded).
+                </span>
+                <button className="btn btn-sm btn-secondary" onClick={() => applyStaleRemote(activeFile.path)} style={{ padding: "2px 8px", fontSize: 11 }}>
+                  <RefreshCcwDot size={12} className="mr-1" />Reload
+                </button>
               </div>
             )}
 
@@ -523,20 +611,41 @@ export default function FileExplorerPanel({ onClose, projectId, teamId }: FileEx
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
                   <div style={{ flex: showTerminal ? "1 1 50%" : "1 1 100%", overflow: "hidden", paddingTop: 8 }}>
                     {activeFile ? (
-                      <Editor
-                        height="100%"
-                        language={getLanguageFromPath(activeFile.path)}
-                        theme="vs-dark"
-                        value={activeFile.content}
-                        onChange={(value) => updateFileContent(activeFile.path, value || "")}
-                        options={{
-                          minimap: { enabled: false },
-                          fontSize: 13,
-                          fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
-                          wordWrap: "on",
-                          padding: { top: 8, bottom: 16 },
-                        }}
-                      />
+                      isMarkdownPath(activeFile.path) && viewMode === "preview" ? (
+                        <div style={{ height: "100%", overflowY: "auto", padding: "8px 24px 32px" }} className="markdown-body">
+                          {activeFile.content.trim() ? (
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              // HTML is NOT enabled (no rehype-raw), so raw HTML
+                              // in agent-authored markdown is escaped — safe.
+                              components={{
+                                a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                              }}
+                            >
+                              {activeFile.content}
+                            </ReactMarkdown>
+                          ) : (
+                            <div className="body-sm" style={{ color: "var(--color-mute)", fontStyle: "italic" }}>
+                              This file is empty. Switch to <strong>Edit</strong> to add content.
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <Editor
+                          height="100%"
+                          language={getLanguageFromPath(activeFile.path)}
+                          theme="vs-dark"
+                          value={activeFile.content}
+                          onChange={(value) => updateFileContent(activeFile.path, value || "")}
+                          options={{
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
+                            wordWrap: "on",
+                            padding: { top: 8, bottom: 16 },
+                          }}
+                        />
+                      )
                     ) : (
                       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-mute)" }} className="body-sm">
                         Select a file to view its content

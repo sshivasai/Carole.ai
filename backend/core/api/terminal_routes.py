@@ -17,13 +17,14 @@ async def execute_command(req: TerminalExecuteRequest, user: dict = Depends(requ
     try:
         # Use project_id as team_id for websocket streaming
         team_id = req.project_id or "default"
-        # Since shell_tools currently uses workspace_root for cwd, we might need to change it 
-        # to respect project_id if needed, but for now we just pass the command.
-        
-        # We'll patch shell_tools to support project_id if it doesn't already, but for now
-        # let's just run it.
-        result = await shell_tools.execute_command(req.command, team_id, req.timeout)
-        
+        # Scope the command to the project workspace so user-run terminal
+        # commands also stay inside the right sandbox (mirrors agent behavior).
+        cwd = None
+        if req.project_id:
+            from core.tools.file_tools import file_tools as _ft
+            cwd = str(await _ft.get_workspace_root(req.project_id))
+        result = await shell_tools.execute_command(req.command, team_id, req.timeout, cwd=cwd)
+
         return {"status": "success", "output": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

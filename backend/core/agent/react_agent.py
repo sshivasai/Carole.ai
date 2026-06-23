@@ -219,12 +219,29 @@ class ReACTAgent:
         # Scratchpad awareness
         scratchpad_block = (
             "SCRATCHPADS:\n"
-            f"- Your personal scratchpad: use read_scratchpad(target='personal') / write_scratchpad(content=..., target='personal')\n"
-            f"- Shared team scratchpad: use read_scratchpad(target='team') / write_scratchpad(content=..., target='team')\n"
-            "Use your personal pad for notes, partial plans, and cross-session memory. "
-            "Write to the team pad to share discoveries, breadcrumbs, or decisions your teammates need to know.\n\n"
+            "- Your personal scratchpad (private to you): read_scratchpad(target='personal') / "
+            "write_scratchpad(content=..., target='personal') / update_scratchpad(content=..., target='personal') / "
+            "clear_scratchpad(target='personal')\n"
+            "- Shared team scratchpad (visible to all agents): read_scratchpad(target='team') / "
+            "write_scratchpad(content=..., target='team') / update_scratchpad(content=..., target='team') / "
+            "clear_scratchpad(target='team')\n"
+            "Use write_scratchpad to append a new timestamped note, update_scratchpad to replace the whole pad, "
+            "and clear_scratchpad to wipe it. Use your personal pad for notes, partial plans, and cross-session "
+            "memory. Write to the team pad to share discoveries, breadcrumbs, or decisions your teammates need to know.\n\n"
         )
         capabilities_block += scratchpad_block
+
+        # Documentation file awareness — frictionless .md creation
+        doc_block = (
+            "DOCUMENTATION FILES:\n"
+            "- You can create and edit Markdown/plain-text docs (e.g. implementation.md, taskstracker.md, "
+            "PLAN.md, README.md) in the project/team workspace with write_file / edit_file / append_file — "
+            "these writes are ALWAYS frictionless (no approval required) because .md/.txt files are "
+            "non-executable and sandboxed.\n"
+            "- Use a dedicated doc (e.g. taskstracker.md for cross-task progress, implementation.md for a "
+            "build plan) to keep durable, human-readable state that the team can open and read in real time.\n\n"
+        )
+        capabilities_block += doc_block
 
         # Reasoning guidelines
         identity_rule = f"\n\nCRITICAL IDENTITY RULE: You are {self.name} ({self.role}). You MUST speak in the first person ('I', 'me'). NEVER refer to {self.name} in the third person. NEVER pretend to be someone else."
@@ -326,7 +343,28 @@ class ReACTAgent:
                         "local_path": att.get("local_path"),
                         "mime_type": att.get("type")
                     })
-        
+                elif att.get("type") == "file_ref":
+                    # An @file:path mention from the chat. Read the referenced
+                    # file's contents *sandboxed to this agent's project* and
+                    # inject them into context so the agent can reason about
+                    # the file without a separate read_file tool call. The path
+                    # is validated/sandboxed by file_tools._resolve_safe_path,
+                    # so an agent can only pull in files from its own project
+                    # workspace — never another project's, or anything outside.
+                    ref_path = att.get("path") or att.get("relative_path")
+                    if ref_path:
+                        try:
+                            from core.tools.file_tools import file_tools as _file_tools
+                            file_content = await _file_tools.read_file(ref_path, self.project_id)
+                            if file_content.startswith("Error"):
+                                content.append({"type": "text", "text": f"\n\n[Referenced file '{ref_path}' could not be read: {file_content}]"})
+                            else:
+                                snippet = file_content if len(file_content) <= 8000 else file_content[:8000] + "\n...[truncated]"
+                                content.append({"type": "text", "text": f"\n\n--- Referenced file: {ref_path} ---\n{snippet}\n--- end {ref_path} ---"})
+                        except Exception as ref_err:
+                            self._log.warning("file_ref read failed for %s: %s", ref_path, ref_err)
+                            content.append({"type": "text", "text": f"\n\n[Referenced file '{ref_path}' unreadable: {ref_err}]"})
+
         messages = history + [{"role": "user", "content": content if attachments else initial_prompt}]
 
         loop_count = 0

@@ -40,6 +40,7 @@ from core.api.search_routes import router as search_router
 from core.api.plugin_routes import router as plugin_router
 from core.api.skill_routes import router as skill_router
 from core.api.model_routes import router as model_router
+from core.api.scratchpad_routes import router as scratchpad_router
 
 import logging
 import importlib
@@ -162,6 +163,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 app.include_router(crud_router)
+app.include_router(scratchpad_router)
 app.include_router(cost_router)
 app.include_router(auth_router)
 app.include_router(google_auth_router)
@@ -239,6 +241,7 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
                 text = payload.get("text", data if isinstance(data, str) else "")
                 sender_id = payload.get("sender_id", "human")
                 sender_name = payload.get("sender_name")
+                attachments = payload.get("attachments")
 
                 if not isinstance(text, str) or len(text) == 0 or len(text) > 10000:
                     logger.warning("Dropping invalid websocket message for team %s: text invalid", team_id)
@@ -246,10 +249,21 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
                 if not isinstance(sender_id, str) or len(sender_id) > 100:
                     logger.warning("Dropping invalid websocket message for team %s: sender_id invalid", team_id)
                     continue
+                # Sanitize attachments: must be a list of small dicts. Caps the
+                # count and per-attachment text size to prevent abuse. File-ref
+                # attachments (@file:path) carry only a path string, so they're tiny.
+                clean_attachments: list = []
+                if isinstance(attachments, list):
+                    for att in attachments[:50]:
+                        if isinstance(att, dict):
+                            clean_attachments.append(att)
 
                 # Route the message through our MessageRouter (persists + triggers agents)
                 try:
-                    await message_router.route_message(text.strip(), sender_id.strip(), team_id, sender_name)
+                    await message_router.route_message(
+                        text.strip(), sender_id.strip(), team_id, sender_name,
+                        attachments=clean_attachments or None,
+                    )
                 except Exception as e:
                     logger.error("Failed to route message for team %s: %s", team_id, e)
         except (asyncio.CancelledError, WebSocketDisconnect):

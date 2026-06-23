@@ -1,32 +1,58 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { api } from "@/hooks/useApi";
-import { FileCode, ChevronDown, ChevronRight, Activity, Trash2 } from "lucide-react";
+import { FileCode, ChevronDown, ChevronRight, Activity, Trash2, RefreshCw } from "lucide-react";
 import { DiffEditor } from "@monaco-editor/react";
 
 interface ActivityLogPanelProps {
   teamId: string;
 }
 
+const isValidTeamId = (t?: string) => !!t && t !== "undefined" && /^[0-9a-fA-F-]{8,}$/.test(t);
+
 export default function ActivityLogPanel({ teamId }: ActivityLogPanelProps) {
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  const reload = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await api.getFileLogs(teamId);
+      setLogs(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      // A TypeError "Failed to fetch" means the backend wasn't reachable
+      // (down / wrong port / CORS). Surface it clearly instead of silently
+      // showing "No recent file modifications."
+      const msg = err?.status
+        ? `Server error (${err.status}).`
+        : "Couldn't reach the backend. Is it running on port 8000?";
+      setError(msg);
+      console.error("Failed to load file logs", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [teamId]);
+
   useEffect(() => {
-    const fetchLogs = async () => {
+    let cancelled = false;
+    (async () => {
+      if (!isValidTeamId(teamId)) { setLoading(false); setError(null); return; }
       try {
-        setLoading(true);
+        setLoading(true); setError(null);
         const data = await api.getFileLogs(teamId);
-        setLogs(data);
-      } catch (err) {
+        if (!cancelled) setLogs(Array.isArray(data) ? data : []);
+      } catch (err: any) {
+        if (cancelled) return;
+        const msg = err?.status ? `Server error (${err.status}).` : "Couldn't reach the backend. Is it running on port 8000?";
+        setError(msg);
         console.error("Failed to load file logs", err);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    };
-    if (teamId && teamId !== "undefined") {
-      fetchLogs();
-    }
+    })();
+    return () => { cancelled = true; };
   }, [teamId]);
 
   const handleDeleteLog = async (e: React.MouseEvent, logId: string) => {
@@ -54,6 +80,13 @@ export default function ActivityLogPanel({ teamId }: ActivityLogPanelProps) {
       <div style={{ flex: 1, overflowY: "auto", padding: "8px" }} className="scrollbar-custom">
         {loading ? (
           <div className="body-sm caption text-center" style={{ marginTop: 20 }}>Loading logs...</div>
+        ) : error ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginTop: 24, padding: "0 12px", textAlign: "center" }}>
+            <span className="caption" style={{ color: "var(--color-error, #ef4444)" }}>{error}</span>
+            <button className="btn btn-sm btn-secondary" onClick={reload} style={{ padding: "4px 12px", fontSize: 12 }}>
+              <RefreshCw size={12} className="mr-1" />Retry
+            </button>
+          </div>
         ) : logs.length === 0 ? (
           <div className="body-sm caption text-center" style={{ marginTop: 20 }}>No recent file modifications.</div>
         ) : (

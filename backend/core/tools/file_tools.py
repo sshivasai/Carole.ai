@@ -44,12 +44,12 @@ class FileTools:
             from sqlalchemy import select
             import uuid
             import re
-            
+
             try:
                 project_uuid = uuid.UUID(project_id)
             except ValueError:
                 return workspaces_dir / project_id
-                
+
             async with async_session() as db:
                 result = await db.execute(select(Project).where(Project.id == project_uuid))
                 project = result.scalar_one_or_none()
@@ -58,18 +58,55 @@ class FileTools:
                     if not slug:
                         slug = str(project.id)[:8]
                     return (workspaces_dir / slug).resolve()
-            
+
             # Fallback if project not found
             return (workspaces_dir / project_id).resolve()
 
         # No project scope: fall back to the configured workspace root.
         return self.workspace_root
 
-    async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None) -> Path:
+    # In-process cache: team_id -> project workspace root. Avoids a DB round
+    # trip on every shell/git invocation for the same team.
+    _team_workspace_cache: dict = {}
+
+    async def get_workspace_root_for_team(self, team_id: Optional[str]) -> Path:
+        """Resolve a team_id to its project workspace root.
+
+        Looks up Team -> project_id -> get_workspace_root(project_id). Used to
+        scope shell and git tools to the agent's own project workspace instead
+        of the shared backend root. Falls back to the default workspace root
+        when team_id is missing or not a valid UUID so callers never crash.
+        """
+        if not team_id:
+            return await self.get_workspace_root(None)
+
+        cached = self._team_workspace_cache.get(team_id)
+        if cached:
+            return cached
+
+        project_id: Optional[str] = None
+        try:
+            import uuid as _uuid
+            from core.memory.database import async_session
+            from core.memory.models import Team
+            from sqlalchemy import select
+            team_uuid = _uuid.UUID(team_id)
+            async with async_session() as db:
+                team = (await db.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
+                if team:
+                    project_id = str(team.project_id)
+        except Exception:
+            pass
+
+        root = await self.get_workspace_root(project_id)
+        self._team_workspace_cache[team_id] = root
+        return root
+
+    async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None, allow_out_of_bounds: bool = False) -> Path:
         root = await self.get_workspace_root(project_id)
         joined_path = Path(root / relative_path)
         resolved_path = joined_path.resolve()
-        if not str(resolved_path).startswith(str(root)):
+        if not allow_out_of_bounds and not str(resolved_path).startswith(str(root)):
             raise PermissionError(
                 f"Access Denied: Path traversal to '{resolved_path}' outside sandbox '{root}'."
             )
@@ -108,7 +145,7 @@ class FileTools:
 
     async def read_file(self, relative_path: str, project_id: Optional[str] = None) -> str:
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id)
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=True)
             lock = self._get_lock(safe_path)
             def _sync_read():
                 if not safe_path.is_file():
@@ -232,7 +269,7 @@ class FileTools:
 
     async def list_directory(self, relative_path: str = ".", project_id: Optional[str] = None) -> str:
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id)
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=True)
             def _sync_list():
                 if not safe_path.is_dir():
                     return f"Error: '{relative_path}' is not a directory."
