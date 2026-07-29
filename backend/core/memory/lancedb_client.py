@@ -100,10 +100,19 @@ class LanceDBClient:
 
             table = db.open_table(self.table_name)
 
+            # FIX H2: Sanitize IDs before embedding in the filter string.
+            # LanceDB filter strings are SQL-like and not parameterized, so we
+            # strip any character that isn't alphanumeric, a hyphen, or an
+            # underscore.  Valid UUIDs only contain [0-9a-f-], so this is safe.
+            import re as _re
+            _safe_id = lambda s: _re.sub(r"[^a-zA-Z0-9_\-]", "", s) if s else ""
+            safe_project_id = _safe_id(project_id)
+            safe_team_id = _safe_id(team_id) if team_id else None
+
             # Match exact project AND (exact team OR project-wide learnings with empty team_id)
-            filter_str = f"project_id = '{project_id}'"
-            if team_id:
-                filter_str += f" AND (team_id = '{team_id}' OR team_id = '')"
+            filter_str = f"project_id = '{safe_project_id}'"
+            if safe_team_id:
+                filter_str += f" AND (team_id = '{safe_team_id}' OR team_id = '')"
             else:
                 filter_str += " AND team_id = ''"
 

@@ -4,12 +4,9 @@
   height: 100%;
   width: 100%;
   padding: 20px;
-  background: rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+  background: var(--color-canvas);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-hairline);
   overflow: hidden;
 }
 
@@ -18,10 +15,10 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--text-tertiary);
+  color: var(--color-mute);
   font-style: italic;
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 12px;
+  background: var(--color-canvas-soft);
+  border-radius: var(--radius-md);
 }
 
 .kanbanHeader {
@@ -33,15 +30,15 @@
 
 .kanbanHeader h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: 0.5px;
+  color: var(--color-ink-strong);
+  letter-spacing: -0.4px;
 }
 
 .loadingSpinner {
   font-size: 12px;
-  color: var(--accent-blue);
+  color: var(--color-primary);
   animation: pulse 1.5s infinite;
 }
 
@@ -58,23 +55,22 @@
   height: 6px;
 }
 .kanbanBoard::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.02);
-  border-radius: 4px;
+  background: transparent;
 }
 .kanbanBoard::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-hairline);
   border-radius: 4px;
 }
 .kanbanBoard::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--color-mute);
 }
 
 .kanbanColumn {
   flex: 1;
   min-width: 260px;
-  background: rgba(255, 255, 255, 0.02);
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  background: var(--color-canvas-soft);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-hairline);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -85,24 +81,25 @@
   justify-content: space-between;
   align-items: center;
   padding: 14px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  background: rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-canvas);
 }
 
 .columnTitle {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: uppercase;
-  color: var(--text-secondary);
-  letter-spacing: 0.5px;
+  color: var(--color-mute);
+  letter-spacing: 1.2px;
 }
 
 .columnCount {
   font-size: 11px;
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-primary);
+  background: var(--color-canvas-soft);
+  color: var(--color-ink);
   padding: 2px 8px;
-  border-radius: 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-hairline);
   font-weight: 600;
 }
 
@@ -122,50 +119,46 @@
   background: transparent;
 }
 .columnBody::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-hairline);
   border-radius: 4px;
 }
 
 .emptyCard {
   text-align: center;
   padding: 24px 0;
-  color: var(--text-tertiary);
+  color: var(--color-mute);
   font-size: 12px;
-  border: 1px dashed rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
+  border: 1px dashed rgba(79, 93, 117, 0.4);
+  border-radius: var(--radius-md);
 }
 
 .taskCard {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
   padding: 14px;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
 .taskCard:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: var(--color-hairline-soft);
+  background: var(--color-canvas-raised);
 }
 
 .taskTitle {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--color-ink);
   line-height: 1.4;
 }
 
 .taskDesc {
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--color-body);
   line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;

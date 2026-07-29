@@ -11,12 +11,96 @@ Tools for inter-agent delegation and coordination.
 
 import uuid
 import asyncio
+import logging
 from typing import Optional
 from sqlalchemy import select
 
 from core.memory.database import async_session
 from core.memory.models import Agent, Team
 from core.config import DEFAULT_FAST_MODEL
+
+logger = logging.getLogger("carole.agent_tools")
+
+# Strong references to background subagent tasks so they aren't garbage-collected
+# mid-run (asyncio only holds weak refs to tasks created via asyncio.create_task).
+_running_subagent_tasks: set = set()
+
+
+async def _publish_failure_notification(
+    task_id: str,
+    parent_coordinator_id: Optional[str],
+    team_id: str,
+    agent_name: str,
+    exc: BaseException,
+) -> None:
+    """Publish a failure <task-notification> to the parent coordinator's team topic.
+
+    Mirrors the success-path event structure used in ReACTAgent.run_loop
+    (see backend/core/agent/react_agent.py:625-634): a "message" event with
+    `is_task_notification=True` published to the `team:{team_id}` topic, with the
+    notification XML carried in the "text" field.
+    """
+    try:
+        from core.chat.event_bus import event_bus
+        notification = (
+            f"<task-notification>\n"
+            f"  <task_id>{task_id}</task_id>\n"
+            f"  <agent>{agent_name}</agent>\n"
+            f"  <status>failed</status>\n"
+            f"  <result>Subagent '{agent_name}' crashed: "
+            f"{type(exc).__name__}: {exc}</result>\n"
+            f"</task-notification>"
+        )
+        await event_bus.publish(f"team:{team_id}", {
+            "type": "message",
+            "sender_id": agent_name,
+            "sender_name": agent_name,
+            "role": "subagent",
+            "text": notification,
+            "is_task_notification": True,
+        })
+    except Exception:
+        logger.exception(
+            "Failed to publish failure task-notification for subagent %s (task_id=%s)",
+            agent_name, task_id,
+        )
+
+
+def _make_done_callback(
+    task_id: str,
+    parent_coordinator_id: Optional[str],
+    team_id: str,
+    agent_name: str,
+):
+    """Build a done_callback for a subagent asyncio.Task.
+
+    On exception, publishes a failure <task-notification> to the parent
+    coordinator so it doesn't hang forever waiting for a result. Also discards
+    the task from the strong-reference set so it can be GC'd once finished.
+    """
+    def _cb(t: asyncio.Task) -> None:
+        _running_subagent_tasks.discard(t)
+        if parent_coordinator_id is None:
+            return
+        try:
+            exc = t.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            # Schedule the async publish on the running loop.
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = None
+            coro = _publish_failure_notification(
+                task_id, parent_coordinator_id, team_id, agent_name, exc
+            )
+            if loop is not None and loop.is_running():
+                asyncio.ensure_future(coro, loop=loop)
+            else:
+                # Fallback: create a task on the current running loop if any.
+                asyncio.create_task(coro)
+    return _cb
 
 
 class AgentTools:
@@ -70,10 +154,27 @@ class AgentTools:
         )
 
         async def _run():
-            async with async_session() as agent_db:
-                await react.run_loop(agent_db, task)
+            try:
+                async with async_session() as agent_db:
+                    await react.run_loop(agent_db, task)
+            except Exception as e:
+                logger.exception(
+                    "[spawn_agent] Subagent %s crashed: %s", agent.name, e
+                )
 
-        asyncio.create_task(_run())
+        # NOTE (Bug 3 race): There is an inherent TOCTOU race here — the
+        # subagent may emit its success <task-notification> before the parent
+        # coordinator has subscribed to the team topic. The EventBus keeps a
+        # per-topic history buffer (last 100 events) which is replayed to
+        # late-joining subscribers (see backend/core/chat/event_bus.py:47-54),
+        # so in practice the parent will still receive the notification on
+        # subscribe via replay. The done_callback below additionally covers the
+        # failure case so the parent never hangs on a crash.
+        _task = asyncio.create_task(_run())
+        _running_subagent_tasks.add(_task)
+        _task.add_done_callback(
+            _make_done_callback(task_id, parent_coordinator_id, str(agent.team_id), agent.name)
+        )
 
         status_msg = f"Success: Spawned agent '{agent_name}' with task: {task[:100]}"
         if parent_coordinator_id:
@@ -172,8 +273,7 @@ class AgentTools:
             await db.refresh(new_agent)
             new_agent_id = str(new_agent.id)
 
-            # Resolve project_id via Team
-            from core.memory.models import Team
+            # Resolve project_id via Team (Team is imported at module top)
             team_res = await db.execute(select(Team).where(Team.id == team_uuid))
             team_obj = team_res.scalar_one_or_none()
             project_id = str(team_obj.project_id) if team_obj else ""
@@ -190,6 +290,11 @@ class AgentTools:
             system_prompt=sys_prompt,
             parent_coordinator_id=_agent_id,
             task_id=task_id,
+            # Mirror spawn_agent: pass through reasoning_effort and fallback_model
+            # so the subagent uses the same model-behavior configuration as the
+            # agent that hired it. (Bug 4 fix.)
+            fallback_model=getattr(new_agent, "fallback_model", None),
+            reasoning_effort=getattr(new_agent, "reasoning_effort", "none") or "none",
         )
 
         async def _run_and_cleanup():
@@ -210,7 +315,17 @@ class AgentTools:
                             "Could not auto-delete subagent %s: %s", subagent_name, del_err
                         )
 
-        asyncio.create_task(_run_and_cleanup())
+        # NOTE (Bug 3 race): As with spawn_agent, a very fast subagent could
+        # emit its success <task-notification> before the parent coordinator
+        # subscribes to the team topic. The EventBus history-replay buffer
+        # (backend/core/chat/event_bus.py:47-54) mitigates this for the success
+        # case, and the done_callback below guarantees the parent is notified
+        # on crash so it never hangs forever.
+        _task = asyncio.create_task(_run_and_cleanup())
+        _running_subagent_tasks.add(_task)
+        _task.add_done_callback(
+            _make_done_callback(task_id, _agent_id, str(team_id), subagent_name)
+        )
 
         return (
             f"Hired subagent '{subagent_name}' (task_id={task_id}). "

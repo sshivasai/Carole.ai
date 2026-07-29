@@ -612,15 +612,15 @@ export default function SettingsPanel({ teamId, projectId, onToast, onTeamDelete
   const [confirmDelete, setConfirmDelete] = useState<"team" | "project" | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const handleDeleteTeam = async () => {
+  const handleDeleteTeam = async (deleteContent: boolean) => {
     if (!teamId) return; setDeleting(true);
-    try { await api.deleteTeam(teamId); onTeamDeleted(); onToast("Team deleted", "success"); }
+    try { await api.deleteTeam(teamId, deleteContent); onTeamDeleted(); onToast("Team deleted", "success"); }
     catch { onToast("Failed to delete team", "error"); }
     finally { setDeleting(false); setConfirmDelete(null); }
   };
-  const handleDeleteProject = async () => {
+  const handleDeleteProject = async (deleteContent: boolean) => {
     if (!projectId) return; setDeleting(true);
-    try { await api.deleteProject(projectId); onProjectDeleted(); onToast("Project deleted", "success"); }
+    try { await api.deleteProject(projectId, deleteContent); onProjectDeleted(); onToast("Project deleted", "success"); }
     catch { onToast("Failed to delete project", "error"); }
     finally { setDeleting(false); setConfirmDelete(null); }
   };
@@ -675,13 +675,30 @@ export default function SettingsPanel({ teamId, projectId, onToast, onTeamDelete
         </div>
       </div>
 
-      <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Confirm Deletion" maxWidth={400}>
+      <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Confirm Deletion" maxWidth={450}>
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
-          <p className="body-sm">This action <strong>cannot be undone</strong>. All data for this {confirmDelete} will be permanently deleted.</p>
-          <div style={{ display: "flex", gap: "var(--sp-md)", justifyContent: "flex-end" }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDelete(null)}>Cancel</button>
-            <button className="btn btn-danger btn-sm" onClick={confirmDelete === "team" ? handleDeleteTeam : handleDeleteProject} disabled={deleting}>
-              {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Yes, Delete
+          <p className="body-sm">
+            This action <strong>cannot be undone</strong>. You can choose to only delete the {confirmDelete} record from the database, or additionally delete all associated files and folders on disk.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)" }}>
+            <button 
+              className="btn btn-danger btn-sm" 
+              onClick={() => confirmDelete === "team" ? handleDeleteTeam(false) : handleDeleteProject(false)} 
+              disabled={deleting}
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Delete {confirmDelete} Record Only
+            </button>
+            <button 
+              className="btn btn-danger btn-sm" 
+              onClick={() => confirmDelete === "team" ? handleDeleteTeam(true) : handleDeleteProject(true)} 
+              disabled={deleting}
+              style={{ width: "100%", justifyContent: "center", background: "var(--color-danger-dark)", borderColor: "var(--color-danger-dark)" }}
+            >
+              {deleting ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />} Delete {confirmDelete} AND Content on Disk
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDelete(null)} disabled={deleting} style={{ width: "100%", justifyContent: "center", marginTop: "var(--sp-xs)" }}>
+              Cancel
             </button>
           </div>
         </div>

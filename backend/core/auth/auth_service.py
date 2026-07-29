@@ -21,9 +21,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.memory.models import User
 
 # Config
-JWT_SECRET = os.getenv("JWT_SECRET", "carole-ai-dev-secret-change-in-production")
+DEFAULT_DEV_SECRET = "carole-ai-dev-secret-change-in-production"
+JWT_SECRET = os.getenv("JWT_SECRET", DEFAULT_DEV_SECRET)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "72"))
+
+
+def validate_auth_config():
+    """Fail-fast guard to ensure JWT_SECRET is explicitly set in production environments."""
+    env = os.getenv("ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    if env in ["production", "prod"]:
+        secret = os.getenv("JWT_SECRET")
+        if not secret or secret == DEFAULT_DEV_SECRET:
+            raise RuntimeError(
+                "CRITICAL SECURITY FAILURE: JWT_SECRET must be set to a secure, random value in production mode!"
+            )
+
 
 
 def _hash_password(password: str) -> str:

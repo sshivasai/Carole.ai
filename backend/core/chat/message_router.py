@@ -346,9 +346,19 @@ class MessageRouter:
 
         Exceptions inside a single agent loop are caught and logged — the
         worker then continues draining the queue.
+
+        B5 — Watchdog: each queue item is bounded by MAX_TASK_TIMEOUT seconds
+        (default 30 min). A stuck tool (hanging subprocess, browser) won't
+        block the queue forever.
+
+        B2 — Auto-restart: if the worker coroutine itself crashes unexpectedly
+        (not from a per-item exception), it is restarted with exponential
+        backoff up to 3 times before giving up.
         """
         queue = self._queues[agent_id]
         logger.info("Worker started for agent '%s'", snapshot.name)
+        # Max time in seconds a single agent loop item may take (30 minutes)
+        _MAX_TASK_TIMEOUT = 1800
 
         while True:
             try:
@@ -365,7 +375,17 @@ class MessageRouter:
             prompt_text, attachments = item
 
             try:
-                await self._execute_agent_loop(agent_id, snapshot, prompt_text, attachments)
+                # B5: Watchdog timeout — prevent a single stuck task from
+                # blocking the queue indefinitely.
+                await asyncio.wait_for(
+                    self._execute_agent_loop(agent_id, snapshot, prompt_text, attachments),
+                    timeout=_MAX_TASK_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Watchdog: agent loop for '%s' exceeded %ds timeout. Killing task.",
+                    snapshot.name, _MAX_TASK_TIMEOUT,
+                )
             except Exception as exc:
                 logger.exception(
                     "Unhandled exception in agent loop for '%s': %s",
@@ -389,6 +409,7 @@ class MessageRouter:
                 })
 
         logger.info("Worker exiting for agent '%s'", snapshot.name)
+
 
     async def _execute_agent_loop(
         self,

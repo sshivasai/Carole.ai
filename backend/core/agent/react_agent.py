@@ -62,6 +62,18 @@ class ReACTAgent:
         self._notification_queue: asyncio.Queue = asyncio.Queue()
         self._listening = False
         self._log = logger.getChild(self.name)
+        # Strong reference to the background cancel-cleanup task so it isn't
+        # garbage-collected mid-run (asyncio only holds weak refs to tasks).
+        self._pending_cleanup: Optional[asyncio.Task] = None
+
+        # --- Session-level caches (cleared at start of each run_loop call) ---
+        # Cached assembled system prompt — rebuilt once per session, not per loop.
+        self._cached_system_prompt: Optional[str] = None
+        # Flag: True after context compaction has run once this session.
+        self._compacted: bool = False
+        # Last observation text for no-progress detection.
+        self._last_observation: str = ""
+        self._no_progress_count: int = 0
 
     async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20) -> List[Dict[str, str]]:
         """Loads recent team messages from the DB to give the agent conversation context."""
@@ -115,9 +127,17 @@ class ReACTAgent:
     async def assemble_system_prompt(self, db_session: AsyncSession, current_task: str) -> str:
         """Assembles system prompt with learnings, tools, team roster, and reasoning guidelines.
 
+        SESSION-CACHED: The assembled prompt is cached on the instance after the
+        first call and reused for all subsequent loops in the same session.
+        This avoids repeated DB queries + LanceDB embedding searches on every loop.
+        Call _invalidate_system_prompt_cache() to force a rebuild (e.g. after
+        receiving new worker results that should be visible in context).
+
         Optimized: fetches Agent roster, Project, User, and Team in a single
         pass using joined selects instead of 3 sequential round-trips.
         """
+        if self._cached_system_prompt is not None:
+            return self._cached_system_prompt
         capabilities_block = "\n====\nCAPABILITIES & MEMORY\n====\n"
 
         # Single query: fetch all agents for the team
@@ -245,7 +265,15 @@ class ReACTAgent:
 
         # Reasoning guidelines
         identity_rule = f"\n\nCRITICAL IDENTITY RULE: You are {self.name} ({self.role}). You MUST speak in the first person ('I', 'me'). NEVER refer to {self.name} in the third person. NEVER pretend to be someone else."
-        return f"{self.system_prompt}{identity_rule}\n{capabilities_block}{STRICT_REASONING_GUIDELINES}"
+        # Removed: STRICT_REASONING_GUIDELINES suffix was duplicating system.tool_use/reasoning_rules already in self.system_prompt
+        assembled = f"{self.system_prompt}{identity_rule}\n{capabilities_block}"
+        self._cached_system_prompt = assembled
+        return assembled
+
+    def _invalidate_system_prompt_cache(self) -> None:
+        """Force a rebuild of the cached system prompt on the next loop iteration.
+        Call this when worker results arrive or team context changes."""
+        self._cached_system_prompt = None
 
     async def run_loop(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None):
         """Runs the core ReACT loop with conversation history and streaming."""
@@ -300,7 +328,7 @@ class ReACTAgent:
                     })
                     
             # Launch cleanup as a background task so it isn't aborted by the current task's cancellation
-            asyncio.create_task(_cleanup_cancelled_task())
+            self._pending_cleanup = asyncio.create_task(_cleanup_cancelled_task())
             self._log.info("Agent %s stopped by user request.", self.name)
             raise  # re-raise so asyncio.Task knows it was cancelled
         finally:
@@ -312,6 +340,14 @@ class ReACTAgent:
                 pass
 
     async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None):
+        # Reset all per-session caches at the start of each new run.
+        # This ensures a fresh agent session doesn't carry stale state from a
+        # previous invocation (e.g. if the agent object were somehow reused).
+        self._cached_system_prompt = None
+        self._compacted = False
+        self._last_observation = ""
+        self._no_progress_count = 0
+
         # Fetch agent config
         agent_uuid = uuid.UUID(self.agent_id) if isinstance(self.agent_id, str) else self.agent_id
         stmt = select(Agent).where(Agent.id == agent_uuid)
@@ -330,8 +366,26 @@ class ReACTAgent:
 
         system_prompt = await self.assemble_system_prompt(db_session, initial_prompt)
 
+        # Dynamic history limit: scale to model context window.
+        # Larger-context models can use more history without risking truncation.
+        _CONTEXT_WINDOW_LIMITS = {
+            # Anthropic
+            "claude-opus": 40, "claude-sonnet": 40, "claude-haiku": 30,
+            # OpenAI
+            "gpt-4o": 35, "gpt-4": 25, "gpt-3.5": 20, "o4-": 40, "o3-": 40,
+            # Google
+            "gemini-2.5": 60, "gemini-2.0": 50, "gemini-1.5": 50, "gemini-flash": 50,
+            # OpenRouter / Ollama — conservative default
+        }
+        history_limit = 20  # safe default
+        model_lower = (self.model or "").lower()
+        for prefix, limit in _CONTEXT_WINDOW_LIMITS.items():
+            if prefix in model_lower:
+                history_limit = limit
+                break
+
         # Load conversation history for context continuity
-        history = await self._load_conversation_history(db_session)
+        history = await self._load_conversation_history(db_session, limit=history_limit)
 
         # Build messages: history + new prompt
         content = [{"type": "text", "text": initial_prompt}]
@@ -364,6 +418,35 @@ class ReACTAgent:
                         except Exception as ref_err:
                             self._log.warning("file_ref read failed for %s: %s", ref_path, ref_err)
                             content.append({"type": "text", "text": f"\n\n[Referenced file '{ref_path}' unreadable: {ref_err}]"})
+                else:
+                    # Generic attachment (PDF, CSV, TXT, etc)
+                    att_path = att.get("local_path")
+                    att_name = att.get("name")
+                    if att_path:
+                        try:
+                            from core.tools.file_tools import file_tools as _file_tools
+                            from pathlib import Path
+                            workspace_root = await _file_tools.get_workspace_root(self.project_id)
+                            try:
+                                rel_path = str(Path(att_path).relative_to(workspace_root)).replace("\\", "/")
+                            except ValueError:
+                                rel_path = att_path
+                                
+                            mime_type = att.get("type", "")
+                            is_text = mime_type.startswith("text/") or mime_type in ["application/json", "application/javascript"]
+                            
+                            if is_text:
+                                file_content = await _file_tools.read_file(rel_path, self.project_id)
+                                if not file_content.startswith("Error"):
+                                    snippet = file_content if len(file_content) <= 8000 else file_content[:8000] + "\n...[truncated]"
+                                    content.append({"type": "text", "text": f"\n\n--- Attached file: {att_name} ({rel_path}) ---\n{snippet}\n--- end ---"})
+                                else:
+                                    content.append({"type": "text", "text": f"\n\n[User attached file '{att_name}'. Located at '{rel_path}'. Could not read contents automatically: {file_content}]"})
+                            else:
+                                content.append({"type": "text", "text": f"\n\n[User attached file '{att_name}'. Located at '{rel_path}'. Use the appropriate tool to read or analyze it if needed.]"})
+                        except Exception as e:
+                            self._log.warning("Failed to process attachment %s: %s", att_name, e)
+                            content.append({"type": "text", "text": f"\n\n[User attached file '{att_name}']"})
 
         messages = history + [{"role": "user", "content": content if attachments else initial_prompt}]
 
@@ -393,11 +476,14 @@ class ReACTAgent:
                 "status": "thinking"
             })
 
-            # Compaction Check
+            # Compaction Check — runs at most ONCE per session (dirty-flag guard).
+            # Repeated compaction in the same session wastes tokens and loses
+            # critical recent tool observations that the agent needs to finish.
             compaction_threshold = getattr(core.config, "CONTEXT_COMPACTION_THRESHOLD", 15)
-            if len(messages) > compaction_threshold:
-                self._log.info("Context window growing large (%d msgs). Compacting...", len(messages))
-                to_compact = messages[1:-5]
+            if not self._compacted and len(messages) > compaction_threshold:
+                self._log.info("Context window growing large (%d msgs). Compacting (once per session)...", len(messages))
+                # Preserve: system-equivalent first message + recent 6 msgs (tool results + last response)
+                to_compact = messages[1:-6] if len(messages) > 7 else messages[1:-2]
                 try:
                     summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact))
                     summary = await llm_router.generate_completion(
@@ -405,9 +491,12 @@ class ReACTAgent:
                         system_prompt=COMPACTION_SYSTEM_PROMPT,
                         messages=[{"role": "user", "content": summary_prompt}],
                         temperature=0.3,
-                        max_tokens=1000
+                        max_tokens=1500
                     )
-                    messages = [messages[0]] + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{summary}\n[/COMPACTED HISTORY]"}] + messages[-5:]
+                    # Keep: original first message + compaction summary + last 6 messages
+                    messages = [messages[0]] + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{summary}\n[/COMPACTED HISTORY]"}] + messages[-6:]
+                    self._compacted = True
+                    self._log.info("Compaction complete. Messages reduced to %d.", len(messages))
                 except Exception as e:
                     self._log.warning("Compaction failed, continuing with full context: %s", e)
 
@@ -436,6 +525,12 @@ class ReACTAgent:
                     self._current_thought_buffer = ""
                     self._current_reasoning_buffer = saved_reasoning_buffer
                     
+                    if attempt > 0:
+                        await event_bus.publish(self.topic, {
+                            "type": "thought_reset",
+                            "sender_id": self.agent_id,
+                        })
+
                     async for chunk in llm_router.generate_stream_with_reasoning(
                         model=self.model,
                         system_prompt=system_prompt,
@@ -503,6 +598,18 @@ class ReACTAgent:
                         })
 
             if had_error:
+                # The post-loop max_loops block is skipped (loop_count < max_loops),
+                # so we must publish idle here or the UI's typing indicator never clears.
+                try:
+                    await event_bus.publish(self.topic, {
+                        "type": "agent_status",
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "status": "idle",
+                    })
+                except Exception:
+                    pass
                 break
 
             messages.append({"role": "assistant", "content": thought_buffer})
@@ -515,6 +622,97 @@ class ReACTAgent:
             action_call = self._parse_action(thought_buffer)
 
             if not action_call:
+                # Heuristic: does this look like a malformed tool call rather
+                # than a genuine final answer? If the model emitted something
+                # tool-call-like (wrong tag spelling, XML-style <tool>, JSON
+                # function_call, or a bare `word(` near the end) we treat it as
+                # a parse failure and ask the model to retry with the exact
+                # [ACTION]tool_name(args)[/ACTION] format instead of silently
+                # stopping.
+                _lower = thought_buffer.lower()
+                action_promise_triggers = [
+                    "[action", "[tool", "<tool", "tool_call", "function_call",
+                    "writing the file", "writing to", "creating the file", "creating a file",
+                    "i'll create", "i will create", "i'll write", "i will write",
+                    "let me write", "let me create", "let me execute", "running the command",
+                    "saving to", "creating file",
+                    # Step narration triggers — agent describing what it WILL do without doing it
+                    "step 1:", "step 2:", "step 3:", "step 4:",
+                    "let me start", "let me now", "let me first",
+                    "i'll now", "i will now", "i'll move on", "i'll work on", "i will work on",
+                    "i'll get that set up", "i'll finalize", "i'll add", "i'll build",
+                    "next, i'll", "next i'll", "now i'll", "now i will",
+                    "i'll proceed", "first, i'll", "first i'll",
+                    "let me handle", "let me proceed",
+                ]
+                looks_like_tool_call = any(
+                    sig in _lower for sig in action_promise_triggers
+                ) or bool(re.search(r"\w+\s*\(", thought_buffer[-200:]))
+
+                # Detect plan-only responses: model outputs a numbered plan/steps
+                # list AND contains intent language but no ACTION tag was found.
+                # This is the classic "I'll create X... I'll create Y... [stops]" failure.
+                has_numbered_plan = bool(re.search(r"^\s*\d+[\.\)]\s+\S", thought_buffer, re.MULTILINE))
+                has_plan_header = any(p in _lower for p in ["plan:", "steps:", "here's my plan", "here is my plan", "my plan is", "the plan is"])
+
+                # Detect code-in-chat: model pastes ``` code blocks instead of using write_file.
+                has_code_block = bool(re.search(r"```[\w\-]*\n[\s\S]{50,}", thought_buffer))
+
+                is_plan_without_action = (has_numbered_plan or has_plan_header) and loop_count <= 2
+                is_code_in_chat = has_code_block and loop_count <= max_loops - 1
+
+                if (looks_like_tool_call or is_plan_without_action or is_code_in_chat) and loop_count < max_loops - 1:
+                    if is_code_in_chat and not looks_like_tool_call:
+                        correction = (
+                            "[OBSERVATION] CRITICAL ERROR — Code in Chat Detected: You pasted a code block into your chat "
+                            "response instead of writing it to a file. This is strictly forbidden. "
+                            "You MUST use [ACTION]write_file({\"path\": \"filename\", \"content\": \"...\"})[/ACTION] "
+                            "to write the file directly to the project workspace. "
+                            "Do NOT paste code in chat. Execute write_file NOW.[/OBSERVATION]"
+                        )
+                    elif is_plan_without_action and not looks_like_tool_call:
+                        correction = (
+                            "[OBSERVATION] CRITICAL ERROR — Plan Without Execution Detected: You described a plan "
+                            "or steps to complete the task but did not execute any of them. A plan alone is NOT progress. "
+                            "You must IMMEDIATELY begin executing your plan by calling the first tool now. "
+                            "Do NOT describe what you will do — DO IT. "
+                            "Use [ACTION]tool_name({\"param\": \"value\"})[/ACTION] to start executing your first step right now. "
+                            "Do not stop until all steps in your plan are fully completed.[/OBSERVATION]"
+                        )
+                    else:
+                        correction = (
+                            "[OBSERVATION] Error: You indicated that you are performing an action or writing a file, "
+                            "but you did not include an [ACTION] tool call tag in your response. Please invoke the tool now "
+                            "using the exact format: [ACTION]tool_name({\"param\": \"value\"})[/ACTION]. "
+                            "Do not just say you are writing the file — execute the tool call now.[/OBSERVATION]"
+                        )
+                    # FIX L2: Alternating-turn constraint.
+                    # The messages list may end with a `user` message (the last observation).
+                    # Injecting another `user` message back-to-back violates the
+                    # strict alternating-turn requirement of Anthropic & Gemini APIs.
+                    # Solution: prepend a minimal assistant acknowledgment stub so the
+                    # sequence is always: ...user → assistant → user (correction).
+                    last_role = messages[-1]["role"] if messages else "user"
+                    if last_role == "user":
+                        messages.append({
+                            "role": "assistant",
+                            "content": "[Acknowledged — executing correction]"
+                        })
+                    messages.append({"role": "user", "content": correction})
+                    try:
+                        db_msg = Message(
+                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            sender_id="system",
+                            sender_name="System",
+                            text=correction,
+                        )
+                        db_session.add(db_msg)
+                        await db_session.commit()
+                    except Exception as corr_err:
+                        self._log.warning("Could not persist correction observation: %s", corr_err)
+                    continue
+
+
                 # Agent is done — persist and broadcast
                 self._log.info("Task finished after %d loops.", loop_count)
                 db_msg = Message(
@@ -562,9 +760,23 @@ class ReACTAgent:
                 tool_name, tool_args = action_call
                 self._log.info("Executing tool: %s", tool_name)
 
-                # Move intermediate text to the reasoning trace
-                self._current_reasoning_buffer += f"\n\n{thought_buffer}\n"
-                
+                # Move intermediate text to the reasoning trace.
+                # Strip the raw [ACTION]...[/ACTION] block so the DB-persisted
+                # reasoning_text only contains the agent's natural-language text
+                # (e.g. "Let me write this now.") — the formatted 🛠️ block below
+                # provides the structured tool call details. This way on refresh
+                # the Thoughts panel looks identical to the live-streaming view.
+                # NOTE: This non-greedy regex stops at the FIRST `[/ACTION]`.
+                # If a tool argument's string value contains the literal
+                # `[/ACTION]`, the strip truncates early. A proper fix requires
+                # a state-machine parser (out of scope here).
+                text_before_action = re.sub(r'\[ACTION\][\s\S]*?\[/ACTION\]', '', thought_buffer).strip()
+                # Also strip `...` variants some models emit
+                text_before_action = re.sub(r'`[\s\S]*?`', '', text_before_action).strip()
+
+                if text_before_action:
+                    self._current_reasoning_buffer += f"\n\n{text_before_action}\n"
+
                 await event_bus.publish(self.topic, {
                     "type": "collapse_to_reasoning",
                     "sender_id": self.agent_id,
@@ -627,11 +839,65 @@ class ReACTAgent:
                     "is_intermediate": True
                 })
 
+                observation_text = f"[OBSERVATION] Tool output:\n{observation}\n[/OBSERVATION]"
                 messages.append({
                     "role": "user",
-                    "content": f"[OBSERVATION] Tool output:\n{observation}\n[/OBSERVATION]"
+                    "content": observation_text
                 })
-        
+
+                # --- No-progress guard ---
+                # If the last 3 tool observations are identical, the agent is
+                # stuck in a loop (e.g. calling the same broken tool repeatedly).
+                # Break early with a diagnostic rather than burning all max_loops.
+                obs_fingerprint = observation.strip()[:200]
+                if obs_fingerprint and obs_fingerprint == self._last_observation:
+                    self._no_progress_count += 1
+                    if self._no_progress_count >= 3:
+                        self._log.warning(
+                            "No-progress guard triggered after %d identical observations. Breaking loop.",
+                            self._no_progress_count,
+                        )
+                        stuck_note = (
+                            "\n\n*[System: Agent loop stopped — the last 3 tool calls returned identical results. "
+                            "This usually means the tool is stuck or the target resource is unavailable. "
+                            "Please review the tool output above and try a different approach.]*"
+                        )
+                        thought_buffer = (self._current_thought_buffer or "") + stuck_note
+                        db_msg = Message(
+                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            sender_id=self.agent_id,
+                            sender_name=self.name,
+                            text=thought_buffer,
+                            reasoning_text=self._current_reasoning_buffer or None,
+                        )
+                        db_session.add(db_msg)
+                        await db_session.commit()
+                        await event_bus.publish(self.topic, {
+                            "type": "message",
+                            "id": str(db_msg.id),
+                            "sender_id": self.agent_id,
+                            "sender_name": self.name,
+                            "role": self.role,
+                            "text": thought_buffer,
+                            "has_reasoning": bool(self._current_reasoning_buffer),
+                        })
+                        await event_bus.publish(self.topic, {
+                            "type": "agent_status",
+                            "sender_id": self.agent_id,
+                            "sender_name": self.name,
+                            "role": self.role,
+                            "status": "idle",
+                        })
+                        return
+                else:
+                    self._no_progress_count = 0
+                self._last_observation = obs_fingerprint
+
+                # If worker results arrived mid-loop, invalidate the cached system
+                # prompt so they appear in context on the next assemble call.
+                if self._worker_results:
+                    self._invalidate_system_prompt_cache()
+
         # If we exited the loop by hitting max_loops, we still need to publish a final message
         if loop_count >= max_loops and action_call:
             self._log.warning("Agent hit max loop limit (%d). Terminating.", max_loops)
@@ -666,28 +932,117 @@ class ReACTAgent:
             })
 
     def _parse_action(self, text: str) -> Any:
-        """Parses [ACTION]tool_name(args)[/ACTION] or <tool_call>tool_name(args) even if truncated."""
-        # First try to find a completed block
-        match = re.search(r"(?:\[(?:ACTION|TOOL)\]|<tool_call>)\s*(\w+)\s*\((.*?)\)(?:\s*\[/(?:ACTION|TOOL)\]|\s*</tool_call>)", text, re.DOTALL)
-        
-        if match:
-            tool_name = match.group(1)
-            raw_args = match.group(2).strip()
+        """Parses [ACTION]tool_name(args)[/ACTION] or <tool_call>tool_name(args) even if truncated.
+
+        Extraction strategy (in order):
+        1. Find the opening paren after the tool name.
+        2. Walk characters to find the matching closing paren (honours nested
+           parens, single-quoted strings, double-quoted strings, and basic
+           escape sequences). This avoids the classic non-greedy-regex trap
+           where `(.*?)` stops at the first `)` inside a quoted value.
+        3. Parse the captured args string as: JSON → Python AST kwargs →
+           regex-based key=value fallback.
+        """
+        # Locate the tag + tool name
+        header_match = re.search(
+            r"(?:\[(?:ACTION|TOOL)\]|<tool_call>)\s*(\w+)\s*\(",
+            text, re.DOTALL
+        )
+        if not header_match:
+            return None
+
+        tool_name = header_match.group(1)
+        scan_start = header_match.end()  # position right after the opening '('
+
+        # Walk forward to find the balanced closing paren
+        depth = 1
+        i = scan_start
+        in_single = False
+        in_double = False
+        while i < len(text) and depth > 0:
+            ch = text[i]
+            if ch == '\\' and (in_single or in_double):
+                i += 2  # skip escaped char
+                continue
+            if ch == "'" and not in_double:
+                in_single = not in_single
+            elif ch == '"' and not in_single:
+                in_double = not in_double
+            elif not in_single and not in_double:
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+            i += 1
+
+        if depth == 0:
+            # Balanced — content is everything up to (but not including) the final ')'
+            raw_args = text[scan_start:i - 1].strip()
         else:
-            # Fallback for truncated streams (end of text)
-            match = re.search(r"(?:\[(?:ACTION|TOOL)\]|<tool_call>)\s*(\w+)\s*\((.*)", text, re.DOTALL)
-            if not match:
-                return None
-            tool_name = match.group(1)
-            raw_args = match.group(2).strip()
-            # Clean up trailing closing parens/tags if any
+            # Unbalanced (truncated stream) — take everything we have
+            raw_args = text[scan_start:].strip()
+            # Strip any trailing closing tag that bled in
             raw_args = re.sub(r"\)\s*(?:\[/(?:ACTION|TOOL)\]|</tool_call>)?\s*$", "", raw_args).strip()
-        
+
+        if not raw_args:
+            return tool_name, {}
+
+        # --- Parse attempts ---
+
+        # 1. Try JSON
         try:
             arguments = json.loads(raw_args)
-        except json.JSONDecodeError:
-            arguments = {"value": raw_args}
-        return tool_name, arguments
+            if isinstance(arguments, dict):
+                return tool_name, arguments
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 2. Try Python AST kwargs  (e.g.  key="value", other=True)
+        try:
+            import ast as _ast
+            tree = _ast.parse(f"_dummy({raw_args})", mode="eval")
+            arguments = {}
+            for kw in tree.body.keywords:  # type: ignore[attr-defined]
+                arguments[kw.arg] = _ast.literal_eval(kw.value)
+            if arguments:
+                return tool_name, arguments
+        except Exception:
+            pass
+
+        # 3. Regex-based key=value extractor — handles multiline string values
+        #    Supports:  key="...",  key='...',  key=123,  key=True/False/None
+        try:
+            arguments = {}
+            # Match key= followed by a quoted string (with escaped quotes), number, or bare word
+            pattern = re.compile(
+                r"""(\w+)\s*=\s*(?:"""
+                r""""((?:[^"\\]|\\.)*)"|"""   # double-quoted string
+                r"""'((?:[^'\\]|\\.)*)'|"""   # single-quoted string
+                r"""(\d+(?:\.\d+)?)|"""        # number
+                r"""(True|False|None)"""       # bare keywords
+                r""")""",
+                re.DOTALL,
+            )
+            for m in pattern.finditer(raw_args):
+                key = m.group(1)
+                if m.group(2) is not None:
+                    val: Any = m.group(2).replace('\\"', '"').replace("\\'", "'").replace("\\n", "\n").replace("\\t", "\t")
+                elif m.group(3) is not None:
+                    val = m.group(3).replace('\\"', '"').replace("\\'", "'").replace("\\n", "\n").replace("\\t", "\t")
+                elif m.group(4) is not None:
+                    raw_num = m.group(4)
+                    val = float(raw_num) if "." in raw_num else int(raw_num)
+                else:
+                    bare = m.group(5)
+                    val = {"True": True, "False": False, "None": None}[bare]
+                arguments[key] = val
+            if arguments:
+                return tool_name, arguments
+        except Exception:
+            pass
+
+        # 4. Last resort — hand the raw string to the wrapper as 'value'
+        return tool_name, {"value": raw_args}
 
     def _build_task_notification(self, result_text: str, status: str) -> str:
         task_id = self.task_id or "unknown"

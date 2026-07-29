@@ -27,7 +27,7 @@ export default function LoadingScreen({ steps = [] }: Props) {
         <div style={{
           width: 56, height: 56, borderRadius: "var(--radius-md)",
           background: "var(--color-primary)", display: "flex", alignItems: "center",
-          justifyContent: "center", fontSize: 28, fontWeight: 700, color: "#051a10",
+          justifyContent: "center", fontSize: 28, fontWeight: 700, color: "var(--color-on-primary)",
           position: "relative", zIndex: 1, boxShadow: "0 0 30px var(--color-primary-glow)",
         }}>
           C
@@ -51,8 +51,8 @@ export default function LoadingScreen({ steps = [] }: Props) {
                 display: "flex", alignItems: "center", justifyContent: "center",
                 transition: "all 0.3s",
               }}>
-                {i < activeStep && <span style={{ fontSize: 10, color: "#051a10", fontWeight: 700 }}>✓</span>}
-                {i === activeStep && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#051a10", animation: "pulse 1s infinite" }} />}
+                {i < activeStep && <span style={{ fontSize: 10, color: "var(--color-on-primary)", fontWeight: 700 }}>✓</span>}
+                {i === activeStep && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--color-on-primary)", animation: "pulse 1s infinite" }} />}
               </div>
               <span style={{ fontSize: 13, color: i <= activeStep ? "var(--color-ink)" : "var(--color-mute)" }}>{step}</span>
             </div>

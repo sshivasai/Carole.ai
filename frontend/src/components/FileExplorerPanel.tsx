@@ -101,11 +101,11 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
   // "preview" renders rendered markdown; "edit" shows the Monaco editor. Only
   // meaningful for .md/.txt files — code files always use the editor.
   const [viewMode, setViewMode] = useState<"preview" | "edit">("preview");
-  
+
   // Explorer State
   const [refreshKey, setRefreshKey] = useState(0);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  
+
   // Terminal State
   const [showTerminal, setShowTerminal] = useState(false);
   const [terminalCmd, setTerminalCmd] = useState<{ cmd: string; ts: number } | null>(null);
@@ -186,7 +186,10 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
     setLoadingContent(true);
     try {
       const res = await api.readFile(path, projectId);
-      setOpenFiles(prev => [...prev, { path, content: res.content, isDirty: false }]);
+      setOpenFiles(prev => {
+        if (prev.some(f => f.path === path)) return prev;
+        return [...prev, { path, content: res.content, isDirty: false }];
+      });
       setActiveFilePath(path);
       setViewMode(isMarkdownPath(path) ? "preview" : "edit");
     } catch (error) {
@@ -206,7 +209,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
 
   const closeFile = (path: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    
+
     setOpenFiles(prev => {
       const filtered = prev.filter(f => f.path !== path);
       // If we are closing the active file, switch to the next available one
@@ -273,10 +276,10 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
       try {
         await api.deleteFile(path, projectId);
         if (openFiles.some(f => f.path === path || f.path.startsWith(path + "/"))) {
-           setOpenFiles(prev => prev.filter(f => !(f.path === path || f.path.startsWith(path + "/"))));
-           if (activeFilePath === path || activeFilePath?.startsWith(path + "/")) {
-             setActiveFilePath(null);
-           }
+          setOpenFiles(prev => prev.filter(f => !(f.path === path || f.path.startsWith(path + "/"))));
+          if (activeFilePath === path || activeFilePath?.startsWith(path + "/")) {
+            setActiveFilePath(null);
+          }
         }
         setRefreshKey(k => k + 1);
       } catch (error) {
@@ -329,7 +332,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
   const handleExecuteFile = (path: string) => {
     const ext = path.split('.').pop()?.toLowerCase();
     let cmd = '';
-    
+
     if (ext === 'js' || ext === 'ts') cmd = `node ${path}`;
     else if (ext === 'py') cmd = `python ${path}`;
     else if (ext === 'sh') cmd = `bash ${path}`;
@@ -339,7 +342,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
       addToast({ type: "warning", message: `Execution not supported for .${ext} files yet.` });
       return;
     }
-    
+
     setShowTerminal(true);
     setTerminalCmd({ cmd, ts: Date.now() });
   };
@@ -365,33 +368,31 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
 
   const containerStyle: React.CSSProperties = isFullScreen
     ? {
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 9999,
-        display: "flex",
-        background: "var(--color-canvas)",
-        width: "100%",
-        maxWidth: "none",
-      }
+      position: "fixed",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      zIndex: 9999,
+      display: "flex",
+      background: "var(--color-canvas)",
+      width: "100%",
+      maxWidth: "none",
+    }
     : {
-        display: "flex",
-        height: "100%",
-        borderLeft: "1px solid var(--border-glass)",
-        background: "var(--bg-glass-panel)",
-        backdropFilter: "var(--blur-md)",
-        WebkitBackdropFilter: "var(--blur-md)",
-        width: "100%",
-        maxWidth: 800,
-      };
+      display: "flex",
+      height: "100%",
+      borderLeft: "1px solid var(--border-subtle)",
+      background: "var(--bg-app)",
+      width: "100%",
+      maxWidth: 800,
+    };
 
   return (
     <div style={containerStyle}>
       {/* Activity Bar */}
       <div style={{ width: 48, borderRight: "1px solid var(--color-hairline)", background: "var(--bg-glass-card)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 8, gap: 8 }}>
-        <button 
+        <button
           onClick={() => setActiveLeftTab("explorer")}
           style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "explorer" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "explorer" ? "var(--color-primary-glow-sm)" : "transparent" }}
           className="hover:text-white transition-colors"
@@ -399,7 +400,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
         >
           <LayoutList size={20} />
         </button>
-        <button 
+        <button
           onClick={() => setActiveLeftTab("search")}
           style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "search" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "search" ? "var(--color-primary-glow-sm)" : "transparent" }}
           className="hover:text-white transition-colors"
@@ -407,7 +408,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
         >
           <Search size={20} />
         </button>
-        <button 
+        <button
           onClick={() => setActiveLeftTab("git")}
           style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "git" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "git" ? "var(--color-primary-glow-sm)" : "transparent" }}
           className="hover:text-white transition-colors"
@@ -415,7 +416,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
         >
           <GitBranch size={20} />
         </button>
-        <button 
+        <button
           onClick={() => setActiveLeftTab("activity")}
           style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "activity" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "activity" ? "var(--color-primary-glow-sm)" : "transparent" }}
           className="hover:text-white transition-colors"
@@ -426,7 +427,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
       </div>
 
       {/* Left Pane - Sidebar Content */}
-      <div style={{ width: 250, borderRight: "1px solid var(--color-hairline)", display: "flex", flexDirection: "column", background: "var(--bg-glass-panel)" }}>
+      <div style={{ width: 250, borderRight: "1px solid var(--border-subtle)", display: "flex", flexDirection: "column", background: "var(--bg-surface)" }}>
         {activeLeftTab === "explorer" && (
           <>
             <div style={{ padding: "var(--sp-sm) var(--sp-md)", borderBottom: "1px solid var(--color-hairline)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -456,13 +457,13 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
                     <span className="body-sm truncate" style={{ fontSize: "13px", fontWeight: "bold" }}>workspaces</span>
                   </div>
                   <div style={{ paddingLeft: 12 }}>
-                    <TreeNode 
-                      path="." 
-                      name={projectName || "loading..."} 
-                      isDir={true} 
-                      onFileSelect={openFile} 
-                      selectedPath={activeFilePath} 
-                      defaultExpanded={true} 
+                    <TreeNode
+                      path="."
+                      name={projectName || "loading..."}
+                      isDir={true}
+                      onFileSelect={openFile}
+                      selectedPath={activeFilePath}
+                      defaultExpanded={true}
                       projectId={projectId}
                       refreshKey={refreshKey}
                       onContextMenu={handleContextMenu}
@@ -470,13 +471,13 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
                   </div>
                 </>
               ) : (
-                <TreeNode 
-                  path="." 
-                  name="workspaces" 
-                  isDir={true} 
-                  onFileSelect={openFile} 
-                  selectedPath={activeFilePath} 
-                  defaultExpanded={true} 
+                <TreeNode
+                  path="."
+                  name="workspaces"
+                  isDir={true}
+                  onFileSelect={openFile}
+                  selectedPath={activeFilePath}
+                  defaultExpanded={true}
                   projectId={undefined}
                   refreshKey={refreshKey}
                   onContextMenu={handleContextMenu}
@@ -506,7 +507,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
                 const isActive = file.path === activeFilePath;
                 const fileName = file.path.split('/').pop() || file.path;
                 return (
-                  <div 
+                  <div
                     key={file.path}
                     onClick={() => setActiveFilePath(file.path)}
                     style={{
@@ -532,7 +533,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
                     {file.isDirty && (
                       <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff", marginRight: 6 }} />
                     )}
-                    <button 
+                    <button
                       onClick={(e) => closeFile(file.path, e)}
                       style={{ padding: 2, borderRadius: 3 }}
                       className="hover:bg-gray-600 text-transparent hover:text-white group-hover:text-gray-400"
@@ -654,9 +655,9 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
                   </div>
                   {showTerminal && (
                     <div style={{ flex: "1 1 50%", borderTop: "1px solid var(--color-hairline)", overflow: "hidden" }}>
-                      <TerminalPanel 
-                        projectId={projectId} 
-                        onClose={() => setShowTerminal(false)} 
+                      <TerminalPanel
+                        projectId={projectId}
+                        onClose={() => setShowTerminal(false)}
                         triggerCommand={terminalCmd}
                       />
                     </div>
@@ -719,7 +720,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
           )}
           <ContextMenuItem onClick={() => { handleRename(contextMenu.path); setContextMenu(null); }}>Rename</ContextMenuItem>
           <div style={{ height: "1px", background: "var(--color-hairline)", margin: "4px 0" }} />
-          <ContextMenuItem 
+          <ContextMenuItem
             onClick={() => { handleDelete(contextMenu.path); setContextMenu(null); }}
             style={{ color: "var(--color-error)" }}
           >
@@ -731,15 +732,15 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
       {dialog.visible && (
         <Modal open={dialog.visible} onClose={() => setDialog({ ...dialog, visible: false })} title={
           dialog.type === "delete" ? "Delete Item" :
-          dialog.type === "rename" ? "Rename Item" :
-          dialog.type === "new_file" ? "New File" : "New Folder"
+            dialog.type === "rename" ? "Rename Item" :
+              dialog.type === "new_file" ? "New File" : "New Folder"
         } maxWidth={400}>
           <form onSubmit={submitDialog} style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
             <p className="body-sm">
               {dialog.type === "delete" ? `Are you sure you want to delete ${dialog.path}?` :
-               dialog.type === "rename" ? `Rename ${dialog.path} to:` :
-               dialog.type === "new_file" ? `Create new file in ${dialog.path}:` :
-               `Create new folder in ${dialog.path}:`}
+                dialog.type === "rename" ? `Rename ${dialog.path} to:` :
+                  dialog.type === "new_file" ? `Create new file in ${dialog.path}:` :
+                    `Create new folder in ${dialog.path}:`}
             </p>
             {dialog.type !== "delete" && (
               <input
@@ -834,21 +835,21 @@ function TreeNode({ path, name, isDir, onFileSelect, selectedPath, defaultExpand
     if (expanded && isDir) {
       void loadChildren();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   useEffect(() => {
     if (defaultExpanded && isDir && children.length === 0) {
       void loadChildren();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultExpanded, isDir, path, children.length]);
 
   const isSelected = path === selectedPath && !isDir;
 
   return (
     <div>
-      <div 
+      <div
         style={{
           display: "flex",
           alignItems: "center",
@@ -873,7 +874,7 @@ function TreeNode({ path, name, isDir, onFileSelect, selectedPath, defaultExpand
         <span className="body-sm truncate" style={{ fontSize: "13px" }}>{name}</span>
         {loading && <RefreshCw size={10} className="animate-spin ml-2 text-mute" />}
       </div>
-      
+
       {expanded && isDir && (
         <div style={{ paddingLeft: 12 }}>
           {children.map(child => (

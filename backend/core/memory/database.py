@@ -91,14 +91,15 @@ async def init_db(force_recreate: bool = False):
         # 3. Create all tables (additive — won't modify existing columns)
         await conn.run_sync(Base.metadata.create_all)
         
-        # 4. Additive migration — add reasoning_text column if it doesn't exist yet
+        # 4. Additive migration — add missing columns if they don't exist yet
         if _is_sqlite:
-            try:
-                await conn.execute(text("ALTER TABLE messages ADD COLUMN reasoning_text TEXT"))
-            except Exception:
-                pass  # Column already exists — safe to ignore
-                
-            try:
-                await conn.execute(text("ALTER TABLE file_backups ADD COLUMN backup_file_name VARCHAR(255)"))
-            except Exception:
-                pass
+            for query in [
+                "ALTER TABLE messages ADD COLUMN reasoning_text TEXT",
+                "ALTER TABLE file_backups ADD COLUMN backup_file_name VARCHAR(255)",
+            ]:
+                try:
+                    await conn.execute(text(query))
+                except Exception as e:
+                    # Duplicate column error is expected on existing databases
+                    if "duplicate column name" not in str(e).lower():
+                        print(f"ℹ️ [DB Migration Notice] {e}")

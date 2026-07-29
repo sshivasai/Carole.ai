@@ -93,10 +93,10 @@ function detectProvider(model: string, catalog: Record<string, any>): string {
   }
   // Fallback: infer by prefix
   if (model.startsWith("openrouter/")) return "openrouter";
-  if (model.startsWith("nvidia/"))     return "nvidia";
-  if (model.startsWith("ollama/"))     return "ollama";
-  if (model.startsWith("gemini"))      return "google";
-  if (model.startsWith("claude"))      return "anthropic";
+  if (model.startsWith("nvidia/")) return "nvidia";
+  if (model.startsWith("ollama/")) return "ollama";
+  if (model.startsWith("gemini")) return "google";
+  if (model.startsWith("claude")) return "anthropic";
   if (model.startsWith("gpt") || model.startsWith("o4") || model.startsWith("o3")) return "openai";
   return Object.keys(catalog)[0] || "openrouter";
 }
@@ -115,7 +115,7 @@ function ModelSelector({
 }) {
   const providerData = catalog[provider];
   const models = providerData?.models || [];
-  
+
   // If the current model isn't in the provider's known list, we treat it as "custom"
   const isKnown = models.some((m: any) => m.value === model);
   const showCustom = !isKnown && model !== "";
@@ -134,9 +134,9 @@ function ModelSelector({
         <label className="form-label">
           Model
         </label>
-        <select 
-          className="input" 
-          value={isKnown ? model : "custom"} 
+        <select
+          className="input"
+          value={isKnown ? model : "custom"}
           onChange={e => {
             if (e.target.value === "custom") {
               onModelChange("");
@@ -183,25 +183,25 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   initial?: AgentConfig; teamId: string; roleTemplates: any[];
   onSave: (a: AgentConfig) => void; onClose: () => void;
 }) {
-  const [name,          setName]          = useState(initial?.name || "");
-  const [role,          setRole]          = useState(initial?.role || "researcher");
-  const [persona,       setPersona]       = useState(initial?.personality || "");
-  const [skills,        setSkills]        = useState((initial?.skills || []).join(", "));
-  const [loading,       setLoading]       = useState(false);
-  const [catalog,       setCatalog]       = useState<Record<string, any>>({});
+  const [name, setName] = useState(initial?.name || "");
+  const [role, setRole] = useState(initial?.role || "researcher");
+  const [persona, setPersona] = useState(initial?.personality || "");
+  const [skills, setSkills] = useState((initial?.skills || []).join(", "));
+  const [loading, setLoading] = useState(false);
+  const [catalog, setCatalog] = useState<Record<string, any>>({});
   const [catalogLoaded, setCatalogLoaded] = useState(false);
 
   // Primary model state
   const [primProvider, setPrimProvider] = useState("openrouter");
-  const [primModel,    setPrimModel]    = useState(initial?.model || "openrouter/free");
+  const [primModel, setPrimModel] = useState(initial?.model || "openrouter/free");
 
   // Fallback model state
   const [showFallback, setShowFallback] = useState(!!(initial?.fallback_model));
   const [fallProvider, setFallProvider] = useState("openrouter");
-  const [fallModel,    setFallModel]    = useState(initial?.fallback_model || "");
+  const [fallModel, setFallModel] = useState(initial?.fallback_model || "");
 
   // Reasoning state
-  const [reasoning,    setReasoning]    = useState(initial?.reasoning_effort || "none");
+  const [reasoning, setReasoning] = useState(initial?.reasoning_effort || "none");
 
   // Load model catalog from backend on mount
   useEffect(() => {
@@ -252,7 +252,7 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
         setPrimModel(tmpl.recommended_model);
       }
       if (!name) setName(tmpl.suggested_names?.[0] || "");
-    } catch {}
+    } catch { }
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -306,7 +306,7 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
         <div className="form-group">
           <label className="form-label">Role</label>
           <select className="input" value={role} onChange={e => { setRole(e.target.value); applyTemplate(e.target.value); }}>
-            {["orchestrator","researcher","coder","writer","analyst","custom"].map(r => <option key={r} value={r}>{r}</option>)}
+            {["orchestrator", "architect", "coder", "debugger", "researcher", "writer", "analyst", "custom"].map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
       </div>
@@ -387,12 +387,12 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
 }
 
 export default function AgentPanel({ agents, teamId, streamingAgents, agentQueues = {}, onAgentsChange, onToast }: Props) {
-  const [modalOpen,    setModalOpen]    = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | undefined>(undefined);
-  const [templates,    setTemplates]    = useState<any[]>([]);
+  const [templates, setTemplates] = useState<any[]>([]);
   const [, setDeletingId] = useState<string | null>(null);
 
-  useEffect(() => { api.listRoleTemplates().then(setTemplates).catch(() => {}); }, []);
+  useEffect(() => { api.listRoleTemplates().then(setTemplates).catch(() => { }); }, []);
 
   const handleSaved = (saved: AgentConfig) => {
     const existing = agents.find(a => a.id === saved.id);

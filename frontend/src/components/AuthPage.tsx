@@ -50,7 +50,7 @@ export default function AuthPage() {
             width: 52, height: 52, borderRadius: "var(--radius-md)",
             background: "var(--color-primary)", display: "inline-flex",
             alignItems: "center", justifyContent: "center",
-            fontSize: 26, fontWeight: 700, color: "#051a10",
+            fontSize: 26, fontWeight: 700, color: "var(--color-on-primary)",
             boxShadow: "0 0 30px var(--color-primary-glow)", marginBottom: "var(--sp-lg)",
           }}>C</div>
           <h1 className="display-md" style={{ marginBottom: "var(--sp-xs)" }}>Carole.ai</h1>
@@ -68,7 +68,7 @@ export default function AuthPage() {
                 border: "none", borderRadius: "var(--radius-sm)", cursor: "pointer",
                 transition: "all var(--t-fast)",
                 background: mode === m ? "var(--color-primary)" : "transparent",
-                color: mode === m ? "#051a10" : "var(--color-mute)",
+                color: mode === m ? "var(--color-on-primary)" : "var(--color-mute)",
               }}
             >
               {m === "login" ? "Sign In" : "Create Account"}

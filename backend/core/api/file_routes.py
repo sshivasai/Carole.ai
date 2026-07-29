@@ -89,7 +89,7 @@ _TREE_MAX_FILES = 2000
 
 
 @router.get("/tree")
-async def file_tree(project_id: str | None = Query(None, description="Project ID"), user: dict = Depends(require_auth)) -> dict:
+async def file_tree(project_id: str | None = Query(None, description="Project ID"), team_id: str | None = Query(None, description="Team ID"), user: dict = Depends(require_auth)) -> dict:
     """Return a flat list of all file paths in the project workspace.
 
     Used to power @file mentions in chat. Sandbox-scoped to the project
@@ -98,6 +98,7 @@ async def file_tree(project_id: str | None = Query(None, description="Project ID
     """
     try:
         import os
+        from core.tools.file_tools import file_tools
         root = await file_tools.get_workspace_root(project_id)
         if not root.exists():
             return {"files": []}
@@ -117,6 +118,23 @@ async def file_tree(project_id: str | None = Query(None, description="Project ID
                 files.append(rel)
                 if len(files) >= _TREE_MAX_FILES:
                     return {"files": files, "truncated": True}
+
+        # Include media files for the specific team
+        if team_id:
+            team_carole_dir = await file_tools.get_team_carole_dir(team_id)
+            chat_media_dir = team_carole_dir / "Chat_Media"
+            if chat_media_dir.exists():
+                for dirpath, dirnames, filenames in os.walk(chat_media_dir):
+                    for name in filenames:
+                        full = os.path.join(dirpath, name)
+                        try:
+                            rel = os.path.relpath(full, root).replace("\\", "/")
+                        except ValueError:
+                            continue
+                        files.append(rel)
+                        if len(files) >= _TREE_MAX_FILES:
+                            return {"files": files, "truncated": True}
+
         return {"files": files, "truncated": False}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -235,7 +253,9 @@ async def get_file_logs(team_id: str, db: AsyncSession = Depends(get_db), user: 
 
             original_content = ""
             if backup.backup_file_name:
-                history_dir = CAROLE_HOME_DIR / "file-history" / str(team_id)
+                from core.tools.file_tools import file_tools
+                team_carole_dir = await file_tools.get_team_carole_dir(team_id)
+                history_dir = team_carole_dir / "file-history"
                 backup_path = history_dir / backup.backup_file_name
                 try:
                     if backup_path.exists():
@@ -280,7 +300,9 @@ async def delete_file_log(log_id: str, db: AsyncSession = Depends(get_db), user:
 
     # Delete the physical backup file if it exists
     if backup.backup_file_name:
-        history_dir = CAROLE_HOME_DIR / "file-history" / str(backup.team_id)
+        from core.tools.file_tools import file_tools
+        team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id))
+        history_dir = team_carole_dir / "file-history"
         backup_path = history_dir / backup.backup_file_name
         try:
             if backup_path.exists():

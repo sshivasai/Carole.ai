@@ -43,16 +43,20 @@ class TerminalSessionManager:
                 
                 def read_output_winpty():
                     try:
-                        while process.isalive():
+                        while session_id in self.active_sessions and process.isalive():
                             data = process.read(blocking=True)
                             if not data:
                                 break
-                            asyncio.run_coroutine_threadsafe(
+                            future = asyncio.run_coroutine_threadsafe(
                                 websocket.send_text(data), 
                                 loop
                             )
+                            try:
+                                future.result(timeout=5.0)
+                            except Exception:
+                                break  # WebSocket closed or sending failed
                     except Exception as e:
-                        logger.error(f"Error reading winpty process output: {e}")
+                        logger.debug("Winpty reader exiting: %s", e)
                             
                 thread = threading.Thread(target=read_output_winpty, daemon=True)
                 thread.start()

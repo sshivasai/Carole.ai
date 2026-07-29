@@ -15,7 +15,7 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<TerminalType | null>(null);
   const fitAddonRef = useRef<FitAddonType | null>(null);
-  
+
   const isRunning = useRef(false);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -49,20 +49,20 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
           foreground: "var(--color-ink)",
         }
       });
-      
+
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
-      
+
       term.open(terminalRef.current!);
       fitAddon.fit();
-      
+
       xtermRef.current = term;
       fitAddonRef.current = fitAddon;
 
       // Connect WebSocket
       const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       const wsUrl = apiBaseUrl.replace(/^http/, "ws") + `/api/terminal/ws/${projectId || "default"}`;
-      
+
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -71,14 +71,14 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
         ws.send(JSON.stringify({ action: "resize", cols: term.cols, rows: term.rows }));
         // Execute trigger command if it arrived before init
         if (triggerCommand && triggerCommand.cmd && !isRunning.current) {
-           ws.send(JSON.stringify({ action: "input", data: triggerCommand.cmd + "\n" }));
-           isRunning.current = true; // Mark as running so we don't repeat
+          ws.send(JSON.stringify({ action: "input", data: triggerCommand.cmd + "\n" }));
+          isRunning.current = true; // Mark as running so we don't repeat
         }
       };
 
       ws.onmessage = (event) => {
         if (typeof event.data === "string") {
-            term.write(event.data);
+          term.write(event.data);
         }
       };
 
@@ -88,19 +88,19 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
 
       term.onData((data) => {
         if (ws.readyState === WebSocket.OPEN) {
-            // For ctrl+c
-            if (data === '\x03') {
-                ws.send(JSON.stringify({ action: "interrupt" }));
-            } else {
-                ws.send(JSON.stringify({ action: "input", data }));
-            }
+          // For ctrl+c
+          if (data === '\x03') {
+            ws.send(JSON.stringify({ action: "interrupt" }));
+          } else {
+            ws.send(JSON.stringify({ action: "input", data }));
+          }
         }
       });
 
       const handleResize = () => {
         fitAddon.fit();
         if (ws.readyState === WebSocket.OPEN) {
-           ws.send(JSON.stringify({ action: "resize", cols: term.cols, rows: term.rows }));
+          ws.send(JSON.stringify({ action: "resize", cols: term.cols, rows: term.rows }));
         }
       };
       window.addEventListener("resize", handleResize);
@@ -112,14 +112,14 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
       if (wsRef.current) wsRef.current.close();
       if (term) term.dispose();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     // Handle triggers that happen after terminal is initialized
     if (triggerCommand && triggerCommand.cmd && xtermRef.current && !isRunning.current) {
-       executeCmd(triggerCommand.cmd);
-       isRunning.current = true;
+      executeCmd(triggerCommand.cmd);
+      isRunning.current = true;
     }
   }, [triggerCommand]);
 
@@ -131,13 +131,13 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "transparent", color: "var(--color-ink)" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 12px", background: "var(--bg-glass-card)", borderBottom: "1px solid var(--border-glass)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 12px", background: "var(--bg-surface)", borderBottom: "1px solid var(--border-subtle)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <TerminalIcon size={14} style={{ color: "var(--color-mute)" }} />
           <span style={{ fontWeight: 600, fontSize: 12 }}>Terminal</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button 
+          <button
             onClick={handleClear}
             style={{ color: "var(--color-mute)", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}
             className="hover:text-white"
@@ -146,7 +146,7 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
             <Trash2 size={14} />
           </button>
           {onClose && (
-            <button 
+            <button
               onClick={onClose}
               style={{ color: "var(--color-mute)", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}
               className="hover:text-white"
@@ -159,7 +159,7 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
       </div>
 
       <div style={{ flex: 1, padding: "8px", overflow: "hidden" }}>
-          <div ref={terminalRef} style={{ width: "100%", height: "100%" }} />
+        <div ref={terminalRef} style={{ width: "100%", height: "100%" }} />
       </div>
     </div>
   );

@@ -210,7 +210,7 @@ export default function GitPanel({ projectId, onClose }: GitPanelProps) {
             disabled={loading || changes.length === 0 || !commitMessage.trim()}
             style={{
               background: changes.length === 0 || !commitMessage.trim() ? "var(--bg-glass-panel)" : "var(--color-primary)",
-              color: changes.length === 0 || !commitMessage.trim() ? "var(--color-mute)" : "#051a10",
+              color: changes.length === 0 || !commitMessage.trim() ? "var(--color-mute)" : "var(--color-on-primary)",
               border: "1px solid var(--border-glass)",
               padding: "6px 12px",
               borderRadius: "4px",
@@ -239,7 +239,7 @@ export default function GitPanel({ projectId, onClose }: GitPanelProps) {
                 onClick={() => void handleInit()}
                 disabled={loading}
                 style={{
-                  background: "var(--color-primary)", color: "#051a10", border: "1px solid var(--border-glass)", padding: "6px 12px",
+                  background: "var(--color-primary)", color: "var(--color-on-primary)", border: "1px solid var(--border-glass)", padding: "6px 12px",
                   borderRadius: "4px", cursor: "pointer", fontWeight: "bold"
                 }}
               >

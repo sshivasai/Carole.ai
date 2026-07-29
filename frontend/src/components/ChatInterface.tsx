@@ -19,7 +19,7 @@ interface Props {
   onOpenFile?: (path: string) => void;
 }
 
-const AVATAR_COLORS = ["#3b82f6","#8b5cf6","#00d992","#f97316","#ef4444","#eab308"];
+const AVATAR_COLORS = ["#3b82f6", "#8b5cf6", "#00d992", "#f97316", "#ef4444", "#eab308"];
 function avatarColor(name: string) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
@@ -32,20 +32,34 @@ function fmtTime(ts?: string | number) {
 
 
 function ApprovalCard({ msg }: { msg: ChatMessage }) {
-  const [status, setStatus] = useState<"pending"|"approved"|"denied">("pending");
+  const backendStatus = (msg as any).status;
+  const [localStatus, setLocalStatus] = useState<"pending" | "approved" | "denied">("pending");
+  const status = backendStatus && backendStatus !== "pending" ? backendStatus : localStatus;
+
   const [loading, setLoading] = useState(false);
   const decide = async (approved: boolean) => {
     if (!msg.tx_id || status !== "pending") return;
     setLoading(true);
-    try { await api.approveToolExecution(msg.tx_id, approved); setStatus(approved ? "approved" : "denied"); }
-    catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    setLocalStatus(approved ? "approved" : "denied");
+    try {
+      await api.approveToolExecution(msg.tx_id, approved);
+    } catch (e: any) {
+      const errText = e?.message || e?.body || String(e);
+      if (e?.status === 404 || errText.includes("already resolved") || errText.includes("not found")) {
+        console.log(`[ApprovalCard] Transaction ${msg.tx_id} already resolved on server.`);
+      } else {
+        console.error("Failed to approve tool execution:", e);
+        setLocalStatus("pending");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
   const borderColor = status === "pending" ? "var(--color-warning)" : status === "approved" ? "var(--color-primary)" : "var(--color-danger)";
   return (
     <div style={{ border: `1px solid ${borderColor}`, borderRadius: "var(--radius-md)", padding: "var(--sp-lg)", background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", boxShadow: "var(--shadow-clay)", display: "flex", flexDirection: "column", gap: "var(--sp-md)", maxWidth: 460 }}>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-        <span style={{ fontSize: 16 }}>🛑</span>
+        <span style={{ fontSize: 14 }}>🛑</span>
         <span className="body-sm-strong">Approval Required</span>
         {status !== "pending" && <span className={`pill ${status === "approved" ? "pill-live" : "pill-error"}`}>{status.toUpperCase()}</span>}
       </div>
@@ -60,7 +74,7 @@ function ApprovalCard({ msg }: { msg: ChatMessage }) {
         </div>
       )}
       {msg.arguments && Object.keys(msg.arguments).length > 0 && (
-        <pre style={{ fontSize: 11, background: "var(--color-canvas)", borderRadius: "var(--radius-xs)", padding: "var(--sp-sm) var(--sp-md)", overflowX: "auto", maxHeight: 120, border: "1px solid var(--color-hairline)", margin: 0 }}>
+        <pre style={{ fontSize: 10, background: "var(--color-canvas)", borderRadius: "var(--radius-xs)", padding: "var(--sp-sm) var(--sp-md)", overflowX: "auto", maxHeight: 120, border: "1px solid var(--color-hairline)", margin: 0 }}>
           {JSON.stringify(msg.arguments, null, 2)}
         </pre>
       )}
@@ -118,9 +132,9 @@ function ToolRow({ msg }: { msg: ChatMessage }) {
   const obs = msg.text || "";
   return (
     <div style={{ paddingLeft: 36, display: "flex", flexDirection: "column", gap: 2 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute)", fontSize: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute)", fontSize: 11 }}>
         <Wrench size={11} style={{ color: isEnd ? "var(--color-primary)" : "var(--color-warning)" }} />
-        <span className="code-inline" style={{ padding: "0 4px", fontSize: 11 }}>{msg.tool_name}</span>
+        <span className="code-inline" style={{ padding: "0 4px", fontSize: 10 }}>{msg.tool_name}</span>
         <span>{isEnd ? "done" : "running…"}</span>
         {isEnd && obs && (
           <button onClick={() => setOpen(o => !o)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)", display: "flex", padding: 0 }}>
@@ -129,7 +143,7 @@ function ToolRow({ msg }: { msg: ChatMessage }) {
         )}
       </div>
       {isEnd && obs && open && (
-        <pre style={{ fontSize: 11, background: "var(--color-canvas-soft)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-xs)", padding: "var(--sp-sm) var(--sp-md)", overflow: "auto", maxHeight: 200, color: "var(--color-body)", marginLeft: 17 }}>
+        <pre style={{ fontSize: 10, background: "var(--color-canvas-soft)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-xs)", padding: "var(--sp-sm) var(--sp-md)", overflow: "auto", maxHeight: 200, color: "var(--color-body)", marginLeft: 17 }}>
           {obs}
         </pre>
       )}
@@ -137,8 +151,22 @@ function ToolRow({ msg }: { msg: ChatMessage }) {
   );
 }
 
-function ThoughtsPanel({ reasoning, isStreaming }: { reasoning?: string; isStreaming?: boolean }) {
-  const [open, setOpen] = useState(false);
+function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: string; isStreaming?: boolean; components?: any }) {
+  const [open, setOpen] = useState<boolean>(Boolean(isStreaming));
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isStreaming) {
+      setOpen(true);
+    }
+  }, [isStreaming]);
+
+  useEffect(() => {
+    if (open && isStreaming && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [reasoning, open, isStreaming]);
+
   if (!reasoning) return null;
   return (
     <div style={{ marginTop: "var(--sp-sm)", borderTop: "1px dashed var(--color-hairline)", paddingTop: "var(--sp-sm)" }}>
@@ -147,23 +175,32 @@ function ThoughtsPanel({ reasoning, isStreaming }: { reasoning?: string; isStrea
         style={{
           display: "flex", alignItems: "center", gap: "var(--sp-xs)",
           background: "none", border: "none", cursor: "pointer",
-          color: "var(--color-mute)", fontSize: 12, padding: 0
+          color: "var(--color-mute)", fontSize: 11, padding: 0
         }}
       >
         {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        <span style={{ fontSize: 11, letterSpacing: "0.3px", fontWeight: 600 }}>🧠 Thoughts</span>
-        {isStreaming && <Loader2 size={10} className="animate-spin" style={{ marginLeft: 4, color: "var(--color-warning)" }} />}
+        <span style={{ fontSize: 10, letterSpacing: "0.3px", fontWeight: 600 }}>🧠 Thoughts & Activity</span>
+        {isStreaming && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 4, color: "var(--color-warning)", fontSize: 10 }}>
+            <Loader2 size={10} className="animate-spin" />
+            <span style={{ fontSize: 9, opacity: 0.8 }}>Working in background...</span>
+          </span>
+        )}
       </button>
       {open && (
-        <div className="thoughts-scrollbar" style={{
-          marginTop: "var(--sp-sm)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)",
-          border: "1px solid var(--border-glass)", borderRadius: "var(--radius-sm)",
-          padding: "var(--sp-md)", fontSize: 12, color: "var(--color-body)",
-          lineHeight: 1.6,
-        }}>
-          <pre style={{ whiteSpace: "pre-wrap", wordWrap: "break-word", fontFamily: "inherit", margin: 0, fontSize: 12 }}>
+        <div
+          ref={scrollRef}
+          className="thoughts-scrollbar markdown-body"
+          style={{
+            marginTop: "var(--sp-sm)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)",
+            border: "1px solid var(--border-glass)", borderRadius: "var(--radius-sm)",
+            padding: "var(--sp-md)", fontSize: 11, color: "var(--color-body)",
+            lineHeight: 1.6, maxHeight: 300, overflowY: "auto"
+          }}
+        >
+          <ReactMarkdown skipHtml={true} remarkPlugins={[remarkGfm]} components={components}>
             {reasoning}
-          </pre>
+          </ReactMarkdown>
         </div>
       )}
     </div>
@@ -172,14 +209,67 @@ function ThoughtsPanel({ reasoning, isStreaming }: { reasoning?: string; isStrea
 
 export default function ChatInterface({ messages, agents, onSendMessage, onDeleteMessage, onRollbackMessage, teamId, projectId, onToggleExplorer, onOpenFile }: Props) {
   const [inputText, setInputText] = useState("");
-  const [recording, setRecording]   = useState(false);
+  const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [searchQuery, setSearchQuery]   = useState("");
-  const [searchMode, setSearchMode]     = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const mediaRef  = useRef<MediaRecorder | null>(null);
+  const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+
+  const markdownComponents = useMemo(() => ({
+    a: ({ href, children, ...props }: any) => {
+      // Intercept @file:path chips and relative file links to open the file in the
+      // explorer instead of navigating away.
+      if (href && onOpenFile) {
+        if (href.startsWith("file:")) {
+          const path = href.slice("file:".length);
+          return (
+            <a
+              {...props}
+              href="#"
+              onClick={(e) => { e.preventDefault(); onOpenFile(path); }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 7px", margin: "0 2px", background: "var(--color-primary-glow-sm)", border: "1px solid var(--color-primary-soft)", borderRadius: 4, color: "var(--color-primary)", textDecoration: "none", fontFamily: "var(--font-mono)", fontSize: "0.9em", cursor: "pointer" }}
+              title={`Open ${path}`}
+            >
+              {children}
+            </a>
+          );
+        }
+
+        // Intercept relative links (no scheme) as file paths
+        if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href) && !href.startsWith("#")) {
+          return (
+            <a
+              {...props}
+              href="#"
+              onClick={(e) => { e.preventDefault(); onOpenFile(href); }}
+              title={`Open ${href}`}
+            >
+              {children}
+            </a>
+          );
+        }
+      }
+      return <a href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
+    },
+    table: ({ ...props }: any) => <div style={{ overflowX: 'auto', margin: 'var(--sp-md) 0' }}><table style={{ borderCollapse: 'collapse', width: '100%' }} {...props} /></div>,
+    th: ({ ...props }: any) => <th style={{ border: '1px solid var(--color-hairline)', padding: 'var(--sp-sm)', background: 'var(--color-canvas-raised)' }} {...props} />,
+    td: ({ ...props }: any) => <td style={{ border: '1px solid var(--color-hairline)', padding: 'var(--sp-sm)' }} {...props} />,
+    code: ({ className, children, ...props }: any) => {
+      const match = /language-(\w+)/.exec(className || '')
+      const inline = !match;
+      return inline ? (
+        <code className="code-inline" {...props}>{children}</code>
+      ) : (
+        <pre className="code-block" style={{ marginTop: 8, marginBottom: 8 }}>
+          <code className={className} {...props}>{children}</code>
+        </pre>
+      )
+    },
+    del: ({ children, ...props }: any) => searchMode && searchQuery.trim() ? <mark style={{ backgroundColor: "var(--color-primary-glow)", color: "var(--color-primary)", borderRadius: 2, padding: "0 2px" }} {...props}>{children}</mark> : <del {...props}>{children}</del>
+  }), [onOpenFile, searchMode, searchQuery]);
 
   // Editing state
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
@@ -212,7 +302,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
     if (!projectId) return;
     if (fileTreeLoadedFor === projectId) return;
     try {
-      const res = await api.listFileTree(projectId);
+      const res = await api.listFileTree(projectId, teamId ?? undefined);
       setFileTree(res.files || []);
     } catch (e) {
       console.warn("Failed to load file tree for mentions", e);
@@ -220,7 +310,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
     } finally {
       setFileTreeLoadedFor(projectId);
     }
-  }, [projectId, fileTreeLoadedFor]);
+  }, [projectId, teamId, fileTreeLoadedFor]);
 
   // Build the combined, query-filtered mention list. Agents first, then files
   // (files capped to keep the dropdown snappy). Each item knows how to insert
@@ -359,7 +449,11 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   const doDelete = async (msgId: string) => {
     if (onDeleteMessage) onDeleteMessage(msgId);
     try { await api.deleteMessage(msgId); }
-    catch (e) { console.error(e); }
+    catch (e: any) {
+      // 404 is expected for ephemeral WS-only messages (typing, tool_start, streaming)
+      // that were never persisted to the DB. Swallow silently.
+      if (e?.status !== 404) console.error("deleteMessage failed:", e);
+    }
   };
 
   const [rollbackOpen, setRollbackOpen] = useState(false);
@@ -375,7 +469,9 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
     setRollbackOpen(false);
     if (onRollbackMessage) onRollbackMessage(rollbackMsgId);
     try { await api.rollbackFromMessage(rollbackMsgId); }
-    catch (e) { console.error(e); }
+    catch (e: any) {
+      if (e?.status !== 404) console.error("rollbackFromMessage failed:", e);
+    }
     finally { setRollbackMsgId(null); }
   };
 
@@ -420,10 +516,10 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Header */}
-      <header className="section-header" style={{ padding: "var(--sp-md) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
+      <header className="section-header" style={{ padding: "var(--sp-md) var(--sp-2xl)", background: "var(--bg-surface)" }}>
         <div>
           <h2 className="display-sm">Team Chat</h2>
-          <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 10, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
+          <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
         </div>
         <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
           {onToggleExplorer && (
@@ -452,16 +548,16 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
       {/* Messages */}
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "var(--sp-2xl)", display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
         {displayMessages.map(msg => {
-          const isHuman    = msg.sender_id === "human";
-          const isTool     = msg.type === "tool_start" || msg.type === "tool_end";
+          const isHuman = msg.sender_id === "human";
+          const isTool = msg.type === "tool_start" || msg.type === "tool_end";
           const isApproval = msg.type === "approval_request";
           const isQuestion = msg.type === "agent_question";
           const isFileChange = msg.type === "file_change";
-          const isSystem   = msg.sender_id === "system";
+          const isSystem = msg.sender_id === "system";
           const isStreaming = msg.type === "streaming";
           const isIntermediate = msg.is_intermediate === true || msg.type === "tool_trace";
 
-          if (isTool)     return <ToolRow key={msg.id} msg={msg} />;
+          if (isTool) return <ToolRow key={msg.id} msg={msg} />;
 
           // Compact collapsible row for intermediate tool-trace records
           if (isIntermediate) {
@@ -484,13 +580,13 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                     }}
                   >
                     {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                    <span className="caption" style={{ fontFamily: "monospace", fontSize: 11 }}>
+                    <span className="caption" style={{ fontFamily: "monospace", fontSize: 10 }}>
                       🛠️ {msg.sender_name} — {(msg.text || "").slice(0, 60)}{(msg.text || "").length > 60 ? "…" : ""}
                     </span>
                     {msg.timestamp && <span className="caption" style={{ marginLeft: 4, opacity: 0.4 }}>{fmtTime(msg.timestamp)}</span>}
                   </button>
                   {isExpanded && (
-                    <div className="markdown-body" style={{ fontSize: 12, marginTop: 4, padding: "var(--sp-sm) var(--sp-md)", background: "var(--color-canvas-raised)", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "auto", maxHeight: 300 }}>
+                    <div className="markdown-body" style={{ fontSize: 11, marginTop: 4, padding: "var(--sp-sm) var(--sp-md)", background: "var(--color-canvas-raised)", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "auto", maxHeight: 300 }}>
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text || ""}</ReactMarkdown>
                     </div>
                   )}
@@ -521,7 +617,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               color = "#FBBF24";
               cleanText = text.replace(/\[LEARNING_[^\]]+\]\s*/, "");
             }
-            
+
             return (
               <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", position: "relative", marginLeft: 8 }}>
                 <div style={{ position: "absolute", top: 15, bottom: -15, left: 14, width: 2, background: "var(--border-glass)", zIndex: 0 }} />
@@ -555,9 +651,9 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
                   <span className="body-sm" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    <strong style={{color: "var(--color-body)"}}>{msg.sender_name || "Agent"}</strong> modified <strong style={{color: "var(--color-body)"}}>{msg.path?.split('/').pop() || msg.path}</strong>
+                    <strong style={{ color: "var(--color-body)" }}>{msg.sender_name || "Agent"}</strong> modified <strong style={{ color: "var(--color-body)" }}>{msg.path?.split('/').pop() || msg.path}</strong>
                   </span>
-                  <span className="caption" style={{color: "var(--color-mute)"}}>{msg.path && onOpenFile ? "Click to open in editor" : "View details in the Activity Log tab"}</span>
+                  <span className="caption" style={{ color: "var(--color-mute)" }}>{msg.path && onOpenFile ? "Click to open in editor" : "View details in the Activity Log tab"}</span>
                 </div>
               </div>
               {msg.timestamp && <span className="caption" style={{ opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
@@ -569,7 +665,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><ApprovalCard msg={msg} /></div>
             </div>
           );
-          if (isQuestion)  return (
+          if (isQuestion) return (
             <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
               <div style={{ width: 30, height: 30, borderRadius: "50%", background: avatarColor(msg.sender_name || ""), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Bot size={14} color="#fff" /></div>
               <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
@@ -600,20 +696,31 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
             embeddedReasoning += "```json\n" + match[1].trim() + "\n```\n\n";
           }
           cleanText = cleanText.replace(actionRegex, "");
-          
+
           // Strip out <function_calls> wrapper tags if the LLM output them
           cleanText = cleanText.replace(/<function_calls>/g, "").replace(/<\/function_calls>/g, "");
-          
           cleanText = cleanText.trim();
-          const finalReasoning = msg.reasoning ? (msg.reasoning + "\n\n" + embeddedReasoning).trim() : embeddedReasoning.trim();
 
+          let rawReasoning = msg.reasoning || "";
+          // Strip raw [ACTION]...[/ACTION] blocks — needed for the live-streaming
+          // case where collapse_to_reasoning copies raw LLM text (with action tags).
+          // The backend now stores only clean text + formatted 🛠️ blocks in reasoning_text,
+          // but live messages may still have raw tags until they are replaced by the
+          // final persisted message on refresh.
+          rawReasoning = rawReasoning.replace(/\[ACTION\][\s\S]*?\[\/ACTION\]/g, "");
+          // Render <tool_call>...</tool_call> as code blocks instead of stripping
+          rawReasoning = rawReasoning.replace(/<tool_call>([\s\S]*?)<\/tool_call>/g, "\n```json\n$1\n```\n");
+          rawReasoning = rawReasoning.replace(/<function_calls>|<\/function_calls>/g, "");
+          rawReasoning = rawReasoning.trim();
+
+          const finalReasoning = rawReasoning ? (rawReasoning + "\n\n" + embeddedReasoning).trim() : embeddedReasoning.trim();
           let markdownText = cleanText;
           // Render @file:path references as clickable chips that open the file
           // in the explorer (instead of raw @file:... text).
           if (onOpenFile) {
             markdownText = markdownText.replace(
               /(^|[^`])@file:(\S+)/g,
-              (_m, pre, p) => {
+              (_m: string, pre: string, p: string) => {
                 const path = p.replace(/[),.;]+$/, "");
                 const base = path.split("/").pop() || path;
                 return `${pre}[\`📄 ${base}\`](file:${path})`;
@@ -629,7 +736,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
           return (
             <div key={msg.id} className="animate-fade-in group" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", flexDirection: isHuman ? "row-reverse" : "row", position: "relative" }}>
-              
+
               <div style={{ width: 30, height: 30, borderRadius: "50%", flexShrink: 0, background: ac, border: isHuman ? "1px solid var(--color-hairline)" : "none", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {isHuman ? <User size={14} color="var(--color-mute)" /> : <Bot size={14} color="#fff" />}
               </div>
@@ -646,8 +753,8 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                 {/* Edit Mode vs Normal Mode */}
                 {editingMsgId === msg.id ? (
                   <div style={{ background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", border: "1px solid var(--color-primary)", padding: "var(--sp-sm)", borderRadius: "var(--radius-md)", boxShadow: "var(--shadow-clay)", display: "flex", flexDirection: "column", gap: "var(--sp-sm)", width: "100%", minWidth: 400 }}>
-                    <textarea 
-                      className="input" 
+                    <textarea
+                      className="input"
                       style={{ minHeight: 80, resize: "vertical" }}
                       value={editText}
                       onChange={e => setEditText(e.target.value)}
@@ -661,15 +768,13 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                 ) : (
                   <div style={{
                     padding: "var(--sp-md) var(--sp-lg)", lineHeight: 1.6,
-                    background: isHuman ? "var(--color-primary-glow-sm)" : "var(--bg-glass-card)",
-                    backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)",
-                    border: isHuman ? "1px solid rgba(0,217,146,0.2)" : "1px solid var(--border-glass)",
+                    background: isHuman ? "var(--bg-surface-raised)" : "var(--bg-surface)",
+                    border: isHuman ? "1px solid var(--border-subtle)" : "1px solid var(--border-subtle)",
                     borderRadius: "var(--radius-md)",
-                    boxShadow: isHuman ? "var(--shadow-clay-inset)" : "var(--shadow-clay-sm)",
                     borderTopRightRadius: isHuman ? 2 : undefined,
                     borderTopLeftRadius: !isHuman ? 2 : undefined,
-                    color: isHuman ? "var(--color-primary)" : "var(--color-ink)",
-                    position: "relative", fontSize: 14,
+                    color: "var(--text-primary)",
+                    position: "relative", fontSize: "var(--text-sm)",
                   }}>
                     {isThinking ? (
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", color: "var(--color-mute)" }}>
@@ -685,7 +790,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                               att.type?.startsWith("image/") ? (
                                 <img key={i} src={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(0,217,146,0.2)" }} />
                               ) : (
-                                <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(0,217,146,0.1)", borderRadius: "var(--radius-sm)", fontSize: 12, color: "var(--color-primary)", textDecoration: "none" }}>📎 {att.name}</a>
+                                <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(0,217,146,0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none" }}>📎 {att.name}</a>
                               )
                             ))}
                           </div>
@@ -693,44 +798,10 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                       </div>
                     ) : (
                       <div className="markdown-body">
-                        <ReactMarkdown 
+                        <ReactMarkdown
+                          skipHtml={true}
                           remarkPlugins={[remarkGfm]}
-                          components={{
-                            a: ({href, children, ...props}) => {
-                              // Intercept @file:path chips to open the file in the
-                              // explorer instead of navigating away.
-                              if (href && href.startsWith("file:") && onOpenFile) {
-                                const path = href.slice("file:".length);
-                                return (
-                                  <a
-                                    {...props}
-                                    href="#"
-                                    onClick={(e) => { e.preventDefault(); onOpenFile(path); }}
-                                    style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 7px", margin: "0 2px", background: "var(--color-primary-glow-sm)", border: "1px solid var(--color-primary-soft)", borderRadius: 4, color: "var(--color-primary)", textDecoration: "none", fontFamily: "var(--font-mono)", fontSize: "0.9em", cursor: "pointer" }}
-                                    title={`Open ${path}`}
-                                  >
-                                    {children}
-                                  </a>
-                                );
-                              }
-                              return <a href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
-                            },
-                            table: ({...props}) => <div style={{overflowX: 'auto', margin: 'var(--sp-md) 0'}}><table style={{borderCollapse: 'collapse', width: '100%'}} {...props} /></div>,
-                            th: ({...props}) => <th style={{border: '1px solid var(--color-hairline)', padding: 'var(--sp-sm)', background: 'var(--color-canvas-raised)'}} {...props} />,
-                            td: ({...props}) => <td style={{border: '1px solid var(--color-hairline)', padding: 'var(--sp-sm)'}} {...props} />,
-                            code: ({className, children, ...props}) => {
-                              const match = /language-(\w+)/.exec(className || '')
-                              const inline = !match;
-                              return inline ? (
-                                <code className="code-inline" {...props}>{children}</code>
-                              ) : (
-                                <pre className="code-block" style={{ marginTop: 8, marginBottom: 8 }}>
-                                  <code className={className} {...props}>{children}</code>
-                                </pre>
-                              )
-                            },
-                            del: ({children, ...props}) => searchMode && searchQuery.trim() ? <mark style={{ backgroundColor: "var(--color-primary-glow)", color: "var(--color-primary)", borderRadius: 2, padding: "0 2px" }} {...props}>{children}</mark> : <del {...props}>{children}</del>
-                          }}
+                          components={markdownComponents}
                         >
                           {markdownText}
                         </ReactMarkdown>
@@ -746,7 +817,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                           onClick={() => api.stopAgent(msg.sender_id)}
                           style={{
                             display: "inline-flex", alignItems: "center", gap: 6,
-                            padding: "4px 10px", fontSize: 12, cursor: "pointer",
+                            padding: "4px 10px", fontSize: 11, cursor: "pointer",
                             background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)",
                             borderRadius: "var(--radius-sm)", color: "var(--color-danger)",
                             transition: "background 0.15s",
@@ -761,9 +832,9 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                     )}
                     {/* Thoughts Panel — renders reasoning trace + tool calls */}
                     {!isHuman && !isThinking && (
-                      <ThoughtsPanel reasoning={finalReasoning} isStreaming={isStreaming} />
+                      <ThoughtsPanel reasoning={finalReasoning} isStreaming={isStreaming} components={markdownComponents} />
                     )}
-                    {msg.pending_approval && (
+                    {msg.pending_approval && msg.pending_approval.status !== "approved" && (
                       <div style={{ marginTop: "var(--sp-md)" }}>
                         <ApprovalCard msg={{ ...msg, ...msg.pending_approval, type: "approval_request" } as ChatMessage} />
                       </div>
@@ -774,9 +845,9 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
               {/* Action Menu Hover */}
               {!isThinking && !isStreaming && !isSystem && !isApproval && !isQuestion && editingMsgId !== msg.id && (
-                <div className="msg-actions" style={{ 
-                  display: "flex", gap: 4, position: "absolute", top: -10, 
-                  [isHuman ? "left" : "right"]: 0, 
+                <div className="msg-actions" style={{
+                  display: "flex", gap: 4, position: "absolute", top: -10,
+                  [isHuman ? "left" : "right"]: 0,
                   background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", border: "1px solid var(--border-glass)", boxShadow: "var(--shadow-clay-sm)",
                   padding: "2px 4px", borderRadius: "var(--radius-md)",
                   opacity: 0, transition: "opacity 0.1s"
@@ -818,9 +889,9 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               {att.type?.startsWith("image/") ? (
                 <img src={att.url} alt="attachment" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               ) : (
-                <div style={{ fontSize: 10, color: "var(--color-mute)" }}>File</div>
+                <div style={{ fontSize: 9, color: "var(--color-mute)" }}>File</div>
               )}
-              <button 
+              <button
                 onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
                 style={{ position: "absolute", top: 2, right: 2, background: "rgba(0,0,0,0.5)", color: "white", border: "none", borderRadius: "50%", padding: 2, cursor: "pointer", display: "flex" }}
               >
@@ -832,20 +903,20 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
       )}
 
       {/* Input */}
-      <div style={{ padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-glass)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", zIndex: 10 }}>
+      <div style={{ padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10 }}>
         <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
-          
+
           <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileUpload} />
           <button className="btn btn-sm btn-icon btn-ghost" title="Attach file" onClick={() => fileInputRef.current?.click()} disabled={uploading} style={{ flexShrink: 0, padding: "8px 12px" }}>
             {uploading ? <Loader2 size={16} className="animate-spin" /> : <Folder size={16} />}
           </button>
-          
+
           {/* Mention Dropdown — agents + project files */}
           {mentionOpen && mentionItems.length > 0 && (
             <div style={{
               position: "absolute", bottom: "100%", left: 0, marginBottom: "var(--sp-sm)",
               background: "var(--bg-glass-card)", backdropFilter: "var(--blur-lg)", WebkitBackdropFilter: "var(--blur-lg)", border: "1px solid var(--border-glass)",
-              borderRadius: "var(--radius-md)", boxShadow: "var(--shadow-clay)",
+              borderRadius: "var(--radius-md)", boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
               maxHeight: 240, overflowY: "auto", minWidth: 240, maxWidth: 360, zIndex: 10
             }}>
               {mentionItems.map((item, i) => {
@@ -882,16 +953,16 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                     <FileCode size={15} color="var(--color-brand)" style={{ flexShrink: 0 }} />
                     <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
                       <span className="body-sm" style={{ fontWeight: 500 }}>{base}</span>
-                      {dir && <span className="caption" style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{dir}</span>}
+                      {dir && <span className="caption" style={{ fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{dir}</span>}
                     </div>
-                    <span className="caption" style={{ marginLeft: "auto", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.5 }}>file</span>
+                    <span className="caption" style={{ marginLeft: "auto", fontSize: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>file</span>
                   </div>
                 );
               })}
             </div>
           )}
 
-          <textarea 
+          <textarea
             ref={inputRef}
             className="input" style={{ flex: 1, resize: "none", minHeight: 40, maxHeight: 160, lineHeight: 1.5, padding: "9px var(--sp-md)" }}
             placeholder="Message your team... (@ to mention an agent or a file · Enter to send, Shift+Enter for newline)"
@@ -910,7 +981,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
       </div>
 
       <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
-      
+
       <Modal open={rollbackOpen} onClose={() => setRollbackOpen(false)} title="Confirm Rollback">
         <p className="body-sm">
           Are you sure? This will delete this message, all following messages, and revert any files the agents modified during those messages.

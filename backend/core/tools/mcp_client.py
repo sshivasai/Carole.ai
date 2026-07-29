@@ -21,6 +21,12 @@ class MCPManager:
             cls._instance.sessions = {}
         return cls._instance
     
+    async def shutdown(self):
+        """Safely close all MCP server connections and resources."""
+        if self.exit_stack:
+            await self.exit_stack.aclose()
+            self.sessions.clear()
+            
     async def connect_stdio_server(self, server_name: str, command: str, args: list[str], team_id: str = None, agent_id: str = None, env_vars: dict = None):
         """
         Connects to an MCP server via stdio, extracts its tools, 

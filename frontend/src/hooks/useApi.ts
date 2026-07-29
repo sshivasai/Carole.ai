@@ -95,14 +95,14 @@ export const api = {
   getProject: (projectId: string) => apiFetch<any>(`/api/projects/single/${projectId}`),
   createProject: (name: string, ownerId?: string) =>
     apiFetch<any>("/api/projects", { method: "POST", body: JSON.stringify({ name, owner_id: ownerId }) }),
-  deleteProject: (projectId: string) => apiFetch<any>(`/api/projects/${projectId}`, { method: "DELETE" }),
+  deleteProject: (projectId: string, deleteContent?: boolean) => apiFetch<any>(`/api/projects/${projectId}${deleteContent ? '?delete_content=true' : ''}`, { method: "DELETE" }),
 
   // ── Teams ──
   listTeams: (projectId: string) => apiFetch<any[]>(`/api/teams/${projectId}`),
   getTeam: (teamId: string) => apiFetch<any>(`/api/teams/single/${teamId}`),
   createTeam: (name: string, projectId: string) =>
     apiFetch<any>("/api/teams", { method: "POST", body: JSON.stringify({ name, project_id: projectId }) }),
-  deleteTeam: (teamId: string) => apiFetch<any>(`/api/teams/${teamId}`, { method: "DELETE" }),
+  deleteTeam: (teamId: string, deleteContent?: boolean) => apiFetch<any>(`/api/teams/${teamId}${deleteContent ? '?delete_content=true' : ''}`, { method: "DELETE" }),
 
   // ── Models & Catalog ──
   listModels: () => apiFetch<Record<string, any>>("/api/models"),
@@ -256,8 +256,13 @@ export const api = {
   // ── Files ──
   listFiles: (path: string = ".", projectId?: string) =>
     apiFetch<any[]>(`/api/files/list?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
-  listFileTree: (projectId?: string) =>
-    apiFetch<{ files: string[]; truncated?: boolean }>(`/api/files/tree${projectId ? `?project_id=${projectId}` : ""}`),
+  listFileTree: (projectId?: string, teamId?: string) => {
+    const params = new URLSearchParams();
+    if (projectId) params.append("project_id", projectId);
+    if (teamId) params.append("team_id", teamId);
+    const query = params.toString();
+    return apiFetch<{ files: string[]; truncated?: boolean }>(`/api/files/tree${query ? `?${query}` : ""}`);
+  },
   readFile: (path: string, projectId?: string) =>
     apiFetch<{ content: string }>(`/api/files/read?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
   writeFile: (path: string, content: string, projectId?: string) =>

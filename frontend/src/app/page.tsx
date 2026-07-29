@@ -15,6 +15,7 @@ import ScratchpadPanel from "@/components/ScratchpadPanel";
 import LoadingScreen from "@/components/LoadingScreen";
 import AuthPage from "@/components/AuthPage";
 import ToastContainer from "@/components/Toast";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useToast } from "@/hooks/useToast";
@@ -63,6 +64,10 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
       if (ex) return filtered.map(m => m.id === sid ? { ...m, reasoning: (m.reasoning || "") + entry } : m);
       return [...filtered, { id: sid, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, role: evt.role, text: "", reasoning: entry, type: "streaming", timestamp: ts }];
     }
+    case "thought_reset": {
+      const sid = `streaming-${evt.sender_id}`;
+      return prev.map(m => m.id === sid ? { ...m, text: "" } : m);
+    }
     case "tool_end": {
       // Append tool result to the streaming agent's reasoning trace
       const sid = `streaming-${evt.sender_id}`;
@@ -86,7 +91,7 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
       return [...prev.filter(m => m.id !== sid && m.id !== `thinking-${evt.sender_id}` && m.id !== newId), {
         id: newId, sender_id: evt.sender_id || "agent", sender_name: evt.sender_name,
         role: evt.role, text: evt.text || "", type: "message", timestamp: evt.timestamp || ts,
-        reasoning: streamingMsg?.reasoning || undefined,
+        reasoning: evt.reasoning || streamingMsg?.reasoning || undefined,
       }];
     }
     case "agent_status": {
@@ -108,6 +113,30 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
         return prev.map(m => m.id === sid ? { ...m, pending_approval: { tx_id: evt.tx_id, tool_name: evt.tool_name, arguments: evt.arguments, text: evt.text || "" } } : m);
       }
       return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "approval_request", tx_id: evt.tx_id, tool_name: evt.tool_name, arguments: evt.arguments, timestamp: ts }];
+    }
+    case "approval_update": {
+      const sid = `streaming-${evt.agent_id || evt.sender_id}`;
+      return prev.map(m => {
+        if (m.id === sid && m.pending_approval && m.pending_approval.tx_id === evt.tx_id) {
+          return { ...m, pending_approval: { ...m.pending_approval, text: evt.text || "" } };
+        }
+        if (m.type === "approval_request" && m.tx_id === evt.tx_id) {
+          return { ...m, text: evt.text || "" };
+        }
+        return m;
+      });
+    }
+    case "approval_resolved": {
+      const sid = `streaming-${evt.agent_id || evt.sender_id}`;
+      return prev.map(m => {
+        if (m.id === sid && m.pending_approval && m.pending_approval.tx_id === evt.tx_id) {
+          return { ...m, pending_approval: { ...m.pending_approval, status: evt.status } };
+        }
+        if (m.type === "approval_request" && m.tx_id === evt.tx_id) {
+          return { ...m, status: evt.status };
+        }
+        return m;
+      });
     }
     case "file_change":
       return [...prev, { id: makeId(), sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, type: "file_change", path: evt.path, action: evt.action, diff: evt.diff, text: evt.text || "", timestamp: ts }];
@@ -143,7 +172,6 @@ function AppShell() {
   const { user } = useAuth();
   const toast = useToast();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastEventIndex = useRef(0);
 
   const [activeView, setActiveView] = useState("chat");
   const [projects, setProjects] = useState<any[]>([]);
@@ -167,18 +195,60 @@ function AppShell() {
   const [agentQueues, setAgentQueues] = useState<Record<string, number>>({});
   const [scratchpads, setScratchpads] = useState<ScratchpadItem[]>([]);
 
-  const { connected, events, sendMessage } = useWebSocket(teamId);
-
-  // Track which agents are currently streaming
-  useEffect(() => {
-    if (events.length === 0) return;
-    const evt = events[events.length - 1];
+  const handleWSEvent = useCallback((evt: any) => {
     if (evt.type === "thought_delta" && evt.sender_id) {
       setStreamingAgents(s => new Set([...s, evt.sender_id!]));
-    } else if (evt.type === "message" && evt.sender_id) {
+    } else if ((evt.type === "message" || (evt.type === "agent_status" && evt.status === "idle")) && evt.sender_id) {
       setStreamingAgents(s => { const n = new Set(s); n.delete(evt.sender_id!); return n; });
     }
-  }, [events]);
+    
+    if (["thought_delta", "thought_reset", "stream_reasoning", "message", "approval_request", "approval_update", "approval_resolved", "agent_question", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "file_change", "collapse_to_reasoning"].includes(evt.type)) {
+      setMessages(prev => {
+        const updated = applyWSEvent(prev, evt);
+        return updated.length > 150 ? updated.slice(-150) : updated;
+      });
+    }
+
+    if (evt.type === "file_change") {
+      setLastFileChange({ ...evt, _seq: Date.now() });
+    }
+    if (evt.type === "browser_screenshot") {
+      setScreenshots(prev => [...prev, evt as BrowserScreenshotEvent].slice(-50));
+    }
+    if (evt.type === "task_update" && evt.task) {
+      if (evt.action === "created") setTasks(prev => [evt.task!, ...prev]);
+      else if (evt.action === "updated") setTasks(prev => prev.map(t => t.id === evt.task!.id ? { ...t, ...evt.task! } : t));
+    }
+    if (evt.type === "agent_queue_update" && evt.agent_id != null) {
+      setAgentQueues(prev => ({ ...prev, [evt.agent_id]: evt.queue_depth ?? 0 }));
+    }
+    if (evt.type === "scratchpad_updated") {
+      const target = (evt.target === "team" ? "team" : "personal") as "team" | "personal";
+      const agentName = evt.agent_name || "";
+      const content = evt.content ?? "";
+      const updated_at = evt.timestamp;
+      setScratchpads(prev => {
+        const idx = prev.findIndex(p => p.target === target && (target === "team" || p.agent_name === agentName));
+        const entry: ScratchpadItem = {
+          target,
+          agent_name: target === "team" ? "Team" : agentName,
+          agent_id: evt.agent_id,
+          label: evt.label || (target === "team" ? "Team Scratchpad" : `${agentName}'s Scratchpad`),
+          content,
+          updated_at,
+          size_bytes: content.length,
+        };
+        if (idx >= 0) {
+          const copy = [...prev];
+          copy[idx] = { ...copy[idx], ...entry };
+          return copy;
+        }
+        return [...prev, entry];
+      });
+    }
+  }, []);
+
+  const { connected, sendMessage } = useWebSocket(teamId, handleWSEvent);
 
   // Initial load
   useEffect(() => {
@@ -224,72 +294,7 @@ function AppShell() {
       }).catch(console.error);
   }, [teamId]);
 
-  // WebSocket event handler
-  useEffect(() => {
-    if (events.length === 0) {
-      lastEventIndex.current = 0;
-      return;
-    }
 
-    if (lastEventIndex.current < events.length) {
-      const newEvents = events.slice(lastEventIndex.current);
-
-      // Batch process messages to avoid multiple state updates
-      setMessages(prev => {
-        let currentMsgs = prev;
-        for (const evt of newEvents) {
-          if (["thought_delta", "stream_reasoning", "message", "approval_request", "agent_question", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "file_change", "collapse_to_reasoning"].includes(evt.type)) {
-            currentMsgs = applyWSEvent(currentMsgs, evt);
-          }
-        }
-        return currentMsgs;
-      });
-
-      // Process other events
-      for (const evt of newEvents) {
-        if (evt.type === "file_change") {
-          // Feed the latest file_change to the explorer for realtime sync.
-          setLastFileChange({ ...evt, _seq: events.length });
-        }
-        if (evt.type === "browser_screenshot") {
-          setScreenshots(prev => [...prev, evt as BrowserScreenshotEvent].slice(-50));
-        }
-        if (evt.type === "task_update" && evt.task) {
-          if (evt.action === "created") setTasks(prev => [evt.task!, ...prev]);
-          else if (evt.action === "updated") setTasks(prev => prev.map(t => t.id === evt.task!.id ? { ...t, ...evt.task! } : t));
-        }
-        if (evt.type === "agent_queue_update" && evt.agent_id != null) {
-          setAgentQueues(prev => ({ ...prev, [evt.agent_id]: evt.queue_depth ?? 0 }));
-        }
-        if (evt.type === "scratchpad_updated") {
-          const target = (evt.target === "team" ? "team" : "personal") as "team" | "personal";
-          const agentName = evt.agent_name || "";
-          const content = evt.content ?? "";
-          const updated_at = evt.timestamp;
-          setScratchpads(prev => {
-            const idx = prev.findIndex(p => p.target === target && (target === "team" || p.agent_name === agentName));
-            const entry: ScratchpadItem = {
-              target,
-              agent_name: target === "team" ? "Team" : agentName,
-              agent_id: evt.agent_id,
-              label: evt.label || (target === "team" ? "Team Scratchpad" : `${agentName}'s Scratchpad`),
-              content,
-              updated_at,
-              size_bytes: content.length,
-            };
-            if (idx >= 0) {
-              const copy = [...prev];
-              copy[idx] = { ...copy[idx], ...entry };
-              return copy;
-            }
-            return [...prev, entry];
-          });
-        }
-      }
-
-      lastEventIndex.current = events.length;
-    }
-  }, [events]);
 
 
   const handleSendMessage = useCallback((text: string, attachments?: any[]) => {
@@ -341,9 +346,9 @@ function AppShell() {
         onTeamCreated={handleTeamCreated}
       />
 
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "var(--color-canvas)", position: "relative" }}>
+      <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "var(--bg-app)", position: "relative" }}>
         {activeView === "chat" && (
-          <div style={{ display: "flex", height: "100%", width: "100%" }}>
+          <div className="animate-entrance" style={{ display: "flex", height: "100%", width: "100%" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <ChatInterface
                 messages={messages}
@@ -386,41 +391,57 @@ function AppShell() {
           </div>
         )}
         {activeView === "tasks" && (
-          <KanbanBoard tasks={tasks} agents={agents} teamId={teamId} onTasksChange={setTasks} />
+          <div className="animate-entrance" style={{ height: "100%" }}>
+            <KanbanBoard tasks={tasks} agents={agents} teamId={teamId} onTasksChange={setTasks} />
+          </div>
         )}
         {activeView === "agents" && (
-          <AgentPanel agents={agents} teamId={teamId} streamingAgents={streamingAgents}
-            agentQueues={agentQueues}
-            onAgentsChange={setAgents} onToast={(msg, type) => toast.show(msg, type)} />
+          <div className="animate-entrance" style={{ height: "100%" }}>
+            <AgentPanel agents={agents} teamId={teamId} streamingAgents={streamingAgents}
+              agentQueues={agentQueues}
+              onAgentsChange={setAgents} onToast={(msg, type) => toast.show(msg, type)} />
+          </div>
         )}
         {activeView === "browser" && (
-          <BrowserView screenshots={screenshots} />
+          <div className="animate-entrance" style={{ height: "100%" }}>
+            <BrowserView screenshots={screenshots} />
+          </div>
         )}
         {activeView === "memory" && (
-          <MemoryView learnings={learnings} projectId={projectId} teamId={teamId}
-            onLearningsChange={setLearnings} onToast={(msg, type) => toast.show(msg, type)} />
+          <div className="animate-entrance" style={{ height: "100%" }}>
+            <MemoryView learnings={learnings} projectId={projectId} teamId={teamId}
+              onLearningsChange={setLearnings} onToast={(msg, type) => toast.show(msg, type)} />
+          </div>
         )}
         {activeView === "scratchpad" && (
-          <ScratchpadPanel teamId={teamId} agents={agents} scratchpads={scratchpads}
-            onScratchpadsChange={setScratchpads}
-            onToast={(msg, type) => toast.show(msg, type as any)} />
+          <div className="animate-entrance" style={{ height: "100%" }}>
+            <ScratchpadPanel teamId={teamId} agents={agents} scratchpads={scratchpads}
+              onScratchpadsChange={setScratchpads}
+              onToast={(msg, type) => toast.show(msg, type as any)} />
+          </div>
         )}
         {activeView === "settings" && (
-          <SettingsPanel teamId={teamId} projectId={projectId} agents={agents}
-            onToast={(msg, type) => toast.show(msg, type as any)}
-            onTeamDeleted={handleTeamDeleted}
-            onProjectDeleted={handleProjectDeleted} />
+          <div className="animate-entrance" style={{ height: "100%" }}>
+            <SettingsPanel teamId={teamId} projectId={projectId} agents={agents}
+              onToast={(msg, type) => toast.show(msg, type as any)}
+              onTeamDeleted={handleTeamDeleted}
+              onProjectDeleted={handleProjectDeleted} />
+          </div>
         )}
         {activeView === "plugins" && (
-          <PluginStudio onToast={(msg, type) => toast.show(msg, type as any)} />
+          <div className="animate-entrance" style={{ height: "100%" }}>
+            <PluginStudio onToast={(msg, type) => toast.show(msg, type as any)} />
+          </div>
         )}
         {activeView === "skills" && (
-          <SkillsStudio teamId={teamId} onToast={(msg, type) => toast.show(msg, type as any)} />
+          <div className="animate-entrance" style={{ height: "100%" }}>
+            <SkillsStudio teamId={teamId} onToast={(msg, type) => toast.show(msg, type as any)} />
+          </div>
         )}
         {activeView === "mcp" && (
-          <div style={{ padding: "var(--sp-xl)", height: "100%", overflowY: "auto" }}>
+          <div className="animate-entrance" style={{ padding: "var(--space-6)", height: "100%", overflowY: "auto" }}>
             <div className="card">
-              <div style={{ padding: "var(--sp-lg) var(--sp-2xl)", borderBottom: "1px solid var(--color-hairline)" }}>
+              <div className="section-header">
                 <h3 className="display-sm">MCP Servers</h3>
                 <p className="caption">Model Context Protocol server integrations for this team.</p>
               </div>
@@ -446,8 +467,10 @@ function AppContent() {
 
 export default function Home() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }

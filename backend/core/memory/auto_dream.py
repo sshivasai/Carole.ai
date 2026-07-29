@@ -45,17 +45,27 @@ class AutoDreamWorker:
         return self._interval_minutes if self._interval_minutes > 0 else core.config.DREAM_INTERVAL_MINUTES
 
     async def start(self):
-        """Starts the periodic consolidation loop as a background coroutine."""
+        """Starts the periodic consolidation loop as a background coroutine.
+
+        FIX B3: Uses absolute time scheduling so cycles run every N minutes
+        from the START of each cycle, not N minutes after the cycle completes.
+        A 2-minute consolidation run with a 15-minute interval will trigger
+        at t=0, t=15, t=30 — not t=0, t=17, t=34.
+        """
         self._running = True
         logger.info("💤 [Dream Worker] Started. Consolidating every %d minutes.", self.interval)
 
         while self._running:
+            cycle_start = asyncio.get_event_loop().time()
             try:
                 await self.consolidate_all_teams()
             except Exception as e:
                 logger.exception("✗ [Dream Worker] Error during consolidation cycle: %s", e)
 
-            await asyncio.sleep(self.interval * 60)
+            # Sleep for the remainder of the interval, accounting for cycle duration
+            elapsed = asyncio.get_event_loop().time() - cycle_start
+            sleep_for = max(0.0, self.interval * 60 - elapsed)
+            await asyncio.sleep(sleep_for)
 
     def stop(self):
         """Gracefully stops the consolidation loop."""
@@ -105,9 +115,30 @@ class AutoDreamWorker:
             return
 
         # Build conversation log
-        conversation_text = "\n".join(
+        conversation_lines = [
             f"[{msg.sender_name or msg.sender_id}]: {msg.text}" for msg in messages
-        )
+        ]
+        conversation_text = "\n".join(conversation_lines)
+
+        # FIX H4: Token budget guard — cheap fast models (e.g. GPT-3.5, free OpenRouter
+        # models) have context windows as small as ~4k tokens (~16k chars). Cap the
+        # conversation text at ~8000 chars (≈2k tokens), trimming from the OLDEST
+        # messages to preserve the most recent context for lesson extraction.
+        _MAX_CONV_CHARS = 8000
+        if len(conversation_text) > _MAX_CONV_CHARS:
+            trimmed_lines = []
+            running_len = 0
+            for line in reversed(conversation_lines):
+                if running_len + len(line) + 1 > _MAX_CONV_CHARS:
+                    break
+                trimmed_lines.append(line)
+                running_len += len(line) + 1
+            trimmed_lines.reverse()
+            conversation_text = "\n".join(trimmed_lines)
+            logger.debug(
+                "💤 [Dream] Team '%s': Trimmed conversation to %d chars for LLM budget.",
+                team.name, len(conversation_text),
+            )
 
         # Extract lessons via LLM
         prompt = CONSOLIDATION_PROMPT.format(conversation=conversation_text)

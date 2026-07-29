@@ -18,6 +18,52 @@ from core.chat.event_bus import event_bus
 logger = logging.getLogger("carole.task_tools")
 
 
+async def _resolve_task(db, task_id_input: str, team_id_str: str = None) -> Task | None:
+    """Finds a task by full UUID, short UUID prefix, exact title, or fuzzy title match."""
+    if not task_id_input:
+        return None
+
+    task_id_str = str(task_id_input).strip()
+
+    # 1. Try full UUID
+    try:
+        task_uuid = uuid.UUID(task_id_str)
+        stmt = select(Task).where(Task.id == task_uuid)
+        res = await db.execute(stmt)
+        task = res.scalar_one_or_none()
+        if task:
+            return task
+    except (ValueError, AttributeError):
+        pass
+
+    # Fetch tasks for team to check prefix or title
+    stmt = select(Task)
+    if team_id_str:
+        try:
+            stmt = stmt.where(Task.team_id == uuid.UUID(team_id_str))
+        except (ValueError, AttributeError):
+            pass
+    res = await db.execute(stmt)
+    all_tasks = res.scalars().all()
+
+    # 2a. Short ID prefix match
+    for t in all_tasks:
+        if str(t.id).lower().startswith(task_id_str.lower()):
+            return t
+
+    # 2b. Exact title match
+    for t in all_tasks:
+        if t.title.strip().lower() == task_id_str.lower():
+            return t
+
+    # 2c. Substring title match
+    for t in all_tasks:
+        if task_id_str.lower() in t.title.strip().lower():
+            return t
+
+    return None
+
+
 class TaskTools:
     async def create_task(
         self, team_id: str, title: str, description: str = "",
@@ -66,9 +112,9 @@ class TaskTools:
             if assignee_agent:
                 from core.chat.message_router import message_router
                 if blocked_by_task_id:
-                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} a new task '{title}' has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
+                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} a new task '{title}' (ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
                 else:
-                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} a new task '{title}' has been assigned to you. Please start working on it."
+                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} a new task '{title}' (ID: {task.id}) has been assigned to you. Please start working on it. Update the task status to 'in_progress' when starting and 'done' when finished."
                 await message_router.route_message(
                     text=assign_text,
                     sender_id="system",
@@ -78,7 +124,7 @@ class TaskTools:
                 )
 
             assigned_msg = f" (assigned to {assignee_name})" if assignee_name else ""
-            return f"✓ Task created: '{title}'{assigned_msg} [priority: {priority}]"
+            return f"✓ Task created: '{title}' (ID: {task.id}){assigned_msg} [priority: {priority}]"
 
     async def list_tasks(self, team_id: str, status_filter: str = None) -> str:
         """Lists tasks for the team, optionally filtered by status."""
@@ -118,14 +164,7 @@ class TaskTools:
     ) -> str:
         """Updates a task's status, notes, and/or assignee. Wakes the agent on assignment."""
         async with async_session() as db:
-            try:
-                task_uuid = uuid.UUID(task_id)
-            except (ValueError, AttributeError):
-                return f"Error: '{task_id}' is not a valid task ID."
-
-            stmt = select(Task).where(Task.id == task_uuid)
-            result = await db.execute(stmt)
-            task = result.scalar_one_or_none()
+            task = await _resolve_task(db, task_id)
             if not task:
                 return f"Error: Task '{task_id}' not found."
 
@@ -160,15 +199,20 @@ class TaskTools:
 
             await db.commit()
 
-            # Broadcast status change to UI
+            # Broadcast status change to UI with complete status field
             team_id_str = str(task.team_id)
             await event_bus.publish(f"team:{team_id_str}", {
                 "type": "task_update",
                 "action": "updated",
                 "task": {
-                    "id": str(task.id), "title": task.title,
-                    "old_status": old_status, "new_status": task.status,
+                    "id": str(task.id),
+                    "title": task.title,
+                    "status": task.status,
+                    "old_status": old_status,
+                    "new_status": task.status,
                     "priority": task.priority,
+                    "description": task.description,
+                    "assigned_agent_id": str(task.assigned_agent_id) if task.assigned_agent_id else None,
                 },
             })
 
@@ -187,9 +231,9 @@ class TaskTools:
             # If a new assignee was set, wake them via @mention
             if new_assignee_agent:
                 if task.blocked_by_task_id:
-                    assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
+                    assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
                 else:
-                    assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' has been assigned to you. Please start working on it."
+                    assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (ID: {task.id}) has been assigned to you. Please start working on it. Update task status to 'in_progress' when starting and 'done' when finished."
                 await message_router.route_message(
                     text=assign_text,
                     sender_id="system",
@@ -230,19 +274,12 @@ class TaskTools:
         """Adds a comment to a task and broadcasts a chat notification."""
         async with async_session() as db:
             from core.memory.models import TaskComment
-            try:
-                task_uuid = uuid.UUID(task_id)
-            except (ValueError, AttributeError):
-                return f"Error: '{task_id}' is not a valid task ID."
-                
-            stmt = select(Task).where(Task.id == task_uuid)
-            result = await db.execute(stmt)
-            task = result.scalar_one_or_none()
+            task = await _resolve_task(db, task_id)
             if not task:
                 return f"Error: Task '{task_id}' not found."
                 
             comment = TaskComment(
-                task_id=task_uuid,
+                task_id=task.id,
                 author_id=author_id,
                 author_name=author_name,
                 text=text
@@ -255,7 +292,13 @@ class TaskTools:
             await event_bus.publish(f"team:{team_id_str}", {
                 "type": "task_update",
                 "action": "updated",
-                "task": {"id": str(task.id)}
+                "task": {
+                    "id": str(task.id),
+                    "title": task.title,
+                    "status": task.status,
+                    "description": task.description,
+                    "assigned_agent_id": str(task.assigned_agent_id) if task.assigned_agent_id else None,
+                }
             })
 
             from core.chat.message_router import message_router

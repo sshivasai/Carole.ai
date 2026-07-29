@@ -53,16 +53,31 @@ async def _ensure_browser():
     return _browser
 
 
+MAX_BROWSER_CONTEXTS = 5
+
+
 async def get_page(agent_id: str):
     """
     Returns an isolated browser Page for the given agent.
     Creates a new BrowserContext and Page if one doesn't exist yet.
     The same page is reused across tool calls to maintain navigation state.
+    Limits active contexts to MAX_BROWSER_CONTEXTS to prevent RAM bloat.
     """
     browser = await _ensure_browser()
 
     async with _lock:
         if agent_id not in _contexts:
+            # Enforce max context cap with LRU eviction
+            if len(_contexts) >= MAX_BROWSER_CONTEXTS:
+                oldest_id = next(iter(_contexts))
+                oldest_ctx = _contexts.pop(oldest_id, None)
+                if oldest_ctx:
+                    try:
+                        await oldest_ctx.close()
+                        logger.info("🌐 [BrowserPool] Evicted oldest browser context (%s) to maintain cap of %d.", oldest_id[:8], MAX_BROWSER_CONTEXTS)
+                    except Exception as e:
+                        logger.warning("Browser context eviction error: %s", e)
+
             ctx = await browser.new_context(
                 viewport={"width": 1280, "height": 900},
                 user_agent=(

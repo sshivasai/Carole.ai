@@ -7,7 +7,7 @@ A scratchpad is a per-agent (or shared team) notepad that agents use to keep
 partial plans, breadcrumbs, and cross-session notes.  Each team gets a directory
 under its workspace:
 
-    ~/.carole/workspaces/{project_slug}/{team_slug}/scratchpads/
+    ~/.carole/workspaces/{project_slug}/.carole/{team_slug}/scratchpads/
         TEAM_NOTES.md            <- shared / common pad
         {Agent_Name}.md          <- one personal pad per agent
 
@@ -117,7 +117,7 @@ class ScratchpadStore:
 
     async def _team_dir(self, team_id: str) -> Path:
         slugs = await self._resolve_slugs(team_id)
-        path = self.workspaces_dir / slugs["project_slug"] / slugs["team_slug"] / "scratchpads"
+        path = self.workspaces_dir / slugs["project_slug"] / ".carole" / slugs["team_slug"] / "scratchpads"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

@@ -429,24 +429,15 @@ class ToolExecutor:
 
         # 2. Judge — LLM-based review, then execute
         elif gate_level == "judge":
+            tx_id = str(uuid.uuid4())
             topic = f"team:{team_id}"
-            await event_bus.publish(topic, {
-                "type": "judge_review_request",
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "text": f"⚠️ Agent '{agent_name}' wants to run '{tool_name}'. Awaiting Judge AI appraisal..."
-            })
-            approved, reason = await judge_evaluator.evaluate(tool_name, arguments, agent_name, team_id=team_id)
-            if approved:
-                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
-            else:
-                # Trigger human override flow
-                tx_id = str(uuid.uuid4())
-                event = asyncio.Event()
-                pending_approvals[tx_id] = event
-
+            
+            # Setup human override event
+            event = asyncio.Event()
+            pending_approvals[tx_id] = event
+            
+            try:
+                # 1. Publish approval request to UI instantly
                 await event_bus.publish(topic, {
                     "type": "approval_request",
                     "tx_id": tx_id,
@@ -454,34 +445,86 @@ class ToolExecutor:
                     "agent_name": agent_name,
                     "tool_name": tool_name,
                     "arguments": arguments,
-                    "text": f"🛑 Judge DENIED execution: {reason}\nRequire human override to proceed."
+                    "text": f"⚠️ Judge AI is evaluating '{tool_name}'... (You can override now)"
                 })
-
-                logger.info(
-                    "🛑 [Executor] Judge denied agent '%s' tool=%s. Awaiting human override tx_id=%s",
-                    agent_name, tool_name, tx_id
+                
+                # 2. Start concurrent Judge evaluation
+                judge_task = asyncio.create_task(
+                    judge_evaluator.evaluate(tool_name, arguments, agent_name, team_id=team_id)
                 )
-
-                try:
-                    await asyncio.wait_for(event.wait(), timeout=APPROVAL_TIMEOUT_SECS)
-                except asyncio.TimeoutError:
-                    pending_approvals.pop(tx_id, None)
-                    approval_results.pop(tx_id, None)
-                    logger.warning(
-                        "[Executor] Override for tx_id=%s timed out after %ds — denying.",
-                        tx_id, APPROVAL_TIMEOUT_SECS
-                    )
+                human_task = asyncio.create_task(event.wait())
+                
+                logger.info("⚖️ [Executor] Racing Judge vs Human for agent '%s' tool=%s tx_id=%s", agent_name, tool_name, tx_id)
+                
+                # 3. Wait for the FIRST one to finish
+                done, pending = await asyncio.wait(
+                    [judge_task, human_task], 
+                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=APPROVAL_TIMEOUT_SECS
+                )
+                
+                if not done:
+                    # Both timed out
+                    judge_task.cancel()
+                    logger.warning("[Executor] Approval for tx_id=%s timed out after %ds.", tx_id, APPROVAL_TIMEOUT_SECS)
                     return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
-
-                override_approved = approval_results.pop(tx_id, False)
+                
+                if human_task in done:
+                    # Human answered first
+                    judge_task.cancel()
+                    override_approved = approval_results.get(tx_id, False)
+                    
+                    if override_approved:
+                        logger.info("✓ [Executor] tx_id=%s HUMAN APPROVED (preempted judge).", tx_id)
+                        return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
+                    else:
+                        logger.info("✗ [Executor] tx_id=%s HUMAN DENIED (preempted judge).", tx_id)
+                        return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
+                
+                if judge_task in done:
+                    # Judge answered first
+                    approved, reason = judge_task.result()
+                    if approved:
+                        human_task.cancel()
+                        logger.info("✓ [Executor] tx_id=%s JUDGE APPROVED.", tx_id)
+                        
+                        # Notify UI that approval is resolved so card can disappear
+                        await event_bus.publish(topic, {
+                            "type": "approval_resolved",
+                            "tx_id": tx_id,
+                            "status": "approved",
+                            "reason": reason
+                        })
+                        return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
+                    else:
+                        # Judge denied. We DO NOT cancel human task. We wait for human override!
+                        logger.info("🛑 [Executor] tx_id=%s JUDGE DENIED. Awaiting human override...", tx_id)
+                        
+                        # Update UI to show denial reason
+                        await event_bus.publish(topic, {
+                            "type": "approval_update",
+                            "tx_id": tx_id,
+                            "text": f"🛑 Judge DENIED execution: {reason}\nRequire human override to proceed."
+                        })
+                        
+                        # Wait for human task (remaining time)
+                        try:
+                            await asyncio.wait_for(human_task, timeout=APPROVAL_TIMEOUT_SECS)
+                        except asyncio.TimeoutError:
+                            logger.warning("[Executor] Override for tx_id=%s timed out after %ds.", tx_id, APPROVAL_TIMEOUT_SECS)
+                            return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
+                        
+                        override_approved = approval_results.get(tx_id, False)
+                        
+                        if override_approved:
+                            logger.info("✓ [Executor] tx_id=%s OVERRIDE APPROVED. Resuming...", tx_id)
+                            return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
+                        else:
+                            logger.info("✗ [Executor] tx_id=%s OVERRIDE DENIED.", tx_id)
+                            return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}' after Judge rejection."
+            finally:
                 pending_approvals.pop(tx_id, None)
-
-                if override_approved:
-                    logger.info("✓ [Executor] tx_id=%s OVERRIDE APPROVED. Resuming execution...", tx_id)
-                    return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
-                else:
-                    logger.info("✗ [Executor] tx_id=%s OVERRIDE DENIED. Cancelling execution...", tx_id)
-                    return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}' after Judge rejection."
+                approval_results.pop(tx_id, None)
 
         # 3. Human — block until user approves via POST /api/tools/approve/{tx_id}
         elif gate_level == "human":
@@ -491,42 +534,42 @@ class ToolExecutor:
             event = asyncio.Event()
             pending_approvals[tx_id] = event
 
-            await event_bus.publish(topic, {
-                "type": "approval_request",
-                "tx_id": tx_id,
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "text": f"🛑 Approval Required: Agent '{agent_name}' wants to execute '{tool_name}'."
-            })
-
-            logger.info(
-                "🛑 [Executor] Pausing agent '%s'. Awaiting human approval for tx_id=%s tool=%s",
-                agent_name, tx_id, tool_name
-            )
-
             try:
-                await asyncio.wait_for(event.wait(), timeout=APPROVAL_TIMEOUT_SECS)
-            except asyncio.TimeoutError:
-                # Clean up stale entries on timeout
+                await event_bus.publish(topic, {
+                    "type": "approval_request",
+                    "tx_id": tx_id,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "text": f"🛑 Approval Required: Agent '{agent_name}' wants to execute '{tool_name}'."
+                })
+
+                logger.info(
+                    "🛑 [Executor] Pausing agent '%s'. Awaiting human approval for tx_id=%s tool=%s",
+                    agent_name, tx_id, tool_name
+                )
+
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=APPROVAL_TIMEOUT_SECS)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[Executor] Approval for tx_id=%s timed out after %ds — denying.",
+                        tx_id, APPROVAL_TIMEOUT_SECS
+                    )
+                    return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
+
+                approved = approval_results.get(tx_id, False)
+
+                if approved:
+                    logger.info("✓ [Executor] tx_id=%s APPROVED. Resuming execution...", tx_id)
+                    return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
+                else:
+                    logger.info("✗ [Executor] tx_id=%s DENIED. Cancelling execution...", tx_id)
+                    return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
+            finally:
                 pending_approvals.pop(tx_id, None)
                 approval_results.pop(tx_id, None)
-                logger.warning(
-                    "[Executor] Approval for tx_id=%s timed out after %ds — denying.",
-                    tx_id, APPROVAL_TIMEOUT_SECS
-                )
-                return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
-
-            approved = approval_results.pop(tx_id, False)
-            pending_approvals.pop(tx_id, None)
-
-            if approved:
-                logger.info("✓ [Executor] tx_id=%s APPROVED. Resuming execution...", tx_id)
-                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
-            else:
-                logger.info("✗ [Executor] tx_id=%s DENIED. Cancelling execution...", tx_id)
-                return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
 
         else:
             return f"Error: Unknown tool permission gate level '{gate_level}'."
@@ -538,14 +581,21 @@ class ToolExecutor:
         context: ToolExecutionContext | None = None,
     ) -> str:
         """Executes the tool handler and emits file_change events for file operations."""
-        # Inject agent identity + snapshot context into args
+        # Inject agent identity + snapshot context into args.
+        # Shallow-copy first so we don't mutate the caller's dict or leak
+        # internal keys into persisted tool-call records.
+        arguments = {**arguments}
         arguments["_agent_id"] = agent_id
         arguments["_agent_name"] = agent_name
         arguments["_active_message_id"] = active_message_id  # used by write_file / edit_file for FileBackup
         arguments["_team_id"] = team_id
         if context:
             arguments["_context"] = context
-        result = await spec.handler(arguments, team_id)
+        try:
+            result = await spec.handler(arguments, team_id)
+        except Exception as e:
+            logger.exception("[Executor] Tool '%s' raised: %s", spec.name, e)
+            return f"Error: Tool '{spec.name}' raised an exception: {type(e).__name__}: {e}"
 
         # If the tool returned a FileChangeResult, emit a file_change event
         if isinstance(result, FileChangeResult):
@@ -564,6 +614,9 @@ class ToolExecutor:
                 await event_bus.publish("system:file_changes", event)
             return result.message
 
+        # Coerce non-string results to strings so execute() honors its -> str contract.
+        if not isinstance(result, str):
+            result = str(result) if result is not None else ""
         return result
 
 
@@ -639,8 +692,16 @@ async def _wrap_write_file(args: Dict[str, Any], team_id: str):
     content = args.get("content")
     agent_name = args.get("_agent_name", "Unknown")
     message_id = args.get("_active_message_id")
-    if not path or content is None:
-        return "Error: Missing parameter 'relative_path' or 'content'."
+    if not path:
+        return (
+            "Error: Missing required parameter 'relative_path'. "
+            "Usage: write_file(relative_path=\"path/to/file.py\", content=\"...\")"
+        )
+    if content is None:
+        return (
+            "Error: Missing required parameter 'content'. "
+            "Usage: write_file(relative_path=\"path/to/file.py\", content=\"...\")"
+        )
     try:
         await _check_active_editor_conflicts(path, agent_name)
     except Exception as e:
@@ -692,7 +753,8 @@ async def _snapshot_file(relative_path: str, team_id: str, message_id: str | Non
         backup_file_name = None
         if p.exists():
             path_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
-            history_dir = CAROLE_HOME_DIR / "file-history" / str(team_id)
+            team_carole_dir = await _ft.get_team_carole_dir(team_id)
+            history_dir = team_carole_dir / "file-history"
             history_dir.mkdir(parents=True, exist_ok=True)
             
             version = 1
@@ -1066,7 +1128,7 @@ async def _wrap_hire_subagent(args: Dict[str, Any], team_id: str) -> str:
 
 async def _wrap_send_message(args: Dict[str, Any], team_id: str) -> str:
     text = args.get("text") or args.get("message") or args.get("value", "")
-    sender = args.get("sender_id", "agent")
+    sender = args.get("_agent_id", "agent")
     recipient = args.get("recipient_name")
     if not text:
         return "Error: Missing 'text'."
@@ -1116,7 +1178,10 @@ async def _wrap_comment_on_task(args: Dict[str, Any], team_id: str) -> str:
 async def _wrap_read_scratchpad(args: Dict[str, Any], team_id: str) -> str:
     """Read the agent's personal scratchpad or the shared team scratchpad."""
     from core.memory.scratchpad import scratchpad_store
-    target = args.get("target", "personal")
+    # 'target' may arrive via the 'value' fallback key if arg parsing degraded
+    target = args.get("target") or args.get("value", "personal")
+    if target not in ("personal", "team"):
+        target = "personal"
     agent_name = args.get("_agent_name", "agent")
     result = await scratchpad_store.read(team_id, target, agent_name)
     content = result.get("content", "")
@@ -1128,10 +1193,15 @@ async def _wrap_write_scratchpad(args: Dict[str, Any], team_id: str) -> str:
     """Append (or overwrite) the agent's personal scratchpad or the shared team scratchpad."""
     from core.memory.scratchpad import scratchpad_store
     target = args.get("target", "personal")
-    content = args.get("content", "")
+    content = args.get("content")
     mode = args.get("mode", "append")  # 'append' or 'overwrite'
     agent_name = args.get("_agent_name", "agent")
     agent_id = args.get("_agent_id", "unknown")
+    if content is None:
+        return (
+            "Error: Missing required parameter 'content'. "
+            "Usage: write_scratchpad(content=\"your text here\", target='team')"
+        )
     result = await scratchpad_store.write(team_id, target, agent_name, content, mode=mode, agent_id=agent_id)
     if result.get("status") == "error":
         return f"Error: {result.get('error')}"
@@ -1142,9 +1212,14 @@ async def _wrap_update_scratchpad(args: Dict[str, Any], team_id: str) -> str:
     """Replace the full contents of the agent's personal or shared team scratchpad."""
     from core.memory.scratchpad import scratchpad_store
     target = args.get("target", "personal")
-    content = args.get("content", "")
+    content = args.get("content")
     agent_name = args.get("_agent_name", "agent")
     agent_id = args.get("_agent_id", "unknown")
+    if content is None:
+        return (
+            "Error: Missing required parameter 'content'. "
+            "Usage: update_scratchpad(content=\"your text here\", target='team')"
+        )
     result = await scratchpad_store.update(team_id, target, agent_name, content, agent_id=agent_id)
     if result.get("status") == "error":
         return f"Error: {result.get('error')}"
@@ -1154,10 +1229,14 @@ async def _wrap_update_scratchpad(args: Dict[str, Any], team_id: str) -> str:
 async def _wrap_clear_scratchpad(args: Dict[str, Any], team_id: str) -> str:
     """Delete/clear the agent's personal or shared team scratchpad."""
     from core.memory.scratchpad import scratchpad_store
-    target = args.get("target", "personal")
+    target = args.get("target") or args.get("value", "personal")
+    if target not in ("personal", "team"):
+        target = "personal"
     agent_name = args.get("_agent_name", "agent")
     agent_id = args.get("_agent_id", "unknown")
     result = await scratchpad_store.delete(team_id, target, agent_name, agent_id=agent_id)
+    if result.get("status") == "error":
+        return f"Error: {result.get('error')}"
     return f"✓ Cleared {result.get('label')}."
 
 
@@ -1265,9 +1344,12 @@ async def _wrap_move_file(args: Dict[str, Any], team_id: str) -> str:
     return await file_tools.move_file(src, dst, project_id=project_id)
 
 async def _wrap_create_directory(args: Dict[str, Any], team_id: str) -> str:
-    path = args.get("path") or args.get("relative_path", "")
+    path = args.get("path") or args.get("relative_path") or args.get("value", "")
     if not path:
-        return "Error: Missing 'path'."
+        return (
+            "Error: Missing required parameter 'path'. "
+            "Usage: create_directory(path=\"my_new_folder\")"
+        )
     project_id = await _team_project_id(team_id)
     return await file_tools.create_directory(path, project_id=project_id)
 
@@ -1348,6 +1430,7 @@ async def _wrap_create_meeting(args: Dict[str, Any], team_id: str) -> str:
     attendees_emails = args.get("attendees_emails", [])
     if not summary or not start_time_iso or not end_time_iso:
         return "Error: Missing 'summary', 'start_time_iso', or 'end_time_iso'."
+    # create_meeting is a sync function (not a coroutine), so no await is needed.
     return create_meeting(summary, start_time_iso, end_time_iso, attendees_emails)
 
 async def _wrap_send_email(args: Dict[str, Any], team_id: str) -> str:
@@ -1356,6 +1439,7 @@ async def _wrap_send_email(args: Dict[str, Any], team_id: str) -> str:
     body = args.get("body", "")
     if not to_email or not subject or not body:
         return "Error: Missing 'to_email', 'subject', or 'body'."
+    # send_email is a sync function (not a coroutine), so no await is needed.
     return send_email(to_email, subject, body)
 
 async def _wrap_generate_mom(args: Dict[str, Any], team_id: str) -> str:

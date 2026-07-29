@@ -43,7 +43,32 @@ from core.llm.model_catalog import load_model_catalog, get_active_catalog  # noq
 
 class MultiModelRouter:
     def __init__(self):
+        # FIX H3: Shared persistent httpx client with connection pooling.
+        # Previously each LLM call opened a new TCP connection (100-300ms overhead).
+        # A persistent client reuses connections via HTTP keep-alive, dramatically
+        # reducing per-request latency.
+        #   - max_connections=50: enough for concurrent multi-agent workloads
+        #   - max_keepalive_connections=20: keep warm connections for most-used providers
+        #   - keepalive_expiry=30s: close idle connections before server-side timeout
+        self._http_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=50,
+                max_keepalive_connections=20,
+                keepalive_expiry=30.0,
+            ),
+            timeout=httpx.Timeout(
+                connect=10.0,    # TCP connect
+                read=300.0,      # streaming read (long for slow models)
+                write=30.0,
+                pool=5.0,
+            ),
+            http2=True,          # Enable HTTP/2 where supported (Anthropic, OpenAI)
+        )
         self.reload_config()
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client. Call on application shutdown."""
+        await self._http_client.aclose()
 
     def reload_config(self) -> None:
         """
@@ -527,33 +552,32 @@ class MultiModelRouter:
             f":streamGenerateContent?alt=sse&key={self.gemini_key}"
         )
 
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            try:
-                async with client.stream("POST", url, json=payload) as response:
-                    if response.status_code != 200:
-                        err_body = await response.aread()
-                        yield f"[Gemini API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
-                        return
+        try:
+            async with self._http_client.stream("POST", url, json=payload) as response:
+                if response.status_code != 200:
+                    err_body = await response.aread()
+                    yield f"[Gemini API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
+                    return
 
-                    async for line in response.aiter_lines():
-                        if line.startswith("data:"):
-                            data_str = line[5:].strip()
-                            if not data_str or data_str == "[DONE]":
-                                continue
-                            try:
-                                data = json.loads(data_str)
-                                candidates = data.get("candidates", [])
-                                if candidates:
-                                    content = candidates[0].get("content", {})
-                                    parts = content.get("parts", [])
-                                    for part in parts:
-                                        text = part.get("text", "")
-                                        if text:
-                                            yield text
-                            except json.JSONDecodeError:
-                                continue
-            except Exception as e:
-                yield f"[Router Connection Exception (Gemini): {str(e)}]"
+                async for line in response.aiter_lines():
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if not data_str or data_str == "[DONE]":
+                            continue
+                        try:
+                            data = json.loads(data_str)
+                            candidates = data.get("candidates", [])
+                            if candidates:
+                                content = candidates[0].get("content", {})
+                                parts = content.get("parts", [])
+                                for part in parts:
+                                    text = part.get("text", "")
+                                    if text:
+                                        yield text
+                        except json.JSONDecodeError:
+                            continue
+        except Exception as e:
+            yield f"[Router Connection Exception (Gemini): {str(e)}]"
 
     # ================================================================
     # Shared SSE streaming with retry
@@ -569,51 +593,60 @@ class MultiModelRouter:
         """
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=90.0) as client:
-                    async with client.stream("POST", url, headers=headers, json=payload) as response:
-                        if response.status_code == 429:
-                            # Rate limited — backoff and retry
-                            wait = (2 ** attempt) * 2
-                            print(f"⚠️ [Router] Rate limited (429). Retrying in {wait}s... (attempt {attempt+1}/{max_retries})")
-                            await asyncio.sleep(wait)
+                async with self._http_client.stream("POST", url, headers=headers, json=payload) as response:
+                    if response.status_code == 429:
+                        # Rate limited — backoff and retry
+                        wait = (2 ** attempt) * 2
+                        import logging as _log
+                        _log.getLogger("carole.router").warning(
+                            "Rate limited (429). Retrying in %ds... (attempt %d/%d)", wait, attempt + 1, max_retries
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+
+                    if response.status_code >= 500:
+                        wait = (2 ** attempt) * 1
+                        import logging as _log
+                        _log.getLogger("carole.router").warning(
+                            "Server error (%d). Retrying in %ds...", response.status_code, wait
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+
+                    if response.status_code != 200:
+                        err_body = await response.aread()
+                        yield f"[API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
+                        return
+
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
                             continue
-
-                        if response.status_code >= 500:
-                            wait = (2 ** attempt) * 1
-                            print(f"⚠️ [Router] Server error ({response.status_code}). Retrying in {wait}s...")
-                            await asyncio.sleep(wait)
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            content, _ = self._extract_text_from_sse(data, parse_format)
+                            if content:
+                                yield content
+                        except json.JSONDecodeError:
                             continue
-
-                        if response.status_code != 200:
-                            err_body = await response.aread()
-                            yield f"[API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
-                            return
-
-                        async for line in response.aiter_lines():
-                            if not line.startswith("data:"):
-                                continue
-                            data_str = line[5:].strip()
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                content, _ = self._extract_text_from_sse(data, parse_format)
-                                if content:
-                                    yield content
-                            except json.JSONDecodeError:
-                                continue
-                        return  # Success — don't retry
+                    return  # Success — don't retry
 
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 wait = (2 ** attempt) * 1
                 if attempt < max_retries - 1:
-                    print(f"⚠️ [Router] Connection error: {e}. Retrying in {wait}s... (attempt {attempt+1}/{max_retries})")
+                    import logging as _log
+                    _log.getLogger("carole.router").warning(
+                        "Connection error: %s. Retrying in %ds... (attempt %d/%d)", e, wait, attempt + 1, max_retries
+                    )
                     await asyncio.sleep(wait)
                 else:
                     yield f"[Router Connection Error after {max_retries} retries: {str(e)}]"
             except Exception as e:
                 yield f"[Router Exception: {str(e)}]"
                 return
+
 
     @staticmethod
     def _extract_text_from_sse(data: dict, parse_format: str) -> tuple[str, str]:

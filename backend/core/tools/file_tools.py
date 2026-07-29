@@ -102,6 +102,37 @@ class FileTools:
         self._team_workspace_cache[team_id] = root
         return root
 
+    async def get_team_carole_dir(self, team_id: str) -> Path:
+        """Resolve a team_id to its hidden .carole directory.
+        
+        Returns workspaces_dir / project_slug / .carole / team_slug
+        """
+        project_slug = team_id
+        team_slug = team_id
+
+        try:
+            import uuid as _uuid
+            from core.memory.database import async_session
+            from core.memory.models import Team, Project
+            from sqlalchemy import select
+            team_uuid = _uuid.UUID(team_id)
+            async with async_session() as db:
+                team = (await db.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
+                if team:
+                    team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-') or str(team.id)[:8]
+                    project = (await db.execute(select(Project).where(Project.id == team.project_id))).scalar_one_or_none()
+                    if project:
+                        project_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-') or str(project.id)[:8]
+                    else:
+                        project_slug = str(team.project_id)
+        except Exception:
+            pass
+
+        workspaces_dir = CAROLE_HOME_DIR / "workspaces"
+        carole_dir = workspaces_dir / project_slug / ".carole" / team_slug
+        carole_dir.mkdir(parents=True, exist_ok=True)
+        return carole_dir
+
     async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None, allow_out_of_bounds: bool = False) -> Path:
         root = await self.get_workspace_root(project_id)
         joined_path = Path(root / relative_path)

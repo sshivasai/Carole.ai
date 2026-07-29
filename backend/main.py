@@ -59,6 +59,9 @@ logger = logging.getLogger("carole")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
+    from core.auth.auth_service import validate_auth_config
+    validate_auth_config()
+
     logger.info("🚀 [Lifespan] Initializing Database Connection Pool...")
     try:
         await init_db()
@@ -122,15 +125,41 @@ async def lifespan(app: FastAPI):
         logger.error("✗ [Lifespan] Failed to restore MCP servers: %s", e)
 
     # Start background Dream Worker
+    # FIX B1: Store strong reference in app.state so asyncio cannot garbage-collect the task.
     logger.info("🚀 [Lifespan] Starting Background 'Dream' Worker...")
-    dream_task = asyncio.create_task(dream_worker.start())
+    dream_task = asyncio.create_task(dream_worker.start(), name="dream_worker")
+
+    # FIX B4: Periodic EventBus topic sweeper — cleans up inactive topics every 5 min.
+    # Prevents the event bus subscriber dict from growing unbounded over a long server uptime.
+    async def _topic_sweeper():
+        while True:
+            await asyncio.sleep(300)  # every 5 minutes
+            try:
+                swept = await event_bus.clean_inactive_topics()
+                if swept:
+                    logger.debug("🧹 [TopicSweeper] Cleaned %d inactive topics.", swept)
+            except Exception as sweep_err:
+                logger.warning("Topic sweeper error: %s", sweep_err)
+
+    sweeper_task = asyncio.create_task(_topic_sweeper(), name="topic_sweeper")
+
+    # Store all background task references in app.state
+    app.state.background_tasks = [dream_task, sweeper_task]
 
     yield  # Server is now running
 
     # --- SHUTDOWN ---
     logger.info("🛑 [Lifespan] Cleaning up resources...")
     dream_worker.stop()
-    dream_task.cancel()
+
+    # Cancel and await all background tasks gracefully
+    for bg_task in getattr(app.state, "background_tasks", []):
+        if not bg_task.done():
+            bg_task.cancel()
+    _bg_tasks = getattr(app.state, "background_tasks", [])
+    if _bg_tasks:
+        await asyncio.gather(*_bg_tasks, return_exceptions=True)
+        logger.info("✓ [Lifespan] All background tasks stopped.")
 
     # Close browser contexts
     try:
@@ -138,6 +167,28 @@ async def lifespan(app: FastAPI):
         await close_all()
     except Exception as e:
         logger.warning("Browser pool cleanup error: %s", e)
+
+    # Close MCP Manager connections
+    try:
+        from core.tools.mcp_client import mcp_manager
+        await mcp_manager.shutdown()
+    except Exception as e:
+        logger.warning("MCP Manager cleanup error: %s", e)
+
+    # Close shared LLM router httpx connection pool (FIX H3)
+    try:
+        from core.llm.multi_model_router import llm_router
+        await llm_router.aclose()
+        logger.info("✓ [Lifespan] LLM router HTTP client closed.")
+    except Exception as e:
+        logger.warning("LLM router cleanup error: %s", e)
+
+    # Close Database connection pool
+    try:
+        from core.memory.database import engine
+        await engine.dispose()
+    except Exception as e:
+        logger.warning("Database dispose error: %s", e)
 
 
 app = FastAPI(title="Carole.ai Backend", version="0.2.0", lifespan=lifespan)
@@ -288,8 +339,13 @@ async def websocket_endpoint(websocket: WebSocket, team_id: str):
         except Exception as e:
             logger.exception("Unexpected error in send_to_client for team %s: %s", team_id, e)
 
+    task1 = asyncio.create_task(receive_from_client())
+    task2 = asyncio.create_task(send_to_client())
+
     try:
-        await asyncio.gather(receive_from_client(), send_to_client())
+        done, pending = await asyncio.wait([task1, task2], return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
     finally:
         await event_bus.unsubscribe(topic, event_queue)
 

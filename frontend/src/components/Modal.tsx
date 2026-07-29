@@ -40,7 +40,7 @@ export default function Modal({ open, onClose, title, children, maxWidth = 480, 
         style={{ maxWidth }}
       >
         {(title || !hideClose) && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--sp-2xl)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--sp-2xl)", flexShrink: 0 }}>
             {title && <h2 className="display-md">{title}</h2>}
             {!hideClose && (
               <button
@@ -54,7 +54,9 @@ export default function Modal({ open, onClose, title, children, maxWidth = 480, 
             )}
           </div>
         )}
-        {children}
+        <div style={{ overflowY: "auto", maxHeight: "calc(90vh - 120px)" }} className="modal-content">
+          {children}
+        </div>
       </div>
     </div>
   );

@@ -98,6 +98,20 @@ class EventBus:
         topic = f"agent:{agent_id}"
         await self.publish(topic, message)
 
+    async def clean_inactive_topics(self) -> int:
+        """Evicts topic history entries for topics that have 0 active subscribers.
+        Returns the number of topics pruned."""
+        async with self._lock:
+            empty_topics = [
+                topic for topic in self._history
+                if not self._subscribers.get(topic)
+            ]
+            for topic in empty_topics:
+                del self._history[topic]
+            if empty_topics:
+                logger.debug("EventBus: Pruned %d inactive topic history entries.", len(empty_topics))
+            return len(empty_topics)
+
     def get_history(self, topic: str) -> List[dict]:
         """Returns the event history for a topic."""
         return list(self._history.get(topic, []))

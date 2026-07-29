@@ -97,10 +97,10 @@ class ToolRegistry:
             if spec.agent_id is not None and spec.agent_id != agent_id:
                 continue
 
-            params_desc = ", ".join(
-                f"{k}: {v.get('type', 'string')}"
+            params_desc = "{" + ", ".join(
+                f'"{k}": {v.get("type", "string")}'
                 for k, v in spec.parameters.items()
-            ) if spec.parameters else "none"
+            ) + "}" if spec.parameters else "{}"
             lines.append(
                 f"- {spec.name}({params_desc}): {spec.description} "
                 f"[category={spec.category}, permission={spec.permission_default}]"

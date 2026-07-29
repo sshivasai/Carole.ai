@@ -461,12 +461,40 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
 # ============================================================
 
 @router.delete("/projects/{project_id}")
-async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_project(project_id: str, delete_content: bool = False, db: AsyncSession = Depends(get_db)):
+    if delete_content:
+        import shutil
+        from core.tools.file_tools import file_tools
+        try:
+            workspace_dir = await file_tools.get_workspace_root(project_id)
+            if workspace_dir.exists() and workspace_dir.name != "workspaces":
+                shutil.rmtree(str(workspace_dir))
+        except Exception as e:
+            import logging
+            logging.getLogger("carole.crud").warning("Failed to delete project folder: %s", e)
+
     await db.execute(delete(Project).where(Project.id == uuid.UUID(project_id)))
     return {"status": "deleted", "id": project_id}
 
 @router.delete("/teams/{team_id}")
-async def delete_team(team_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_team(team_id: str, delete_content: bool = False, db: AsyncSession = Depends(get_db)):
+    if delete_content:
+        import shutil
+        import re
+        from core.tools.file_tools import file_tools
+        try:
+            result = await db.execute(select(Team).where(Team.id == uuid.UUID(team_id)))
+            team = result.scalar_one_or_none()
+            if team:
+                workspace_dir = await file_tools.get_workspace_root(str(team.project_id))
+                team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-')
+                team_dir = workspace_dir / team_slug
+                if team_dir.exists():
+                    shutil.rmtree(str(team_dir))
+        except Exception as e:
+            import logging
+            logging.getLogger("carole.crud").warning("Failed to delete team folder: %s", e)
+
     await db.execute(delete(Team).where(Team.id == uuid.UUID(team_id)))
     return {"status": "deleted", "id": team_id}
 
@@ -526,7 +554,37 @@ async def list_messages(team_id: str, limit: int = 100, db: AsyncSession = Depen
     ]
 
 
+
+
+@router.get("/messages/search/{team_id}")
+async def search_messages(team_id: str, q: str = "", limit: int = 20, db: AsyncSession = Depends(get_db)):
+    """Full-text search over persisted messages for a team."""
+    if not q.strip():
+        return []
+    result = await db.execute(
+        select(Message)
+        .where(Message.team_id == uuid.UUID(team_id))
+        .where(Message.text.ilike(f"%{q}%"))
+        .order_by(Message.created_at.desc())
+        .limit(limit)
+    )
+    messages = result.scalars().all()
+    return [
+        {
+            "id": str(m.id), "sender_id": m.sender_id,
+            "sender_name": getattr(m, "sender_name", None),
+            "text": m.text,
+            "created_at": (m.created_at.isoformat() + "Z") if m.created_at else None,
+            "reasoning": getattr(m, "reasoning_text", None),
+            "attachments": getattr(m, "attachments", []) or [],
+            "is_intermediate": getattr(m, "is_intermediate", False),
+        }
+        for m in messages
+    ]
+
+
 # ─── Scratchpad endpoints live in core/api/scratchpad_routes.py ──────────────
+
 
 
 import os
@@ -572,7 +630,9 @@ async def upload_file(file: UploadFile = File(...), team_id: Optional[str] = Non
                         import re
                         proj_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
                         team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-')
-                        upload_dir = str(CAROLE_HOME_DIR / "workspaces" / proj_slug / team_slug / "Chat_Media")
+                        from core.tools.file_tools import file_tools
+                        team_carole_dir = await file_tools.get_team_carole_dir(team_id)
+                        upload_dir = str(team_carole_dir / "Chat_Media")
                         os.makedirs(upload_dir, exist_ok=True)
                         url_path = f"/api/media/{proj_slug}/{team_slug}/{filename}"
             except Exception as e:
@@ -625,7 +685,7 @@ async def get_chat_media(project_slug: str, team_slug: str, filename: str):
         if ".." in part or "/" in part or "\\" in part:
             raise HTTPException(status_code=400, detail="Invalid path component")
         
-    file_path = CAROLE_HOME_DIR / "workspaces" / project_slug / team_slug / "Chat_Media" / filename
+    file_path = CAROLE_HOME_DIR / "workspaces" / project_slug / ".carole" / team_slug / "Chat_Media" / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
         
@@ -739,7 +799,9 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
                     deleted_files.append(bk.file_path)
                 else:
                     # File was modified — restore original from copy-on-write buffer
-                    history_dir = CAROLE_HOME_DIR / "file-history" / team_id_str
+                    from core.tools.file_tools import file_tools
+                    team_carole_dir = await file_tools.get_team_carole_dir(team_id_str)
+                    history_dir = team_carole_dir / "file-history"
                     backup_path = history_dir / bk.backup_file_name
                     
                     if backup_path.exists():

@@ -16,6 +16,42 @@ from pathlib import Path
 from typing import Optional
 
 
+import urllib.parse
+import ipaddress
+import re
+
+
+def _validate_git_url(url: str) -> Optional[str]:
+    """Validates git clone URL to prevent SSRF targeting internal hosts/IPs."""
+    url_str = (url or "").strip()
+    if not url_str:
+        return "Error: Git URL cannot be empty."
+
+    # Allow standard SSH git syntax: git@github.com:user/repo.git
+    if re.match(r"^git@[a-zA-Z0-9.\-]+:[a-zA-Z0-9_\-/\.]+(\.git)?$", url_str):
+        return None
+
+    parsed = urllib.parse.urlparse(url_str)
+    if parsed.scheme not in ["https", "http", "git", "ssh"]:
+        return f"Error: Untrusted git URL scheme '{parsed.scheme}'. Only https, http, git, and ssh are allowed."
+
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return "Error: Invalid Git URL — missing hostname."
+
+    if hostname in ["localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254"]:
+        return f"Error: Target host '{hostname}' is restricted."
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            return f"Error: Target IP address '{hostname}' is in a restricted private range."
+    except ValueError:
+        pass  # Hostname is a domain name
+
+    return None
+
+
 class GitTools:
     def __init__(self, workspace_root: str = None):
         if not workspace_root:
@@ -97,6 +133,9 @@ class GitTools:
 
     async def clone(self, url: str, directory: str = None, cwd: Optional[str] = None) -> str:
         """Clones a repository into the workspace."""
+        val_err = _validate_git_url(url)
+        if val_err:
+            return val_err
         args = ["clone", url]
         if directory:
             args.append(directory)

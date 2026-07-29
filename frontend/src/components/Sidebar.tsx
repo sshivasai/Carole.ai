@@ -111,10 +111,6 @@ export default function Sidebar({
       {/* Logo */}
       <div className={styles.sidebarLogo}>
         <div className={styles.sidebarLogoMark}>C</div>
-        <div style={{ flex: 1, overflow: "hidden" }}>
-          <div className={styles.sidebarLogoText}>Carole.ai</div>
-          <div className={styles.sidebarLogoSub}>v0.2 · multi-agent</div>
-        </div>
         <button className={styles.collapseBtn} onClick={() => setIsCollapsed(true)} title="Collapse Sidebar">
           <ChevronLeft size={16} />
         </button>

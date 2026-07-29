@@ -20,17 +20,18 @@ const HEARTBEAT_INTERVAL_MS = 25_000;
  * - No heartbeat → 25s ping to keep alive through load balancers / proxies
  * - isMounted guard prevents state updates after unmount (no React warnings)
  */
-export function useWebSocket(teamId: string | null) {
+export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => void) {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
-  const [events, setEvents] = useState<WSEvent[]>([]);
+  const eventQueue = useRef<WSEvent[]>([]);
+  const flushTimer = useRef<NodeJS.Timeout | null>(null);
   const reconnectTimer = useRef<NodeJS.Timeout | null>(null);
   const heartbeatTimer = useRef<NodeJS.Timeout | null>(null);
   const attemptRef = useRef(0);
   const isMounted = useRef(true);
   // Holds the latest `connect` so the reconnect timer always calls the current
   // version (avoids a stale closure and the use-before-declaration warning).
-  const connectRef = useRef<() => void>(() => {});
+  const connectRef = useRef<() => void>(() => { });
 
   const stopHeartbeat = useCallback(() => {
     if (heartbeatTimer.current) {
@@ -70,7 +71,20 @@ export function useWebSocket(teamId: string | null) {
         const event: WSEvent = JSON.parse(e.data);
         // Ignore server pong echoes
         if ((event as any).type === "pong") return;
-        setEvents((prev) => [...prev, event]);
+
+        eventQueue.current.push(event);
+        if (!flushTimer.current) {
+          flushTimer.current = setTimeout(() => {
+            if (isMounted.current) {
+              const currentEvents = [...eventQueue.current];
+              if (onEvent) {
+                currentEvents.forEach(evt => onEvent(evt));
+              }
+            }
+            eventQueue.current = [];
+            flushTimer.current = null;
+          }, 0);
+        }
       } catch {
         console.warn("Failed to parse WS message:", e.data);
       }
@@ -106,6 +120,7 @@ export function useWebSocket(teamId: string | null) {
     return () => {
       isMounted.current = false;
       stopHeartbeat();
+      if (flushTimer.current) clearTimeout(flushTimer.current);
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
@@ -123,7 +138,9 @@ export function useWebSocket(teamId: string | null) {
     }
   }, []);
 
-  const clearEvents = useCallback(() => setEvents([]), []);
+  const clearEvents = useCallback(() => {
+    eventQueue.current = [];
+  }, []);
 
-  return { connected, events, sendMessage, sendRaw, clearEvents };
+  return { connected, sendMessage, sendRaw, clearEvents };
 }

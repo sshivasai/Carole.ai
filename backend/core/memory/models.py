@@ -225,7 +225,7 @@ class FileBackup(Base):
     Uses an append-only, copy-on-write file backup strategy similar to Claude Code.
     
     - `backup_file_name = None`  → file did not exist before; rollback should unlink/delete the file.
-    - `backup_file_name = str`   → SHA-256 hash filename in `~/.carole/file-history/{team_id}/`. Rollback should copy this over the live file.
+    - `backup_file_name = str`   → SHA-256 hash filename in `~/.carole/workspaces/{project_slug}/.carole/{team_slug}/file-history/`. Rollback should copy this over the live file.
     - `operation`                → 'write' or 'edit', for debugging/auditing.
     """
     __tablename__ = "file_backups"
