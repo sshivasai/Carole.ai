@@ -637,28 +637,29 @@ class ReACTAgent:
                     "let me write", "let me create", "let me execute", "running the command",
                     "saving to", "creating file",
                     # Step narration triggers — agent describing what it WILL do without doing it
-                    "step 1:", "step 2:", "step 3:", "step 4:",
-                    "let me start", "let me now", "let me first",
                     "i'll now", "i will now", "i'll move on", "i'll work on", "i will work on",
-                    "i'll get that set up", "i'll finalize", "i'll add", "i'll build",
+                    "i'll get that set up", "i'll finalize", "i'll build",
                     "next, i'll", "next i'll", "now i'll", "now i will",
-                    "i'll proceed", "first, i'll", "first i'll",
+                    "i'll proceed", "first, i'll",
                     "let me handle", "let me proceed",
                 ]
+                # Only match actual snake_case tool call patterns (e.g. write_file(), execute_command()),
+                # NOT any word followed by a paren (which falsely fires on "README.md (see above)")
                 looks_like_tool_call = any(
                     sig in _lower for sig in action_promise_triggers
-                ) or bool(re.search(r"\w+\s*\(", thought_buffer[-200:]))
+                ) or bool(re.search(r"\b[a-z]+(?:_[a-z]+)+\s*\(", thought_buffer[-200:]))
 
                 # Detect plan-only responses: model outputs a numbered plan/steps
                 # list AND contains intent language but no ACTION tag was found.
                 # This is the classic "I'll create X... I'll create Y... [stops]" failure.
-                has_numbered_plan = bool(re.search(r"^\s*\d+[\.\)]\s+\S", thought_buffer, re.MULTILINE))
-                has_plan_header = any(p in _lower for p in ["plan:", "steps:", "here's my plan", "here is my plan", "my plan is", "the plan is"])
+                # Only trigger on the very first loop to avoid flagging long multi-step final answers.
+                has_numbered_plan = bool(re.search(r"^\s*\d+[\.\)]\s+\S", thought_buffer, re.MULTILINE)) and loop_count <= 1
+                has_plan_header = any(p in _lower for p in ["plan:", "here's my plan", "here is my plan", "my plan is", "the plan is"]) and loop_count <= 1
 
                 # Detect code-in-chat: model pastes ``` code blocks instead of using write_file.
                 has_code_block = bool(re.search(r"```[\w\-]*\n[\s\S]{50,}", thought_buffer))
 
-                is_plan_without_action = (has_numbered_plan or has_plan_header) and loop_count <= 2
+                is_plan_without_action = (has_numbered_plan or has_plan_header)
                 is_code_in_chat = has_code_block and loop_count <= max_loops - 1
 
                 if (looks_like_tool_call or is_plan_without_action or is_code_in_chat) and loop_count < max_loops - 1:

@@ -715,8 +715,8 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
           const finalReasoning = rawReasoning ? (rawReasoning + "\n\n" + embeddedReasoning).trim() : embeddedReasoning.trim();
           let markdownText = cleanText;
-          // Render @file:path references as clickable chips that open the file
-          // in the explorer (instead of raw @file:... text).
+          // Render @file:path references and bare file names as clickable links
+          // that open the file in the explorer.
           if (onOpenFile) {
             markdownText = markdownText.replace(
               /(^|[^`])@file:(\S+)/g,
@@ -726,6 +726,19 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                 return `${pre}[\`📄 ${base}\`](file:${path})`;
               }
             );
+
+            // Linkify bare file names (e.g., README.md, src/main.py)
+            // Split text by markdown code blocks or markdown links to avoid breaking them
+            const parts = markdownText.split(/(```[\s\S]*?```|`[^`]*`|\[.*?\]\(.*?\))/g);
+            // Matches file paths with common extensions, bounded by whitespace or punctuation
+            const fileRegex = /(^|\s|'|"|\()([a-zA-Z0-9_./-]+\.(?:md|ts|tsx|js|jsx|py|html|css|json|txt|yml|yaml|sh|bash|ini|env))(?=$|\s|'|"|\)|,|\.|\!|\?)/gi;
+            
+            markdownText = parts.map((part, i) => {
+              if (i % 2 === 0) {
+                return part.replace(fileRegex, '$1[$2](file:$2)');
+              }
+              return part;
+            }).join('');
           }
           if (searchMode && searchQuery.trim()) {
             const safeQuery = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
