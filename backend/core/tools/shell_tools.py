@@ -127,6 +127,13 @@ class ShellTools:
         full_stdout = "".join(stdout_chunks)
         full_stderr = "".join(stderr_chunks)
 
+        # Truncate to prevent context window overflow from verbose commands
+        MAX_SHELL_OUTPUT = 8000
+        if len(full_stdout) > MAX_SHELL_OUTPUT:
+            full_stdout = full_stdout[:MAX_SHELL_OUTPUT] + f"\n... [Output truncated — {len(''.join(stdout_chunks))} total chars. Use read_file to see full output if saved to a file.]"
+        if len(full_stderr) > MAX_SHELL_OUTPUT:
+            full_stderr = full_stderr[:MAX_SHELL_OUTPUT] + f"\n... [Stderr truncated — {len(''.join(stderr_chunks))} total chars]"
+
         if process.returncode != 0:
             return (
                 f"✗ Command failed with exit code {process.returncode}.\n"

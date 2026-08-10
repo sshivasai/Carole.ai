@@ -56,14 +56,14 @@ class AutoDreamWorker:
         logger.info("💤 [Dream Worker] Started. Consolidating every %d minutes.", self.interval)
 
         while self._running:
-            cycle_start = asyncio.get_event_loop().time()
+            cycle_start = asyncio.get_running_loop().time()
             try:
                 await self.consolidate_all_teams()
             except Exception as e:
                 logger.exception("✗ [Dream Worker] Error during consolidation cycle: %s", e)
 
             # Sleep for the remainder of the interval, accounting for cycle duration
-            elapsed = asyncio.get_event_loop().time() - cycle_start
+            elapsed = asyncio.get_running_loop().time() - cycle_start
             sleep_for = max(0.0, self.interval * 60 - elapsed)
             await asyncio.sleep(sleep_for)
 
@@ -180,6 +180,17 @@ class AutoDreamWorker:
                 combined_text = f"{task_summary} | {lesson_rule}"
                 embedding = await llm_router.generate_embeddings(combined_text)
 
+                # Deduplication check
+                existing = await lancedb_client.search_learnings(
+                    vector=embedding,
+                    project_id=team.project_id,
+                    team_id=team.id,
+                    limit=1
+                )
+                if existing and existing[0].get("_distance", 1.0) < 0.15:
+                    logger.debug("💤 [Dream] Team '%s': Skipping duplicate lesson", team.name)
+                    continue
+
                 learning = Learning(
                     project_id=team.project_id,
                     team_id=team.id,
@@ -210,15 +221,23 @@ class AutoDreamWorker:
         """Parses JSON extraction output containing category, task_summary, and content."""
         import json
         
+        import re
+        
         text = text.strip()
-        # Remove potential markdown code blocks
-        if text.startswith("```json"):
-            text = text[7:]
-        elif text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+        
+        # Try to find a JSON array block if there is conversational filler
+        match = re.search(r'\[\s*\{.*?\}\s*\]', text, re.DOTALL)
+        if match:
+            text = match.group(0)
+        else:
+            # Fallback for codeblock stripping
+            if text.startswith("```json"):
+                text = text[7:]
+            elif text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
 
         lessons = []
         try:

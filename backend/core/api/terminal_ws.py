@@ -1,4 +1,4 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 import asyncio
 import subprocess
 import threading
@@ -15,6 +15,7 @@ except ImportError:
     HAS_WINPTY = False
 
 from core.tools.file_tools import file_tools
+from core.auth.auth_service import _decode_jwt
 
 router = APIRouter(prefix="/api/terminal", tags=["terminal"])
 logger = logging.getLogger(__name__)
@@ -165,7 +166,30 @@ class TerminalSessionManager:
 manager = TerminalSessionManager()
 
 @router.websocket("/ws/{project_id}")
-async def terminal_websocket(websocket: WebSocket, project_id: str):
+async def terminal_websocket(
+    websocket: WebSocket,
+    project_id: str,
+    token: str = Query(default=""),
+):
+    """
+    WebSocket terminal endpoint. Requires a valid JWT passed as ?token=<jwt>.
+    Browsers cannot set custom headers on WebSocket upgrades, so the token is
+    accepted as a query parameter. The connection is refused (close code 4001)
+    if the token is missing or invalid.
+    """
+    # Authenticate BEFORE accepting the connection
+    payload = _decode_jwt(token) if token else None
+    if not payload:
+        # WS 4001 = Unauthorized (application-level close code)
+        await websocket.close(code=4001)
+        logger.warning("Terminal WS rejected — missing or invalid token for project %s", project_id)
+        return
+
     import uuid
     session_id = str(uuid.uuid4())
+    logger.info(
+        "Terminal WS opened: project=%s user=%s session=%s",
+        project_id, payload.get("email", payload.get("sub", "unknown")), session_id
+    )
     await manager.connect(websocket, session_id, project_id)
+

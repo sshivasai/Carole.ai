@@ -5,11 +5,15 @@ Authentication REST API routes.
 
 - POST /api/auth/signup — Create account + return JWT
 - POST /api/auth/login — Authenticate + return JWT
-- GET /api/auth/me — Get current user from Bearer token
+- GET  /api/auth/me — Get current user from Bearer token
+
+Rate limits (Finding #7):
+  - /login  : 10 attempts / minute per IP
+  - /signup : 5 attempts / minute per IP
 """
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +36,8 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/signup")
-async def signup(body: SignupRequest, db: AsyncSession = Depends(get_db)):
+async def signup(request: Request, body: SignupRequest, db: AsyncSession = Depends(get_db)):
+    # Rate limit: 5 signup attempts per minute per IP (enforced by slowapi in main.py)
     result = await auth_service.signup(
         db=db, email=body.email, password=body.password,
         first_name=body.first_name, last_name=body.last_name,
@@ -43,7 +48,8 @@ async def signup(body: SignupRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/login")
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
+    # Rate limit: 10 login attempts per minute per IP (enforced by slowapi in main.py)
     result = await auth_service.login(db=db, email=body.email, password=body.password)
     if "error" in result:
         raise HTTPException(status_code=401, detail=result["error"])

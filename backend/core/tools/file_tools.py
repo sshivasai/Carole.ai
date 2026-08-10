@@ -134,10 +134,23 @@ class FileTools:
         return carole_dir
 
     async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None, allow_out_of_bounds: bool = False) -> Path:
-        root = await self.get_workspace_root(project_id)
+        root = (await self.get_workspace_root(project_id)).resolve()
         joined_path = Path(root / relative_path)
         resolved_path = joined_path.resolve()
-        if not allow_out_of_bounds and not str(resolved_path).startswith(str(root)):
+
+        is_inside = False
+        try:
+            resolved_path.relative_to(root)
+            is_inside = True
+        except ValueError:
+            if os.name == 'nt':
+                try:
+                    Path(str(resolved_path).lower()).relative_to(Path(str(root).lower()))
+                    is_inside = True
+                except ValueError:
+                    is_inside = False
+
+        if not allow_out_of_bounds and not is_inside:
             raise PermissionError(
                 f"Access Denied: Path traversal to '{resolved_path}' outside sandbox '{root}'."
             )
@@ -181,8 +194,39 @@ class FileTools:
             def _sync_read():
                 if not safe_path.is_file():
                     return f"Error: '{relative_path}' is not a file or does not exist."
-                with open(safe_path, "r", encoding="utf-8") as f:
-                    return f.read()
+                
+                ext = safe_path.suffix.lower()
+                if ext == ".docx":
+                    try:
+                        from markitdown import MarkItDown
+                        md = MarkItDown()
+                        result = md.convert(str(safe_path))
+                        return result.text_content
+                    except Exception as e:
+                        try:
+                            # fallback
+                            import docx
+                            doc = docx.Document(safe_path)
+                            return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                        except Exception as inner_e:
+                            return f"Error reading docx file: {str(e)} - fallback also failed: {str(inner_e)}"
+                elif ext == ".pdf":
+                    try:
+                        import PyPDF2
+                        with open(safe_path, "rb") as f:
+                            reader = PyPDF2.PdfReader(f)
+                            text = ""
+                            for page in reader.pages:
+                                text += page.extract_text() + "\n"
+                            return text
+                    except Exception as e:
+                        return f"Error reading pdf file: {str(e)}"
+                
+                try:
+                    with open(safe_path, "r", encoding="utf-8") as f:
+                        return f.read()
+                except UnicodeDecodeError:
+                    return "[Binary file: cannot display as text]"
             async with lock:
                 return await asyncio.to_thread(_sync_read)
         except Exception as e:
@@ -437,6 +481,61 @@ class FileTools:
             return await asyncio.to_thread(_sync_mkdir)
         except Exception as e:
             return f"Error creating directory: {str(e)}"
+
+    async def diff_files(
+        self,
+        path_a: str,
+        path_b: str,
+        team_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> str:
+        """
+        Compare two files in the workspace and return a unified diff.
+        Useful for reviewing changes between versions of the same file, or comparing
+        two different files side-by-side.
+
+        Args:
+            path_a: Relative path to the first (original) file.
+            path_b: Relative path to the second (new) file.
+        """
+        workspace = await self.get_workspace_root(project_id)
+
+        def _sync_diff():
+            abs_a = (workspace / path_a).resolve()
+            abs_b = (workspace / path_b).resolve()
+
+            # Sandbox check
+            if not str(abs_a).startswith(str(workspace)):
+                return f"Error: path_a '{path_a}' is outside the workspace."
+            if not str(abs_b).startswith(str(workspace)):
+                return f"Error: path_b '{path_b}' is outside the workspace."
+            if not abs_a.exists():
+                return f"Error: File not found: {path_a}"
+            if not abs_b.exists():
+                return f"Error: File not found: {path_b}"
+
+            try:
+                lines_a = abs_a.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+                lines_b = abs_b.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+            except Exception as e:
+                return f"Error reading files: {str(e)}"
+
+            diff_lines = list(difflib.unified_diff(
+                lines_a, lines_b,
+                fromfile=path_a,
+                tofile=path_b,
+                lineterm="",
+            ))
+
+            if not diff_lines:
+                return f"No differences found between '{path_a}' and '{path_b}'."
+
+            added = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
+            removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
+            summary = f"Diff: {path_a} → {path_b} | +{added} lines, -{removed} lines\n\n"
+            return summary + "\n".join(diff_lines)
+
+        return await asyncio.to_thread(_sync_diff)
 
 
 # Singleton file tools instance

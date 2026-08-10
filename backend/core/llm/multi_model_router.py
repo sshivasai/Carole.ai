@@ -28,9 +28,12 @@ Features:
 import os
 import json
 import asyncio
+import logging
 import httpx
 from typing import AsyncGenerator, List, Dict, Optional, Any
 from core.llm.config_manager import load_config, get_key
+
+logger = logging.getLogger("carole.router")
 
 
 
@@ -597,8 +600,7 @@ class MultiModelRouter:
                     if response.status_code == 429:
                         # Rate limited — backoff and retry
                         wait = (2 ** attempt) * 2
-                        import logging as _log
-                        _log.getLogger("carole.router").warning(
+                        logger.warning(
                             "Rate limited (429). Retrying in %ds... (attempt %d/%d)", wait, attempt + 1, max_retries
                         )
                         await asyncio.sleep(wait)
@@ -606,8 +608,7 @@ class MultiModelRouter:
 
                     if response.status_code >= 500:
                         wait = (2 ** attempt) * 1
-                        import logging as _log
-                        _log.getLogger("carole.router").warning(
+                        logger.warning(
                             "Server error (%d). Retrying in %ds...", response.status_code, wait
                         )
                         await asyncio.sleep(wait)
@@ -636,8 +637,7 @@ class MultiModelRouter:
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 wait = (2 ** attempt) * 1
                 if attempt < max_retries - 1:
-                    import logging as _log
-                    _log.getLogger("carole.router").warning(
+                    logger.warning(
                         "Connection error: %s. Retrying in %ds... (attempt %d/%d)", e, wait, attempt + 1, max_retries
                     )
                     await asyncio.sleep(wait)
@@ -833,39 +833,42 @@ class MultiModelRouter:
     ):
         """
         Like _stream_with_retry but yields {content, reasoning} dicts.
+        Uses the shared persistent HTTP client for connection reuse.
         """
-        import httpx
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=90.0) as client:
-                    async with client.stream("POST", url, headers=headers, json=payload) as response:
-                        if response.status_code == 429:
-                            wait = (2 ** attempt) * 2
-                            await asyncio.sleep(wait)
-                            continue
-                        if response.status_code >= 500:
-                            await asyncio.sleep(2 ** attempt)
-                            continue
-                        if response.status_code != 200:
-                            err = await response.aread()
-                            yield {"content": f"[API Error {response.status_code}: {err.decode()[:300]}]", "reasoning": ""}
-                            return
-                        async for line in response.aiter_lines():
-                            if not line.startswith("data:"):
-                                continue
-                            data_str = line[5:].strip()
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                content, reasoning = self._extract_text_from_sse(data, parse_format)
-                                if content or reasoning:
-                                    yield {"content": content, "reasoning": reasoning}
-                            except json.JSONDecodeError:
-                                continue
+                async with self._http_client.stream("POST", url, headers=headers, json=payload) as response:
+                    if response.status_code == 429:
+                        wait = (2 ** attempt) * 2
+                        logger.warning("Rate limited (429) in rich stream. Retrying in %ds...", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    if response.status_code >= 500:
+                        wait = 2 ** attempt
+                        logger.warning("Server error (%d) in rich stream. Retrying in %ds...", response.status_code, wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    if response.status_code != 200:
+                        err = await response.aread()
+                        yield {"content": f"[API Error {response.status_code}: {err.decode()[:300]}]", "reasoning": ""}
                         return
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            content, reasoning = self._extract_text_from_sse(data, parse_format)
+                            if content or reasoning:
+                                yield {"content": content, "reasoning": reasoning}
+                        except json.JSONDecodeError:
+                            continue
+                    return
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 if attempt < max_retries - 1:
+                    logger.warning("Connection error in rich stream: %s. Retrying...", e)
                     await asyncio.sleep(2 ** attempt)
                 else:
                     yield {"content": f"[Connection Error: {e}]", "reasoning": ""}
@@ -895,6 +898,12 @@ class MultiModelRouter:
             if result:
                 return result
 
+        # Fallback to OpenRouter (NVIDIA Nemotron 3 Embed 1B free)
+        if self.openrouter_key:
+            result = await self._embeddings_openrouter(text)
+            if result:
+                return result
+
         # No keys available — return mock zero-vector
         return [0.0] * 1536
 
@@ -909,22 +918,21 @@ class MultiModelRouter:
             "model": "text-embedding-3-small"
         }
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(
-                    "https://api.openai.com/v1/embeddings",
-                    headers=headers,
-                    json=payload
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    return data["data"][0]["embedding"]
-                else:
-                    print(f"✗ [Router] OpenAI Embeddings error: {response.text[:200]}")
-                    return None
-            except Exception as e:
-                print(f"✗ [Router] OpenAI Embeddings connection error: {str(e)}")
+        try:
+            response = await self._http_client.post(
+                "https://api.openai.com/v1/embeddings",
+                headers=headers,
+                json=payload
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data["data"][0]["embedding"]
+            else:
+                logger.warning("OpenAI Embeddings error: %s", response.text[:200])
                 return None
+        except Exception as e:
+            logger.warning("OpenAI Embeddings connection error: %s", e)
+            return None
 
     async def _embeddings_gemini(self, text: str) -> Optional[List[float]]:
         """Google Gemini text-embedding-004 (768 dimensions, zero-padded to 1536)."""
@@ -939,24 +947,56 @@ class MultiModelRouter:
             }
         }
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(url, json=payload)
-                if response.status_code == 200:
-                    data = response.json()
-                    values = data.get("embedding", {}).get("values", [])
-                    if values:
-                        # Zero-pad from 768 to 1536 to match pgvector column dimension
-                        while len(values) < 1536:
-                            values.append(0.0)
-                        return values[:1536]
-                    return None
-                else:
-                    print(f"✗ [Router] Gemini Embeddings error: {response.text[:200]}")
-                    return None
-            except Exception as e:
-                print(f"✗ [Router] Gemini Embeddings connection error: {str(e)}")
+        try:
+            response = await self._http_client.post(url, json=payload)
+            if response.status_code == 200:
+                data = response.json()
+                values = data.get("embedding", {}).get("values", [])
+                if values:
+                    # Zero-pad from 768 to 1536 to match pgvector column dimension
+                    while len(values) < 1536:
+                        values.append(0.0)
+                    return values[:1536]
                 return None
+            else:
+                logger.warning("Gemini Embeddings error: %s", response.text[:200])
+                return None
+        except Exception as e:
+            logger.warning("Gemini Embeddings connection error: %s", e)
+            return None
+
+    async def _embeddings_openrouter(self, text: str) -> Optional[List[float]]:
+        """OpenRouter NVIDIA Nemotron 3 Embed 1B (padded/truncated to 1536)."""
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "input": text,
+            "model": "nvidia/nemotron-3-embed-1b:free"
+        }
+
+        try:
+            response = await self._http_client.post(
+                "https://openrouter.ai/api/v1/embeddings",
+                headers=headers,
+                json=payload
+            )
+            if response.status_code == 200:
+                data = response.json()
+                values = data["data"][0]["embedding"]
+                if values:
+                    # Pad or truncate to 1536
+                    while len(values) < 1536:
+                        values.append(0.0)
+                    return values[:1536]
+                return None
+            else:
+                logger.warning("OpenRouter Embeddings error: %s", response.text[:200])
+                return None
+        except Exception as e:
+            logger.warning("OpenRouter Embeddings connection error: %s", e)
+            return None
 
 
     # Alias for compatibility with older code paths

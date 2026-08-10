@@ -28,22 +28,24 @@ class CodeGraph:
         
         self.start_listening_task()
 
-    def get_project_root(self, project_id: Optional[str]) -> Path:
+    async def get_project_root(self, project_id: Optional[str]) -> Path:
         if project_id:
             from core.tools.file_tools import file_tools
-            return file_tools.get_workspace_root(project_id)
+            return await file_tools.get_workspace_root(project_id)
         return self.workspace_root
 
-    def get_graph_file(self, project_id: Optional[str]) -> Path:
+    async def get_graph_file(self, project_id: Optional[str]) -> Path:
         if project_id:
-            root = self.get_project_root(project_id)
-            return root / "code_graph.json"
+            root = await self.get_project_root(project_id)
+            carole_dir = root / ".carole"
+            carole_dir.mkdir(parents=True, exist_ok=True)
+            return carole_dir / "code_graph.json"
         return CAROLE_HOME_DIR / "code_graph.json"
 
-    def get_graph(self, project_id: Optional[str]) -> nx.DiGraph:
+    async def get_graph(self, project_id: Optional[str]) -> nx.DiGraph:
         pid = project_id or "default"
         if pid not in self.graphs:
-            graph_file = self.get_graph_file(project_id)
+            graph_file = await self.get_graph_file(project_id)
             if graph_file.exists():
                 try:
                     with open(graph_file, "r") as f:
@@ -55,36 +57,36 @@ class CodeGraph:
                 self.graphs[pid] = nx.DiGraph()
         return self.graphs[pid]
 
-    def _save_graph(self, project_id: Optional[str]):
+    async def _save_graph(self, project_id: Optional[str]):
         try:
-            graph_file = self.get_graph_file(project_id)
+            graph_file = await self.get_graph_file(project_id)
             graph_file.parent.mkdir(parents=True, exist_ok=True)
             with open(graph_file, "w") as f:
-                json.dump(nx.node_link_data(self.get_graph(project_id)), f)
+                json.dump(nx.node_link_data(await self.get_graph(project_id)), f)
         except Exception as e:
             print(f"Error saving code graph for project {project_id}: {e}")
 
-    def mark_file_active(self, path: str, agent_name: str, project_id: Optional[str] = None):
+    async def mark_file_active(self, path: str, agent_name: str, project_id: Optional[str] = None):
         pid = project_id or "default"
         if pid not in self.active_editors:
             self.active_editors[pid] = {}
         if path not in self.active_editors[pid]:
             self.active_editors[pid][path] = set()
         self.active_editors[pid][path].add(agent_name)
-        self._save_graph(project_id)
+        await self._save_graph(project_id)
         
-    def clear_file_active(self, path: str, project_id: Optional[str] = None):
+    async def clear_file_active(self, path: str, project_id: Optional[str] = None):
         pid = project_id or "default"
         if pid in self.active_editors and path in self.active_editors[pid]:
             self.active_editors[pid].pop(path, None)
-            self._save_graph(project_id)
+            await self._save_graph(project_id)
 
-    def parse_file(self, relative_path: str, project_id: Optional[str] = None):
+    async def parse_file(self, relative_path: str, project_id: Optional[str] = None):
         """Parses a file for dependencies and updates the graph."""
-        project_root = self.get_project_root(project_id)
+        project_root = await self.get_project_root(project_id)
         safe_path = (project_root / relative_path).resolve()
         
-        graph = self.get_graph(project_id)
+        graph = await self.get_graph(project_id)
         
         if not safe_path.is_file():
             if graph.has_node(relative_path):
@@ -147,11 +149,11 @@ class CodeGraph:
         for dep in dependencies:
             graph.add_edge(relative_path, dep)
             
-        self._save_graph(project_id)
+        await self._save_graph(project_id)
 
-    def build_graph(self, project_id: Optional[str] = None):
+    async def build_graph(self, project_id: Optional[str] = None):
         """Scans project root and maps all files."""
-        project_root = self.get_project_root(project_id)
+        project_root = await self.get_project_root(project_id)
         skip_dirs = {'.git', 'node_modules', '__pycache__', '.next', 'venv', '.venv', 'dist', 'build'}
         for root, dirs, files in os.walk(project_root):
             dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
@@ -161,10 +163,10 @@ class CodeGraph:
                     try:
                         rel = full_path.relative_to(project_root)
                         rel_str = str(rel).replace("\\", "/")
-                        self.parse_file(rel_str, project_id)
+                        await self.parse_file(rel_str, project_id)
                     except ValueError:
                         pass
-        self._save_graph(project_id)
+        await self._save_graph(project_id)
 
     async def _listen_for_file_changes(self):
         queue = await event_bus.subscribe("system:file_changes")
@@ -176,7 +178,7 @@ class CodeGraph:
                     project_id = event.get("project_id")
                     if path:
                         path = path.replace("\\", "/")
-                        self.parse_file(path, project_id)
+                        await self.parse_file(path, project_id)
             except Exception as e:
                 print(f"Error in CodeGraph listener: {e}")
 

@@ -19,26 +19,7 @@ from core.chat.event_bus import event_bus
 from core.tools.voice_stt_tts import voice_service
 from core.llm.multi_model_router import llm_router
 from core.config import DEFAULT_FAST_MODEL
-
-
-MEETING_NOTES_PROMPT = """Analyze the following meeting transcription and produce structured meeting notes.
-
-Format:
-## Meeting Summary
-<2-3 sentence summary>
-
-## Key Decisions
-- <decision 1>
-- <decision 2>
-
-## Action Items
-- [ ] <action item> (Owner: <name if mentioned>)
-
-## Important Points
-- <point 1>
-
-Transcription:
-{transcription}"""
+from core.prompts import get_prompt
 
 
 class MeetingTool:
@@ -74,12 +55,13 @@ class MeetingTool:
         self, transcription: str, agent_name: str, team_id: str
     ) -> str:
         """Takes a transcription and produces structured meeting notes via LLM."""
-        prompt = MEETING_NOTES_PROMPT.format(transcription=transcription)
+        prompt_template = get_prompt("system.meeting_notes")
+        prompt = prompt_template.format(transcription=transcription)
         notes = await llm_router.generate_completion(
-            model="gpt-4o-mini",
-            system_prompt="You produce concise, actionable meeting notes.",
+            model=DEFAULT_FAST_MODEL,
+            system_prompt="You produce concise, accurate meeting notes. Never invent attendees or decisions not in the transcription.",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=2000,
         )
 
@@ -94,13 +76,14 @@ class MeetingTool:
     async def generate_mom(
         self, transcription: str
     ) -> str:
-        """Takes a transcription and produces structured Minutes of Meeting (Summary, Decisions, Action Items)."""
-        prompt = MEETING_NOTES_PROMPT.format(transcription=transcription)
+        """Takes a transcription and produces structured Minutes of Meeting."""
+        prompt_template = get_prompt("system.meeting_notes")
+        prompt = prompt_template.format(transcription=transcription)
         mom = await llm_router.generate_completion(
             model=DEFAULT_FAST_MODEL,
-            system_prompt="You produce concise, actionable Minutes of Meeting.",
+            system_prompt="You produce concise, accurate Minutes of Meeting. Never invent attendees or decisions not in the transcription.",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=2000,
         )
         return mom

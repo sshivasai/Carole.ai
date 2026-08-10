@@ -24,6 +24,7 @@ venv/
 .venv/
 env/
 .env
+.env.example
 
 # Next.js / Node
 node_modules/
@@ -42,5 +43,12 @@ Thumbs.db
 *.db
 .carole/
 
-# Credentials
+# Credentials and Secrets
 backend/credentials.json
+token.json
+*.pem
+*.key
+
+
+
+

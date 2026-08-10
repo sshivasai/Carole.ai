@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { api } from "@/hooks/useApi";
 import { AgentConfig } from "@/lib/types";
-import { Plus, Loader2, Server, Trash2 } from "lucide-react";
+import { Plus, Loader2, Server, Trash2, Power } from "lucide-react";
 
 interface Props {
   teamId: string | null;
@@ -11,24 +11,33 @@ interface Props {
 }
 
 export default function McpIntegration({ teamId, agents, onToast }: Props) {
-  const [servers,    setServers]    = useState<any[]>([]);
-  const [serverName, setServerName] = useState("");
-  const [command,    setCommand]    = useState("");
-  const [args,       setArgs]       = useState("");
-  const [envVars,    setEnvVars]    = useState("");
-  const [agentId,    setAgentId]    = useState("");
-  const [loading,    setLoading]    = useState(false);
-  const [fetching,   setFetching]   = useState(false);
+  const [servers,          setServers]          = useState<any[]>([]);
+  const [globalServers,    setGlobalServers]    = useState<any[]>([]);
+  const [serverName,       setServerName]       = useState("");
+  const [command,          setCommand]          = useState("");
+  const [args,             setArgs]             = useState("");
+  const [envVars,          setEnvVars]          = useState("");
+  const [agentId,          setAgentId]          = useState("");
+  const [loading,          setLoading]          = useState(false);
+  const [fetching,         setFetching]         = useState(false);
+  const [toggling,         setToggling]         = useState<string | null>(null);
 
   const loadServers = useCallback(async () => {
     if (!teamId) return;
     setFetching(true);
-    try { setServers(await api.listMcpServers(teamId)); }
+    try { 
+      const [teamMcps, globalMcps] = await Promise.all([
+        api.listMcpServers(teamId),
+        api.listGlobalMcpServers()
+      ]);
+      setServers(teamMcps);
+      setGlobalServers(globalMcps);
+    }
     catch { /* ignore */ }
     finally { setFetching(false); }
   }, [teamId]);
 
-  useEffect(() => { if (teamId) loadServers(); else setServers([]); }, [teamId, loadServers]);
+  useEffect(() => { if (teamId) loadServers(); else { setServers([]); setGlobalServers([]); } }, [teamId, loadServers]);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,6 +60,19 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
     finally { setLoading(false); }
   };
 
+  const handleToggleGlobal = async (server_name: string) => {
+    setToggling(server_name);
+    try {
+      await api.toggleGlobalMcpServer(server_name);
+      await loadServers();
+      onToast?.(`Toggled global MCP ${server_name}`, "success");
+    } catch {
+      onToast?.(`Failed to toggle ${server_name}`, "error");
+    } finally {
+      setToggling(null);
+    }
+  };
+
   if (!teamId) return <p className="caption" style={{ padding: "var(--sp-md)", textAlign: "center" }}>Select a team to manage MCP servers.</p>;
 
   return (
@@ -71,15 +93,51 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
         </button>
       </form>
 
-      {/* List */}
+      {/* Global Built-in List */}
       <div>
-        <h4 className="label" style={{ marginBottom: "var(--sp-sm)" }}>Connected Servers</h4>
-        {fetching ? (
+        <h4 className="label" style={{ marginBottom: "var(--sp-sm)" }}>Global Built-in Servers</h4>
+        {fetching && globalServers.length === 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {[1,2].map(i => <div key={i} className="skeleton" style={{ height: 60 }} />)}
+          </div>
+        ) : globalServers.length === 0 ? (
+          <p className="caption" style={{ textAlign: "center", padding: "var(--sp-lg) 0" }}>No global servers.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
+            {globalServers.map(s => (
+              <div key={s.server_name} style={{ background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)", padding: "var(--sp-md)", opacity: s.is_disabled ? 0.6 : 1 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                    <Server size={12} color={s.is_connected ? "var(--color-primary)" : "var(--color-mute)"} />
+                    <span className="body-sm-strong">{s.server_name}</span>
+                    {s.is_connected && !s.is_disabled && <span style={{ fontSize: 10, background: "var(--color-success)", color: "#000", padding: "2px 6px", borderRadius: 10 }}>Running</span>}
+                  </div>
+                  <button 
+                    className={`btn btn-icon-sm btn-ghost ${s.is_disabled ? 'text-success' : 'text-danger'}`} 
+                    title={s.is_disabled ? "Enable Server" : "Disable Server"}
+                    onClick={() => handleToggleGlobal(s.server_name)}
+                    disabled={toggling === s.server_name}
+                  >
+                    {toggling === s.server_name ? <Loader2 size={12} className="animate-spin" /> : <Power size={12} />}
+                  </button>
+                </div>
+                <code style={{ fontSize: 10, color: "var(--color-mute)", display: "block", marginTop: 4 }}>{s.command} {s.args?.join(" ")}</code>
+                <div className="caption" style={{ marginTop: 4 }}>{s.description}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Team Custom List */}
+      <div>
+        <h4 className="label" style={{ marginBottom: "var(--sp-sm)" }}>Connected Team Servers</h4>
+        {fetching && servers.length === 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {[1,2].map(i => <div key={i} className="skeleton" style={{ height: 60 }} />)}
           </div>
         ) : servers.length === 0 ? (
-          <p className="caption" style={{ textAlign: "center", padding: "var(--sp-lg) 0" }}>No MCP servers connected.</p>
+          <p className="caption" style={{ textAlign: "center", padding: "var(--sp-lg) 0" }}>No custom team servers connected.</p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
             {servers.map(s => (
@@ -107,7 +165,7 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
                 </div>
                 <code style={{ fontSize: 10, color: "var(--color-mute)", display: "block", marginTop: 4 }}>{s.command} {s.args?.join(" ")}</code>
                 <div className="caption" style={{ marginTop: 4 }}>
-                  {s.agent_id ? agents.find(a => a.id === s.agent_id)?.name || "Unknown agent" : "Global"}
+                  {s.agent_id ? agents.find(a => a.id === s.agent_id)?.name || "Unknown agent" : "Team Global"}
                 </div>
               </div>
             ))}

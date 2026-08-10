@@ -137,7 +137,7 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
         target: selected.target,
         agent_name: selected.target === "team" ? "Team" : selected.agent_name,
         agent_id: selected.agent_id,
-        author: "Human",
+        author: "admin",
       });
       upsert({
         ...selected,
@@ -164,9 +164,9 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
         mode: "append",
         agent_name: selected.target === "team" ? "Team" : selected.agent_name,
         agent_id: selected.agent_id,
-        author: "Human",
+        author: "admin",
       });
-      const newContent = res?.content ?? selected.content + `\n<!-- Human -->\n${appendText}\n`;
+      const newContent = res?.content ?? selected.content + `\n<!-- admin -->\n${appendText}\n`;
       upsert({
         ...selected,
         content: newContent,

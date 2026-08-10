@@ -6,6 +6,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
+import AgentAvatar from "./AgentAvatar";
+import AppSpinner from "./AppSpinner";
+import { ActionToolbar } from "./ActionToolbar";
+import { DiffViewer } from "./DiffViewer";
+import { McpStatusIndicator } from "./McpStatusIndicator";
 
 interface Props {
   messages: ChatMessage[];
@@ -151,6 +156,16 @@ function ToolRow({ msg }: { msg: ChatMessage }) {
   );
 }
 
+function TypingIndicator() {
+  return (
+    <span className="typing-indicator" title="Agent is typing...">
+      <span className="typing-dot" style={{ animationDelay: "0ms" }} />
+      <span className="typing-dot" style={{ animationDelay: "200ms" }} />
+      <span className="typing-dot" style={{ animationDelay: "400ms" }} />
+    </span>
+  );
+}
+
 function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: string; isStreaming?: boolean; components?: any }) {
   const [open, setOpen] = useState<boolean>(Boolean(isStreaming));
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -181,9 +196,9 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
         {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         <span style={{ fontSize: 10, letterSpacing: "0.3px", fontWeight: 600 }}>🧠 Thoughts & Activity</span>
         {isStreaming && (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 4, color: "var(--color-warning)", fontSize: 10 }}>
-            <Loader2 size={10} className="animate-spin" />
-            <span style={{ fontSize: 9, opacity: 0.8 }}>Working in background...</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 6, color: "var(--color-primary)", fontSize: 10 }}>
+            <AppSpinner size={12} />
+            <span style={{ fontSize: 9, opacity: 0.85, fontWeight: 500 }}>Working in background...</span>
           </span>
         )}
       </button>
@@ -214,6 +229,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [showTeamAgents, setShowTeamAgents] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -475,6 +491,21 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
     finally { setRollbackMsgId(null); }
   };
 
+  const [clearChatOpen, setClearChatOpen] = useState(false);
+
+  const doClearChatConfirm = async () => {
+    if (!teamId) return;
+    setClearChatOpen(false);
+    try {
+      await api.clearTeamChat(teamId);
+      // The backend publishes a 'chat_cleared' websocket event.
+      // A full page reload is the simplest way to clear all local state reliably.
+      window.location.reload();
+    } catch (e: any) {
+      console.error("clearTeamChat failed:", e);
+    }
+  };
+
   const toggleRecord = async () => {
     if (recording) {
       mediaRef.current?.stop();
@@ -514,12 +545,56 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   const displayMessages = searchMode ? searchResults.map((m: any) => ({ ...m, id: m.id, type: "message", timestamp: m.created_at })) : messages;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Header */}
-      <header className="section-header" style={{ padding: "var(--sp-md) var(--sp-2xl)", background: "var(--bg-surface)" }}>
-        <div>
-          <h2 className="display-sm">Team Chat</h2>
-          <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
+    <div style={{ flex: 1, minHeight: 0, height: "100%", width: "100%", position: "relative" }}>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* Header */}
+        <header className="section-header" style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", background: "var(--bg-surface)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-lg)" }}>
+          <div>
+            <h2 className="display-sm">Team Chat</h2>
+            <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
+          </div>
+          
+          <div style={{ position: "relative" }}>
+            <div 
+              onClick={() => setShowTeamAgents(!showTeamAgents)}
+              style={{ display: "flex", alignItems: "center", cursor: "pointer", padding: "4px", borderRadius: "var(--radius-md)", background: showTeamAgents ? "var(--bg-surface-elevated)" : "transparent" }}
+              title="View team agents"
+            >
+              <div style={{ display: "flex", marginRight: "8px" }}>
+                {agents.slice(0, 3).map((agent, i) => (
+                  <div key={agent.id} style={{ marginLeft: i > 0 ? "-8px" : 0, borderRadius: "50%", border: "2px solid var(--bg-surface)", zIndex: 3 - i }}>
+                    <AgentAvatar name={agent.name} avatarSeed={agent.id} size={24} />
+                  </div>
+                ))}
+                {agents.length > 3 && (
+                  <div style={{ marginLeft: "-8px", borderRadius: "50%", border: "2px solid var(--bg-surface)", width: 24, height: 24, background: "var(--bg-surface-elevated)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, color: "var(--text-secondary)", zIndex: 0 }}>
+                    +{agents.length - 3}
+                  </div>
+                )}
+              </div>
+              <ChevronDown size={14} color="var(--text-secondary)" style={{ transform: showTeamAgents ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+            </div>
+
+            {showTeamAgents && (
+              <div style={{ position: "absolute", top: "100%", left: 0, marginTop: "8px", width: "260px", background: "var(--bg-surface)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-md)", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 100, overflow: "hidden" }}>
+                <div style={{ padding: "12px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-surface-elevated)" }}>
+                  <h3 style={{ fontSize: "12px", fontWeight: 600, margin: 0, color: "var(--text-secondary)" }}>TEAM AGENTS ({agents.length})</h3>
+                </div>
+                <div style={{ maxHeight: "300px", overflowY: "auto", padding: "8px" }}>
+                  {agents.map(a => (
+                    <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "8px", borderRadius: "var(--radius-sm)" }}>
+                      <AgentAvatar name={a.name} avatarSeed={a.id} size={32} />
+                      <div>
+                        <div style={{ fontWeight: 500, fontSize: "13px" }}>{a.name}</div>
+                        {a.role_template && <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{a.role_template}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
         <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
           {onToggleExplorer && (
@@ -531,12 +606,18 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
             onClick={() => setSearchMode(s => !s)} title="Search messages">
             <Search size={14} />
           </button>
+          <button className="btn btn-icon btn-outline btn-sm"
+            onClick={() => setClearChatOpen(true)} title="Clear all chat messages"
+            style={{ color: "var(--color-danger)" }}>
+            <Trash2 size={14} />
+          </button>
+          <McpStatusIndicator />
         </div>
       </header>
 
       {/* Search bar */}
       {searchMode && (
-        <div style={{ padding: "var(--sp-sm) var(--sp-2xl)", borderBottom: "1px solid var(--border-glass)", background: "var(--bg-glass-panel)", display: "flex", gap: "var(--sp-sm)" }}>
+        <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", borderBottom: "1px solid var(--border-glass)", background: "var(--bg-glass-panel)", display: "flex", gap: "var(--sp-sm)" }}>
           <input className="input" style={{ flex: 1, minHeight: 32 }} placeholder="Search messages..."
             value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") handleSearch(); }} autoFocus />
@@ -546,7 +627,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
       )}
 
       {/* Messages */}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "var(--sp-2xl)", display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-2xl)", display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
         {displayMessages.map(msg => {
           const isHuman = msg.sender_id === "human";
           const isTool = msg.type === "tool_start" || msg.type === "tool_end";
@@ -564,9 +645,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
             const isExpanded = expandedTraces.has(msg.id);
             return (
               <div key={msg.id} style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-start", marginLeft: 8, marginBottom: 2 }}>
-                <div style={{ width: 22, height: 22, borderRadius: "50%", background: avatarColor(msg.sender_name || "agent"), flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.7, marginTop: 2 }}>
-                  <Terminal size={11} color="#fff" />
-                </div>
+                <AgentAvatar name={msg.sender_name || "agent"} id={msg.sender_id} size={22} isStreaming={isStreaming} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <button
                     onClick={() => setExpandedTraces(prev => {
@@ -618,6 +697,8 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               cleanText = text.replace(/\[LEARNING_[^\]]+\]\s*/, "");
             }
 
+            cleanText = cleanText.replace(/ by (?:Human|Admin)(?=\s|$)/g, " by admin").replace(/\(Admin\)/gi, "(admin)");
+
             return (
               <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", position: "relative", marginLeft: 8 }}>
                 <div style={{ position: "absolute", top: 15, bottom: -15, left: 14, width: 2, background: "var(--border-glass)", zIndex: 0 }} />
@@ -661,13 +742,13 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
           );
           if (isApproval) return (
             <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-              <div style={{ width: 30, height: 30, borderRadius: "50%", background: avatarColor(msg.sender_name || ""), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Bot size={14} color="#fff" /></div>
+              <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} size={30} />
               <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><ApprovalCard msg={msg} /></div>
             </div>
           );
           if (isQuestion) return (
             <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-              <div style={{ width: 30, height: 30, borderRadius: "50%", background: avatarColor(msg.sender_name || ""), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Bot size={14} color="#fff" /></div>
+              <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} size={30} />
               <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
             </div>
           );
@@ -732,8 +813,8 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
             const parts = markdownText.split(/(```[\s\S]*?```|`[^`]*`|\[.*?\]\(.*?\))/g);
             // Matches file paths with common extensions, bounded by whitespace or punctuation
             const fileRegex = /(^|\s|'|"|\()([a-zA-Z0-9_./-]+\.(?:md|ts|tsx|js|jsx|py|html|css|json|txt|yml|yaml|sh|bash|ini|env))(?=$|\s|'|"|\)|,|\.|\!|\?)/gi;
-            
-            markdownText = parts.map((part, i) => {
+
+            markdownText = parts.map((part: string, i: number) => {
               if (i % 2 === 0) {
                 return part.replace(fileRegex, '$1[$2](file:$2)');
               }
@@ -750,9 +831,14 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
           return (
             <div key={msg.id} className="animate-fade-in group" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", flexDirection: isHuman ? "row-reverse" : "row", position: "relative" }}>
 
-              <div style={{ width: 30, height: 30, borderRadius: "50%", flexShrink: 0, background: ac, border: isHuman ? "1px solid var(--color-hairline)" : "none", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {isHuman ? <User size={14} color="var(--color-mute)" /> : <Bot size={14} color="#fff" />}
-              </div>
+              <AgentAvatar
+                name={msg.sender_name || (isHuman ? "admin" : "Agent")}
+                id={msg.sender_id}
+                role={msg.role}
+                size={32}
+                isStreaming={isStreaming}
+                isThinking={isThinking}
+              />
               <div style={{ maxWidth: "78%" }}>
                 {!isHuman && (
                   <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
@@ -783,16 +869,14 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                     padding: "var(--sp-md) var(--sp-lg)", lineHeight: 1.6,
                     background: isHuman ? "var(--bg-surface-raised)" : "var(--bg-surface)",
                     border: isHuman ? "1px solid var(--border-subtle)" : "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-md)",
-                    borderTopRightRadius: isHuman ? 2 : undefined,
-                    borderTopLeftRadius: !isHuman ? 2 : undefined,
+                    borderRadius: isHuman ? "var(--radius-md) 2px var(--radius-md) var(--radius-md)" : "2px var(--radius-md) var(--radius-md) var(--radius-md)",
                     color: "var(--text-primary)",
                     position: "relative", fontSize: "var(--text-sm)",
                   }}>
                     {isThinking ? (
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", color: "var(--color-mute)" }}>
-                        <Loader2 size={14} className="animate-spin" />
-                        <span className="body-sm">Thinking...</span>
+                        <TypingIndicator />
+                        <span className="body-sm" style={{ opacity: 0.8 }}>Thinking...</span>
                       </div>
                     ) : isHuman ? (
                       <div style={{ whiteSpace: "pre-wrap" }}>
@@ -820,9 +904,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                         </ReactMarkdown>
                       </div>
                     )}
-                    {isStreaming && (
-                      <span style={{ display: "inline-block", width: 2, height: 14, background: "var(--color-primary)", borderRadius: 1, marginLeft: 2, verticalAlign: "text-bottom", animation: "blink 1s step-end infinite" }} />
-                    )}
+                    {isStreaming && <TypingIndicator />}
                     {/* Stop Generating button — visible while streaming or thinking */}
                     {(isStreaming || isThinking) && !isHuman && (
                       <div style={{ marginTop: "var(--sp-sm)", display: "flex", justifyContent: "flex-end" }}>
@@ -896,7 +978,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
       {/* Attachments preview */}
       {attachments.length > 0 && (
-        <div style={{ display: "flex", gap: "var(--sp-sm)", padding: "var(--sp-sm) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
+        <div style={{ flexShrink: 0, display: "flex", gap: "var(--sp-sm)", padding: "var(--sp-sm) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
           {attachments.map((att, i) => (
             <div key={i} style={{ position: "relative", width: 48, height: 48, borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "hidden", background: "var(--color-canvas-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               {att.type?.startsWith("image/") ? (
@@ -916,7 +998,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
       )}
 
       {/* Input */}
-      <div style={{ padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10 }}>
+      <div style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10 }}>
         <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
 
           <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileUpload} />
@@ -945,7 +1027,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                       onMouseEnter={() => setMentionIndex(i)}
                       onClick={() => insertMention(item)}
                     >
-                      <div style={{ width: 16, height: 16, borderRadius: "50%", background: avatarColor(item.name), flexShrink: 0 }} />
+                      <AgentAvatar name={item.name} id={item.id} role={item.role} size={18} />
                       <span className="body-sm-strong">{item.name}</span>
                       <span className="caption" style={{ marginLeft: "auto" }}>{item.role}</span>
                     </div>
@@ -1004,6 +1086,17 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
           <button className="btn btn-danger" onClick={doRollbackConfirm}>Rollback</button>
         </div>
       </Modal>
+
+      <Modal open={clearChatOpen} onClose={() => setClearChatOpen(false)} title="Confirm Clear Chat">
+        <p className="body-sm">
+          Are you sure? This will permanently delete <b>all</b> messages in this chat. This action cannot be undone.
+        </p>
+        <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end", marginTop: "var(--sp-xl)" }}>
+          <button className="btn btn-ghost" onClick={() => setClearChatOpen(false)}>Cancel</button>
+          <button className="btn btn-danger" onClick={doClearChatConfirm}>Clear Chat</button>
+        </div>
+      </Modal>
+      </div>
     </div>
   );
 }

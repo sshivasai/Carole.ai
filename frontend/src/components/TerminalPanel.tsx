@@ -4,6 +4,8 @@ import React, { useRef, useEffect } from "react";
 import { Terminal as TerminalIcon, Trash2, X } from "lucide-react";
 import type { Terminal as TerminalType } from "@xterm/xterm";
 import type { FitAddon as FitAddonType } from "@xterm/addon-fit";
+import { getWsBase, getWsToken } from "@/hooks/useWebSocket";
+import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPanelProps {
   projectId?: string;
@@ -33,15 +35,15 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
 
     let term: TerminalType;
     let fitAddon: FitAddonType;
+    let resizeObserver: ResizeObserver;
 
     const initTerminal = async () => {
       const { Terminal } = await import("@xterm/xterm");
       const { FitAddon } = await import("@xterm/addon-fit");
-      await import("@xterm/xterm/css/xterm.css");
 
       term = new Terminal({
         cursorBlink: true,
-        fontFamily: "var(--font-mono, monospace)",
+        fontFamily: "var(--font-mono, 'Courier New', monospace)",
         fontSize: 13,
         allowTransparency: true,
         theme: {
@@ -54,17 +56,32 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
       term.loadAddon(fitAddon);
 
       term.open(terminalRef.current!);
+
+      // Wait for fonts to load before fitting
+      if (document.fonts) {
+        await document.fonts.ready;
+      }
       fitAddon.fit();
 
       xtermRef.current = term;
       fitAddonRef.current = fitAddon;
 
-      // Connect WebSocket
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const wsUrl = apiBaseUrl.replace(/^http/, "ws") + `/api/terminal/ws/${projectId || "default"}`;
+      // Connect WebSocket — append JWT for backend auth (Finding #4).
+      // Browsers cannot set custom headers on WS upgrades, so the token is
+      // passed as a query param. The server closes with 4001 if it is missing.
+      const wsToken = getWsToken();
+      const wsUrl = `${getWsBase()}/api/terminal/ws/${projectId || "default"}${
+        wsToken ? `?token=${encodeURIComponent(wsToken)}` : ""
+      }`;
 
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
+
+      term.onResize(({ cols, rows }) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ action: "resize", cols, rows }));
+        }
+      });
 
       ws.onopen = () => {
         // Send initial size
@@ -98,17 +115,28 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
       });
 
       const handleResize = () => {
-        fitAddon.fit();
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ action: "resize", cols: term.cols, rows: term.rows }));
+        try {
+          // Add a small delay to ensure container dimensions are final
+          requestAnimationFrame(() => {
+            if (fitAddonRef.current) {
+              fitAddonRef.current.fit();
+            }
+          });
+        } catch (e) {
+          // ignore fit errors during unmount
         }
       };
-      window.addEventListener("resize", handleResize);
+
+      resizeObserver = new ResizeObserver(() => {
+        handleResize();
+      });
+      resizeObserver.observe(terminalRef.current!);
     };
 
     void initTerminal();
 
     return () => {
+      if (resizeObserver) resizeObserver.disconnect();
       if (wsRef.current) wsRef.current.close();
       if (term) term.dispose();
     };

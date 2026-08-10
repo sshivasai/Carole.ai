@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,21 +17,67 @@ from core.memory.database import get_db
 from core.memory.models import User, Project, Team, Agent, Message, Task
 from core.tools.tool_registry import ToolRegistry
 from core.config import DEFAULT_FAST_MODEL
+from core.auth.auth_middleware import require_auth
 
 router = APIRouter(prefix="/api", tags=["crud"])
 
-async def _get_human_name(db: AsyncSession, team_id: uuid.UUID) -> str:
-    stmt_team = select(Team).where(Team.id == team_id)
-    team_obj = (await db.execute(stmt_team)).scalar_one_or_none()
-    if team_obj:
-        stmt_proj = select(Project).where(Project.id == team_obj.project_id)
-        proj_obj = (await db.execute(stmt_proj)).scalar_one_or_none()
-        if proj_obj and proj_obj.owner_id:
-            stmt_user = select(User).where(User.id == proj_obj.owner_id)
-            user_obj = (await db.execute(stmt_user)).scalar_one_or_none()
-            if user_obj:
-                return f"{user_obj.first_name or ''} {user_obj.last_name or ''}".strip() or "Human"
-    return "Human"
+async def _get_human_name(db: AsyncSession, team_id: Optional[uuid.UUID] = None) -> str:
+    user_name = None
+    if team_id:
+        stmt_team = select(Team).where(Team.id == team_id)
+        team_obj = (await db.execute(stmt_team)).scalar_one_or_none()
+        if team_obj:
+            stmt_proj = select(Project).where(Project.id == team_obj.project_id)
+            proj_obj = (await db.execute(stmt_proj)).scalar_one_or_none()
+            if proj_obj and proj_obj.owner_id:
+                stmt_user = select(User).where(User.id == proj_obj.owner_id)
+                user_obj = (await db.execute(stmt_user)).scalar_one_or_none()
+                if user_obj:
+                    user_name = (user_obj.first_name or f"{user_obj.first_name or ''} {user_obj.last_name or ''}").strip()
+                    if not user_name and user_obj.email:
+                        user_name = user_obj.email.split("@")[0]
+
+    if not user_name:
+        stmt_user = select(User).limit(1)
+        user_obj = (await db.execute(stmt_user)).scalar_one_or_none()
+        if user_obj:
+            user_name = (user_obj.first_name or f"{user_obj.first_name or ''} {user_obj.last_name or ''}").strip()
+            if not user_name and user_obj.email:
+                user_name = user_obj.email.split("@")[0]
+
+    if not user_name:
+        return "admin"
+
+    if "(admin)" in user_name.lower():
+        return user_name
+        
+    if user_name.lower() == "admin":
+        return "admin"
+        
+    return f"{user_name}(admin)"
+
+
+async def _assert_team_access(db: AsyncSession, team_id: str, user_id: str) -> None:
+    """
+    Finding #8 — Ownership check. Raises 403 if the authenticated user does not
+    own the project that this team belongs to.
+    """
+    try:
+        team = (await db.execute(
+            select(Team).where(Team.id == uuid.UUID(team_id))
+        )).scalar_one_or_none()
+    except (ValueError, Exception):
+        raise HTTPException(status_code=400, detail="Invalid team_id format.")
+
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found.")
+
+    project = (await db.execute(
+        select(Project).where(Project.id == team.project_id)
+    )).scalar_one_or_none()
+
+    if not project or str(project.owner_id) != user_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
 
 
 # ============================================================
@@ -42,7 +88,7 @@ class UserCreate(BaseModel):
     email: str
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    password: str = "demo"
+    password: str  # No default — callers must explicitly provide a password (Finding #17)
 
 class LearningCreate(BaseModel):
     project_id: str
@@ -51,14 +97,14 @@ class LearningCreate(BaseModel):
     team_id: Optional[str] = None
 
 class ProjectCreate(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=200)  # Finding #13
     owner_id: Optional[str] = None
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
 
 class TeamCreate(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=200)  # Finding #13
     project_id: str
 
 class AgentCreate(BaseModel):
@@ -123,21 +169,23 @@ class McpServerCreate(BaseModel):
 # ============================================================
 
 @router.post("/users")
-async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db)):
+async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    # Finding #2 — authentication required
     from core.auth.auth_service import _hash_password
-    user = User(
+    new_user = User(
         email=body.email,
-        hashed_password=_hash_password(body.password),  # Always hash passwords
+        hashed_password=_hash_password(body.password),
         first_name=body.first_name,
         last_name=body.last_name,
         is_verified=True,
     )
-    db.add(user)
+    db.add(new_user)
     await db.commit()
-    return {"id": str(user.id), "email": user.email, "first_name": user.first_name, "last_name": user.last_name}
+    return {"id": str(new_user.id), "email": new_user.email, "first_name": new_user.first_name, "last_name": new_user.last_name}
 
 @router.get("/users")
-async def list_users(db: AsyncSession = Depends(get_db)):
+async def list_users(db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    # Finding #2 — authentication required
     result = await db.execute(select(User).order_by(User.created_at.desc()))
     return [{"id": str(u.id), "email": u.email, "first_name": u.first_name, "last_name": u.last_name} for u in result.scalars().all()]
 
@@ -361,7 +409,9 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
     }
 
 @router.get("/agents/{team_id}")
-async def list_agents(team_id: str, db: AsyncSession = Depends(get_db)):
+async def list_agents(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    # Finding #8 — ownership check
+    await _assert_team_access(db, team_id, user["sub"])
     result = await db.execute(
         select(Agent).where(Agent.team_id == uuid.UUID(team_id)).order_by(Agent.created_at)
     )
@@ -461,7 +511,8 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
 # ============================================================
 
 @router.delete("/projects/{project_id}")
-async def delete_project(project_id: str, delete_content: bool = False, db: AsyncSession = Depends(get_db)):
+async def delete_project(project_id: str, delete_content: bool = False, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    # Finding #2 — authentication required
     if delete_content:
         import shutil
         from core.tools.file_tools import file_tools
@@ -477,7 +528,8 @@ async def delete_project(project_id: str, delete_content: bool = False, db: Asyn
     return {"status": "deleted", "id": project_id}
 
 @router.delete("/teams/{team_id}")
-async def delete_team(team_id: str, delete_content: bool = False, db: AsyncSession = Depends(get_db)):
+async def delete_team(team_id: str, delete_content: bool = False, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    # Finding #2 — authentication required
     if delete_content:
         import shutil
         import re
@@ -499,7 +551,8 @@ async def delete_team(team_id: str, delete_content: bool = False, db: AsyncSessi
     return {"status": "deleted", "id": team_id}
 
 @router.delete("/users/{user_id}")
-async def delete_user(user_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_user(user_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    # Finding #2 — authentication required
     await db.execute(delete(User).where(User.id == uuid.UUID(user_id)))
     return {"status": "deleted", "id": user_id}
 
@@ -530,7 +583,11 @@ async def get_team(team_id: str, db: AsyncSession = Depends(get_db)):
 # ============================================================
 
 @router.get("/messages/{team_id}")
-async def list_messages(team_id: str, limit: int = 100, db: AsyncSession = Depends(get_db)):
+async def list_messages(team_id: str, limit: int = 100, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    # Finding #8 — verify the authenticated user owns this team
+    await _assert_team_access(db, team_id, user["sub"])
+    # Clamp limit to prevent large data dumps
+    limit = min(limit, 500)
     from sqlalchemy import nulls_last
     result = await db.execute(
         select(Message)
@@ -557,14 +614,20 @@ async def list_messages(team_id: str, limit: int = 100, db: AsyncSession = Depen
 
 
 @router.get("/messages/search/{team_id}")
-async def search_messages(team_id: str, q: str = "", limit: int = 20, db: AsyncSession = Depends(get_db)):
+async def search_messages(team_id: str, q: str = "", limit: int = 20, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Full-text search over persisted messages for a team."""
-    if not q.strip():
+    # Finding #8 — ownership check
+    await _assert_team_access(db, team_id, user["sub"])
+    # Finding #5 — enforce minimum length and escape LIKE metacharacters to prevent wildcard DoS
+    if not q.strip() or len(q.strip()) < 2:
         return []
+    limit = min(limit, 50)  # cap to prevent large result dumps
+    # Escape % and _ so they are treated as literals, not SQL wildcards
+    q_escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     result = await db.execute(
         select(Message)
         .where(Message.team_id == uuid.UUID(team_id))
-        .where(Message.text.ilike(f"%{q}%"))
+        .where(Message.text.ilike(f"%{q_escaped}%", escape="\\"))
         .order_by(Message.created_at.desc())
         .limit(limit)
     )
@@ -736,6 +799,35 @@ async def delete_message(message_id: str, db: AsyncSession = Depends(get_db)):
     await event_bus.publish(f"team:{team_id}", {
         "type": "message_deleted",
         "message_id": message_id,
+    })
+    return {"ok": True}
+
+
+@router.delete("/teams/{team_id}/messages")
+async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete all messages for a team permanently."""
+    from sqlalchemy import delete
+    import shutil
+    from core.tools.file_tools import file_tools
+    
+    # 1. Delete DB Messages
+    stmt = delete(Message).where(Message.team_id == uuid.UUID(team_id))
+    await db.execute(stmt)
+    await db.commit()
+
+    # 2. Delete Chat Media from Disk
+    try:
+        team_carole_dir = await file_tools.get_team_carole_dir(team_id)
+        chat_media_dir = team_carole_dir / "Chat_Media"
+        if chat_media_dir.exists():
+            shutil.rmtree(chat_media_dir)
+    except Exception as e:
+        import logging as _log
+        _log.getLogger("carole.upload").warning(f"Failed to clear Chat_Media for team {team_id}: {e}")
+
+    from core.chat.event_bus import event_bus
+    await event_bus.publish(f"team:{team_id}", {
+        "type": "chat_cleared"
     })
     return {"ok": True}
 
@@ -1019,7 +1111,8 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
 
     from core.chat.message_router import message_router
     from core.memory.models import Agent
-    sys_text = f"[TASK_UPDATE] '{task.title}' moved to {task.status} by Human"
+    human_name = await _get_human_name(db, task.team_id)
+    sys_text = f"[TASK_UPDATE] '{task.title}' moved to {task.status} by {human_name}"
     if task.assigned_agent_id:
         agent_res = await db.execute(select(Agent).where(Agent.id == task.assigned_agent_id))
         agent = agent_res.scalar_one_or_none()
@@ -1094,8 +1187,9 @@ async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
     await db.delete(task)
     await db.commit()
     from core.chat.message_router import message_router
+    human_name = await _get_human_name(db, task.team_id)
     await message_router.route_message(
-        text=f"[TASK_DELETE] '{task.title}' was deleted by Human",
+        text=f"[TASK_DELETE] '{task.title}' was deleted by {human_name}",
         sender_id="system",
         team_id=str(task.team_id),
         sender_name="System",
@@ -1513,6 +1607,16 @@ async def get_project_usage(project_id: str, db: AsyncSession = Depends(get_db))
 # MCP Servers
 # ============================================================
 
+@router.get("/mcp/status")
+async def get_mcp_status():
+    from core.tools.mcp_client import mcp_manager
+    # Convert tuple keys to strings for JSON serialization
+    safe_statuses = {}
+    for k, v in mcp_manager.statuses.items():
+        key_str = f"{k[0]}::{k[1]}::{k[2]}"
+        safe_statuses[key_str] = v
+    return safe_statuses
+
 @router.post("/mcp")
 async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_db)):
     from core.memory.models import McpServer
@@ -1546,8 +1650,10 @@ async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_d
     )
 
     from core.chat.message_router import message_router
+    t_uuid = uuid.UUID(body.team_id) if body.team_id else None
+    human_name = await _get_human_name(db, t_uuid)
     await message_router.route_message(
-        text=f"[MCP_ADD] New MCP Server '{body.server_name}' was connected by Human",
+        text=f"[MCP_ADD] New MCP Server '{body.server_name}' was connected by {human_name}",
         sender_id="system",
         team_id=body.team_id,
         sender_name="System",
@@ -1555,6 +1661,81 @@ async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_d
     )
 
     return {"id": str(server.id), "status": "connecting"}
+
+@router.get("/mcp/global")
+async def list_global_mcps():
+    import json
+    from core.config import GLOBAL_MCPS, DISABLED_GLOBAL_MCPS_FILE
+    from core.tools.mcp_client import mcp_manager
+    
+    disabled_mcps = []
+    if DISABLED_GLOBAL_MCPS_FILE.exists():
+        try:
+            with open(DISABLED_GLOBAL_MCPS_FILE, "r") as f:
+                disabled_mcps = json.load(f)
+        except Exception:
+            pass
+
+    results = []
+    for mcp in GLOBAL_MCPS:
+        is_disabled = mcp["server_name"] in disabled_mcps
+        key = ("None", "global", mcp["server_name"])
+        is_connected = key in mcp_manager.sessions
+        
+        results.append({
+            "server_name": mcp["server_name"],
+            "command": mcp["command"],
+            "args": mcp["args"],
+            "description": mcp.get("description", ""),
+            "is_global": True,
+            "is_disabled": is_disabled,
+            "is_connected": is_connected
+        })
+    return results
+
+@router.post("/mcp/global/{server_name}/toggle")
+async def toggle_global_mcp(server_name: str):
+    import json
+    import asyncio
+    from core.config import GLOBAL_MCPS, DISABLED_GLOBAL_MCPS_FILE
+    from core.tools.mcp_client import mcp_manager
+    
+    mcp_config = next((m for m in GLOBAL_MCPS if m["server_name"] == server_name), None)
+    if not mcp_config:
+        raise HTTPException(404, "Global MCP not found")
+        
+    disabled_mcps = []
+    if DISABLED_GLOBAL_MCPS_FILE.exists():
+        try:
+            with open(DISABLED_GLOBAL_MCPS_FILE, "r") as f:
+                disabled_mcps = json.load(f)
+        except Exception:
+            pass
+            
+    is_disabling = server_name not in disabled_mcps
+    
+    if is_disabling:
+        disabled_mcps.append(server_name)
+        key = ("None", "global", server_name)
+        if key in mcp_manager.sessions:
+            mcp_manager.sessions.pop(key, None)
+    else:
+        disabled_mcps.remove(server_name)
+        asyncio.create_task(
+            mcp_manager.connect_stdio_server(
+                server_name=mcp_config["server_name"],
+                command=mcp_config["command"],
+                args=mcp_config["args"],
+                team_id=None,
+                agent_id=None,
+            ),
+            name=f"{server_name}_mcp_server",
+        )
+        
+    with open(DISABLED_GLOBAL_MCPS_FILE, "w") as f:
+        json.dump(disabled_mcps, f)
+        
+    return {"ok": True, "server_name": server_name, "is_disabled": is_disabling}
 
 @router.get("/mcp/{team_id}")
 async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db)):
@@ -1595,8 +1776,9 @@ async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db)):
     
     await db.commit()
     from core.chat.message_router import message_router
+    human_name = await _get_human_name(db, server.team_id)
     await message_router.route_message(
-        text=f"[MCP_DELETE] MCP Server '{server.server_name}' was disconnected by Human",
+        text=f"[MCP_DELETE] MCP Server '{server.server_name}' was disconnected by {human_name}",
         sender_id="system",
         team_id=str(server.team_id),
         sender_name="System",
@@ -1615,6 +1797,7 @@ class AppSettings(BaseModel):
     providers: dict = {}
     default_models: dict = {}
     agent_settings: dict = {}
+    browser_automation: dict = {}
 
 
 @router.get("/settings")
@@ -1636,11 +1819,24 @@ async def get_settings():
         else:
             masked_keys[k] = ""
 
+    # Mask browser_automation api_keys
+    ba_cfg = dict(cfg.get("browser_automation", {}))
+    masked_ba_keys = {}
+    for k, v in ba_cfg.get("api_keys", {}).items():
+        if v and len(v) > 8:
+            masked_ba_keys[k] = f"{'*' * (len(v) - 4)}{v[-4:]}"
+        elif v:
+            masked_ba_keys[k] = "****"
+        else:
+            masked_ba_keys[k] = ""
+    ba_cfg["api_keys"] = masked_ba_keys
+
     return {
         "api_keys": masked_keys,
         "providers": cfg.get("providers", {}),
         "default_models": cfg.get("default_models", {}),
         "agent_settings": cfg.get("agent_settings", {}),
+        "browser_automation": ba_cfg,
     }
 
 
@@ -1667,7 +1863,21 @@ async def save_settings(body: AppSettings):
     new_default_models = {**current.get("default_models", {}), **body.default_models}
     new_agent_settings = {**current.get("agent_settings", {}), **body.agent_settings}
 
-    updated_cfg = {"api_keys": new_keys, "providers": new_providers, "default_models": new_default_models, "agent_settings": new_agent_settings}
+    current_ba = current.get("browser_automation", {})
+    new_ba = {**current_ba, **body.browser_automation}
+    new_ba_keys = dict(current_ba.get("api_keys", {}))
+    for k, v in body.browser_automation.get("api_keys", {}).items():
+        if v and not all(c == "*" for c in v.replace("-", "").replace("_", "")):
+            new_ba_keys[k] = v.strip()
+    new_ba["api_keys"] = new_ba_keys
+
+    updated_cfg = {
+        "api_keys": new_keys, 
+        "providers": new_providers, 
+        "default_models": new_default_models, 
+        "agent_settings": new_agent_settings,
+        "browser_automation": new_ba
+    }
     save_config(updated_cfg)
 
     # Hot-reload the LLM router so new keys are used immediately
@@ -1676,5 +1886,9 @@ async def save_settings(body: AppSettings):
     # Hot-reload web_tools so Tavily key is picked up
     from core.tools.web_tools import web_tools
     web_tools.reload_config()
+    
+    # Close active browsers so they restart with the new provider
+    from core.tools.browser_pool import close_all
+    await close_all()
 
     return {"status": "saved", "reloaded": True}

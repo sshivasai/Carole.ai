@@ -68,14 +68,13 @@ async def read_file(path: str = Query(..., description="Relative path to file"),
         if not safe_path.is_file():
             raise HTTPException(status_code=400, detail=f"'{path}' is not a file.")
 
-        with open(safe_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = await file_tools.read_file(path, project_id)
+        if content.startswith("Error"):
+            raise HTTPException(status_code=400, detail=content)
 
         return {"content": content}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Cannot read binary file.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -187,7 +186,17 @@ async def delete_file_endpoint(path: str = Query(...), project_id: str | None = 
                 raise HTTPException(status_code=400, detail=res)
         elif safe_path.is_dir():
             import shutil
-            shutil.rmtree(safe_path)
+            import os
+            import stat
+            
+            def on_rm_error(func, p, exc_info):
+                try:
+                    os.chmod(p, stat.S_IWRITE)
+                    func(p)
+                except Exception:
+                    pass
+
+            shutil.rmtree(safe_path, onerror=on_rm_error)
             res = f"Success: Deleted directory '{path}'."
         else:
             raise HTTPException(status_code=404, detail="Path not found.")

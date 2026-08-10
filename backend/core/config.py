@@ -20,6 +20,35 @@ CAROLE_HOME_DIR.mkdir(parents=True, exist_ok=True)
 PLUGINS_DIR = CAROLE_HOME_DIR / "plugins"
 PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
 
+DISABLED_GLOBAL_MCPS_FILE = CAROLE_HOME_DIR / "disabled_global_mcps.json"
+
+GLOBAL_MCPS = [
+    {
+        "server_name": "playwright",
+        "command": "npx",
+        "args": ["-y", "@playwright/mcp@latest"],
+        "description": "Browser automation and web scraping"
+    },
+    {
+        "server_name": "context7",
+        "command": "npx",
+        "args": ["-y", "@upstash/context7-mcp@latest"],
+        "description": "Live library and framework documentation"
+    },
+    {
+        "server_name": "markitdown",
+        "command": "uvx",
+        "args": ["markitdown-mcp"],
+        "description": "Convert PDF/Word/Excel/Images to Markdown"
+    },
+    {
+        "server_name": "sequential_thinking",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+        "description": "Structured step-by-step reasoning scaffold"
+    }
+]
+
 # ==========================================
 # Global Model Settings  (env-configurable)
 # ==========================================
@@ -66,6 +95,7 @@ _PROMPT_ALIASES = {
     "COMPACTION_SYSTEM_PROMPT": "system.compaction_system",
     "COMPACTION_USER_PROMPT":   "system.compaction_user",
     "KEYWORD_EXTRACTION_PROMPT":"system.keyword_extraction",
+    "OUTPUT_EFFICIENCY_PROMPT": "system.output_efficiency",
 }
 
 
@@ -81,11 +111,11 @@ _AGENT_SETTINGS_DEFAULTS = {
     "APPROVAL_TIMEOUT_SECS": 60,
     "MAX_QUEUE_SIZE": 500,
     "DREAM_INTERVAL_MINUTES": 15,
-    "MEMORY_RETRIEVAL_LIMIT": 3,
+    "MEMORY_RETRIEVAL_LIMIT": 5,
     "CONTEXT_COMPACTION_THRESHOLD": 15,
 }
 
-def __getattr__(name: str) -> str:
+def __getattr__(name: str):
     """
     Module-level __getattr__ so old-style `from core.config import JUDGE_SYSTEM_PROMPT`
     still works — it now reads from prompts.json instead of a hardcoded string.

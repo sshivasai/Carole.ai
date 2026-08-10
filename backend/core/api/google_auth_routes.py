@@ -42,8 +42,20 @@ REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/
 FRONTEND_SUCCESS_URL = os.getenv("FRONTEND_URL", "http://localhost:3000") + "?google_connected=1"
 FRONTEND_ERROR_URL   = os.getenv("FRONTEND_URL", "http://localhost:3000") + "?google_error=1"
 
-# Store OAuth states in memory (fine for a local single-user backend)
-_AUTH_SESSIONS = {}
+# Store OAuth states in memory.
+# Bounded to prevent memory DoS (max 200 sessions), entries expire after 10 min.
+_AUTH_SESSIONS: dict = {}  # state -> {"code_verifier": ..., "expires_at": float}
+_AUTH_SESSION_MAX = 200
+_AUTH_SESSION_TTL = 600  # 10 minutes
+
+
+def _purge_expired_sessions() -> None:
+    """Remove expired OAuth sessions from the in-memory store."""
+    import time
+    now = time.time()
+    expired = [k for k, v in _AUTH_SESSIONS.items() if v.get("expires_at", 0) < now]
+    for k in expired:
+        _AUTH_SESSIONS.pop(k, None)
 
 
 def _credentials_file_exists() -> bool:
@@ -149,8 +161,19 @@ async def google_authorize():
             prompt="consent",
         )
         
-        # Save the code verifier if PKCE is used (e.g. for "installed" client types)
-        _AUTH_SESSIONS[state] = getattr(flow, "code_verifier", None)
+        # Purge expired sessions and enforce max size to prevent memory DoS
+        import time
+        _purge_expired_sessions()
+        if len(_AUTH_SESSIONS) >= _AUTH_SESSION_MAX:
+            # Evict the oldest entry
+            oldest_key = next(iter(_AUTH_SESSIONS))
+            _AUTH_SESSIONS.pop(oldest_key, None)
+
+        # Save the code verifier with TTL so state cannot be replayed indefinitely
+        _AUTH_SESSIONS[state] = {
+            "code_verifier": getattr(flow, "code_verifier", None),
+            "expires_at": time.time() + _AUTH_SESSION_TTL,
+        }
 
         return RedirectResponse(auth_url)
 
@@ -172,6 +195,17 @@ async def google_callback(request: Request):
     if error or not code:
         return RedirectResponse(FRONTEND_ERROR_URL)
 
+    # Finding #12 — Explicit state validation to prevent OAuth CSRF.
+    # Reject the callback if the state is unknown or has expired.
+    import time
+    _purge_expired_sessions()
+    if not state or state not in _AUTH_SESSIONS:
+        logger.warning("OAuth callback rejected — unknown or expired state: %s", state)
+        return RedirectResponse(FRONTEND_ERROR_URL + "&reason=invalid_state")
+
+    session_data = _AUTH_SESSIONS.pop(state)  # Remove to prevent replay
+    code_verifier = session_data.get("code_verifier")
+
     try:
         with open(_CREDS_PATH) as f:
             raw = json.load(f)
@@ -190,10 +224,8 @@ async def google_callback(request: Request):
         )
         
         # Restore PKCE code verifier
-        if state in _AUTH_SESSIONS:
-            code_verifier = _AUTH_SESSIONS.pop(state)
-            if code_verifier:
-                flow.code_verifier = code_verifier
+        if code_verifier:
+            flow.code_verifier = code_verifier
 
         flow.fetch_token(code=code)
         _save_token(flow.credentials)

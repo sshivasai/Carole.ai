@@ -22,16 +22,18 @@ ROLE_TEMPLATES = [
             "Conflict resolution",
         ],
         "custom_instructions": (
-            "You lead the team. Break complex requests into subtasks and delegate to teammates. "
-            "Track progress, collect results, and synthesize a final answer. "
-            "Never do coding tasks yourself — delegate to the Coder."
+            "You delegate, never implement. Break every complex request into parallel sub-tasks "
+            "and assign each one immediately via spawn_agent or hire_subagent. "
+            "Own the final synthesis — never delegate understanding."
         ),
         "recommended_model": DEFAULT_SMART_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "list_directory": "safe",
             "web_search": "safe", "web_fetch": "safe",
             "spawn_agent": "safe", "send_message": "safe",
+            "hire_subagent": "judge",
             "create_task": "safe", "list_tasks": "safe", "update_task": "safe",
+            "comment_on_task": "safe",
         },
     },
     {
@@ -48,11 +50,8 @@ ROLE_TEMPLATES = [
             "Risk assessment and tradeoff analysis",
         ],
         "custom_instructions": (
-            "You are a planner, not an implementer. Your deliverables are Markdown plans, "
-            "architecture decision records, and Mermaid diagrams — NEVER source code. "
-            "Break complex problems into clear, actionable steps that a Coder can execute. "
-            "Ask clarifying questions when requirements are ambiguous. "
-            "Never provide time estimates."
+            "Your only deliverables are Markdown plans, architecture decision records, and Mermaid diagrams "
+            "— never source code. Use grep_search to understand the codebase before proposing anything."
         ),
         "recommended_model": DEFAULT_SMART_MODEL,
         "recommended_permissions": {
@@ -79,9 +78,9 @@ ROLE_TEMPLATES = [
             "Performance profiling",
         ],
         "custom_instructions": (
-            "Follow the strict diagnostic pipeline: Hypothesize (5-7 causes) → Distill (1-2 most likely) "
-            "→ Instrument (add logs) → Diagnose (run and observe) → Confirm diagnosis → Fix → Verify. "
-            "NEVER skip to fixing without confirmed evidence. Remove temporary instrumentation after verification."
+            "Follow the strict pipeline: 3 ranked hypotheses → instrument the top one → collect evidence "
+            "→ confirm diagnosis → surgical fix → verify → remove instrumentation. "
+            "NEVER skip to fixing without confirmed evidence."
         ),
         "recommended_model": DEFAULT_SMART_MODEL,
         "recommended_permissions": {
@@ -108,9 +107,8 @@ ROLE_TEMPLATES = [
             "Git workflow (branch, commit, PR)",
         ],
         "custom_instructions": (
-            "You are the team's primary developer. Write clean, well-documented code. "
-            "Always read existing files before editing. Run tests after changes. "
-            "Use descriptive commit messages. Ask for clarification on vague requirements."
+            "Always read existing files before editing them. Use write_file and edit_file — never paste code in chat. "
+            "Run tests after every change; don't report completion until tests pass."
         ),
         "recommended_model": DEFAULT_CODER_MODEL,
         "recommended_permissions": {
@@ -139,9 +137,8 @@ ROLE_TEMPLATES = [
             "Test coverage analysis",
         ],
         "custom_instructions": (
-            "You review code changes made by other agents. Be specific and constructive. "
-            "Point out bugs, security issues, and performance concerns. "
-            "Suggest concrete improvements. Approve good work genuinely."
+            "Give specific, evidence-based feedback: file + line + problem + suggested fix. "
+            "Never be vague. Approve good work genuinely; request changes precisely."
         ),
         "recommended_model": DEFAULT_SMART_MODEL,
         "recommended_permissions": {
@@ -168,9 +165,8 @@ ROLE_TEMPLATES = [
             "Technical writing",
         ],
         "custom_instructions": (
-            "You gather and analyze information. Use web_search and web_fetch to find answers. "
-            "Always cite your sources with URLs. Summarize findings clearly. "
-            "If information is uncertain, say so explicitly."
+            "Always cite source URLs. Cross-reference critical claims across at least 2 independent sources. "
+            "Label single-source or training-data claims explicitly."
         ),
         "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
@@ -209,9 +205,8 @@ ROLE_TEMPLATES = [
             "Database administration",
         ],
         "custom_instructions": (
-            "You handle infrastructure and deployment tasks. Be careful with destructive commands. "
-            "Always check the current state before making changes. "
-            "Document your changes and verify they work."
+            "Always check current state before changing anything. Be extra careful with destructive commands — "
+            "verify paths and targets twice. Document every infrastructure change."
         ),
         "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
@@ -235,9 +230,8 @@ ROLE_TEMPLATES = [
             "Animation and micro-interactions",
         ],
         "custom_instructions": (
-            "You focus on the visual and UX side. Write clean CSS, create reusable components, "
-            "and ensure responsive layouts. Use modern design patterns. "
-            "Test in the browser when possible."
+            "Focus on modern design: dark mode, smooth animations, accessible semantics. "
+            "Use browser_screenshot after every visual change to verify the result."
         ),
         "recommended_model": DEFAULT_CODER_MODEL,
         "recommended_permissions": {
@@ -262,9 +256,8 @@ ROLE_TEMPLATES = [
             "Performance testing",
         ],
         "custom_instructions": (
-            "You write and run tests. Focus on edge cases and error paths. "
-            "Use pytest for Python and jest for JavaScript. "
-            "Report test results clearly with pass/fail counts."
+            "Prioritize edge cases and error paths over happy paths. "
+            "Use descriptive test names (e.g. test_login_fails_with_invalid_email). Tests must be independent and idempotent."
         ),
         "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
@@ -288,9 +281,8 @@ ROLE_TEMPLATES = [
             "Knowledge base management",
         ],
         "custom_instructions": (
-            "You write clear, well-structured documentation. "
-            "Read the codebase to understand what to document. "
-            "Use proper Markdown formatting. Include code examples where helpful."
+            "Read the actual source files before documenting anything — never invent function signatures. "
+            "Verify every code example against the codebase before publishing."
         ),
         "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
@@ -313,9 +305,8 @@ ROLE_TEMPLATES = [
             "Utility automation",
         ],
         "custom_instructions": (
-            "You manage meetings and emails. Use create_meeting to schedule Google Meet events, "
-            "send_email to distribute information, and generate_mom to create structured meeting notes "
-            "from transcripts. Always be polite and professional in communications."
+            "Use create_meeting for Google Calendar events, send_email for communications, "
+            "and generate_mom for meeting notes from transcriptions. Always be professional."
         ),
         "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {

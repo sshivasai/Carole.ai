@@ -97,12 +97,38 @@ class ToolRegistry:
             if spec.agent_id is not None and spec.agent_id != agent_id:
                 continue
 
-            params_desc = "{" + ", ".join(
-                f'"{k}": {v.get("type", "string")}'
-                for k, v in spec.parameters.items()
-            ) + "}" if spec.parameters else "{}"
+            # Build parameter description with inline hints from descriptions
+            description = spec.description
+            if spec.name == "browser_navigate":
+                try:
+                    from core.llm.config_manager import load_config
+                    provider = load_config().get("browser_automation", {}).get("provider", "local")
+                    if provider != "local":
+                        description += f" (Note: Anti-bot and CAPTCHA bypassing is currently ENABLED via {provider.capitalize()})."
+                except Exception:
+                    pass
+
+            if spec.parameters:
+                param_parts = []
+                for k, v in spec.parameters.items():
+                    param_type = v.get("type", "string")
+                    desc = v.get("description", "")
+                    required = v.get("required", False)
+                    entry = f'"{k}": {param_type}'
+                    hints = []
+                    if required:
+                        hints.append("required")
+                    if desc:
+                        hints.append(desc)
+                    if hints:
+                        entry += f' /* {"; ".join(hints)} */'
+                    param_parts.append(entry)
+                params_desc = "{" + ", ".join(param_parts) + "}"
+            else:
+                params_desc = "{}"
+
             lines.append(
-                f"- {spec.name}({params_desc}): {spec.description} "
+                f"- {spec.name}({params_desc}): {description} "
                 f"[category={spec.category}, permission={spec.permission_default}]"
             )
         lines.append("</available-tools>")
@@ -122,6 +148,16 @@ class ToolRegistry:
             if spec.agent_id is not None and spec.agent_id != agent_id:
                 continue
 
+            description = spec.description
+            if spec.name == "browser_navigate":
+                try:
+                    from core.llm.config_manager import load_config
+                    provider = load_config().get("browser_automation", {}).get("provider", "local")
+                    if provider != "local":
+                        description += f" (Note: Anti-bot and CAPTCHA bypassing is currently ENABLED via {provider.capitalize()})."
+                except Exception:
+                    pass
+
             # Build a minimal JSON-Schema object from spec.parameters
             properties = {}
             required = []
@@ -137,7 +173,7 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": spec.name,
-                    "description": f"{spec.description} [category={spec.category}, permission={spec.permission_default}]",
+                    "description": f"{description} [category={spec.category}, permission={spec.permission_default}]",
                     "parameters": {
                         "type": "object",
                         "properties": properties,

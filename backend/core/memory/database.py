@@ -11,10 +11,13 @@ Responsibilities:
 """
 
 import os
+import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from core.config import CAROLE_HOME_DIR
+
+logger = logging.getLogger("carole.database")
 
 # Read the database URL from environment
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -63,8 +66,6 @@ async def get_db():
         except Exception:
             await session.rollback()
             raise
-        finally:
-            await session.close()
 
 # Database initialization function
 async def init_db(force_recreate: bool = False):
@@ -85,13 +86,15 @@ async def init_db(force_recreate: bool = False):
         
         # 2. Optionally drop all tables first (dev convenience)
         if force_recreate:
-            print("⚠️ [DB] FORCE_DB_RECREATE enabled — dropping all tables...")
+            logger.warning("FORCE_DB_RECREATE enabled — dropping all tables...")
             await conn.run_sync(Base.metadata.drop_all)
         
         # 3. Create all tables (additive — won't modify existing columns)
         await conn.run_sync(Base.metadata.create_all)
         
         # 4. Additive migration — add missing columns if they don't exist yet
+        # TODO: Replace this brittle ALTER TABLE approach with Alembic when
+        #       the schema stabilises for production.
         if _is_sqlite:
             for query in [
                 "ALTER TABLE messages ADD COLUMN reasoning_text TEXT",
@@ -102,4 +105,4 @@ async def init_db(force_recreate: bool = False):
                 except Exception as e:
                     # Duplicate column error is expected on existing databases
                     if "duplicate column name" not in str(e).lower():
-                        print(f"ℹ️ [DB Migration Notice] {e}")
+                        logger.info("DB Migration Notice: %s", e)

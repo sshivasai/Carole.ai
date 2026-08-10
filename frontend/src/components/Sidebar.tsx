@@ -4,6 +4,7 @@ import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader
 import styles from "./Sidebar.module.css";
 import { api } from "@/hooks/useApi";
 import { useAuth } from "@/hooks/useAuth";
+import AgentAvatar from "./AgentAvatar";
 
 interface Props {
   activeView: string;
@@ -173,7 +174,7 @@ export default function Sidebar({
         </div>
         {user && (
           <div className={styles.userRow}>
-            <div className={styles.userAvatar}>{userInitials}</div>
+            <AgentAvatar name={user.first_name || user.email} id={user.id || user.email} role="human" size={28} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className={styles.userName} title={user.email}>
                 {user.first_name ? `${user.first_name} ${user.last_name || ""}`.trim() : user.email}

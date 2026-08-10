@@ -11,6 +11,8 @@ Key differences from a Worker:
 4. Never delegates understanding — reads worker output and synthesizes.
 """
 
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,11 +25,13 @@ class CoordinatorAgent(ReACTAgent):
     """Extended ReACT agent with Coordinator-specific planning and delegation."""
 
     async def assemble_system_prompt(self, db_session: AsyncSession, current_task: str) -> str:
-        """Extends the base prompt with coordinator-specific directives."""
-        base_prompt = await super().assemble_system_prompt(db_session, current_task)
+        """Extends the base prompt with coordinator-specific directives.
 
-        # Fetch active tasks
-        import uuid
+        IMPORTANT: COORDINATOR_DIRECTIVES are injected BEFORE the capabilities/tools
+        block (which is assembled by super()). This ensures the coordinator's core
+        instructions are not buried after a long tool list in extended contexts.
+        """
+        # Build the coordinator prefix: directives + active task board
         team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
         task_stmt = select(Task).where(
             Task.team_id == team_uuid,
@@ -44,4 +48,14 @@ class CoordinatorAgent(ReACTAgent):
                 tasks_block += f"- [{t.status}] {t.title} (priority: {t.priority}, assigned: {assignee})\n"
             tasks_block += "</active-tasks>\n"
 
-        return f"{base_prompt}\n{tasks_block}\n{COORDINATOR_DIRECTIVES}"
+        # Prepend coordinator directives to the system prompt (before tool capabilities),
+        # then let the base class append the full capabilities block (tools, memory, browser, etc.)
+        coordinator_prefix = f"{COORDINATOR_DIRECTIVES}{tasks_block}\n"
+
+        # Temporarily inject the prefix into self.system_prompt so assemble_system_prompt
+        # includes it at the top of the assembled output, before the capabilities block.
+        original_system_prompt = self.system_prompt
+        self.system_prompt = coordinator_prefix + (self.system_prompt or "")
+        assembled = await super().assemble_system_prompt(db_session, current_task)
+        self.system_prompt = original_system_prompt  # restore
+        return assembled

@@ -1,6 +1,16 @@
 "use client";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export function getApiBase(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return process.env.NEXT_PUBLIC_API_URL;
+  }
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname || "localhost";
+    const protocol = window.location.protocol || "http:";
+    return `${protocol}//${host}:8000`;
+  }
+  return "http://localhost:8000";
+}
 
 // Simple in-flight deduplication map for GET requests
 const _inflight = new Map<string, Promise<any>>();
@@ -18,7 +28,20 @@ async function apiFetch<T>(path: string, options?: RequestInit, retry = 1): Prom
   const isGet = !options?.method || options.method === "GET";
 
   const execute = async (): Promise<T> => {
-    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    let res: Response;
+    const url = `${getApiBase()}${path}`;
+    try {
+      res = await fetch(url, { ...options, headers });
+    } catch (err: any) {
+      if (err instanceof TypeError || err?.name === "TypeError" || err?.message === "Failed to fetch") {
+        const netErr: any = new Error(`Failed to connect to backend at ${url}. Ensure the FastAPI backend server is running.`);
+        netErr.status = 0;
+        netErr.endpoint = path;
+        netErr.cause = err;
+        throw netErr;
+      }
+      throw err;
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "Unknown error");
       const err: any = new Error(`API ${res.status}: ${text}`);
@@ -141,6 +164,8 @@ export const api = {
     apiFetch<any>(`/api/messages/${messageId}`, { method: "PUT", body: JSON.stringify({ text }) }),
   deleteMessage: (messageId: string) =>
     apiFetch<any>(`/api/messages/${messageId}`, { method: "DELETE" }),
+  clearTeamChat: (teamId: string) =>
+    apiFetch<any>(`/api/teams/${teamId}/messages`, { method: "DELETE" }),
   rollbackFromMessage: (messageId: string) =>
     apiFetch<any>(`/api/messages/${messageId}/rollback`, { method: "DELETE" }),
 
@@ -212,11 +237,15 @@ export const api = {
   getRoleTemplate: (role: string) => apiFetch<any>(`/api/role-templates/${role}`),
 
   // ── MCP ──
+  listGlobalMcpServers: () => apiFetch<any[]>("/api/mcp/global"),
+  toggleGlobalMcpServer: (serverName: string) =>
+    apiFetch<any>(`/api/mcp/global/${serverName}/toggle`, { method: "POST" }),
   listMcpServers: (teamId: string) => apiFetch<any[]>(`/api/mcp/${teamId}`),
   createMcpServer: (data: { team_id: string; server_name: string; command: string; args: string; agent_id?: string; env_vars?: Record<string, string> }) =>
     apiFetch<any>("/api/mcp", { method: "POST", body: JSON.stringify(data) }),
   deleteMcpServer: (serverId: string) =>
     apiFetch<any>(`/api/mcp/${serverId}`, { method: "DELETE" }),
+  getMcpStatus: () => apiFetch<Record<string, any>>("/api/mcp/status"),
 
   // ── Knowledge ──
   uploadKnowledgeFile: async (projectId: string, teamId: string | null, file: File) => {
@@ -224,7 +253,7 @@ export const api = {
     formData.append("file", file);
     const path = `/api/knowledge/upload?project_id=${projectId}${teamId ? `&team_id=${teamId}` : ""}`;
     const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`${getApiBase()}${path}`, {
       method: "POST",
       body: formData,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -238,7 +267,7 @@ export const api = {
     const formData = new FormData();
     formData.append("file", audioBlob, "recording.webm");
     const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
-    const res = await fetch(`${API_BASE}/api/audio/transcribe/${teamId}`, {
+    const res = await fetch(`${getApiBase()}/api/audio/transcribe/${teamId}`, {
       method: "POST",
       body: formData,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -304,11 +333,11 @@ export const api = {
 
   // ── App Settings ──
   getAppConfig: () => apiFetch<any>("/api/settings"),
-  updateAppConfig: (config: { api_keys?: Record<string, string>; providers?: Record<string, string>; default_models?: Record<string, string>; agent_settings?: Record<string, unknown> }) =>
+  updateAppConfig: (config: { api_keys?: Record<string, string>; providers?: Record<string, string>; default_models?: Record<string, string>; agent_settings?: Record<string, unknown>; browser_automation?: any }) =>
     apiFetch<any>("/api/settings", { method: "POST", body: JSON.stringify(config) }),
 
   // ── Google OAuth ──
   getGoogleStatus: () => apiFetch<any>("/api/auth/google/status"),
   disconnectGoogle: () => apiFetch<any>("/api/auth/google/disconnect", { method: "POST" }),
-  getGoogleAuthUrl: () => `${API_BASE}/api/auth/google/authorize`,
+  getGoogleAuthUrl: () => `${getApiBase()}/api/auth/google/authorize`,
 };

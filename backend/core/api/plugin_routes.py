@@ -1,10 +1,12 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 import os
+import re
 import aiofiles
 
 from core.config import PLUGINS_DIR
 from core.tools.tool_registry import ToolRegistry
+from core.auth.auth_middleware import require_auth
 import core.config
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
@@ -32,11 +34,27 @@ async def list_plugins():
             })
     return plugins
 
+
+_SAFE_PLUGIN_FILENAME_RE = re.compile(r'^[a-zA-Z0-9_-]+\.py$')
+
+
+def _validate_plugin_filename(filename: str) -> None:
+    """Validate plugin filename is safe (no path traversal, no dangerous chars)."""
+    if not _SAFE_PLUGIN_FILENAME_RE.match(filename):
+        raise HTTPException(
+            400,
+            "Invalid plugin filename. Only alphanumeric, underscore, and hyphen characters are allowed (e.g. my_tool.py)."
+        )
+    # Double-check resolved path stays inside PLUGINS_DIR
+    resolved = (PLUGINS_DIR / filename).resolve()
+    if not str(resolved).startswith(str(PLUGINS_DIR.resolve())):
+        raise HTTPException(400, "Path traversal attempt detected.")
+
+
 @router.post("/{filename}")
-async def save_plugin(filename: str, body: PluginCode):
-    """Save a plugin file and hot-reload the tool registry."""
-    if not filename.endswith(".py"):
-        raise HTTPException(400, "Plugin must be a .py file")
+async def save_plugin(filename: str, body: PluginCode, user: dict = Depends(require_auth)):
+    """Save a plugin file and hot-reload the tool registry. Requires authentication."""
+    _validate_plugin_filename(filename)
     
     file_path = PLUGINS_DIR / filename
     
@@ -55,14 +73,16 @@ async def save_plugin(filename: str, body: PluginCode):
     from sqlalchemy import select
     from core.memory.models import Team
     from core.chat.message_router import message_router
+    from core.api.crud_routes import _get_human_name
     
     async with async_session() as db:
         result = await db.execute(select(Team.id))
         teams = result.scalars().all()
+        human_name = await _get_human_name(db)
         
     for t_id in teams:
         await message_router.route_message(
-            text=f"[TOOL_ADD] Custom plugin tool '{filename}' was added by Human",
+            text=f"[TOOL_ADD] Custom plugin tool '{filename}' was added by {human_name}",
             sender_id="system",
             team_id=str(t_id),
             sender_name="System",
@@ -72,8 +92,9 @@ async def save_plugin(filename: str, body: PluginCode):
     return {"ok": True, "filename": filename}
 
 @router.delete("/{filename}")
-async def delete_plugin(filename: str):
-    """Delete a plugin file and hot-reload the tool registry."""
+async def delete_plugin(filename: str, user: dict = Depends(require_auth)):
+    """Delete a plugin file and hot-reload the tool registry. Requires authentication."""
+    _validate_plugin_filename(filename)
     file_path = PLUGINS_DIR / filename
     if file_path.exists():
         os.remove(file_path)
@@ -86,14 +107,16 @@ async def delete_plugin(filename: str):
         from sqlalchemy import select
         from core.memory.models import Team
         from core.chat.message_router import message_router
+        from core.api.crud_routes import _get_human_name
         
         async with async_session() as db:
             result = await db.execute(select(Team.id))
             teams = result.scalars().all()
+            human_name = await _get_human_name(db)
             
         for t_id in teams:
             await message_router.route_message(
-                text=f"[TOOL_DELETE] Custom plugin tool '{filename}' was removed by Human",
+                text=f"[TOOL_DELETE] Custom plugin tool '{filename}' was removed by {human_name}",
                 sender_id="system",
                 team_id=str(t_id),
                 sender_name="System",

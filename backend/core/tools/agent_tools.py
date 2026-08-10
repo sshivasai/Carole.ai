@@ -18,6 +18,7 @@ from sqlalchemy import select
 from core.memory.database import async_session
 from core.memory.models import Agent, Team
 from core.config import DEFAULT_FAST_MODEL
+from core.prompts import get_prompt
 
 logger = logging.getLogger("carole.agent_tools")
 
@@ -223,28 +224,25 @@ class AgentTools:
         task_id = str(uuid.uuid4())
         subagent_name = f"Sub-{role.replace(' ', '')}_{task_id[:4]}"
 
-        # Full production-grade system prompt for the subagent
+        # Build system prompt from registry: personality.subagent + any matching role framework
+        # This avoids duplicating behavioral rules already in prompts.json
+        personality_block = get_prompt("personality.subagent", name=subagent_name, role=role)
+        role_slug = f"role.{role.lower().replace(' ', '_')}"
+        role_block = get_prompt(role_slug)  # Returns '' if slug doesn't exist
+
         sys_prompt = (
-            f"You are {subagent_name}, a temporary specialist subagent hired for one specific task.\n"
-            f"Role: {role}\n"
-            f"Expertise: {expertise}\n\n"
-            "Follow this process STRICTLY:\n"
-            "1. UNDERSTAND: Restate the task in your own words. Identify exactly what output is expected.\n"
-            "2. PLAN: Write 2-3 bullet points outlining your approach.\n"
-            "3. EXECUTE: Use your available tools step by step to complete the task.\n"
-            "4. SCORE: Evaluate your result against the original task requirements (e.g. 9/10).\n"
-            "5. RETURN: End your final message with the task-notification block below.\n\n"
+            f"{personality_block}\n\n"
+            f"Role: {role} | Expertise: {expertise}\n\n"
+            f"{role_block}\n".rstrip() + "\n\n" if role_block else
+            f"{personality_block}\n\nRole: {role} | Expertise: {expertise}\n\n"
+        ) + (
             "Your final response MUST end with:\n"
             f"<task-notification>\n"
             f"  <task_id>{task_id}</task_id>\n"
             f"  <agent>{subagent_name}</agent>\n"
             f"  <status>completed</status>\n"
             f"  <result>Your concise result summary here (max 500 words)</result>\n"
-            f"</task-notification>\n\n"
-            "IMPORTANT CONSTRAINTS:\n"
-            "- You are temporary. Do NOT hire further subagents.\n"
-            "- You have no shared context with the team chat — your task description is all you have.\n"
-            "- When done, stop. Your coordinator will handle next steps.\n"
+            f"</task-notification>\n"
         )
 
         # Correct tool_permissions format — keys match the tool category names in tool_executor.py
@@ -255,6 +253,7 @@ class AgentTools:
             "web": "allow",
             "code_analysis": "allow",
             "memory": "allow",
+            "interaction": "allow",
         }
 
         async with async_session() as db:

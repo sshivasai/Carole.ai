@@ -141,6 +141,18 @@ class GitTools:
             args.append(directory)
         return await self._run_git(*args, cwd=cwd)
 
+    async def pull(self, remote: str = "origin", branch: str = None, cwd: Optional[str] = None) -> str:
+        """Pulls latest changes from the remote. Equivalent to git fetch + git merge."""
+        if branch:
+            return await self._run_git("pull", remote, branch, cwd=cwd)
+        return await self._run_git("pull", remote, cwd=cwd)
+
+    async def branch(self, all: bool = False, cwd: Optional[str] = None) -> str:
+        """Lists branches. all=True includes remote-tracking branches."""
+        if all:
+            return await self._run_git("branch", "-a", cwd=cwd)
+        return await self._run_git("branch", "-v", cwd=cwd)
+
 
 # Singleton
 git_tools = GitTools()

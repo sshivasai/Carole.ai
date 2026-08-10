@@ -16,7 +16,7 @@ export default function BrowserView({ screenshots }: Props) {
   const download = () => {
     if (!active?.image_base64) return;
     const a = document.createElement("a");
-    a.href = `data:image/jpeg;base64,${active.image_base64}`;
+    a.href = active.image_base64.startsWith("data:") ? active.image_base64 : `data:image/jpeg;base64,${active.image_base64}`;
     a.download = `screenshot-${Date.now()}.jpg`;
     a.click();
   };
@@ -82,7 +82,7 @@ export default function BrowserView({ screenshots }: Props) {
               {screenshots.map((s, idx) => (
                 <button key={idx} onClick={() => setSelectedIndex(idx)}
                   style={{ flexShrink: 0, width: 60, height: 38, padding: 0, border: `2px solid ${selectedIndex === idx || (selectedIndex === null && idx === screenshots.length - 1) ? "var(--color-primary)" : "var(--color-hairline)"}`, borderRadius: "var(--radius-xs)", overflow: "hidden", cursor: "pointer", background: "#000", transition: "border-color var(--t-fast)" }}>
-                  {s.image_base64 && <img src={`data:image/jpeg;base64,${s.image_base64}`} alt={`Shot ${idx + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                  {s.image_base64 && <img src={s.image_base64.startsWith("data:") ? s.image_base64 : `data:image/jpeg;base64,${s.image_base64}`} alt={`Shot ${idx + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
                 </button>
               ))}
             </div>
@@ -90,7 +90,7 @@ export default function BrowserView({ screenshots }: Props) {
 
           <div style={{ flex: 1, background: "#000", display: "flex", justifyContent: "center", overflow: "auto" }}>
             {active.image_base64 ? (
-              <img src={`data:image/jpeg;base64,${active.image_base64}`} alt="Browser view" style={{ maxWidth: "100%", height: "auto", objectFit: "contain" }} />
+              <img src={active.image_base64.startsWith("data:") ? active.image_base64 : `data:image/jpeg;base64,${active.image_base64}`} alt="Browser view" style={{ maxWidth: "100%", height: "auto", objectFit: "contain" }} />
             ) : (
               <div className="empty-state"><Monitor size={40} className="empty-state-icon" /><p>Waiting for visual feed…</p></div>
             )}

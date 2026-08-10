@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Folder, File, ChevronRight, ChevronDown, RefreshCw, X, Terminal as TerminalIcon, Maximize2, Minimize2, Search, GitBranch, LayoutList, Activity, Eye, Pencil, RefreshCcwDot } from "lucide-react";
+import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
 import { api } from "@/hooks/useApi";
 import Editor from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
@@ -85,7 +86,7 @@ interface OpenFile {
   staleRemote?: { content: string; sender: string } | null;
 }
 
-const isMarkdownPath = (path: string) => /\.(md|markdown|txt)$/i.test(path);
+const isMarkdownPath = (path: string) => /\.(md|markdown|txt|docx|pdf)$/i.test(path);
 
 export default function FileExplorerPanel({ onClose, projectId, teamId, lastFileChange, pendingOpenFile, onPendingOpenConsumed }: FileExplorerPanelProps) {
   const { addToast } = useToast();
@@ -391,7 +392,7 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
   return (
     <div style={containerStyle}>
       {/* Activity Bar */}
-      <div style={{ width: 48, borderRight: "1px solid var(--color-hairline)", background: "var(--bg-glass-card)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 8, gap: 8 }}>
+      <div style={{ width: 48, borderRight: "1px solid var(--color-hairline)", background: "var(--bg-glass-card)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 8, gap: 8, flexShrink: 0 }}>
         <button
           onClick={() => setActiveLeftTab("explorer")}
           style={{ padding: 10, borderRadius: "var(--radius-sm)", color: activeLeftTab === "explorer" ? "var(--color-primary)" : "var(--color-body)", background: activeLeftTab === "explorer" ? "var(--color-primary-glow-sm)" : "transparent" }}
@@ -426,8 +427,9 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
         </button>
       </div>
 
-      {/* Left Pane - Sidebar Content */}
-      <div style={{ width: 250, borderRight: "1px solid var(--border-subtle)", display: "flex", flexDirection: "column", background: "var(--bg-surface)" }}>
+      <PanelGroup direction="horizontal" autoSaveId="file-explorer-horizontal">
+        {/* Left Pane - Sidebar Content */}
+        <Panel id="file-explorer-left" order={1} defaultSize={25} minSize={15} maxSize={40} style={{ display: "flex", flexDirection: "column", background: "var(--bg-surface)", borderRight: "1px solid var(--border-subtle)" }}>
         {activeLeftTab === "explorer" && (
           <>
             <div style={{ padding: "var(--sp-sm) var(--sp-md)", borderBottom: "1px solid var(--color-hairline)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -495,11 +497,12 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
         {activeLeftTab === "activity" && teamId && (
           <ActivityLogPanel teamId={teamId} />
         )}
-      </div>
-
-      {/* Right Pane - Content View */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "transparent" }}>
-        {openFiles.length > 0 ? (
+        </Panel>
+        <PanelResizeHandle className="resize-handle" style={{ width: "4px", cursor: "col-resize", background: "var(--border-subtle)", flexShrink: 0 }} />
+        
+        {/* Right Pane - Content View */}
+        <Panel id="file-explorer-right" order={2} style={{ display: "flex", flexDirection: "column", minWidth: 0, background: "transparent" }}>
+          {openFiles.length > 0 ? (
           <>
             {/* Editor Tabs */}
             <div style={{ display: "flex", background: "var(--bg-glass-card)", overflowX: "auto", overflowY: "hidden", height: 35, flexShrink: 0 }} className="scrollbar-hide">
@@ -610,58 +613,63 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
                 <div className="text-mute body-sm p-4">Loading...</div>
               ) : (
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-                  <div style={{ flex: showTerminal ? "1 1 50%" : "1 1 100%", overflow: "hidden", paddingTop: 8 }}>
-                    {activeFile ? (
-                      isMarkdownPath(activeFile.path) && viewMode === "preview" ? (
-                        <div style={{ height: "100%", overflowY: "auto", padding: "8px 24px 32px" }} className="markdown-body">
-                          {activeFile.content.trim() ? (
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              // HTML is NOT enabled (no rehype-raw), so raw HTML
-                              // in agent-authored markdown is escaped — safe.
-                              components={{
-                                a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-                              }}
-                            >
-                              {activeFile.content}
-                            </ReactMarkdown>
-                          ) : (
-                            <div className="body-sm" style={{ color: "var(--color-mute)", fontStyle: "italic" }}>
-                              This file is empty. Switch to <strong>Edit</strong> to add content.
-                            </div>
-                          )}
-                        </div>
+                  <PanelGroup direction="vertical" autoSaveId="file-explorer-vertical">
+                    <Panel defaultSize={showTerminal ? 60 : 100} minSize={20} style={{ display: "flex", flexDirection: "column", overflow: "hidden", paddingTop: 8 }}>
+                      {activeFile ? (
+                        isMarkdownPath(activeFile.path) && viewMode === "preview" ? (
+                          <div style={{ height: "100%", overflowY: "auto", padding: "8px 24px 32px" }} className="markdown-body">
+                            {activeFile.content.trim() ? (
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                // HTML is NOT enabled (no rehype-raw), so raw HTML
+                                // in agent-authored markdown is escaped — safe.
+                                components={{
+                                  a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                                }}
+                              >
+                                {activeFile.content}
+                              </ReactMarkdown>
+                            ) : (
+                              <div className="body-sm" style={{ color: "var(--color-mute)", fontStyle: "italic" }}>
+                                This file is empty. Switch to <strong>Edit</strong> to add content.
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <Editor
+                            height="100%"
+                            language={getLanguageFromPath(activeFile.path)}
+                            theme="vs-dark"
+                            value={activeFile.content}
+                            onChange={(value) => updateFileContent(activeFile.path, value || "")}
+                            options={{
+                              minimap: { enabled: false },
+                              fontSize: 13,
+                              fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
+                              wordWrap: "on",
+                              padding: { top: 8, bottom: 16 },
+                            }}
+                          />
+                        )
                       ) : (
-                        <Editor
-                          height="100%"
-                          language={getLanguageFromPath(activeFile.path)}
-                          theme="vs-dark"
-                          value={activeFile.content}
-                          onChange={(value) => updateFileContent(activeFile.path, value || "")}
-                          options={{
-                            minimap: { enabled: false },
-                            fontSize: 13,
-                            fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
-                            wordWrap: "on",
-                            padding: { top: 8, bottom: 16 },
-                          }}
-                        />
-                      )
-                    ) : (
-                      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-mute)" }} className="body-sm">
-                        Select a file to view its content
-                      </div>
+                        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-mute)" }} className="body-sm">
+                          Select a file to view its content
+                        </div>
+                      )}
+                    </Panel>
+                    {showTerminal && (
+                      <>
+                        <PanelResizeHandle className="resize-handle" />
+                        <Panel defaultSize={40} minSize={20} style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--color-hairline)", overflow: "hidden" }}>
+                          <TerminalPanel
+                            projectId={projectId}
+                            onClose={() => setShowTerminal(false)}
+                            triggerCommand={terminalCmd}
+                          />
+                        </Panel>
+                      </>
                     )}
-                  </div>
-                  {showTerminal && (
-                    <div style={{ flex: "1 1 50%", borderTop: "1px solid var(--color-hairline)", overflow: "hidden" }}>
-                      <TerminalPanel
-                        projectId={projectId}
-                        onClose={() => setShowTerminal(false)}
-                        triggerCommand={terminalCmd}
-                      />
-                    </div>
-                  )}
+                  </PanelGroup>
                 </div>
               )}
             </div>
@@ -689,7 +697,8 @@ export default function FileExplorerPanel({ onClose, projectId, teamId, lastFile
             </div>
           </div>
         )}
-      </div>
+        </Panel>
+      </PanelGroup>
 
       {contextMenu && (
         <div

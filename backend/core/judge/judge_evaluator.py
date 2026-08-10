@@ -13,7 +13,10 @@ When a tool is gated at "judge" level, the ToolExecutor publishes a
 
 from core.llm.multi_model_router import llm_router
 from core.config import JUDGE_SYSTEM_PROMPT, DEFAULT_JUDGE_MODEL
+import logging
 import re
+
+logger = logging.getLogger("carole.judge")
 
 class JudgeEvaluator:
     async def evaluate(self, tool_name: str, arguments: dict, agent_name: str, team_id: str = None) -> tuple[bool, str]:
@@ -46,7 +49,7 @@ class JudgeEvaluator:
                             history_text += f"[{sender}]: {msg.text}\n"
                         history_text += "\n"
             except Exception as e:
-                print(f"Error loading chat context for judge: {e}")
+                logger.warning("Error loading chat context for judge: %s", e)
 
         prompt = (
             f"Agent '{agent_name}' wants to execute tool '{tool_name}' "
@@ -74,9 +77,9 @@ class JudgeEvaluator:
 
         verdict_text = response.upper()
         approved = "APPROVE" in verdict_text
-        print(f"[Judge] Tool '{tool_name}' by '{agent_name}' -> {'APPROVED' if approved else 'DENIED'}")
+        logger.info("Tool '%s' by '%s' -> %s", tool_name, agent_name, "APPROVED" if approved else "DENIED")
         if not reasoning:
-            print(f"[Judge] WARNING: Empty reasoning. Raw response: {response}")
+            logger.warning("Empty reasoning. Raw response: %s", response)
         
         return approved, reasoning
 

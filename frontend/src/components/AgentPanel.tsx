@@ -4,6 +4,7 @@ import type { AgentConfig } from "@/lib/types";
 import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
+import AgentAvatar from "./AgentAvatar";
 
 interface Props {
   agents: AgentConfig[];
@@ -34,9 +35,7 @@ function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)" }}>
-        <div style={{ width: 38, height: 38, borderRadius: "var(--radius-md)", background: `${roleColor}22`, border: `1px solid ${roleColor}44`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-          <Bot size={18} color={roleColor} />
-        </div>
+        <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={38} isThinking={isThinking} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
             <span className="body-sm-strong">{agent.name}</span>

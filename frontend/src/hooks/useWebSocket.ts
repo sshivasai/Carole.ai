@@ -3,7 +3,23 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { WSEvent } from "@/lib/types";
 
-const WS_BASE = process.env.NEXT_PUBLIC_API_URL?.replace("http", "ws") || "ws://localhost:8000";
+export function getWsBase(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return process.env.NEXT_PUBLIC_API_URL.replace(/^http/, "ws");
+  }
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname || "localhost";
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${host}:8000`;
+  }
+  return "ws://localhost:8000";
+}
+
+/** Read the JWT from localStorage (same key used everywhere in the app). */
+export function getWsToken(): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("carole_token") ?? "";
+}
 
 // Exponential backoff config
 const BACKOFF_BASE_MS = 1000;
@@ -53,7 +69,11 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
   const connect = useCallback(() => {
     if (!teamId || !isMounted.current) return;
 
-    const url = `${WS_BASE}/ws/chat/${teamId}`;
+    // Append JWT so the backend can authenticate the WS upgrade (Finding #4).
+    // Browsers cannot set custom headers on WebSocket connections, so the token
+    // is passed as a query param. The server will close with code 4001 if missing.
+    const token = getWsToken();
+    const url = `${getWsBase()}/ws/chat/${teamId}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

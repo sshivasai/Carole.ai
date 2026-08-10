@@ -14,6 +14,7 @@ import os
 import re
 import ast
 from pathlib import Path
+from typing import Optional, List, Dict, Any
 
 
 class CodeAnalysisTools:
@@ -175,7 +176,7 @@ class CodeAnalysisTools:
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def analyze_impact(self, file_path: str) -> str:
+    async def analyze_impact(self, file_path: str, project_id: Optional[str] = None) -> str:
         """Analyzes the impact of modifying a file using the Code Knowledge Graph."""
         from core.knowledge.code_graph import code_graph
         try:
@@ -185,11 +186,12 @@ class CodeAnalysisTools:
             except ValueError:
                 return f"Error: '{file_path}' is not within the workspace."
 
-            if not code_graph.graph.has_node(path_str):
+            graph = await code_graph.get_graph(project_id)
+            if not graph.has_node(path_str):
                 return f"No dependency graph data for '{path_str}'."
 
             # Find all files that depend on this file
-            dependent_files = list(code_graph.graph.predecessors(path_str))
+            dependent_files = list(graph.predecessors(path_str))
             
             output = [f"🔍 Impact Analysis for '{path_str}':"]
             if dependent_files:

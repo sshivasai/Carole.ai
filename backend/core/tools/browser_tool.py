@@ -33,9 +33,8 @@ from core.chat.event_bus import event_bus
 logger = logging.getLogger("carole.browser")
 
 # Maximum characters to return for page text (to keep token counts manageable)
-MAX_TEXT_CHARS = 5000
-MAX_HTML_CHARS = 8000
-
+MAX_TEXT_CHARS = 100000
+MAX_HTML_CHARS = 100000
 
 async def _get_page(agent_id: str):
     """Helper: get the current page for an agent."""
@@ -46,7 +45,7 @@ async def _get_page(agent_id: str):
 async def _publish_screenshot(page, agent_id: str, agent_name: str, team_id: str, label: str = ""):
     """Capture a screenshot and broadcast it to the team topic."""
     try:
-        screenshot_bytes = await page.screenshot(type="png", full_page=False)
+        screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
         b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
         await event_bus.publish(f"team:{team_id}", {
             "type": "browser_screenshot",
@@ -54,7 +53,7 @@ async def _publish_screenshot(page, agent_id: str, agent_name: str, team_id: str
             "sender_name": agent_name,
             "url": page.url,
             "label": label,
-            "image_base64": f"data:image/png;base64,{b64}",
+            "image_base64": f"data:image/jpeg;base64,{b64}",
         })
     except Exception as e:
         logger.warning("Failed to capture screenshot: %s", e)
@@ -70,20 +69,45 @@ class BrowserTool:
 
     async def navigate(self, url: str, agent_id: str, agent_name: str, team_id: str,
                        wait_until: str = "domcontentloaded") -> str:
-        """Navigate to a URL and return the page title + visible text."""
+        """Navigate to a URL and return the page title + visible text.
+        Waits for networkidle after initial load to handle JS-rendered pages."""
         try:
             page = await _get_page(agent_id)
             response = await page.goto(url, wait_until=wait_until, timeout=30_000)
             status = response.status if response else "unknown"
 
+            # Wait for network idle so JS-rendered forms/SPAs fully load
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10_000)
+            except Exception:
+                pass  # Best-effort; some pages never go fully idle
+
             await _publish_screenshot(page, agent_id, agent_name, team_id, f"Navigated to {url}")
 
             title = await page.title()
-            text = await page.inner_text("body")
-            text = text[:MAX_TEXT_CHARS]
+            html_content = await page.content()
+            
+            try:
+                import markdownify
+                text = markdownify.markdownify(html_content, heading_style="ATX", strip=["script", "style", "nav", "footer", "header"])
+            except ImportError:
+                text = await page.inner_text("body")
+            
+            if len(text) > MAX_TEXT_CHARS:
+                text = text[:MAX_TEXT_CHARS] + "\n\n[Content truncated due to length...]"
+            # Detect iframes so the agent knows the page has embedded content
+            iframe_count = await page.evaluate("document.querySelectorAll('iframe').length")
+            iframe_hint = ""
+            if iframe_count > 0:
+                iframe_hint = (
+                    f"\n⚠️ This page contains {iframe_count} iframe(s). "
+                    f"Form fields may be inside an iframe. Use browser_get_interactive_elements "
+                    f"to discover all inputs (including inside iframes).\n"
+                )
+
             return (
                 f"✓ Navigated to {url}\n"
-                f"  Status: {status} | Title: {title}\n\n"
+                f"  Status: {status} | Title: {title}{iframe_hint}\n\n"
                 f"Page text:\n{text}"
             )
         except ImportError:
@@ -138,7 +162,7 @@ class BrowserTool:
         """Capture a screenshot of the current page and stream it to the UI."""
         try:
             page = await _get_page(agent_id)
-            screenshot_bytes = await page.screenshot(type="png", full_page=full_page)
+            screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=full_page)
             b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
             await event_bus.publish(f"team:{team_id}", {
                 "type": "browser_screenshot",
@@ -146,7 +170,7 @@ class BrowserTool:
                 "sender_name": agent_name,
                 "url": page.url,
                 "label": "Manual screenshot",
-                "image_base64": f"data:image/png;base64,{b64}",
+                "image_base64": f"data:image/jpeg;base64,{b64}",
             })
             return f"✓ Screenshot captured for {page.url} ({'full page' if full_page else 'viewport'})"
         except Exception as e:
@@ -159,7 +183,7 @@ class BrowserTool:
             element = await page.query_selector(selector)
             if not element:
                 return f"Error: Element '{selector}' not found."
-            screenshot_bytes = await element.screenshot(type="png")
+            screenshot_bytes = await element.screenshot(type="jpeg", quality=60)
             b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
             await event_bus.publish(f"team:{team_id}", {
                 "type": "browser_screenshot",
@@ -167,7 +191,7 @@ class BrowserTool:
                 "sender_name": agent_name,
                 "url": page.url,
                 "label": f"Element: {selector}",
-                "image_base64": f"data:image/png;base64,{b64}",
+                "image_base64": f"data:image/jpeg;base64,{b64}",
             })
             return f"✓ Screenshot taken of element '{selector}'"
         except Exception as e:
@@ -178,10 +202,16 @@ class BrowserTool:
     # ------------------------------------------------------------------ #
 
     async def click(self, selector: str, agent_id: str, agent_name: str = "", team_id: str = "") -> str:
-        """Click an element by CSS selector."""
+        """Click an element by CSS selector. Automatically searches iframes if not found on main page."""
         try:
             page = await _get_page(agent_id)
-            await page.click(selector, timeout=10_000)
+            try:
+                await page.click(selector, timeout=10_000)
+            except Exception:
+                # Fallback: search inside iframes
+                clicked = await self._try_in_frames(page, "click", selector)
+                if not clicked:
+                    raise
             if team_id:
                 await _publish_screenshot(page, agent_id, agent_name, team_id, f"Clicked: {selector}")
             return f"✓ Clicked element: {selector}"
@@ -201,13 +231,19 @@ class BrowserTool:
 
     async def type_text(self, selector: str, text: str, agent_id: str,
                         clear_first: bool = True) -> str:
-        """Type text into an input element. Optionally clears existing content first."""
+        """Type text into an input element. Automatically searches iframes if not found on main page."""
         try:
             page = await _get_page(agent_id)
-            if clear_first:
-                await page.fill(selector, text, timeout=10_000)
-            else:
-                await page.type(selector, text, delay=30, timeout=10_000)
+            try:
+                if clear_first:
+                    await page.fill(selector, text, timeout=10_000)
+                else:
+                    await page.type(selector, text, delay=30, timeout=10_000)
+            except Exception:
+                # Fallback: search inside iframes
+                filled = await self._try_in_frames(page, "fill" if clear_first else "type", selector, text)
+                if not filled:
+                    raise
             return f"✓ Typed '{text[:80]}{'...' if len(text) > 80 else ''}' into {selector}"
         except Exception as e:
             return f"Error typing into '{selector}': {str(e)}"
@@ -470,14 +506,32 @@ class BrowserTool:
     # ------------------------------------------------------------------ #
 
     async def open_new_tab(self, url: str, agent_id: str, agent_name: str, team_id: str) -> str:
-        """Open a URL in a new browser tab."""
+        """Open a URL in a new browser tab. Waits for networkidle for JS-rendered pages."""
         try:
             from core.tools.browser_pool import get_page
             page = await get_page(agent_id)
             new_page = await page.context.new_page()
-            await new_page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            await new_page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+
+            # Wait for network idle so JS-rendered forms fully load
+            try:
+                await new_page.wait_for_load_state("networkidle", timeout=10_000)
+            except Exception:
+                pass  # Best-effort
+
             await _publish_screenshot(new_page, agent_id, agent_name, team_id, f"New tab: {url}")
-            return f"✓ Opened new tab at {url} (now on tab index {len(page.context.pages) - 1})"
+
+            # Detect iframes
+            iframe_count = await new_page.evaluate("document.querySelectorAll('iframe').length")
+            iframe_hint = ""
+            if iframe_count > 0:
+                iframe_hint = (
+                    f"\n⚠️ This page contains {iframe_count} iframe(s). "
+                    f"Form fields may be inside an iframe. Use browser_get_interactive_elements "
+                    f"to discover all inputs (including inside iframes)."
+                )
+
+            return f"✓ Opened new tab at {url} (now on tab index {len(page.context.pages) - 1}){iframe_hint}"
         except Exception as e:
             return f"Error opening new tab: {str(e)}"
 
@@ -516,6 +570,177 @@ class BrowserTool:
             return f"Open tabs ({len(pages)}):\n" + "\n".join(lines)
         except Exception as e:
             return f"Error listing tabs: {str(e)}"
+
+    # ------------------------------------------------------------------ #
+    # Form Discovery & Iframe Handling
+    # ------------------------------------------------------------------ #
+
+    async def get_interactive_elements(self, agent_id: str, selector_scope: str = "") -> str:
+        """Discover all interactive elements (inputs, selects, buttons, textareas)
+        on the current page AND inside any iframes. Returns a structured list
+        with CSS selectors the agent can use directly.
+
+        This is the FIRST tool agents should call after navigating to a page
+        with forms — never guess selectors."""
+        try:
+            page = await _get_page(agent_id)
+
+            js_extract = """
+            (scopeSelector) => {
+                const root = scopeSelector
+                    ? document.querySelector(scopeSelector)
+                    : document.body;
+                if (!root) return [];
+                const interactables = root.querySelectorAll(
+                    'input, textarea, select, button, [role="button"], [contenteditable="true"], a[href]'
+                );
+                return Array.from(interactables).slice(0, 60).map((el, i) => {
+                    const tag = el.tagName.toLowerCase();
+                    const type = el.getAttribute('type') || '';
+                    const name = el.getAttribute('name') || '';
+                    const id = el.getAttribute('id') || '';
+                    const placeholder = el.getAttribute('placeholder') || '';
+                    const ariaLabel = el.getAttribute('aria-label') || '';
+                    const label = el.labels && el.labels[0] ? el.labels[0].textContent.trim() : '';
+                    const value = (tag === 'select')
+                        ? Array.from(el.options).map(o => o.text).slice(0, 5).join(', ')
+                        : (el.value || '').slice(0, 50);
+                    const text = (tag === 'button' || tag === 'a')
+                        ? el.textContent.trim().slice(0, 60)
+                        : '';
+                    const visible = el.offsetParent !== null || el.offsetHeight > 0;
+                    const required = el.hasAttribute('required');
+
+                    // Build best CSS selector for this element
+                    let selector = '';
+                    if (id) selector = '#' + CSS.escape(id);
+                    else if (name) selector = tag + '[name="' + name + '"]';
+                    else if (ariaLabel) selector = tag + '[aria-label="' + ariaLabel + '"]';
+                    else if (placeholder) selector = tag + '[placeholder="' + placeholder + '"]';
+                    else selector = tag + ':nth-of-type(' + (i + 1) + ')';
+
+                    return {
+                        index: i,
+                        tag, type, name, id, placeholder,
+                        aria_label: ariaLabel,
+                        label,
+                        value,
+                        text,
+                        selector,
+                        visible,
+                        required,
+                        frame: 'main'
+                    };
+                });
+            }
+            """
+
+            # Extract from main page
+            main_elements = await page.evaluate(js_extract, selector_scope)
+
+            # Extract from iframes
+            iframe_elements = []
+            frames = page.frames
+            for idx, frame in enumerate(frames):
+                if frame == page.main_frame:
+                    continue
+                try:
+                    frame_url = frame.url or "about:blank"
+                    frame_els = await frame.evaluate(js_extract, "")
+                    for el in frame_els:
+                        el["frame"] = f"iframe[{idx}] ({frame_url[:60]})"
+                        el["selector"] = f"iframe__{idx}__{el['selector']}"
+                    iframe_elements.extend(frame_els)
+                except Exception as fe:
+                    iframe_elements.append({
+                        "frame": f"iframe[{idx}]",
+                        "error": str(fe)[:100]
+                    })
+
+            all_elements = main_elements + iframe_elements
+
+            if not all_elements:
+                return "No interactive elements found on this page (or inside iframes)."
+
+            # Format as structured output
+            lines = [f"Found {len(all_elements)} interactive element(s):\n"]
+            for el in all_elements:
+                if "error" in el:
+                    lines.append(f"  ⚠️ {el['frame']}: Could not inspect — {el['error']}")
+                    continue
+
+                parts = []
+                if el.get("label"):
+                    parts.append(f"label=\"{el['label']}\"")
+                if el.get("placeholder"):
+                    parts.append(f"placeholder=\"{el['placeholder']}\"")
+                if el.get("aria_label"):
+                    parts.append(f"aria-label=\"{el['aria_label']}\"")
+                if el.get("name"):
+                    parts.append(f"name=\"{el['name']}\"")
+                if el.get("id"):
+                    parts.append(f"id=\"{el['id']}\"")
+                if el.get("text"):
+                    parts.append(f"text=\"{el['text']}\"")
+                if el.get("value"):
+                    parts.append(f"value=\"{el['value']}\"")
+                if el.get("required"):
+                    parts.append("REQUIRED")
+                if not el.get("visible"):
+                    parts.append("HIDDEN")
+
+                tag_type = el['tag']
+                if el.get('type'):
+                    tag_type += f"[{el['type']}]"
+
+                detail = ", ".join(parts)
+                frame_tag = f" [{el['frame']}]" if el['frame'] != 'main' else ""
+
+                lines.append(f"  [{el['index']}] <{tag_type}> selector=\"{el['selector']}\" {detail}{frame_tag}")
+
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error getting interactive elements: {str(e)}"
+
+    async def switch_to_frame(self, frame_index: int, agent_id: str) -> str:
+        """Get info about a specific iframe by index.
+        After calling this, use browser_eval_js with frame-aware selectors."""
+        try:
+            page = await _get_page(agent_id)
+            frames = page.frames
+            non_main = [f for f in frames if f != page.main_frame]
+            if frame_index < 0 or frame_index >= len(non_main):
+                return f"Error: Frame index {frame_index} out of range (0–{len(non_main)-1})."
+            frame = non_main[frame_index]
+            frame_url = frame.url or "about:blank"
+            return f"✓ Frame {frame_index} info: URL={frame_url}, Name={frame.name or '(none)'}"
+        except Exception as e:
+            return f"Error switching to frame: {str(e)}"
+
+    # ------------------------------------------------------------------ #
+    # Internal Helpers
+    # ------------------------------------------------------------------ #
+
+    async def _try_in_frames(self, page, action: str, selector: str, text: str = "") -> bool:
+        """Try to perform an action (click/fill/type) inside iframes when the main page fails."""
+        frames = page.frames
+        for frame in frames:
+            if frame == page.main_frame:
+                continue
+            try:
+                el = await frame.query_selector(selector)
+                if el:
+                    if action == "click":
+                        await el.click(timeout=8_000)
+                    elif action == "fill":
+                        await frame.fill(selector, text, timeout=8_000)
+                    elif action == "type":
+                        await frame.type(selector, text, delay=30, timeout=8_000)
+                    logger.info("✓ [BrowserTool] Found '%s' inside iframe (%s)", selector, frame.url[:60])
+                    return True
+            except Exception:
+                continue
+        return False
 
     # ------------------------------------------------------------------ #
     # Session Management

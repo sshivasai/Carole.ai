@@ -175,7 +175,14 @@ class TaskTools:
                     return f"Error: Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}"
                 task.status = status
             if notes:
-                task.description = (task.description or "") + f"\n[Update] {notes}"
+                from core.memory.models import TaskComment
+                comment = TaskComment(
+                    task_id=task.id,
+                    author_id="system",
+                    author_name=agent_name or "System",
+                    text=notes
+                )
+                db.add(comment)
             if blocked_by_task_id is not None:
                 try:
                     task.blocked_by_task_id = uuid.UUID(blocked_by_task_id) if blocked_by_task_id else None

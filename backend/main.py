@@ -14,8 +14,10 @@ Responsibilities:
 
 import json
 import asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import uvicorn
@@ -46,6 +48,20 @@ import logging
 import importlib
 from typing import Optional, List
 from core.auth.auth_middleware import require_auth
+
+# Rate limiting (Finding #7)
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    _limiter = Limiter(key_func=get_remote_address)
+    _SLOWAPI_AVAILABLE = True
+except ImportError:
+    _SLOWAPI_AVAILABLE = False
+    _limiter = None
+    logging.getLogger("carole").warning(
+        "slowapi not installed — rate limiting disabled. Run: pip install slowapi"
+    )
 
 # Configure structured logging
 logging.basicConfig(
@@ -116,13 +132,43 @@ async def lifespan(app: FastAPI):
                         server_name=server.server_name,
                         command=server.command,
                         args=server.args,
-                        team_id=str(server.team_id),
+                        team_id=str(server.team_id) if server.team_id else None,
                         agent_id=str(server.agent_id) if server.agent_id else None,
                         env_vars=server.env_vars
                     )
                 )
     except Exception as e:
         logger.error("✗ [Lifespan] Failed to restore MCP servers: %s", e)
+
+    # Auto-boot Global MCP Servers
+    # These are available to ALL agents without any UI configuration.
+    import json
+    from core.config import GLOBAL_MCPS, DISABLED_GLOBAL_MCPS_FILE
+    
+    disabled_mcps = []
+    if DISABLED_GLOBAL_MCPS_FILE.exists():
+        try:
+            with open(DISABLED_GLOBAL_MCPS_FILE, "r") as f:
+                disabled_mcps = json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read disabled global MCPs config: {e}")
+
+    for mcp in GLOBAL_MCPS:
+        if mcp["server_name"] in disabled_mcps:
+            logger.info(f"⏸️ [Lifespan] Global MCP server '{mcp['server_name']}' is disabled. Skipping.")
+            continue
+            
+        logger.info(f"🌐 [Lifespan] Starting global {mcp['server_name']} MCP server...")
+        asyncio.create_task(
+            mcp_manager.connect_stdio_server(
+                server_name=mcp["server_name"],
+                command=mcp["command"],
+                args=mcp["args"],
+                team_id=None,
+                agent_id=None,
+            ),
+            name=f"{mcp['server_name']}_mcp_server",
+        )
 
     # Start background Dream Worker
     # FIX B1: Store strong reference in app.state so asyncio cannot garbage-collect the task.
@@ -193,13 +239,37 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Carole.ai Backend", version="0.2.0", lifespan=lifespan)
 
-# CORS middleware — origins configurable via ALLOWED_ORIGINS env var
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+# ── Rate Limiting (Finding #7) ────────────────────────────────────────────────
+if _SLOWAPI_AVAILABLE:
+    app.state.limiter = _limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    logger.info("✓ Rate limiting enabled (slowapi)")
+
+# ── Security Headers Middleware (Finding #9) ──────────────────────────────────
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds essential security response headers to every HTTP response."""
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# ── CORS (Finding #14 — tightened from any port to specific ports) ────────────
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
+)
 ALLOWED_ORIGINS: List[str] = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    # Tightened: only allow the specific ports the frontend runs on (Finding #14)
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1):(3000|3001)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -207,7 +277,6 @@ app.add_middleware(
 
 # Register API routes
 from fastapi.staticfiles import StaticFiles
-import os
 
 UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -238,11 +307,11 @@ def read_root():
 
 @app.get("/health")
 async def health_check():
+    # Finding #9 — Do not expose internal configuration (allowed_origins) to callers
     return {
         "status": "healthy",
         "version": "0.2.0",
         "tools_registered": len(ToolRegistry.list_names()),
-        "allowed_origins": ALLOWED_ORIGINS,
     }
 
 
@@ -265,11 +334,25 @@ async def ws_status(team_id: str):
 # ============================================================
 
 @app.websocket("/ws/chat/{team_id}")
-async def websocket_endpoint(websocket: WebSocket, team_id: str):
+async def websocket_endpoint(
+    websocket: WebSocket,
+    team_id: str,
+    token: str = Query(default=""),
+):
     """
     WebSocket endpoint representing the real-time EventBus gateway for a Team.
     Binds to Pub/Sub topic 'team:{team_id}' and bridges client <-> EventBus.
+
+    Finding #4 — Requires a valid JWT via ?token=<jwt> query param.
+    Browsers cannot set custom headers on WebSocket upgrades.
     """
+    from core.auth.auth_service import _decode_jwt
+    payload = _decode_jwt(token) if token else None
+    if not payload:
+        await websocket.close(code=4001)
+        logger.warning("Chat WS rejected — missing or invalid token for team %s", team_id)
+        return
+
     await websocket.accept()
     topic = f"team:{team_id}"
     event_queue = await event_bus.subscribe(topic)
@@ -430,6 +513,19 @@ async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(
     if not (body.handler_module and body.handler_fn):
         raise HTTPException(status_code=400, detail="handler_module and handler_fn are required for runtime registration")
 
+    # Finding #10 — Restrict imports to safe plugin namespaces to prevent arbitrary
+    # module loading (e.g., loading 'os' and calling 'os.system').
+    _ALLOWED_MODULE_PREFIXES = ("core.plugins.", "plugins.")
+    if not any(body.handler_module.startswith(p) for p in _ALLOWED_MODULE_PREFIXES):
+        logger.warning(
+            "User %s attempted to register a handler from disallowed module: %s",
+            user.get("email"), body.handler_module
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="handler_module must be within the 'core.plugins' or 'plugins' namespace."
+        )
+
     try:
         module = importlib.import_module(body.handler_module)
         handler = getattr(module, body.handler_fn)
@@ -452,9 +548,6 @@ async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(
     logger.info("User %s registered tool %s", user.get("email"), body.name)
     return {"status": "registered", "name": body.name}
 
-
-async def _placeholder_handler(args: dict, team_id: str) -> str:
-    return "Error: This tool was registered at runtime without a handler. Load the plugin first."
 
 
 # ============================================================

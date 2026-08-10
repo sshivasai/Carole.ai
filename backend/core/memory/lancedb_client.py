@@ -129,11 +129,15 @@ class LanceDBClient:
 
     def _sync_delete(self, learning_id: str) -> bool:
         try:
+            import re as _re
+            safe_id = _re.sub(r"[^a-zA-Z0-9_\-]", "", learning_id) if learning_id else ""
+            if not safe_id:
+                return False
             db = self._get_db()
             if self.table_name not in db.table_names():
                 return False
             table = db.open_table(self.table_name)
-            table.delete(f"id = '{learning_id}'")
+            table.delete(f"id = '{safe_id}'")
             return True
         except Exception as e:
             logger.error("LanceDB delete failed: %s", e)

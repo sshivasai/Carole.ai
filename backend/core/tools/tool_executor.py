@@ -68,27 +68,27 @@ _builtins_registered: bool = False
 
 
 def register_builtin_tools():
+    """Registers all built-in tools with the ToolRegistry at startup.
+    Called once from main.py lifespan."""
     global _builtins_registered
     if _builtins_registered:
         logger.debug("[ToolRegistry] Built-in tools already registered — skipping.")
         return
     _builtins_registered = True
-    """Registers all built-in tools with the ToolRegistry at startup.
-    Called once from main.py lifespan."""
 
     builtins = [
         # ---- Filesystem ----
-        ToolSpec("read_file", "Read contents of a file", "filesystem",
+        ToolSpec("read_file", "Read the full contents of a file. You MUST call this before edit_file to see the exact current content. For very large files, consider grep_search first to find the relevant section.", "filesystem",
                  {"relative_path": {"type": "string", "required": True}},
                  "safe", _wrap_read_file),
-        ToolSpec("write_file", "Create or overwrite a file", "filesystem",
+        ToolSpec("write_file", "Create a new file or completely overwrite an existing one. WARNING: This replaces the ENTIRE file contents. To change only specific lines, use edit_file instead. For Markdown/text docs (.md, .txt), writes are auto-approved (no Judge review needed).", "filesystem",
                  {"relative_path": {"type": "string", "required": True},
                   "content": {"type": "string", "required": True}},
                  "judge", _wrap_write_file),
-        ToolSpec("edit_file", "Replace a specific block of text in a file", "filesystem",
+        ToolSpec("edit_file", "Replace a specific block of text in a file. IMPORTANT: You MUST read_file FIRST to see the exact current content, then provide the EXACT target_content that exists in the file. Partial or approximate matches will fail.", "filesystem",
                  {"relative_path": {"type": "string", "required": True},
-                  "target_content": {"type": "string", "required": True},
-                  "replacement_content": {"type": "string", "required": True}},
+                  "target_content": {"type": "string", "required": True, "description": "The exact text block currently in the file that you want to replace. Must match character-for-character."},
+                  "replacement_content": {"type": "string", "required": True, "description": "The new text to replace target_content with."}},
                  "judge", _wrap_edit_file),
         ToolSpec("list_directory", "List files and directories at a path", "filesystem",
                  {"relative_path": {"type": "string", "required": False}},
@@ -111,9 +111,10 @@ def register_builtin_tools():
                  "safe", _wrap_glob_search),
 
         # ---- Shell ----
-        ToolSpec("execute_command", "Execute a shell command in the workspace", "shell",
+        ToolSpec("execute_command", "Execute a shell command in the workspace directory. Returns stdout+stderr (max 60s timeout by default). Use 'cwd' param to run in a subdirectory (e.g. 'frontend') instead of chaining cd commands. IMPORTANT: Long-running commands (servers, watchers) will timeout after 60s — increase timeout if needed. For Git operations, prefer the git_* tools over raw git commands.", "shell",
                  {"command": {"type": "string", "required": True},
-                  "timeout": {"type": "number", "required": False}},
+                  "timeout": {"type": "number", "required": False, "description": "Max seconds to wait (default 60)"},
+                  "cwd": {"type": "string", "required": False, "description": "Subdirectory to run the command in, relative to workspace root (e.g. 'frontend', 'backend/core')"}},
                  "judge", _wrap_execute_command),
 
         # ---- Git ----
@@ -132,6 +133,13 @@ def register_builtin_tools():
         ToolSpec("git_push", "Push current branch to remote", "git",
                  {"remote": {"type": "string", "required": False},
                   "branch": {"type": "string", "required": False}}, "human", _wrap_git_push),
+        ToolSpec("git_pull", "Pull latest changes from the remote (git fetch + merge). Use before editing shared branches.", "git",
+                 {"remote": {"type": "string", "required": False, "description": "Remote name (default: origin)"},
+                  "branch": {"type": "string", "required": False, "description": "Branch to pull (default: current tracking branch)"}},
+                 "judge", _wrap_git_pull),
+        ToolSpec("git_branch", "List all local branches (with last commit info). Set all=true to include remote-tracking branches.", "git",
+                 {"all": {"type": "boolean", "required": False, "description": "true to include remote branches"}},
+                 "safe", _wrap_git_branch),
         ToolSpec("git_stash", "Stash or unstash changes (push/pop/list/drop)", "git",
                  {"action": {"type": "string", "required": False},
                   "message": {"type": "string", "required": False}}, "judge", _wrap_git_stash),
@@ -148,6 +156,10 @@ def register_builtin_tools():
                   "destination": {"type": "string", "required": True}}, "judge", _wrap_move_file),
         ToolSpec("create_directory", "Create a new directory", "filesystem",
                  {"path": {"type": "string", "required": True}}, "safe", _wrap_create_directory),
+        ToolSpec("diff_files", "Compare two files in the workspace and return a unified diff showing additions (+) and removals (-). Use this to review changes between file versions or compare two similar files.", "filesystem",
+                 {"path_a": {"type": "string", "required": True, "description": "Relative path to the first (original) file"},
+                  "path_b": {"type": "string", "required": True, "description": "Relative path to the second (new) file"}},
+                 "safe", _wrap_diff_files),
 
         # ---- Code Analysis ----
         ToolSpec("find_function", "Find function/class definitions by name", "code_analysis",
@@ -165,15 +177,22 @@ def register_builtin_tools():
                  {"file_path": {"type": "string", "required": True}}, "safe", _wrap_analyze_impact),
 
         # ---- Web ----
-        ToolSpec("web_search", "Search the web for information", "web",
+        ToolSpec("web_search", "Search the web using Tavily API. Returns search result summaries with titles, URLs, and content snippets. Use for quick research, fact-checking, or finding resources. CRITICAL LIMITATIONS: (1) Results are search-engine summaries — URLs often point to aggregator/listing pages, NOT direct application or product links. If the user asks for 'exact links', 'direct links', or specific job/product URLs, you MUST follow up with browser_navigate + browser_get_all_links to extract actual destination URLs from the page. (2) ALWAYS include a 'Sources:' section at the end of your response listing URLs as markdown hyperlinks [Title](URL). (3) Use the CURRENT YEAR in search queries for recent information.", "web",
                  {"query": {"type": "string", "required": True},
                   "max_results": {"type": "number", "required": False}},
                  "safe", _wrap_web_search),
-        ToolSpec("web_fetch", "Fetch and extract text from a URL", "web",
+        ToolSpec("web_fetch", "Fetch a URL's content and return it as plain text (HTML is stripped, up to 5000 chars). Use when you have a specific URL and need to read its contents. LIMITATIONS: Does NOT execute JavaScript — dynamic/SPA content will be missing. For pages requiring JS rendering, login, or form interaction, use browser_navigate instead.", "web",
                  {"url": {"type": "string", "required": True}}, "safe", _wrap_web_fetch),
+        ToolSpec("http_request", "Make an arbitrary HTTP request (GET, POST, PUT, PATCH, DELETE) to any URL. Returns the status code, response headers, and body. Use for testing REST APIs, triggering webhooks, or calling internal services. For public web pages, prefer web_fetch instead.", "web",
+                 {"url": {"type": "string", "required": True},
+                  "method": {"type": "string", "required": False, "description": "HTTP method: GET (default), POST, PUT, PATCH, DELETE"},
+                  "headers": {"type": "object", "required": False, "description": "Optional request headers as key-value pairs"},
+                  "body": {"type": "object", "required": False, "description": "Optional JSON request body (auto-sets Content-Type: application/json)"},
+                  "timeout": {"type": "number", "required": False, "description": "Timeout in seconds (default 30)"}},
+                 "judge", _wrap_http_request),
 
         # ---- Browser Automation ----
-        ToolSpec("browser_navigate", "Navigate to a URL, take screenshot, return page title+text", "browser",
+        ToolSpec("browser_navigate", "Navigate to a URL in a real Chromium browser with full JavaScript execution. Returns page title, status code, visible text, and iframe count. Use this INSTEAD of web_fetch when: (1) the page requires JavaScript/SPA rendering, (2) you need to interact with forms or buttons, (3) the user explicitly says 'go to browser' or 'open in browser', (4) you need to extract exact/direct links from a page. IMPORTANT: After navigating to any page with forms, IMMEDIATELY call browser_get_interactive_elements to discover selectors.", "browser",
                  {"url": {"type": "string", "required": True},
                   "wait_until": {"type": "string", "required": False}},
                  "judge", _wrap_browser_navigate),
@@ -189,10 +208,10 @@ def register_builtin_tools():
         ToolSpec("browser_click_text", "Click an element on the page by its visible text", "browser",
                  {"text": {"type": "string", "required": True}},
                  "judge", _wrap_browser_click_text),
-        ToolSpec("browser_type", "Type text into an input element (clears existing content)", "browser",
-                 {"selector": {"type": "string", "required": True},
+        ToolSpec("browser_type", "Type text into an input element. By default clears existing content first (clear_first=true). Set clear_first=false to append to existing text instead. Auto-searches iframes if selector not found on main page.", "browser",
+                 {"selector": {"type": "string", "required": True, "description": "CSS selector from browser_get_interactive_elements output"},
                   "text": {"type": "string", "required": True},
-                  "clear_first": {"type": "boolean", "required": False}},
+                  "clear_first": {"type": "boolean", "required": False, "description": "true (default) to replace existing text, false to append"}},
                  "judge", _wrap_browser_type),
         ToolSpec("browser_press_key", "Press a keyboard key (e.g. Enter, Tab, Escape, ArrowDown)", "browser",
                  {"key": {"type": "string", "required": True}},
@@ -273,16 +292,29 @@ def register_builtin_tools():
                  "judge", _wrap_browser_close_tab),
         ToolSpec("browser_close_session", "Close and release the agent's entire browser session", "browser",
                  {}, "judge", _wrap_browser_close_session),
+        ToolSpec("browser_get_interactive_elements",
+                 "IMPORTANT: Call this FIRST after navigating to any page with forms. "
+                 "Discovers all interactive elements (inputs, selects, buttons, textareas) on the page AND inside iframes. "
+                 "Returns the exact CSS selectors to use with browser_type, browser_click, etc. NEVER guess selectors.",
+                 "browser",
+                 {"selector_scope": {"type": "string", "required": False,
+                  "description": "Optional CSS selector to scope the search (e.g. 'form#apply'). Defaults to the whole page."}},
+                 "safe", _wrap_browser_get_interactive_elements),
+        ToolSpec("browser_switch_to_frame",
+                 "Get info about a specific iframe by its index (from browser_get_interactive_elements output)",
+                 "browser",
+                 {"frame_index": {"type": "number", "required": True}},
+                 "safe", _wrap_browser_switch_to_frame),
 
         # ---- Coordination ----
         ToolSpec("spawn_agent", "Spawn a teammate's ReACT loop with a task", "coordination",
                  {"agent_name": {"type": "string", "required": True},
                   "task": {"type": "string", "required": True}},
                  "safe", _wrap_spawn_agent),
-        ToolSpec("hire_subagent", "Dynamically hire a temporary subagent to offload a specific task", "coordination",
-                 {"role": {"type": "string", "required": True},
-                  "expertise": {"type": "string", "required": True},
-                  "task": {"type": "string", "required": True},
+        ToolSpec("hire_subagent", "Dynamically hire a temporary subagent to offload a specific task. CRITICAL: The subagent has ZERO context from your conversation — you MUST include ALL necessary file paths, error messages, requirements, and constraints in the 'task' parameter. Vague tasks like 'fix the login page' WILL fail.", "coordination",
+                 {"role": {"type": "string", "required": True, "description": "Role name (e.g. 'coder', 'debugger', 'researcher')"},
+                  "expertise": {"type": "string", "required": True, "description": "Domain expertise needed (e.g. 'React frontend', 'Python backend')"},
+                  "task": {"type": "string", "required": True, "description": "FULLY SELF-CONTAINED task description with ALL context, file paths, and constraints"},
                   "model": {"type": "string", "required": False}},
                  "judge", _wrap_hire_subagent),
         ToolSpec("send_message", "Send a message in the team chat", "coordination",
@@ -467,6 +499,12 @@ class ToolExecutor:
                     # Both timed out
                     judge_task.cancel()
                     logger.warning("[Executor] Approval for tx_id=%s timed out after %ds.", tx_id, APPROVAL_TIMEOUT_SECS)
+                    await event_bus.publish(topic, {
+                        "type": "approval_resolved",
+                        "tx_id": tx_id,
+                        "status": "denied",
+                        "reason": "Timed out waiting for approval"
+                    })
                     return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
                 
                 if human_task in done:
@@ -476,14 +514,30 @@ class ToolExecutor:
                     
                     if override_approved:
                         logger.info("✓ [Executor] tx_id=%s HUMAN APPROVED (preempted judge).", tx_id)
+                        await event_bus.publish(topic, {
+                            "type": "approval_resolved",
+                            "tx_id": tx_id,
+                            "status": "approved",
+                            "reason": "Human override approved"
+                        })
                         return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
                     else:
                         logger.info("✗ [Executor] tx_id=%s HUMAN DENIED (preempted judge).", tx_id)
+                        await event_bus.publish(topic, {
+                            "type": "approval_resolved",
+                            "tx_id": tx_id,
+                            "status": "denied",
+                            "reason": "Human override denied"
+                        })
                         return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
                 
                 if judge_task in done:
                     # Judge answered first
-                    approved, reason = judge_task.result()
+                    try:
+                        approved, reason = judge_task.result()
+                    except Exception as e:
+                        logger.error("[Executor] Judge evaluator crashed: %s", e)
+                        approved, reason = False, f"Judge crashed during evaluation: {e}"
                     if approved:
                         human_task.cancel()
                         logger.info("✓ [Executor] tx_id=%s JUDGE APPROVED.", tx_id)
@@ -512,15 +566,33 @@ class ToolExecutor:
                             await asyncio.wait_for(human_task, timeout=APPROVAL_TIMEOUT_SECS)
                         except asyncio.TimeoutError:
                             logger.warning("[Executor] Override for tx_id=%s timed out after %ds.", tx_id, APPROVAL_TIMEOUT_SECS)
+                            await event_bus.publish(topic, {
+                                "type": "approval_resolved",
+                                "tx_id": tx_id,
+                                "status": "denied",
+                                "reason": "Timed out waiting for human override"
+                            })
                             return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
                         
                         override_approved = approval_results.get(tx_id, False)
                         
                         if override_approved:
                             logger.info("✓ [Executor] tx_id=%s OVERRIDE APPROVED. Resuming...", tx_id)
+                            await event_bus.publish(topic, {
+                                "type": "approval_resolved",
+                                "tx_id": tx_id,
+                                "status": "approved",
+                                "reason": "Human override approved"
+                            })
                             return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
                         else:
                             logger.info("✗ [Executor] tx_id=%s OVERRIDE DENIED.", tx_id)
+                            await event_bus.publish(topic, {
+                                "type": "approval_resolved",
+                                "tx_id": tx_id,
+                                "status": "denied",
+                                "reason": "Human override denied"
+                            })
                             return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}' after Judge rejection."
             finally:
                 pending_approvals.pop(tx_id, None)
@@ -557,15 +629,33 @@ class ToolExecutor:
                         "[Executor] Approval for tx_id=%s timed out after %ds — denying.",
                         tx_id, APPROVAL_TIMEOUT_SECS
                     )
+                    await event_bus.publish(topic, {
+                        "type": "approval_resolved",
+                        "tx_id": tx_id,
+                        "status": "denied",
+                        "reason": "Timed out waiting for approval"
+                    })
                     return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
 
                 approved = approval_results.get(tx_id, False)
 
                 if approved:
                     logger.info("✓ [Executor] tx_id=%s APPROVED. Resuming execution...", tx_id)
+                    await event_bus.publish(topic, {
+                        "type": "approval_resolved",
+                        "tx_id": tx_id,
+                        "status": "approved",
+                        "reason": "Human approved"
+                    })
                     return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
                 else:
                     logger.info("✗ [Executor] tx_id=%s DENIED. Cancelling execution...", tx_id)
+                    await event_bus.publish(topic, {
+                        "type": "approval_resolved",
+                        "tx_id": tx_id,
+                        "status": "denied",
+                        "reason": "Human denied"
+                    })
                     return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
             finally:
                 pending_approvals.pop(tx_id, None)
@@ -600,6 +690,7 @@ class ToolExecutor:
         # If the tool returned a FileChangeResult, emit a file_change event
         if isinstance(result, FileChangeResult):
             if result.diff:
+                project_id = await _team_project_id(team_id)
                 event = {
                     "type": "file_change",
                     "action": result.action,
@@ -609,6 +700,7 @@ class ToolExecutor:
                     "after_content": result.after_content,
                     "sender_id": agent_id,
                     "sender_name": agent_name,
+                    "project_id": project_id,
                 }
                 await event_bus.publish(f"team:{team_id}", event)
                 await event_bus.publish("system:file_changes", event)
@@ -632,7 +724,11 @@ async def _wrap_read_file(args: Dict[str, Any], team_id: str) -> str:
     return await file_tools.read_file(path, project_id=project_id)
 
 async def _check_active_editor_conflicts(relative_path: str, agent_name: str) -> None:
-    from core.knowledge.code_graph import code_graph
+    try:
+        from core.knowledge.code_graph import code_graph
+    except ImportError:
+        # Code graph module not available — skip conflict detection gracefully
+        return
     from core.memory.database import async_session
     from core.memory.models import Agent, Task
     from sqlalchemy import select
@@ -643,7 +739,7 @@ async def _check_active_editor_conflicts(relative_path: str, agent_name: str) ->
     if pid not in code_graph.active_editors:
         return
         
-    graph = code_graph.get_graph(None)
+    graph = await code_graph.get_graph(None)
     dependent_files = list(graph.predecessors(path_str)) if graph.has_node(path_str) else []
     
     files_to_check = [path_str] + dependent_files
@@ -840,8 +936,21 @@ async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing parameter 'command'."
     timeout = float(args.get("timeout", 60.0))
     context = args.get("_context")
-    cwd = await _team_cwd(team_id)
+    base_cwd = await _team_cwd(team_id)
+    # Allow agent to specify a subdirectory relative to workspace root
+    sub_cwd = args.get("cwd")
+    if sub_cwd and base_cwd:
+        import os
+        resolved = os.path.normpath(os.path.join(base_cwd, sub_cwd))
+        # Security: ensure resolved path is still within the workspace
+        if resolved.startswith(base_cwd):
+            cwd = resolved
+        else:
+            return f"Error: cwd '{sub_cwd}' escapes the workspace root."
+    else:
+        cwd = base_cwd
     return await shell_tools.execute_command(command, team_id, timeout, context=context, cwd=cwd)
+
 
 async def _wrap_git_status(args: Dict[str, Any], team_id: str) -> str:
     return await git_tools.status(cwd=await _team_cwd(team_id))
@@ -872,6 +981,15 @@ async def _wrap_git_push(args: Dict[str, Any], team_id: str) -> str:
     branch = args.get("branch")
     return await git_tools.push(remote, branch, cwd=await _team_cwd(team_id))
 
+async def _wrap_git_pull(args: Dict[str, Any], team_id: str) -> str:
+    remote = args.get("remote", "origin")
+    branch = args.get("branch")
+    return await git_tools.pull(remote, branch, cwd=await _team_cwd(team_id))
+
+async def _wrap_git_branch(args: Dict[str, Any], team_id: str) -> str:
+    show_all = args.get("all", False)
+    return await git_tools.branch(all=show_all, cwd=await _team_cwd(team_id))
+
 async def _wrap_web_search(args: Dict[str, Any], team_id: str) -> str:
     query = args.get("query") or args.get("value", "")
     if not query:
@@ -884,6 +1002,24 @@ async def _wrap_web_fetch(args: Dict[str, Any], team_id: str) -> str:
     if not url:
         return "Error: Missing parameter 'url'."
     return await web_tools.web_fetch(url)
+
+async def _wrap_http_request(args: Dict[str, Any], team_id: str) -> str:
+    url = args.get("url") or args.get("value", "")
+    if not url:
+        return "Error: Missing parameter 'url'."
+    method = args.get("method", "GET")
+    headers = args.get("headers")
+    body = args.get("body")
+    timeout = float(args.get("timeout", 30.0))
+    return await web_tools.http_request(url, method=method, headers=headers, body=body, timeout=timeout)
+
+async def _wrap_diff_files(args: Dict[str, Any], team_id: str) -> str:
+    path_a = args.get("path_a") or args.get("file_a", "")
+    path_b = args.get("path_b") or args.get("file_b", "")
+    if not path_a or not path_b:
+        return "Error: Both 'path_a' and 'path_b' are required."
+    project_id = await _team_project_id(team_id)
+    return await file_tools.diff_files(path_a, path_b, team_id=team_id, project_id=project_id)
 
 # ---- Browser Wrappers ----
 # These wrappers need agent identity context, which the standard (args, team_id)
@@ -1099,6 +1235,16 @@ async def _wrap_browser_close_tab(args: Dict[str, Any], team_id: str) -> str:
 async def _wrap_browser_close_session(args: Dict[str, Any], team_id: str) -> str:
     agent_id = args.get("_agent_id", "unknown")
     return await browser_tool.close_browser(agent_id)
+
+async def _wrap_browser_get_interactive_elements(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    selector_scope = args.get("selector_scope", "")
+    return await browser_tool.get_interactive_elements(agent_id, selector_scope=selector_scope)
+
+async def _wrap_browser_switch_to_frame(args: Dict[str, Any], team_id: str) -> str:
+    frame_index = int(args.get("frame_index", 0))
+    agent_id = args.get("_agent_id", "unknown")
+    return await browser_tool.switch_to_frame(frame_index, agent_id)
 
 
 async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
@@ -1404,7 +1550,8 @@ async def _wrap_analyze_impact(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("file_path") or args.get("path") or args.get("value", "")
     if not path:
         return "Error: Missing 'file_path'."
-    return code_analysis_tools.analyze_impact(path)
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.analyze_impact(path, project_id)
 
 # ---- Memory Wrappers ----
 

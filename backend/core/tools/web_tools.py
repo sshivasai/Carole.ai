@@ -91,21 +91,87 @@ class WebTools:
                 content_type = response.headers.get("content-type", "")
                 text = response.text
 
-                # Basic HTML tag stripping for readability
+                # Convert HTML to readable text using markdownify to preserve links
                 if "html" in content_type:
-                    import re
-                    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
-                    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
-                    text = re.sub(r"<[^>]+>", " ", text)
-                    text = re.sub(r"\s+", " ", text).strip()
+                    try:
+                        import markdownify
+                        text = markdownify.markdownify(text, heading_style="ATX", strip=["script", "style", "nav", "footer", "header"])
+                    except ImportError:
+                        # Fallback to regex if markdownify not installed
+                        import re
+                        text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
+                        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+                        text = re.sub(r"<[^>]+>", " ", text)
+                        text = re.sub(r"\s+", " ", text).strip()
 
-                # Truncate to prevent context window overflow
-                if len(text) > 5000:
-                    text = text[:5000] + "\n... [Truncated]"
+                # Truncate to prevent context window overflow (using Claude Code's generous 100k limit)
+                MAX_MARKDOWN_LENGTH = 100000
+                if len(text) > MAX_MARKDOWN_LENGTH:
+                    text = text[:MAX_MARKDOWN_LENGTH] + "\n\n[Content truncated due to length...]"
 
                 return f"Source: {url}\n\n{text}"
             except Exception as e:
                 return f"[WebFetch Connection Error: {str(e)}]"
+
+    async def http_request(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: dict = None,
+        body: dict = None,
+        timeout: float = 30.0,
+    ) -> str:
+        """
+        Make an arbitrary HTTP request and return the response.
+        Useful for testing REST APIs, triggering webhooks, or calling internal services.
+
+        Args:
+            url: The full URL to request.
+            method: HTTP method (GET, POST, PUT, PATCH, DELETE). Default: GET.
+            headers: Optional dict of request headers.
+            body: Optional dict to send as JSON body (auto-sets Content-Type: application/json).
+            timeout: Request timeout in seconds. Default: 30.
+        """
+        method = method.upper()
+        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+            return f"Error: Unsupported HTTP method '{method}'. Use GET, POST, PUT, PATCH, DELETE, HEAD, or OPTIONS."
+
+        request_headers = {"User-Agent": "CaroleAI/1.0"}
+        if headers:
+            request_headers.update(headers)
+        if body and "Content-Type" not in request_headers:
+            request_headers["Content-Type"] = "application/json"
+
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            try:
+                kwargs = {"headers": request_headers}
+                if body:
+                    kwargs["json"] = body
+                response = await client.request(method, url, **kwargs)
+
+                # Try to parse JSON response for readability
+                content_type = response.headers.get("content-type", "")
+                try:
+                    if "json" in content_type:
+                        import json
+                        body_text = json.dumps(response.json(), indent=2)
+                    else:
+                        body_text = response.text[:5000]
+                        if len(response.text) > 5000:
+                            body_text += "\n[Response truncated to 5000 chars]"
+                except Exception:
+                    body_text = response.text[:5000]
+
+                return (
+                    f"HTTP {method} {url}\n"
+                    f"Status: {response.status_code} {response.reason_phrase}\n"
+                    f"Headers: {dict(response.headers)}\n\n"
+                    f"Body:\n{body_text}"
+                )
+            except httpx.TimeoutException:
+                return f"[HTTP Request Timeout: {url} did not respond within {timeout}s]"
+            except Exception as e:
+                return f"[HTTP Request Error: {str(e)}]"
 
 
 # Singleton

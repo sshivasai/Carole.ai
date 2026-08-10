@@ -32,19 +32,47 @@ _DEFAULT_CONFIG = {
     "providers": {
         "ollama_base_url": "http://localhost:11434/v1",
     },
+    "compaction": {
+        "max_observation_chars": 4000,
+        "token_trigger_ratio": 0.80,
+        "context_window_size": 128000,
+        "recent_messages_to_keep": 8,
+    },
+    "browser_automation": {
+        "provider": "local",
+        "api_keys": {
+            "browserbase": "",
+            "scraperapi": "",
+            "zenrows": "",
+            "twocaptcha": ""
+        }
+    }
 }
+
+
+_cached_config = None
+_last_mtime = 0.0
 
 
 def load_config() -> dict:
     """
     Reads ~/.carole/config.json and merges with defaults.
+    Uses an mtime-based in-memory cache to avoid disk I/O latency on repeated reads.
     Returns the resolved config dictionary.
     """
+    global _cached_config, _last_mtime
+
     if not CONFIG_PATH.exists():
-        logger.info("⚙️  [ConfigManager] config.json not found — using env vars only.")
-        return _DEFAULT_CONFIG.copy()
+        if _cached_config is None:
+            logger.info("⚙️  [ConfigManager] config.json not found — using env vars only.")
+            _cached_config = _DEFAULT_CONFIG.copy()
+        return _cached_config
 
     try:
+        current_mtime = os.path.getmtime(CONFIG_PATH)
+        if _cached_config is not None and current_mtime == _last_mtime:
+            return _cached_config
+
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             raw = json.load(f)
 
@@ -52,11 +80,28 @@ def load_config() -> dict:
         merged = _DEFAULT_CONFIG.copy()
         merged["api_keys"] = {**merged["api_keys"], **raw.get("api_keys", {})}
         merged["providers"] = {**merged["providers"], **raw.get("providers", {})}
+        merged["compaction"] = {**merged["compaction"], **raw.get("compaction", {})}
+        
+        raw_ba = raw.get("browser_automation", {})
+        merged["browser_automation"] = {**merged["browser_automation"], **raw_ba}
+        if "api_keys" in raw_ba:
+            merged["browser_automation"]["api_keys"] = {**merged["browser_automation"]["api_keys"], **raw_ba["api_keys"]}
+        
+        # also pass through any other top-level keys like agent_settings or default_models
+        for key, value in raw.items():
+            if key not in merged:
+                merged[key] = value
+
         logger.info("⚙️  [ConfigManager] Loaded config from %s", CONFIG_PATH)
-        return merged
+        
+        _cached_config = merged
+        _last_mtime = current_mtime
+        return _cached_config
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("⚙️  [ConfigManager] Failed to read config.json: %s — using env vars.", e)
-        return _DEFAULT_CONFIG.copy()
+        if _cached_config is None:
+            _cached_config = _DEFAULT_CONFIG.copy()
+        return _cached_config
 
 
 def save_config(config: dict) -> None:

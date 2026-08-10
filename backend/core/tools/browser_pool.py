@@ -36,17 +36,44 @@ async def _ensure_browser():
             return _browser
         try:
             from playwright.async_api import async_playwright
+            from core.llm.config_manager import load_config
+            
             _playwright = await async_playwright().start()
-            _browser = await _playwright.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-extensions",
-                ],
-            )
-            logger.info("🌐 [BrowserPool] Chromium launched (headless=True).")
+            
+            cfg = load_config()
+            ba_cfg = cfg.get("browser_automation", {})
+            provider = ba_cfg.get("provider", "local")
+            keys = ba_cfg.get("api_keys", {})
+            
+            if provider == "browserbase" and keys.get("browserbase"):
+                key = keys["browserbase"]
+                _browser = await _playwright.chromium.connect_over_cdp(f"wss://connect.browserbase.com?apiKey={key}")
+                logger.info("🌐 [BrowserPool] Connected to Browserbase CDP.")
+            else:
+                proxy_settings = None
+                if provider == "scraperapi" and keys.get("scraperapi"):
+                    proxy_settings = {"server": f"http://scraperapi:{keys['scraperapi']}@proxy-server.scraperapi.com:8001"}
+                elif provider == "zenrows" and keys.get("zenrows"):
+                    proxy_settings = {"server": f"http://{keys['zenrows']}:@proxy.zenrows.com:8001"}
+                
+                _browser = await _playwright.chromium.launch(
+                    headless=True,
+                    proxy=proxy_settings,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-extensions",
+                        # ── Anti-detection / Stealth ──
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--window-size=1280,900",
+                        "--disable-background-timer-throttling",
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-renderer-backgrounding",
+                    ],
+                )
+                logger.info(f"🌐 [BrowserPool] Chromium launched (provider={provider}, proxy={'yes' if proxy_settings else 'no'}).")
         except Exception as e:
             logger.error("✗ [BrowserPool] Failed to launch browser: %s", e)
             raise
@@ -66,6 +93,17 @@ async def get_page(agent_id: str):
     browser = await _ensure_browser()
 
     async with _lock:
+        if agent_id in _contexts:
+            # If the underlying browser reconnected (e.g. BrowserBase timeout),
+            # the old context is stale. Evict it so we create a new one.
+            if getattr(_contexts[agent_id], "browser", None) != browser:
+                logger.warning("🌐 [BrowserPool] Underlying browser changed, evicting stale context for agent %s", agent_id[:8])
+                try:
+                    await _contexts[agent_id].close()
+                except Exception:
+                    pass
+                _contexts.pop(agent_id)
+
         if agent_id not in _contexts:
             # Enforce max context cap with LRU eviction
             if len(_contexts) >= MAX_BROWSER_CONTEXTS:
@@ -89,19 +127,48 @@ async def get_page(agent_id: str):
                 timezone_id="America/Chicago",
                 # Accept most common permission types so sites don't block
                 permissions=["notifications"],
+                # ── Anti-detection context options ──
+                device_scale_factor=1,
+                has_touch=False,
+                is_mobile=False,
+                java_script_enabled=True,
             )
+            # Inject stealth script to remove `navigator.webdriver` flag
+            # This is the #1 way Google / Cloudflare detect Playwright
+            await ctx.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
+                // Overwrite the chrome runtime to appear as a regular browser
+                window.chrome = { runtime: {} };
+                // Overwrite permissions query to always return 'prompt'
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) =>
+                    parameters.name === 'notifications'
+                        ? Promise.resolve({ state: Notification.permission })
+                        : originalQuery(parameters);
+            """)
             _contexts[agent_id] = ctx
-            logger.debug("🌐 [BrowserPool] Created new context for agent %s", agent_id[:8])
+            logger.debug("🌐 [BrowserPool] Created new stealth context for agent %s", agent_id[:8])
 
         context = _contexts[agent_id]
 
-    pages = context.pages
-    if pages:
-        return pages[0]
-    page = await context.new_page()
-    # Intercept console errors so agents get useful debug info
-    page.on("pageerror", lambda exc: logger.debug("Browser page error: %s", exc))
-    return page
+    try:
+        pages = context.pages
+        if pages:
+            # Ensure the page itself isn't closed
+            if not pages[0].is_closed():
+                return pages[0]
+        
+        page = await context.new_page()
+        # Intercept console errors so agents get useful debug info
+        page.on("pageerror", lambda exc: logger.debug("Browser page error: %s", exc))
+        return page
+    except Exception as e:
+        logger.warning("🌐 [BrowserPool] Failed to get page from context (possibly closed): %s. Recreating context.", e)
+        async with _lock:
+            _contexts.pop(agent_id, None)
+        return await get_page(agent_id)
 
 
 async def close_agent_browser(agent_id: str) -> bool:

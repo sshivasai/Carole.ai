@@ -69,8 +69,6 @@ class ReACTAgent:
         # --- Session-level caches (cleared at start of each run_loop call) ---
         # Cached assembled system prompt — rebuilt once per session, not per loop.
         self._cached_system_prompt: Optional[str] = None
-        # Flag: True after context compaction has run once this session.
-        self._compacted: bool = False
         # Last observation text for no-progress detection.
         self._last_observation: str = ""
         self._no_progress_count: int = 0
@@ -187,17 +185,14 @@ class ReACTAgent:
         # 3. Format past learnings
         learnings_block = ""
         if past_learnings:
-            learnings_block = "LESSONS LEARNED:\n"
+            learnings_block = "LESSONS LEARNED (Apply these rules to your current task):\n"
             for learning in past_learnings:
-                learnings_block += f"- Task context: {learning.get('task_summary')}\n  Lesson: {learning.get('lesson_rule')}\n"
+                # learning.get('lesson_rule') already contains [CATEGORY] prefix from auto_dream
+                learnings_block += f"- Context: {learning.get('task_summary')}\n  Directive: {learning.get('lesson_rule')}\n"
             learnings_block += "\n"
         capabilities_block += learnings_block
 
-        # 4. Tool list
-        tools_block = "AVAILABLE TOOLS:\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n\n"
-        capabilities_block += tools_block
-
-        # 4.5 Dynamic Skills
+        # 4. Dynamic Skills (Injected before tools so LLM reads skill context first)
         from core.skills.skill_manager import SkillManager
         active_skills = await SkillManager.get_team_skills(db_session, str(self.team_id), active_only=True)
         skill_addendums = ""
@@ -205,15 +200,16 @@ class ReACTAgent:
             if skill.system_prompt_addendum:
                 skill_addendums += f"\n[SKILL: {skill.name}]\n{skill.system_prompt_addendum}\n"
             if skill.tools:
-                # Append skill tools to the tools block if not already present
-                # Note: Tool descriptions should already be in ToolRegistry, but this makes the agent
-                # explicitly aware it has these tools specifically enabled by the skill.
                 skill_addendums += f"Skill specific tools allowed: {', '.join(skill.tools)}\n"
             if skill.mcp_servers:
                 skill_addendums += f"Skill MCP servers available: {', '.join(skill.mcp_servers)}\n"
                 
         if skill_addendums:
             capabilities_block += f"\nACTIVE SKILLS:\n{skill_addendums}\n"
+
+        # 5. Tool list
+        tools_block = "AVAILABLE TOOLS:\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n\n"
+        capabilities_block += tools_block
 
         # 5. Worker reports
         worker_results_block = ""
@@ -228,13 +224,22 @@ class ReACTAgent:
             worker_results_block += "\n"
         capabilities_block += worker_results_block
 
+        # Environment awareness — agents know the OS they are running on
+        import platform
+        os_name = platform.system()
+        os_release = platform.release()
+        env_block = (
+            f"CURRENT ENVIRONMENT: You are running on {os_name} {os_release}.\n"
+            f"When using shell tools, ensure your commands are compatible with {os_name} (e.g., use PowerShell/cmd syntax on Windows).\n\n"
+        )
+        
         # Temporal awareness — agents always know the current date/time
         now = datetime.now(timezone.utc)
         temporal_block = (
             f"CURRENT DATE/TIME: {now.strftime('%A, %B %d, %Y %H:%M UTC')}\n"
             f"(Timezone: UTC — adjust to user's local time if mentioned)\n\n"
         )
-        capabilities_block = temporal_block + capabilities_block
+        capabilities_block = env_block + temporal_block + capabilities_block
 
         # Scratchpad awareness
         scratchpad_block = (
@@ -263,10 +268,32 @@ class ReACTAgent:
         )
         capabilities_block += doc_block
 
-        # Reasoning guidelines
+        # Browser automation — 3-Tier architecture
+        browser_block = (
+            "BROWSER AUTOMATION — 3-TIER SYSTEM:\n"
+            "Choose the right tier based on task complexity:\n\n"
+            "TIER 1 — PLAYWRIGHT MCP TOOLS (Default for most web tasks):\n"
+            "Use your playwright_* tools (e.g. playwright_navigate, playwright_click, playwright_fill,\n"
+            "playwright_evaluate) for interactive browsing. These tools maintain a persistent browser\n"
+            "context and are the fastest, most reliable option for standard web interaction.\n\n"
+            "TIER 2 — BUILT-IN STEP-BY-STEP TOOLS (Lightweight fallback):\n"
+            "If Playwright MCP tools are unavailable, use browser_navigate / browser_click / browser_type.\n"
+            "ALWAYS call browser_get_interactive_elements first — never guess CSS selectors.\n\n"
+            "TIER 3 — EPHEMERAL PLAYWRIGHT SCRIPT (Nuclear option):\n"
+            "If Tier 1 and Tier 2 both fail 3+ times (timeouts, bot detection, missing elements), STOP.\n"
+            "Write a complete Python Playwright script using write_file, then run it via run_command.\n"
+            "Use get_by_role()/get_by_text()/get_by_label() — NOT raw CSS selectors.\n"
+            "Include --disable-blink-features=AutomationControlled in launch args.\n\n"
+            "ESCALATION RULE: After 3 consecutive failures in any tier, escalate to the next tier.\n"
+            "Do NOT keep retrying the same failing approach — it wastes your loop budget.\n\n"
+        )
+        capabilities_block += browser_block
+
+        # Reasoning guidelines & Output Efficiency
         identity_rule = f"\n\nCRITICAL IDENTITY RULE: You are {self.name} ({self.role}). You MUST speak in the first person ('I', 'me'). NEVER refer to {self.name} in the third person. NEVER pretend to be someone else."
-        # Removed: STRICT_REASONING_GUIDELINES suffix was duplicating system.tool_use/reasoning_rules already in self.system_prompt
-        assembled = f"{self.system_prompt}{identity_rule}\n{capabilities_block}"
+        output_efficiency = getattr(core.config, "OUTPUT_EFFICIENCY_PROMPT", "")
+        
+        assembled = f"{self.system_prompt}{identity_rule}\n\n{output_efficiency}\n\n{capabilities_block}"
         self._cached_system_prompt = assembled
         return assembled
 
@@ -339,12 +366,116 @@ class ReACTAgent:
             except asyncio.CancelledError:
                 pass
 
+    def _get_compaction_config(self) -> dict:
+        """Load compaction settings from the user's config.json with safe defaults."""
+        from core.llm.config_manager import load_config
+        cfg = load_config()
+        defaults = {
+            "max_observation_chars": 4000,
+            "token_trigger_ratio": 0.80,
+            "context_window_size": 128000,
+            "recent_messages_to_keep": 8,
+        }
+        user_compaction = cfg.get("compaction", {})
+        return {**defaults, **user_compaction}
+
+    def _estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
+        """Stage 3 helper: Fast heuristic token estimation (1 token ~ 4 chars)."""
+        total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        return total_chars // 4
+
+    @staticmethod
+    def _truncate_observation(content: str, max_chars: int) -> str:
+        """Truncate an [OBSERVATION] block's inner text, keeping head + tail."""
+        def _truncate_match(m):
+            inner = m.group(1)
+            if len(inner) > max_chars:
+                half = max_chars // 2
+                dropped = len(inner) - max_chars
+                return f"[OBSERVATION]{inner[:half]}\n...[{dropped} chars truncated]...\n{inner[-half:]}[/OBSERVATION]"
+            return m.group(0)
+        return re.sub(r'\[OBSERVATION\](.*?)\[/OBSERVATION\]', _truncate_match, content, flags=re.DOTALL)
+
+    def _micro_compact(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Stage 1: Strip media and truncate oversized tool outputs in-place."""
+        cc = self._get_compaction_config()
+        max_chars = cc["max_observation_chars"]
+
+        new_msgs = []
+        for msg in messages:
+            content = msg.get("content", "")
+            if msg.get("role") != "user" or not isinstance(content, str):
+                new_msgs.append(msg)
+                continue
+
+            changed = False
+
+            # Strip base64 image payloads
+            if "data:image" in content:
+                content = re.sub(r'data:image/[^;]+;base64,[a-zA-Z0-9+/=]+', '[IMAGE_STRIPPED]', content)
+                changed = True
+
+            # Truncate large [OBSERVATION] blocks
+            if "[OBSERVATION]" in content and len(content) > max_chars:
+                new_content = self._truncate_observation(content, max_chars)
+                if new_content != content:
+                    content = new_content
+                    changed = True
+
+            if changed:
+                new_msg = dict(msg)
+                new_msg["content"] = content
+                new_msgs.append(new_msg)
+            else:
+                new_msgs.append(msg)
+
+        return new_msgs
+
+    def _snip_dead_ends(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Stage 2: Remove failed tool calls that were corrected."""
+        # V1: Passthrough. Full AST-based snipping will be implemented in future PR.
+        return messages
+
+    async def _rolling_compact(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Stage 4: Summarize the oldest messages, keeping the most recent N."""
+        cc = self._get_compaction_config()
+        keep_recent = cc["recent_messages_to_keep"]
+
+        # Guard: not enough messages to compact
+        if len(messages) <= keep_recent + 1:
+            self._log.info("Rolling compact skipped — only %d messages, need > %d.", len(messages), keep_recent + 1)
+            return messages
+
+        to_compact = messages[1:-keep_recent]
+        if not to_compact:
+            return messages
+
+        self._log.info("Rolling compaction: summarizing %d messages (keeping first + last %d).", len(to_compact), keep_recent)
+        summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact, default=str))
+        try:
+            summary = await llm_router.generate_completion(
+                model=getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free"),
+                system_prompt=COMPACTION_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": summary_prompt}],
+                temperature=0.3,
+                max_tokens=2000
+            )
+            compacted = (
+                [messages[0]]
+                + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{summary}\n[/COMPACTED HISTORY]"}]
+                + messages[-keep_recent:]
+            )
+            self._log.info("Rolling compaction complete. %d → %d messages.", len(messages), len(compacted))
+            return compacted
+        except Exception as e:
+            self._log.warning("Rolling compaction failed, continuing with full context: %s", e)
+            return messages
+
     async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None):
         # Reset all per-session caches at the start of each new run.
         # This ensures a fresh agent session doesn't carry stale state from a
         # previous invocation (e.g. if the agent object were somehow reused).
         self._cached_system_prompt = None
-        self._compacted = False
         self._last_observation = ""
         self._no_progress_count = 0
 
@@ -464,6 +595,7 @@ class ReACTAgent:
 
         self._current_thought_buffer = ""
         self._current_reasoning_buffer = ""
+        action_call = None
 
         while loop_count < max_loops:
             loop_count += 1
@@ -476,29 +608,43 @@ class ReACTAgent:
                 "status": "thinking"
             })
 
-            # Compaction Check — runs at most ONCE per session (dirty-flag guard).
-            # Repeated compaction in the same session wastes tokens and loses
-            # critical recent tool observations that the agent needs to finish.
-            compaction_threshold = getattr(core.config, "CONTEXT_COMPACTION_THRESHOLD", 15)
-            if not self._compacted and len(messages) > compaction_threshold:
-                self._log.info("Context window growing large (%d msgs). Compacting (once per session)...", len(messages))
-                # Preserve: system-equivalent first message + recent 6 msgs (tool results + last response)
-                to_compact = messages[1:-6] if len(messages) > 7 else messages[1:-2]
-                try:
-                    summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact))
-                    summary = await llm_router.generate_completion(
-                        model=getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free"),
-                        system_prompt=COMPACTION_SYSTEM_PROMPT,
-                        messages=[{"role": "user", "content": summary_prompt}],
-                        temperature=0.3,
-                        max_tokens=1500
+            # STAGE 1 & 2: Micro-Compaction & Snipping
+            messages = self._micro_compact(messages)
+            messages = self._snip_dead_ends(messages)
+
+            # STAGE 3: Token Budget Check & Rolling Compaction
+            cc = self._get_compaction_config()
+            window_size = cc["context_window_size"]
+            trigger_ratio = cc["token_trigger_ratio"]
+            trigger_tokens = window_size * trigger_ratio
+
+            estimated_tokens = self._estimate_tokens(messages)
+            
+            if estimated_tokens > trigger_tokens:
+                self._log.warning("Context window reached %.0f%% capacity (%d tokens). Triggering rolling compaction...", (estimated_tokens / window_size) * 100, estimated_tokens)
+                messages = await self._rolling_compact(messages)
+
+            # Graceful Degradation Check — trigger 2 loops before max to give
+            # the agent time to reflect AND execute the memory-save tool call.
+            if loop_count == max_loops - 2:
+                self._log.warning("Agent is approaching its loop limit (%d/%d). Injecting Graceful Degradation reflection prompt.", loop_count, max_loops)
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM INSTRUCTION — GRACEFUL DEGRADATION]\n"
+                        "You are running low on execution loops. You have 2 loops remaining.\n"
+                        "STOP attempting your current approach. Do NOT retry the same failing action.\n\n"
+                        "Produce a structured degradation report using this exact format:\n"
+                        "<degradation-report>\n"
+                        "  <what-was-attempted>One sentence describing the task and approach tried</what-was-attempted>\n"
+                        "  <errors-encountered>Specific error messages or failure symptoms observed</errors-encountered>\n"
+                        "  <partial-progress>Any files created, steps completed, or useful findings (or 'None')</partial-progress>\n"
+                        "  <lesson>One actionable rule for next time — what to do differently</lesson>\n"
+                        "  <user-message>A brief, honest explanation for the user of what happened and what they can try</user-message>\n"
+                        "</degradation-report>\n\n"
+                        "After producing the report, use write_scratchpad to persist the lesson to your personal pad."
                     )
-                    # Keep: original first message + compaction summary + last 6 messages
-                    messages = [messages[0]] + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{summary}\n[/COMPACTED HISTORY]"}] + messages[-6:]
-                    self._compacted = True
-                    self._log.info("Compaction complete. Messages reduced to %d.", len(messages))
-                except Exception as e:
-                    self._log.warning("Compaction failed, continuing with full context: %s", e)
+                })
 
             # Stream completion with retry
             self._log.info("Thinking... (loop %d/%d)", loop_count, max_loops)
@@ -568,7 +714,16 @@ class ReACTAgent:
                             })
                     break  # Success
                 except Exception as e:
+                    error_str = str(e).lower()
+                    is_context_limit = ("413" in error_str or "too long" in error_str or "context_length" in error_str)
+                    if is_context_limit:
+                        # STAGE 5: Reactive Error Escalation — compact and break
+                        # back to the outer while loop for a fresh retry set.
+                        self._log.error("API hit context limit! Forcing emergency rolling compaction (attempt %d)." , attempt + 1)
+                        messages = await self._rolling_compact(messages)
+                        break  # break out of retry loop; outer while loop retries
                     if attempt < 2:
+                            
                         wait = (2 ** attempt) * 2
                         self._log.warning("LLM error (attempt %d): %s. Retrying in %ds...", attempt + 1, e, wait)
                         await asyncio.sleep(wait)
@@ -616,8 +771,7 @@ class ReACTAgent:
 
             # Strip any accidental "[Name]: " prefix the model may have
             # hallucinated at the start of its response.
-            import re as _re
-            thought_buffer = _re.sub(r'^\[[^\]]+\]:\s*', '', thought_buffer, count=1)
+            thought_buffer = re.sub(r'^\[[^\]]+\]:\s*', '', thought_buffer, count=1)
 
             action_call = self._parse_action(thought_buffer)
 
@@ -665,27 +819,27 @@ class ReACTAgent:
                 if (looks_like_tool_call or is_plan_without_action or is_code_in_chat) and loop_count < max_loops - 1:
                     if is_code_in_chat and not looks_like_tool_call:
                         correction = (
-                            "[OBSERVATION] CRITICAL ERROR — Code in Chat Detected: You pasted a code block into your chat "
-                            "response instead of writing it to a file. This is strictly forbidden. "
-                            "You MUST use [ACTION]write_file({\"path\": \"filename\", \"content\": \"...\"})[/ACTION] "
-                            "to write the file directly to the project workspace. "
-                            "Do NOT paste code in chat. Execute write_file NOW.[/OBSERVATION]"
+                            "[OBSERVATION] CRITICAL ERROR — Code in Chat Detected.\n"
+                            "You pasted a code block into chat instead of writing it to a file. This is strictly forbidden.\n"
+                            "You MUST write code to disk using the tool. Exact format required:\n"
+                            "  [ACTION]write_file({\"path\": \"backend/auth.py\", \"content\": \"# your code here\"})[/ACTION]\n"
+                            "Execute write_file NOW with the code you just showed in chat.[/OBSERVATION]"
                         )
                     elif is_plan_without_action and not looks_like_tool_call:
                         correction = (
-                            "[OBSERVATION] CRITICAL ERROR — Plan Without Execution Detected: You described a plan "
-                            "or steps to complete the task but did not execute any of them. A plan alone is NOT progress. "
-                            "You must IMMEDIATELY begin executing your plan by calling the first tool now. "
-                            "Do NOT describe what you will do — DO IT. "
-                            "Use [ACTION]tool_name({\"param\": \"value\"})[/ACTION] to start executing your first step right now. "
-                            "Do not stop until all steps in your plan are fully completed.[/OBSERVATION]"
+                            "[OBSERVATION] CRITICAL ERROR — Plan Without Execution Detected.\n"
+                            "You described a plan but did not execute any of it. A plan is NOT progress.\n"
+                            "You MUST immediately execute your first step using a tool call. Exact format:\n"
+                            "  [ACTION]write_file({\"path\": \"index.html\", \"content\": \"<!DOCTYPE html>...\"})[/ACTION]\n"
+                            "Start executing your first planned step RIGHT NOW. Do not stop until ALL steps are done.[/OBSERVATION]"
                         )
                     else:
                         correction = (
-                            "[OBSERVATION] Error: You indicated that you are performing an action or writing a file, "
-                            "but you did not include an [ACTION] tool call tag in your response. Please invoke the tool now "
-                            "using the exact format: [ACTION]tool_name({\"param\": \"value\"})[/ACTION]. "
-                            "Do not just say you are writing the file — execute the tool call now.[/OBSERVATION]"
+                            "[OBSERVATION] Error — Missing Tool Call Tag.\n"
+                            "You indicated an action but did not include an [ACTION] tag. Use this exact format:\n"
+                            "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                            "For example: [ACTION]read_file({\"relative_path\": \"backend/main.py\"})[/ACTION]\n"
+                            "Execute the tool call now.[/OBSERVATION]"
                         )
                     # FIX L2: Alternating-turn constraint.
                     # The messages list may end with a `user` message (the last observation).
@@ -706,6 +860,7 @@ class ReACTAgent:
                             sender_id="system",
                             sender_name="System",
                             text=correction,
+                            is_intermediate=True,
                         )
                         db_session.add(db_msg)
                         await db_session.commit()
@@ -772,8 +927,8 @@ class ReACTAgent:
                 # `[/ACTION]`, the strip truncates early. A proper fix requires
                 # a state-machine parser (out of scope here).
                 text_before_action = re.sub(r'\[ACTION\][\s\S]*?\[/ACTION\]', '', thought_buffer).strip()
-                # Also strip `...` variants some models emit
-                text_before_action = re.sub(r'`[\s\S]*?`', '', text_before_action).strip()
+                # Strip leftover empty markdown codeblocks if the model wrapped the ACTION tag
+                text_before_action = re.sub(r'^\s*```[a-z]*\s*```\s*$', '', text_before_action, flags=re.MULTILINE).strip()
 
                 if text_before_action:
                     self._current_reasoning_buffer += f"\n\n{text_before_action}\n"
@@ -839,6 +994,26 @@ class ReACTAgent:
                     "text": intermediate_trace,
                     "is_intermediate": True
                 })
+                # --- Error recovery hints ---
+                # Inject lightweight hints for common error patterns so the agent
+                # doesn't waste loops retrying the same broken approach.
+                if observation.startswith("✗") or "Error:" in observation or "Error " in observation:
+                    hint = ""
+                    obs_lower = observation.lower()
+                    if "modulenotfounderror" in obs_lower or "importerror" in obs_lower:
+                        hint = "\n\n💡 Hint: A Python module is missing. Try installing it with execute_command({\"command\": \"pip install <module_name>\"})."
+                    elif "command not found" in obs_lower or "not recognized" in obs_lower:
+                        hint = "\n\n💡 Hint: The command was not found. Check if the tool is installed, or use the full path."
+                    elif "permission denied" in obs_lower:
+                        hint = "\n\n💡 Hint: Permission denied. The file may be read-only or owned by another user."
+                    elif "no such file or directory" in obs_lower or "filenotfounderror" in obs_lower:
+                        hint = "\n\n💡 Hint: File or directory not found. Use list_directory to verify the path exists."
+                    elif "target_content not found" in obs_lower or "no match found" in obs_lower:
+                        hint = "\n\n💡 Hint: The target_content for edit_file didn't match. Use read_file to see the exact current content, then copy the exact text."
+                    elif "timeout" in obs_lower and "browser" in tool_name.lower():
+                        hint = "\n\n💡 Hint: Browser selector timed out. Call browser_get_interactive_elements to discover the correct selectors on the page."
+                    if hint:
+                        observation += hint
 
                 observation_text = f"[OBSERVATION] Tool output:\n{observation}\n[/OBSERVATION]"
                 messages.append({
@@ -850,7 +1025,8 @@ class ReACTAgent:
                 # If the last 3 tool observations are identical, the agent is
                 # stuck in a loop (e.g. calling the same broken tool repeatedly).
                 # Break early with a diagnostic rather than burning all max_loops.
-                obs_fingerprint = observation.strip()[:200]
+                import hashlib
+                obs_fingerprint = hashlib.md5(observation.strip().encode()).hexdigest()
                 if obs_fingerprint and obs_fingerprint == self._last_observation:
                     self._no_progress_count += 1
                     if self._no_progress_count >= 3:
@@ -889,6 +1065,12 @@ class ReACTAgent:
                             "role": self.role,
                             "status": "idle",
                         })
+                        # ── SERVER-SIDE FAILSAFE: save lesson on stuck-loop too ──
+                        await self._auto_save_failure_lesson(
+                            initial_prompt=initial_prompt,
+                            messages=messages,
+                            reason="no-progress (3 identical observations)",
+                        )
                         return
                 else:
                     self._no_progress_count = 0
@@ -931,6 +1113,141 @@ class ReACTAgent:
                 "role": self.role,
                 "status": "idle",
             })
+
+            # ── SERVER-SIDE FAILSAFE: Auto-extract and save a lesson ──
+            # The graceful degradation prompt ASKS the LLM to save a lesson,
+            # but it may ignore it. This block guarantees a lesson is ALWAYS
+            # written when the agent hits max_loops, by using a cheap LLM call
+            # to extract the lesson directly from the conversation context.
+            await self._auto_save_failure_lesson(
+                initial_prompt=initial_prompt,
+                messages=messages,
+                reason=f"max_loops ({max_loops})",
+            )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Server-side Failsafe: Auto-extract & persist a lesson on termination
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _auto_save_failure_lesson(
+        self,
+        initial_prompt: str,
+        messages: List[Dict[str, Any]],
+        reason: str,
+    ) -> None:
+        """Extract a lesson from a failed/terminated agent run and save it to
+        long-term memory (LanceDB + SQLite Learning table).
+
+        This is a SERVER-SIDE failsafe — it doesn't rely on the LLM calling
+        update_memory. It runs a cheap, fast LLM call to summarize the failure
+        and directly writes the result into the vector store.
+        """
+        try:
+            # Build a compact summary of the last few messages (tool calls & errors)
+            recent = messages[-8:]  # last 8 messages should capture the failure pattern
+            summary_lines = []
+            for msg in recent:
+                role = msg.get("role", "?")
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        c.get("text", "") for c in content if isinstance(c, dict)
+                    )
+                # Truncate each message to keep token cost low
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                summary_lines.append(f"[{role}]: {content}")
+            context_block = "\n".join(summary_lines)
+
+            extraction_prompt = (
+                "An AI agent was attempting the following task but got terminated due to: "
+                f"{reason}.\n\n"
+                f"Original user request: {initial_prompt[:300]}\n\n"
+                f"Last conversation context:\n{context_block}\n\n"
+                "Extract exactly ONE concise lesson the agent should remember for next time. "
+                "Focus on: which approaches/selectors/tools FAILED and what the correct approach should be.\n\n"
+                "Output format:\n"
+                "TASK: <one-line summary of what the agent was trying to do>\n"
+                "LESSON: <one-line actionable rule for next time>\n\n"
+                "Output exactly NO_LESSON (nothing else) if ANY of these are true:\n"
+                "- The failure was caused by an external factor (API downtime, rate limits, network errors, service unavailable)\n"
+                "- The failure was caused by missing credentials or permissions the agent cannot control\n"
+                "- The agent succeeded partially and the remaining work is straightforward\n"
+                "- The conversation context shows no repeated mistake pattern\n"
+                "Only extract a lesson if there is a clear, correctable agent behavior to encode."
+            )
+
+            extraction = await llm_router.generate_completion(
+                model=getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free"),
+                system_prompt=(
+                    "You are a precise failure analysis engine for AI agent systems. "
+                    "Your job is to extract ONE actionable lesson from a failed agent run. "
+                    "Only output a lesson if the failure reflects a repeatable, correctable agent behavior. "
+                    "Output NO_LESSON for external failures (API errors, rate limits, missing credentials). "
+                    "Keep lessons concrete and tool-specific — not generic advice."
+                ),
+                messages=[{"role": "user", "content": extraction_prompt}],
+                temperature=0.2,
+                max_tokens=300,
+            )
+
+            if "NO_LESSON" in extraction:
+                self._log.info("Auto-lesson extraction: no useful lesson found.")
+                return
+
+            # Parse TASK/LESSON lines
+            task_summary = initial_prompt[:200]
+            lesson_rule = extraction.strip()
+            for line in extraction.strip().split("\n"):
+                if line.startswith("TASK:"):
+                    task_summary = line[5:].strip()
+                elif line.startswith("LESSON:"):
+                    lesson_rule = f"[FAILURE-LESSON] {line[7:].strip()}"
+
+            # Generate embedding
+            combined_text = f"{task_summary} | {lesson_rule}"
+            embedding = await llm_router.generate_embeddings(combined_text)
+
+            # Deduplication check — skip if a very similar lesson already exists
+            existing = await lancedb_client.search_learnings(
+                vector=embedding,
+                project_id=self.project_id,
+                team_id=self.team_id,
+                limit=1,
+            )
+            if existing and existing[0].get("_distance", 1.0) < 0.15:
+                self._log.info("Auto-lesson extraction: duplicate lesson already exists, skipping.")
+                return
+
+            # Save to SQLite
+            from core.memory.database import async_session as _async_session
+            from core.memory.models import Learning
+            async with _async_session() as db:
+                learning = Learning(
+                    project_id=uuid.UUID(self.project_id) if isinstance(self.project_id, str) else self.project_id,
+                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                    task_summary=task_summary,
+                    lesson_rule=lesson_rule,
+                )
+                db.add(learning)
+                await db.commit()
+
+            # Save to LanceDB vector store
+            await lancedb_client.insert_learning(
+                project_id=str(self.project_id),
+                team_id=str(self.team_id),
+                task_summary=task_summary,
+                lesson_rule=lesson_rule,
+                vector=embedding,
+            )
+
+            self._log.info(
+                "✓ Auto-saved failure lesson: '%s' → '%s'",
+                task_summary[:60], lesson_rule[:80],
+            )
+        except Exception as e:
+            # Never let lesson extraction crash the agent — it's best-effort
+            self._log.warning("Auto-lesson extraction failed (non-fatal): %s", e)
 
     def _parse_action(self, text: str) -> Any:
         """Parses [ACTION]tool_name(args)[/ACTION] or <tool_call>tool_name(args) even if truncated.
@@ -1148,6 +1465,7 @@ class ReACTAgent:
                 return f"✗ Tool '{name}' denied: agent record no longer exists in the database."
 
         async def emit_progress(msg: str):
+            self._current_reasoning_buffer += f"⏳ {msg}\n"
             await event_bus.publish(self.topic, {
                 "type": "tool_progress",
                 "sender_id": self.agent_id,

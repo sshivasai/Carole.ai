@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useCallback } from "react";
-import { Settings, Trash2, Upload, Loader2, AlertTriangle, CheckCircle, RefreshCw, Key, Eye, EyeOff, Save, MessageSquare, Layers, DollarSign } from "lucide-react";
+import { Settings, Trash2, Upload, Loader2, AlertTriangle, CheckCircle, RefreshCw, Key, Eye, EyeOff, Save, MessageSquare, Layers, DollarSign, Globe } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import PromptsEditor from "./settings/PromptsEditor";
 import ModelCatalogEditor from "./settings/ModelCatalogEditor";
@@ -394,6 +394,108 @@ function AgentRuntimeCard({ onToast }: { onToast: (msg: string, type: any) => vo
   );
 }
 
+// ── Browser Automation Card ────────────────────────────────────────────────────────
+function BrowserAutomationCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
+  const [settings, setSettings] = useState<any>({ provider: "local", api_keys: {} });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.getAppConfig()
+      .then((cfg: any) => setSettings(cfg.browser_automation || { provider: "local", api_keys: {} }))
+      .catch(() => { })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateAppConfig({ browser_automation: settings });
+      onToast("Browser automation settings saved ✓", "success");
+    } catch {
+      onToast("Failed to save browser automation settings", "error");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-lg)" }}>
+        <Globe size={16} color="var(--color-primary)" />
+        <h3 className="display-sm">Browser Automation & Anti-Bot Settings</h3>
+      </div>
+      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-md)" }}>
+        Configure external providers to bypass CAPTCHAs and bot protection during web scraping. 
+      </p>
+      <div className="callout callout-info" style={{ marginBottom: "var(--sp-xl)" }}>
+        <strong>Note:</strong> By default, the local browser uses stealth mode. Only external proxy providers (Browserbase, ScraperAPI, ZenRows) will automatically handle advanced CAPTCHA solving.
+      </div>
+
+      {loading ? (
+        <div className="skeleton skeleton-text" style={{ width: "60%" }} />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+          <div className="form-group">
+            <label className="form-label">Active Provider</label>
+            <select
+              className="input"
+              value={settings.provider || "local"}
+              onChange={e => setSettings((d: any) => ({ ...d, provider: e.target.value }))}
+            >
+              <option value="local">Local Playwright (Default Stealth)</option>
+              <option value="browserbase">Browserbase (Hosted Headless Browser)</option>
+              <option value="scraperapi">ScraperAPI (Proxy API)</option>
+              <option value="zenrows">ZenRows (Proxy API)</option>
+            </select>
+          </div>
+
+          {settings.provider === "browserbase" && (
+            <div className="form-group">
+              <label className="form-label">Browserbase API Key</label>
+              <input
+                type="password"
+                className="input"
+                placeholder="sk-..."
+                value={settings.api_keys?.browserbase || ""}
+                onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, browserbase: e.target.value } }))}
+              />
+            </div>
+          )}
+
+          {settings.provider === "scraperapi" && (
+            <div className="form-group">
+              <label className="form-label">ScraperAPI Key</label>
+              <input
+                type="password"
+                className="input"
+                value={settings.api_keys?.scraperapi || ""}
+                onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, scraperapi: e.target.value } }))}
+              />
+            </div>
+          )}
+
+          {settings.provider === "zenrows" && (
+            <div className="form-group">
+              <label className="form-label">ZenRows API Key</label>
+              <input
+                type="password"
+                className="input"
+                value={settings.api_keys?.zenrows || ""}
+                onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, zenrows: e.target.value } }))}
+              />
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
+            <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Settings
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Cost Management Card ────────────────────────────────────────────────────────
 
 function CostManagementCard({ projectId, onToast }: { projectId: string; onToast: (msg: string, type: any) => void }) {
@@ -646,6 +748,7 @@ export default function SettingsPanel({ teamId, projectId, onToast, onTeamDelete
       <ApiKeysCard onToast={onToast} />
       <DefaultModelsCard onToast={onToast} />
       <AgentRuntimeCard onToast={onToast} />
+      <BrowserAutomationCard onToast={onToast} />
 
       {/* ── AI Configuration (Prompts + Model Catalog) ── */}
       <AiConfigCard onToast={onToast} />
