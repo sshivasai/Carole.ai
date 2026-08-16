@@ -21,7 +21,11 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-export default function NotificationBell() {
+interface Props {
+  className?: string;
+}
+
+export default function NotificationBell({ className }: Props = {}) {
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unread, setUnread] = useState(0);
@@ -84,22 +88,22 @@ export default function NotificationBell() {
   };
 
   return (
-    <div ref={ref} style={{ position: "relative" }}>
+    <div ref={ref} style={{ position: "relative", display: "inline-flex" }}>
       <button
         id="notification-bell-btn"
-        className="btn btn-icon btn-ghost"
+        className={`btn btn-icon btn-ghost ${className ?? ""}`}
         onClick={handleOpen}
         title="Notifications"
         style={{ position: "relative" }}
       >
-        <Bell size={18} />
+        <Bell size={15} />
         {unread > 0 && (
           <span style={{
             position: "absolute",
-            top: 4,
-            right: 4,
-            width: 8,
-            height: 8,
+            top: 2,
+            right: 2,
+            width: 7,
+            height: 7,
             borderRadius: "50%",
             background: "var(--color-danger, #f87171)",
             border: "2px solid var(--bg-primary, #111)",

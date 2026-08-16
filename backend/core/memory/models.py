@@ -274,8 +274,8 @@ class FileBackup(Base):
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
 
-    # The chat message that triggered this file change
-    message_id = Column(Uuid, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False)
+    # The chat message that triggered this file change (optional)
+    message_id = Column(Uuid, ForeignKey("messages.id", ondelete="CASCADE"), nullable=True)
 
     # Absolute path of the live file that was modified
     file_path = Column(Text, nullable=False)

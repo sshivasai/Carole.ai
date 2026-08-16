@@ -151,12 +151,24 @@ export const api = {
   resetModelCatalog: () =>
     apiFetch<Record<string, any>>("/api/models/catalog/reset", { method: "POST" }),
 
+  // ── Prompt Blocks ──
+  getPromptBlocks: () => apiFetch<import("../lib/types").PromptBlock[]>("/api/settings/prompt-blocks"),
+  savePromptBlocks: (updates: Array<{ key: string; enabled: boolean; content: string }>) =>
+    apiFetch<import("../lib/types").PromptBlock[]>("/api/settings/prompt-blocks", { method: "PUT", body: JSON.stringify(updates) }),
+  resetPromptBlock: (key: string) =>
+    apiFetch<import("../lib/types").PromptBlock>(`/api/settings/prompt-blocks/${key}/reset`, { method: "POST" }),
+
   // ── Prompts ──
   getPrompts: () => apiFetch<Record<string, string>>("/api/prompts"),
   savePrompts: (data: Record<string, string>) =>
     apiFetch<any>("/api/prompts", { method: "POST", body: JSON.stringify(data) }),
   resetPrompts: () =>
     apiFetch<Record<string, string>>("/api/prompts/reset", { method: "POST" }),
+
+  // ── Global Settings ──
+  getSettings: () => apiFetch<Record<string, any>>("/api/settings"),
+  saveSettings: (data: Record<string, any>) =>
+    apiFetch<Record<string, any>>("/api/settings", { method: "POST", body: JSON.stringify(data) }),
 
   // ── Agents ──
   listAgents: (teamId: string) => apiFetch<any[]>(`/api/agents/${teamId}`),

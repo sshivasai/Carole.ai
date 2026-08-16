@@ -177,20 +177,22 @@ export default function Sidebar({
         </div>
         {user && (
           <div className={styles.userRow}>
-            <AgentAvatar name={user.first_name || user.email} id={user.id || user.email} role="human" size={28} />
-            <div style={{ flex: 1, minWidth: 0 }}>
+            <AgentAvatar name={user.first_name || user.email} id={user.id || user.email} role="human" size={26} />
+            <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
               <div className={styles.userName} title={user.email}>
                 {user.first_name ? `${user.first_name} ${user.last_name || ""}`.trim() : user.email}
               </div>
               <div className={styles.userEmail}>{user.email}</div>
             </div>
-            <ThemeToggle />
-            <NotificationBell />
-            <button className={`btn btn-icon-sm btn-ghost ${styles.logoutBtn}`} onClick={logout} title="Sign out">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
-              </svg>
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+              <ThemeToggle className={styles.footerActionBtn} />
+              <NotificationBell className={styles.footerActionBtn} />
+              <button className={`btn btn-icon-sm btn-ghost ${styles.footerActionBtn} ${styles.logoutBtn}`} onClick={logout} title="Sign out">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+              </button>
+            </div>
           </div>
         )}
       </div>

@@ -132,16 +132,23 @@ export default function FileExplorerPanel({onClose,projectId,teamId,lastFileChan
       </div>
       <PanelGroup direction="horizontal" autoSaveId="fe-h">
         <Panel id="fe-left" order={1} defaultSize={25} minSize={15} maxSize={40} style={{display:"flex",flexDirection:"column",background:"var(--bg-surface)",borderRight:"1px solid var(--border-subtle)"}}>
-          {activeLeftTab==="explorer"&&(<>
-            <div style={{padding:"var(--sp-sm) var(--sp-md)",borderBottom:"1px solid var(--color-hairline)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span className="body-sm-strong" style={{textTransform:"uppercase",fontSize:"11px",letterSpacing:"0.5px",color:"var(--color-mute)"}}>Explorer</span>
-              <div style={{display:"flex",gap:"2px"}}>
-                <button className="btn btn-ghost btn-icon btn-sm" onClick={()=>setCollapseSignal(s=>s+1)} title="Collapse All"><ChevronsUpDown size={13}/></button>
-                <button className="btn btn-ghost btn-icon btn-sm" onClick={()=>setRefreshKey(k=>k+1)} title="Refresh"><RefreshCw size={13}/></button>
-                <button className="btn btn-ghost btn-icon btn-sm" onClick={()=>setIsFullScreen(!isFullScreen)} title={isFullScreen?"Restore":"Full Screen"}>{isFullScreen?<Minimize2 size={13}/>:<Maximize2 size={13}/>}</button>
-                {onClose&&<button className="btn btn-ghost btn-icon btn-sm" onClick={onClose} title="Close"><X size={13}/></button>}
-              </div>
+          <div style={{padding:"var(--sp-sm) var(--sp-md)",borderBottom:"1px solid var(--color-hairline)",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+            <span className="body-sm-strong" style={{textTransform:"uppercase",fontSize:"11px",letterSpacing:"0.5px",color:"var(--color-mute)"}}>
+              {activeLeftTab==="explorer"?"Explorer":activeLeftTab==="search"?"Search":activeLeftTab==="git"?"Source Control":activeLeftTab==="activity"?"Activity Log":"File History"}
+            </span>
+            <div style={{display:"flex",gap:"2px"}}>
+              {activeLeftTab==="explorer"&&(
+                <>
+                  <button className="btn btn-ghost btn-icon btn-sm" onClick={()=>setCollapseSignal(s=>s+1)} title="Collapse All"><ChevronsUpDown size={13}/></button>
+                  <button className="btn btn-ghost btn-icon btn-sm" onClick={()=>setRefreshKey(k=>k+1)} title="Refresh"><RefreshCw size={13}/></button>
+                </>
+              )}
+              <button className="btn btn-ghost btn-icon btn-sm" onClick={()=>setIsFullScreen(!isFullScreen)} title={isFullScreen?"Restore":"Full Screen"}>{isFullScreen?<Minimize2 size={13}/>:<Maximize2 size={13}/>}</button>
+              {onClose&&<button className="btn btn-ghost btn-icon btn-sm" onClick={onClose} title="Close Explorer"><X size={13}/></button>}
             </div>
+          </div>
+
+          {activeLeftTab==="explorer"&&(<>
             <div style={{padding:"4px 8px",borderBottom:"1px solid var(--color-hairline)"}}>
               <div style={{display:"flex",alignItems:"center",gap:6,background:"var(--bg-glass-panel)",borderRadius:4,padding:"2px 8px"}}>
                 <Filter size={11} color="var(--color-mute)" style={{flexShrink:0}}/>
@@ -170,10 +177,11 @@ export default function FileExplorerPanel({onClose,projectId,teamId,lastFileChan
           </>)}
           {activeLeftTab==="search"&&<SearchPanel projectId={projectId} onFileSelect={openFile}/>}
           {activeLeftTab==="git"&&<GitPanel projectId={projectId}/>}
-          {activeLeftTab==="activity"&&teamId&&<ActivityLogPanel teamId={teamId}/>}
+          {activeLeftTab==="activity"&&(
+            teamId ? <ActivityLogPanel teamId={teamId}/> : <div className="body-sm" style={{color:"var(--color-mute)",padding:16,fontStyle:"italic"}}>Please select a team room from the sidebar to view activity logs.</div>
+          )}
           {activeLeftTab==="history"&&(<div style={{flex:1,display:"flex",flexDirection:"column"}}>
-            <div style={{padding:"var(--sp-sm) var(--sp-md)",borderBottom:"1px solid var(--color-hairline)"}}><span className="body-sm-strong" style={{textTransform:"uppercase",fontSize:"11px",color:"var(--color-mute)"}}>File History</span></div>
-            {activeFilePath?<FileHistoryPanel filePath={activeFilePath} projectId={projectId} onRestored={()=>{void openFile(activeFilePath);setRefreshKey(k=>k+1);}}/>:<div className="body-sm" style={{color:"var(--color-mute)",padding:16,fontStyle:"italic"}}>Open a file to see history.</div>}
+            {activeFilePath?<FileHistoryPanel filePath={activeFilePath} projectId={projectId} onRestored={()=>{void openFile(activeFilePath);setRefreshKey(k=>k+1);}}/>:<div className="body-sm" style={{color:"var(--color-mute)",padding:16,fontStyle:"italic"}}>Open a file in the editor to see its version history.</div>}
           </div>)}
         </Panel>
         <PanelResizeHandle className="resize-handle" style={{width:"4px",cursor:"col-resize",background:"var(--border-subtle)",flexShrink:0}}/>
@@ -187,7 +195,7 @@ export default function FileExplorerPanel({onClose,projectId,teamId,lastFileChan
                   <span style={{fontSize:12,flexShrink:0}}>{getFileIcon(fname)}</span>
                   <span className="truncate body-sm font-mono" style={{fontSize:"12px",flex:1}}>{fname}</span>
                   {file.isDirty&&<div style={{width:7,height:7,borderRadius:"50%",background:"#fff",flexShrink:0}}/>}
-                  <button onClick={e=>closeFile(file.path,e)} style={{padding:2,borderRadius:3,flexShrink:0}} className="hover:bg-gray-600 text-transparent hover:text-white"><X size={11}/></button>
+                  <button onClick={e=>closeFile(file.path,e)} style={{padding:2,borderRadius:3,flexShrink:0,background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"var(--color-mute)"}} className="hover:text-white transition-colors" title="Close"><X size={12}/></button>
                 </div>);
               })}
             </div>

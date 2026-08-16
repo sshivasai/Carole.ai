@@ -1,12 +1,14 @@
 "use client";
 import React, { useState, useEffect, useCallback } from "react";
-import { Settings, Trash2, Upload, Loader2, AlertTriangle, CheckCircle, RefreshCw, Key, Eye, EyeOff, Save, MessageSquare, Layers, DollarSign, Globe } from "lucide-react";
+import { Settings, Trash2, Upload, Loader2, AlertTriangle, CheckCircle, RefreshCw, Key, Eye, EyeOff, Save, MessageSquare, Layers, DollarSign, Globe, ToggleLeft, ToggleRight, RotateCcw, ChevronDown, ChevronUp, Shield } from "lucide-react";
+import type { PromptBlock, AccessControlConfig } from "@/lib/types";
 import { api } from "@/hooks/useApi";
 import PromptsEditor from "./settings/PromptsEditor";
 import ModelCatalogEditor from "./settings/ModelCatalogEditor";
 import type { AgentConfig } from "@/lib/types";
 import Modal from "./Modal";
 import { useAuth } from "@/hooks/useAuth";
+import AccessControlMatrix, { DEFAULT_ACCESS_CONTROL } from "./AccessControlMatrix";
 
 interface Props {
   teamId: string | null;
@@ -19,6 +21,81 @@ interface Props {
 
 interface HealthData { status: string; tools_registered?: number; version?: string; }
 interface UsageData { total_messages?: number; total_tasks?: number; total_agents?: number; }
+
+
+// ── Global Access Control Card ─────────────────────────────────────────────────
+
+function GlobalAccessControlCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
+  const [config, setConfig] = useState<AccessControlConfig>({ ...DEFAULT_ACCESS_CONTROL, categories: { ...DEFAULT_ACCESS_CONTROL.categories }, overrides: {}, custom_skip_judge: { file_patterns: [], command_prefixes: [] } });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    api.getSettings().then((s: any) => {
+      if (s?.access_control && typeof s.access_control === "object" && "categories" in s.access_control) {
+        setConfig(s.access_control as AccessControlConfig);
+      }
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.saveSettings({ access_control: config });
+      onToast("Access Control defaults saved", "success");
+    } catch {
+      onToast("Failed to save Access Control settings", "error");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: "var(--sp-xl)", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "var(--sp-xl)", display: "flex", alignItems: "center", gap: "var(--sp-md)", textAlign: "left" }}
+      >
+        <div style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(167,139,250,0.12)", border: "1.5px solid rgba(167,139,250,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <Shield size={18} color="#a78bfa" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div className="body-sm-strong">Access Control &amp; Safety Defaults</div>
+          <div className="caption">Global permission defaults for all agents — per-agent settings override these.</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+          <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, fontWeight: 700, background: config.enable_judge ? "rgba(167,139,250,0.15)" : "rgba(251,191,36,0.15)", color: config.enable_judge ? "#a78bfa" : "#fbbf24", border: `1px solid ${config.enable_judge ? "rgba(167,139,250,0.35)" : "rgba(251,191,36,0.35)"}` }}>
+            {config.enable_judge ? "⚖️ Judge ON" : "⚡ Judge OFF"}
+          </span>
+          {expanded ? <ChevronUp size={15} color="var(--color-mute)" /> : <ChevronDown size={15} color="var(--color-mute)" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div style={{ padding: "0 var(--sp-xl) var(--sp-xl)", borderTop: "1px solid var(--color-hairline)" }}>
+          {loading ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", padding: "var(--sp-xl)" }}>
+              <Loader2 size={16} className="animate-spin" style={{ color: "var(--color-primary)" }} />
+              <span className="caption">Loading settings…</span>
+            </div>
+          ) : (
+            <>
+              <div style={{ paddingTop: "var(--sp-xl)" }}>
+                <AccessControlMatrix value={config} onChange={setConfig} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "var(--sp-xl)", paddingTop: "var(--sp-md)", borderTop: "1px solid var(--color-hairline)" }}>
+                <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>
+                  {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                  Save Global Defaults
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Google Account Card ───────────────────────────────────────────────────────
 
@@ -424,7 +501,7 @@ function BrowserAutomationCard({ onToast }: { onToast: (msg: string, type: any) 
         <h3 className="display-sm">Browser Automation & Anti-Bot Settings</h3>
       </div>
       <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-md)" }}>
-        Configure external providers to bypass CAPTCHAs and bot protection during web scraping. 
+        Configure external providers to bypass CAPTCHAs and bot protection during web scraping.
       </p>
       <div className="callout callout-info" style={{ marginBottom: "var(--sp-xl)" }}>
         <strong>Note:</strong> By default, the local browser uses stealth mode. Only external proxy providers (Browserbase, ScraperAPI, ZenRows) will automatically handle advanced CAPTCHA solving.
@@ -675,34 +752,319 @@ function DefaultModelsCard({ onToast }: { onToast: (msg: string, type: any) => v
   );
 }
 
-// ── AI Configuration Card (Prompts + Model Catalog) ──────────────────────────
+// ── Prompt Blocks Editor ────────────────────────────────────────────────────
 
-function AiConfigCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [tab, setTab] = useState<"prompts" | "catalog">("prompts");
+const CATEGORY_ORDER = ["Memory", "Filesystem", "Automation", "Browser"];
+
+const BLOCK_VARS: Record<string, string[]> = {
+  workspace_paths: ["{carole_dir}"],
+};
+
+function PromptBlocksEditor({ onToast }: { onToast: (msg: string, type: any) => void }) {
+  const [blocks, setBlocks] = useState<PromptBlock[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [dirty, setDirty] = useState<Record<string, { enabled: boolean; content: string }>>({});
+
+  useEffect(() => {
+    api.getPromptBlocks()
+      .then(setBlocks)
+      .catch(() => onToast("Failed to load prompt blocks", "error"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const patch = (key: string, field: "enabled" | "content", value: any) => {
+    const block = blocks.find(b => b.key === key);
+    if (!block) return;
+    setDirty(d => ({
+      ...d,
+      [key]: {
+        enabled: field === "enabled" ? value : (d[key]?.enabled ?? block.enabled),
+        content: field === "content" ? value : (d[key]?.content ?? block.content),
+      },
+    }));
+  };
+
+  const handleSaveAll = async () => {
+    if (!Object.keys(dirty).length) return;
+    setSaving(true);
+    try {
+      const updates = Object.entries(dirty).map(([key, val]) => ({ key, ...val }));
+      const updated = await api.savePromptBlocks(updates);
+      setBlocks(updated);
+      setDirty({});
+      onToast("Prompt blocks saved successfully", "success");
+    } catch {
+      onToast("Failed to save prompt blocks", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = async (key: string) => {
+    try {
+      const updated = await api.resetPromptBlock(key);
+      setBlocks(prev => prev.map(b => b.key === key ? { ...b, ...updated, content: updated.content, enabled: updated.enabled, is_customized: false } : b));
+      setDirty(d => { const n = { ...d }; delete n[key]; return n; });
+      onToast(`"${key}" reset to default`, "success");
+    } catch {
+      onToast("Failed to reset block", "error");
+    }
+  };
+
+  if (loading) return <div className="skeleton skeleton-text" style={{ width: "60%", marginTop: "var(--sp-md)" }} />;
+
+  const grouped = CATEGORY_ORDER.map(cat => ({
+    cat,
+    items: blocks.filter(b => b.category === cat),
+  })).filter(g => g.items.length > 0);
+
+  const hasDirty = Object.keys(dirty).length > 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-xl)" }}>
+      <div style={{ background: "var(--color-bg-secondary)", border: "1px solid var(--color-hairline)", borderRadius: 8, padding: "var(--sp-md) var(--sp-lg)" }}>
+        <p className="text-secondary" style={{ fontSize: "0.82rem", margin: 0, lineHeight: 1.5 }}>
+          ⚙️ <strong>System Capability Blocks </strong> are automatically appended to every agent&apos;s context.
+          Toggle any capability on or off with 1 click, or click <strong>Customize Prompt</strong> to fine-tune the instructions.
+        </p>
+      </div>
+
+      {grouped.map(({ cat, items }) => (
+        <div key={cat}>
+          <div style={{ fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--color-text-tertiary)", marginBottom: "var(--sp-sm)" }}>
+            {cat}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
+            {items.map(block => {
+              const override = dirty[block.key];
+              const enabled = override ? override.enabled : block.enabled;
+              const content = override ? override.content : block.content;
+              const isOpen = !!expanded[block.key];
+              const isModified = !!override || block.is_customized;
+              const requiredVars = BLOCK_VARS[block.key] || [];
+              const missingVars = requiredVars.filter(v => !content.includes(v));
+
+              return (
+                <div
+                  key={block.key}
+                  className="card"
+                  style={{
+                    padding: "var(--sp-lg)",
+                    border: `1px solid ${isModified ? "var(--color-brand-primary)" : "var(--color-hairline)"}`,
+                    opacity: enabled ? 1 : 0.6,
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  {/* Header Row */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)", justifyContent: "space-between" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)", flex: 1, minWidth: 0 }}>
+                      {/* Toggle Switch */}
+                      <button
+                        onClick={() => patch(block.key, "enabled", !enabled)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          cursor: "pointer",
+                          padding: 0,
+                          color: enabled ? "var(--color-brand-primary)" : "var(--color-text-tertiary)",
+                          flexShrink: 0,
+                          display: "flex",
+                          alignItems: "center",
+                        }}
+                        title={enabled ? "Click to disable this capability" : "Click to enable this capability"}
+                      >
+                        {enabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+                      </button>
+
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 600, fontSize: "0.88rem" }}>{block.display_name}</span>
+
+                          {/* Status Pills */}
+                          <span
+                            style={{
+                              fontSize: "0.68rem",
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              background: enabled ? "rgba(16, 185, 129, 0.15)" : "rgba(107, 114, 128, 0.15)",
+                              color: enabled ? "var(--color-success)" : "var(--color-text-tertiary)",
+                              border: `1px solid ${enabled ? "rgba(16, 185, 129, 0.3)" : "rgba(107, 114, 128, 0.3)"}`,
+                              fontWeight: 500,
+                            }}
+                          >
+                            {enabled ? "Active" : "Disabled"}
+                          </span>
+
+                          {isModified && (
+                            <span style={{ fontSize: "0.68rem", padding: "1px 6px", borderRadius: 4, background: "var(--color-brand-primary)", color: "#fff", fontWeight: 500 }}>
+                              customized
+                            </span>
+                          )}
+
+                          {/* Required Variables Badge */}
+                          {requiredVars.map(v => (
+                            <span
+                              key={v}
+                              style={{
+                                fontSize: "0.68rem",
+                                padding: "1px 6px",
+                                borderRadius: 4,
+                                fontFamily: "var(--font-mono, monospace)",
+                                background: "rgba(99, 102, 241, 0.12)",
+                                color: "var(--color-brand-primary)",
+                                border: "1px solid rgba(99, 102, 241, 0.25)",
+                              }}
+                            >
+                              Variable: {v}
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="text-secondary" style={{ fontSize: "0.78rem", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {block.description}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div style={{ display: "flex", gap: "var(--sp-sm)", flexShrink: 0, alignItems: "center" }}>
+                      {(block.is_customized || override) && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          style={{ gap: "var(--sp-xs)", fontSize: "0.78rem" }}
+                          onClick={() => handleReset(block.key)}
+                          title="Reset to default prompt"
+                        >
+                          <RotateCcw size={12} /> Reset
+                        </button>
+                      )}
+                      <button
+                        className={`btn btn-sm ${isOpen ? "btn-secondary" : "btn-ghost"}`}
+                        style={{ gap: "var(--sp-xs)", fontSize: "0.78rem" }}
+                        onClick={() => setExpanded(e => ({ ...e, [block.key]: !e[block.key] }))}
+                      >
+                        {isOpen ? (
+                          <>
+                            <ChevronUp size={13} /> Hide Prompt
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown size={13} /> Customize Prompt
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Expandable Editor (Progressive Disclosure) */}
+                  {isOpen && (
+                    <div style={{ marginTop: "var(--sp-md)", paddingTop: "var(--sp-md)", borderTop: "1px solid var(--color-hairline)" }}>
+                      <textarea
+                        value={content}
+                        onChange={e => patch(block.key, "content", e.target.value)}
+                        rows={Math.min(18, Math.max(6, content.split("\n").length + 2))}
+                        spellCheck={false}
+                        style={{
+                          width: "100%",
+                          boxSizing: "border-box",
+                          fontFamily: "var(--font-mono, 'Fira Code', monospace)",
+                          fontSize: "0.78rem",
+                          lineHeight: 1.6,
+                          background: "var(--color-bg-tertiary)",
+                          border: `1px solid ${missingVars.length > 0 ? "var(--color-warning)" : "var(--color-hairline)"}`,
+                          borderRadius: 6,
+                          padding: "var(--sp-md)",
+                          color: "var(--color-text-primary)",
+                          resize: "vertical",
+                        }}
+                      />
+
+                      {/* Missing Variable Warning */}
+                      {missingVars.length > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-xs)", color: "var(--color-warning)", fontSize: "0.76rem", marginTop: "var(--sp-xs)" }}>
+                          <AlertTriangle size={13} />
+                          <span>
+                            Warning: Required placeholder <code>{missingVars.join(", ")}</code> is missing from the text.
+                          </span>
+                        </div>
+                      )}
+
+                      {block.key === "workspace_paths" && missingVars.length === 0 && (
+                        <p className="text-secondary" style={{ fontSize: "0.75rem", marginTop: "var(--sp-xs)", marginBottom: 0 }}>
+                          💡 <code>{`{carole_dir}`}</code> will be automatically replaced at runtime with the scoped project+team path.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
+        <button className="btn btn-primary btn-sm" onClick={handleSaveAll} disabled={saving || !hasDirty} style={{ gap: "var(--sp-sm)" }}>
+          {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+          Save Changes{hasDirty ? ` (${Object.keys(dirty).length})` : ""}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Prompts Configuration Section ────────────────────────────────────────────
+
+function PromptsConfigSection({ onToast }: { onToast: (msg: string, type: any) => void }) {
+  const [promptSubTab, setPromptSubTab] = useState<"roles" | "capabilities">("roles");
 
   return (
     <div style={{ marginBottom: "var(--sp-xl)" }}>
-      {/* Tab bar */}
-      <div style={{ display: "flex", gap: 0, marginBottom: 0, borderBottom: "1px solid var(--color-hairline)" }}>
+      {/* Sub-navigation switcher for Prompts */}
+      <div
+        style={{
+          display: "inline-flex",
+          gap: "var(--sp-xs)",
+          marginBottom: "var(--sp-md)",
+          background: "var(--color-bg-secondary)",
+          padding: "4px",
+          borderRadius: "var(--radius-md)",
+          border: "1px solid var(--color-hairline)",
+        }}
+      >
         <button
-          className={`btn btn-sm ${tab === "prompts" ? "btn-primary" : "btn-ghost"}`}
-          style={{ borderBottomLeftRadius: 0, borderBottomRightRadius: 0, gap: "var(--sp-sm)" }}
-          onClick={() => setTab("prompts")}
+          className={`btn btn-xs ${promptSubTab === "roles" ? "btn-primary" : "btn-ghost"}`}
+          style={{ borderRadius: "var(--radius-sm)", gap: "var(--sp-xs)" }}
+          onClick={() => setPromptSubTab("roles")}
         >
-          <MessageSquare size={13} /> System Prompts
+          🎭 Roles &amp; Personas
         </button>
         <button
-          className={`btn btn-sm ${tab === "catalog" ? "btn-primary" : "btn-ghost"}`}
-          style={{ borderBottomLeftRadius: 0, borderBottomRightRadius: 0, gap: "var(--sp-sm)" }}
-          onClick={() => setTab("catalog")}
+          className={`btn btn-xs ${promptSubTab === "capabilities" ? "btn-primary" : "btn-ghost"}`}
+          style={{ borderRadius: "var(--radius-sm)", gap: "var(--sp-xs)" }}
+          onClick={() => setPromptSubTab("capabilities")}
         >
-          <Layers size={13} /> Model Catalog
+          ⚙️ System Capabilities
         </button>
       </div>
-      <div style={{ marginTop: "var(--sp-lg)" }}>
-        {tab === "prompts" && <PromptsEditor onToast={onToast} />}
-        {tab === "catalog" && <ModelCatalogEditor onToast={onToast} />}
-      </div>
+
+      {/* Prompts Content */}
+      {promptSubTab === "roles" && <PromptsEditor onToast={onToast} />}
+      {promptSubTab === "capabilities" && (
+        <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
+          <div className="flex-between" style={{ marginBottom: "var(--sp-md)" }}>
+            <div>
+              <h3 className="display-sm">System Capabilities</h3>
+              <p className="caption" style={{ marginTop: 2 }}>
+                Modular capability prompts injected into agent context. Toggle on/off or customize.
+              </p>
+            </div>
+          </div>
+          <PromptBlocksEditor onToast={onToast} />
+        </div>
+      )}
     </div>
   );
 }
@@ -750,8 +1112,14 @@ export default function SettingsPanel({ teamId, projectId, onToast, onTeamDelete
       <AgentRuntimeCard onToast={onToast} />
       <BrowserAutomationCard onToast={onToast} />
 
-      {/* ── AI Configuration (Prompts + Model Catalog) ── */}
-      <AiConfigCard onToast={onToast} />
+      {/* ── Prompts & Behavior ── */}
+      <PromptsConfigSection onToast={onToast} />
+
+      {/* ── Access Control & Safety Defaults ── */}
+      <GlobalAccessControlCard onToast={onToast} />
+
+      {/* ── Model Catalog (Standalone Card) ── */}
+      <ModelCatalogEditor onToast={onToast} />
 
       <HealthCard teamId={teamId} />
       {projectId && <UsageCard projectId={projectId} />}
@@ -784,17 +1152,17 @@ export default function SettingsPanel({ teamId, projectId, onToast, onTeamDelete
             This action <strong>cannot be undone</strong>. You can choose to only delete the {confirmDelete} record from the database, or additionally delete all associated files and folders on disk.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)" }}>
-            <button 
-              className="btn btn-danger btn-sm" 
-              onClick={() => confirmDelete === "team" ? handleDeleteTeam(false) : handleDeleteProject(false)} 
+            <button
+              className="btn btn-danger btn-sm"
+              onClick={() => confirmDelete === "team" ? handleDeleteTeam(false) : handleDeleteProject(false)}
               disabled={deleting}
               style={{ width: "100%", justifyContent: "center" }}
             >
               {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Delete {confirmDelete} Record Only
             </button>
-            <button 
-              className="btn btn-danger btn-sm" 
-              onClick={() => confirmDelete === "team" ? handleDeleteTeam(true) : handleDeleteProject(true)} 
+            <button
+              className="btn btn-danger btn-sm"
+              onClick={() => confirmDelete === "team" ? handleDeleteTeam(true) : handleDeleteProject(true)}
               disabled={deleting}
               style={{ width: "100%", justifyContent: "center", background: "var(--color-danger-dark)", borderColor: "var(--color-danger-dark)" }}
             >

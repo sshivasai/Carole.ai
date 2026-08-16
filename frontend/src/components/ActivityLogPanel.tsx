@@ -55,27 +55,37 @@ export default function ActivityLogPanel({ teamId }: ActivityLogPanelProps) {
     return () => { cancelled = true; };
   }, [teamId]);
 
-  const handleDeleteLog = async (e: React.MouseEvent, logId: string) => {
-    e.stopPropagation();
-    if (!window.confirm("Are you sure you want to delete this file activity log?")) return;
+  const [logToDelete, setLogToDelete] = useState<string | null>(null);
+
+  const confirmDeleteLog = async () => {
+    if (!logToDelete) return;
     try {
-      await api.deleteFileLog(logId);
-      setLogs(logs.filter(l => l.id !== logId));
-      if (expandedId === logId) setExpandedId(null);
+      await api.deleteFileLog(logToDelete);
+      setLogs(prev => prev.filter(l => l.id !== logToDelete));
+      if (expandedId === logToDelete) setExpandedId(null);
     } catch (err) {
       console.error("Failed to delete log", err);
-      alert("Failed to delete log. See console for details.");
+    } finally {
+      setLogToDelete(null);
     }
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ padding: "var(--sp-sm) var(--sp-md)", borderBottom: "1px solid var(--color-hairline)", display: "flex", alignItems: "center", gap: 6 }}>
-        <Activity size={14} color="var(--color-primary)" />
-        <span className="body-sm-strong" style={{ textTransform: "uppercase", fontSize: "11px", letterSpacing: "0.5px", color: "var(--color-mute)" }}>
-          Activity Log
-        </span>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }}>
+      {logToDelete && (
+        <div style={{
+          position: "absolute", top: 8, left: 8, right: 8, zIndex: 10,
+          background: "var(--bg-glass-card)", border: "1px solid var(--color-danger)",
+          borderRadius: 6, padding: "8px 12px", boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+          display: "flex", flexDirection: "column", gap: 6
+        }}>
+          <span className="caption" style={{ color: "var(--color-ink)", fontWeight: 500 }}>Delete this activity log record?</span>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+            <button className="btn btn-ghost btn-sm" style={{ padding: "2px 8px", fontSize: 11 }} onClick={() => setLogToDelete(null)}>Cancel</button>
+            <button className="btn btn-danger btn-sm" style={{ padding: "2px 8px", fontSize: 11 }} onClick={confirmDeleteLog}>Delete</button>
+          </div>
+        </div>
+      )}
 
       <div style={{ flex: 1, overflowY: "auto", padding: "8px" }} className="scrollbar-custom">
         {loading ? (
@@ -128,7 +138,7 @@ export default function ActivityLogPanel({ teamId }: ActivityLogPanelProps) {
                     <button 
                       className="btn-ghost" 
                       style={{ padding: "4px", borderRadius: "4px", opacity: 0.6 }}
-                      onClick={(e) => handleDeleteLog(e, log.id)}
+                      onClick={(e) => { e.stopPropagation(); setLogToDelete(log.id); }}
                       title="Delete Log"
                     >
                       <Trash2 size={14} color="var(--color-danger)" />

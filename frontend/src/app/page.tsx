@@ -351,7 +351,7 @@ function AppShell() {
 
   return (
     <PanelGroup direction="horizontal" autoSaveId="app-layout" style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
-      <Panel id="sidebar-panel" order={1} defaultSize={20} minSize={10} maxSize={40} style={{ display: "flex", flexShrink: 0 }}>
+      <Panel id="sidebar-panel" order={1} defaultSize={20} minSize={10} maxSize={40} style={{ display: "flex", flexShrink: 0, minWidth: 0 }}>
         <Sidebar
           activeView={activeView}
           onViewChange={setActiveView}

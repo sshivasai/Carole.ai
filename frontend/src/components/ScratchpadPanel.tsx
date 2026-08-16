@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import type { AgentConfig, ScratchpadItem } from "@/lib/types";
 import { api } from "@/hooks/useApi";
+import Modal from "./Modal";
 
 interface Props {
   teamId: string | null;
@@ -183,9 +184,10 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
     }
   };
 
-  const handleClear = async () => {
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+
+  const executeClear = async () => {
     if (!teamId || !selected) return;
-    if (!window.confirm(`Clear the ${selected.label}? This cannot be undone.`)) return;
     setBusy(true);
     try {
       await api.clearScratchpad(
@@ -200,6 +202,7 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
       onToast("Failed to clear scratchpad", "error");
     } finally {
       setBusy(false);
+      setConfirmClearOpen(false);
     }
   };
 
@@ -263,7 +266,7 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
                   style={iconBtn}><Plus size={14} /> Append</button>
                 <button className="btn-ghost" onClick={startEdit} disabled={busy}
                   style={iconBtn}><Edit2 size={14} /> Edit</button>
-                <button className="btn-ghost" onClick={handleClear} disabled={busy}
+                <button className="btn-ghost" onClick={() => setConfirmClearOpen(true)} disabled={busy}
                   style={iconBtn}><Trash2 size={14} /> Clear</button>
               </>
             ) : (
@@ -338,6 +341,23 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
           )}
         </div>
       </section>
+
+      {/* Clear Scratchpad Confirmation Modal */}
+      {confirmClearOpen && selected && (
+        <Modal open={true} onClose={() => setConfirmClearOpen(false)} title="Clear Scratchpad" maxWidth={400}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+            <p className="body-sm" style={{ color: "var(--color-body)", margin: 0 }}>
+              Are you sure you want to clear <strong>"{selected.label}"</strong>? This will remove all contents from the scratchpad.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)" }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setConfirmClearOpen(false)}>Cancel</button>
+              <button className="btn btn-danger btn-sm" onClick={executeClear} disabled={busy}>
+                {busy ? "Clearing…" : "Clear Scratchpad"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

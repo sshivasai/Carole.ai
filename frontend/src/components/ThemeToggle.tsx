@@ -20,9 +20,9 @@ export default function ThemeToggle({ className }: Props) {
       style={{ transition: "color 0.2s" }}
     >
       {theme === "dark" ? (
-        <Sun size={17} style={{ color: "#fbbf24" }} />
+        <Sun size={15} style={{ color: "#fbbf24" }} />
       ) : (
-        <Moon size={17} style={{ color: "#6366f1" }} />
+        <Moon size={15} style={{ color: "#6366f1" }} />
       )}
     </button>
   );

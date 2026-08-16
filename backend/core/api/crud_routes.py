@@ -1938,6 +1938,7 @@ class AppSettings(BaseModel):
     default_models: dict = {}
     agent_settings: dict = {}
     browser_automation: dict = {}
+    access_control: dict = {}  # Global Access Control & Safety defaults
 
 
 @router.get("/settings")
@@ -1977,6 +1978,7 @@ async def get_settings():
         "default_models": cfg.get("default_models", {}),
         "agent_settings": cfg.get("agent_settings", {}),
         "browser_automation": ba_cfg,
+        "access_control": cfg.get("access_control", {}),
     }
 
 
@@ -2012,11 +2014,12 @@ async def save_settings(body: AppSettings):
     new_ba["api_keys"] = new_ba_keys
 
     updated_cfg = {
-        "api_keys": new_keys, 
-        "providers": new_providers, 
-        "default_models": new_default_models, 
+        "api_keys": new_keys,
+        "providers": new_providers,
+        "default_models": new_default_models,
         "agent_settings": new_agent_settings,
-        "browser_automation": new_ba
+        "browser_automation": new_ba,
+        "access_control": {**current.get("access_control", {}), **body.access_control},
     }
     save_config(updated_cfg)
 
@@ -2088,3 +2091,32 @@ async def delete_entity_memory(
     await db.execute(stmt)
     await db.commit()
     return {"status": "deleted"}
+
+
+# ── Prompt Blocks ─────────────────────────────────────────────────────────────
+
+@router.get("/settings/prompt-blocks")
+async def get_prompt_blocks():
+    """Return all editable system prompt blocks with their current content."""
+    from core.agent.prompt_blocks import list_blocks
+    return list_blocks()
+
+
+@router.put("/settings/prompt-blocks")
+async def save_prompt_blocks(updates: list[dict]):
+    """Save one or more prompt block overrides. Send a list of { key, enabled, content }."""
+    from core.agent.prompt_blocks import save_blocks
+    save_blocks(updates)
+    from core.agent.prompt_blocks import list_blocks
+    return list_blocks()
+
+
+@router.post("/settings/prompt-blocks/{key}/reset")
+async def reset_prompt_block(key: str):
+    """Reset a single prompt block back to its default content."""
+    from core.agent.prompt_blocks import reset_block
+    try:
+        return reset_block(key)
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=str(e))

@@ -235,7 +235,7 @@ async def get_file_logs(team_id: str, db: AsyncSession = Depends(get_db), user: 
 
         stmt = (
             select(FileBackup, Message.sender_name)
-            .join(Message, Message.id == FileBackup.message_id)
+            .outerjoin(Message, Message.id == FileBackup.message_id)
             .where(FileBackup.team_id == uuid.UUID(team_id))
             .order_by(FileBackup.created_at.desc())
             .limit(100)
@@ -342,26 +342,31 @@ async def list_file_history(
     """
     from core.memory.models import FileBackup
     from sqlalchemy import select
-    from core.config import CAROLE_HOME_DIR
     import pathlib
 
     # Resolve the absolute path for this relative path + project
     root = await file_tools.get_workspace_root(project_id)
-    abs_path = str((root / path).resolve())
+    abs_path = str((root / path).resolve()).replace("\\", "/").lower()
+    norm_rel = path.replace("\\", "/").strip("/").lower()
+    filename = pathlib.Path(path).name.lower()
 
-    # Also match the path with forward/backslash variants
     stmt = (
         select(FileBackup)
-        .where(FileBackup.file_path.contains(path.replace("/", "\\").split("\\")[-1]))
         .order_by(FileBackup.created_at.desc())
-        .limit(50)
+        .limit(100)
     )
     result = await db.execute(stmt)
     backups = result.scalars().all()
 
-    # Filter to those whose file_path resolves to the same base name
-    filename = pathlib.Path(path).name
-    filtered = [b for b in backups if pathlib.Path(b.file_path).name == filename]
+    # Match by exact path, ending relative path, or filename
+    filtered = [
+        b for b in backups
+        if b.file_path and (
+            b.file_path.replace("\\", "/").lower() == abs_path
+            or b.file_path.replace("\\", "/").lower().endswith("/" + norm_rel)
+            or pathlib.Path(b.file_path).name.lower() == filename
+        )
+    ]
 
     return [
         {

@@ -10,6 +10,7 @@ interface Props {
 // ── Prompt metadata — groups + human-readable labels ──────────────────────────
 
 const PROMPT_META: Record<string, { label: string; group: string; description: string; vars?: string[] }> = {
+  // ── Personality Styles ──
   "personality.professional": {
     group: "Personality Styles",
     label: "Professional",
@@ -34,6 +35,66 @@ const PROMPT_META: Record<string, { label: string; group: string; description: s
     description: "Thoughtful PR reviewer — constructive, never condescending.",
     vars: ["name", "role"],
   },
+  "personality.subagent": {
+    group: "Personality Styles",
+    label: "Subagent / Specialist",
+    description: "Focused, temporary specialist hired for a single delegated task.",
+    vars: ["name"],
+  },
+
+  // ── Agent Roles ──
+  "role.orchestrator": {
+    group: "Agent Roles",
+    label: "Orchestrator",
+    description: "Workflow coordinator — decomposes requests, delegates in parallel, and synthesizes results.",
+  },
+  "role.coder": {
+    group: "Agent Roles",
+    label: "Software Engineer",
+    description: "Primary implementer — writes, modifies, and verifies code with tests on disk.",
+  },
+  "role.debugger": {
+    group: "Agent Roles",
+    label: "Debugger",
+    description: "Diagnoses and resolves bugs using evidence-driven root cause analysis.",
+  },
+  "role.architect": {
+    group: "Agent Roles",
+    label: "Architect",
+    description: "Plans and designs system architectures as structured Markdown documents.",
+  },
+  "role.researcher": {
+    group: "Agent Roles",
+    label: "Researcher",
+    description: "Gathers, cross-references, and synthesizes cited technical research from authoritative sources.",
+  },
+  "role.writer": {
+    group: "Agent Roles",
+    label: "Technical Writer",
+    description: "Produces accurate, well-structured documentation by analyzing the actual codebase.",
+  },
+  "role.analyst": {
+    group: "Agent Roles",
+    label: "Data Analyst",
+    description: "Extracts insights and patterns from data sources with transparent methodology.",
+  },
+  "role.reviewer": {
+    group: "Agent Roles",
+    label: "Code Reviewer",
+    description: "Delivers specific, actionable code reviews checking security, performance, and correctness.",
+  },
+  "role.devops": {
+    group: "Agent Roles",
+    label: "DevOps Engineer",
+    description: "Manages infrastructure, CI/CD, and deployments with careful assessment and logging.",
+  },
+  "role.tester": {
+    group: "Agent Roles",
+    label: "Test Engineer",
+    description: "Ensures quality with thorough, independent automated tests covering edge cases.",
+  },
+
+  // ── Agent Behavior ──
   "system.tool_use": {
     group: "Agent Behavior",
     label: "Tool Use Instructions",
@@ -42,32 +103,39 @@ const PROMPT_META: Record<string, { label: string; group: string; description: s
   "system.reasoning_rules": {
     group: "Agent Behavior",
     label: "Reasoning Rules",
-    description: "Core thinking rules: simplicity first, surgical changes, goal-driven.",
+    description: "Core thinking rules: simplicity first, surgical changes, goal-driven execution.",
   },
   "system.markdown_rules": {
     group: "Agent Behavior",
     label: "Markdown Rules",
-    description: "Forces agents to link code symbols to file paths.",
+    description: "Enforces linking code declarations to source file paths.",
   },
   "system.behavioral_rules": {
     group: "Agent Behavior",
     label: "Behavioral Rules",
-    description: "Team communication norms — address teammates, summarize work, etc.",
+    description: "Team communication norms — address teammates, full autonomy, summarize work.",
   },
   "system.coordinator_directives": {
     group: "Agent Behavior",
     label: "Coordinator Directives",
-    description: "Instructions injected into coordinator agents for task delegation.",
+    description: "Directives injected into team orchestrator agents for task delegation.",
   },
+  "system.output_efficiency": {
+    group: "Agent Behavior",
+    label: "Output Efficiency",
+    description: "Conciseness and token economy rules — lead with actions over conversational filler.",
+  },
+
+  // ── System Prompts ──
   "system.judge": {
     group: "System Prompts",
-    label: "Judge / Security Prompt",
+    label: "Security Judge Prompt",
     description: "Governs the AI security judge that approves or denies tool calls.",
   },
   "system.consolidation": {
     group: "System Prompts",
     label: "Memory Consolidation",
-    description: "Extracts lessons from conversation logs into long-term memory.",
+    description: "Extracts rules, context, and hard-won memories from conversation logs.",
     vars: ["conversation"],
   },
   "system.compaction_system": {
@@ -87,9 +155,15 @@ const PROMPT_META: Record<string, { label: string; group: string; description: s
     description: "Extracts search keywords from a task description.",
     vars: ["task"],
   },
+  "system.meeting_notes": {
+    group: "System Prompts",
+    label: "Meeting Notes Generator",
+    description: "Generates structured meeting notes from audio transcriptions.",
+    vars: ["transcription"],
+  },
 };
 
-const GROUPS = ["Personality Styles", "Agent Behavior", "System Prompts"];
+const GROUPS = ["Personality Styles", "Agent Roles", "Agent Behavior", "System Prompts"];
 
 // ── Single prompt editor row ───────────────────────────────────────────────────
 
@@ -251,8 +325,10 @@ export default function PromptsEditor({ onToast }: Props) {
   const groupSlugs = Object.keys(PROMPT_META).filter(
     k => PROMPT_META[k].group === activeGroup
   );
-  // Unknown slugs not in PROMPT_META go into their own group
-  const unknownSlugs = Object.keys(prompts).filter(k => !PROMPT_META[k] && !k.startsWith("_"));
+  // Unknown slugs not in PROMPT_META go into their own group (excluding block.* capabilities managed elsewhere)
+  const unknownSlugs = Object.keys(prompts).filter(
+    k => !PROMPT_META[k] && !k.startsWith("_") && !k.startsWith("block.")
+  );
 
   return (
     <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>

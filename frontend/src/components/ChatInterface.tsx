@@ -575,564 +575,564 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
       <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Header */}
         <header className="section-header" style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", background: "var(--bg-surface)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-lg)" }}>
-          <div>
-            <h2 className="display-sm">Team Chat</h2>
-            <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
-          </div>
-          
-          <div style={{ position: "relative" }}>
-            <div 
-              onClick={() => setShowTeamAgents(!showTeamAgents)}
-              style={{ display: "flex", alignItems: "center", cursor: "pointer", padding: "4px", borderRadius: "var(--radius-md)", background: showTeamAgents ? "var(--bg-surface-elevated)" : "transparent" }}
-              title="View team agents"
-            >
-              <div style={{ display: "flex", marginRight: "8px" }}>
-                {agents.slice(0, 3).map((agent, i) => (
-                  <div key={agent.id} style={{ marginLeft: i > 0 ? "-8px" : 0, borderRadius: "50%", border: "2px solid var(--bg-surface)", zIndex: 3 - i }}>
-                    <AgentAvatar name={agent.name} avatarSeed={agent.id} size={24} />
+          <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-lg)" }}>
+              <div>
+                <h2 className="display-sm">Team Chat</h2>
+                <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
+              </div>
+              
+              <div style={{ position: "relative" }}>
+                <div 
+                  onClick={() => setShowTeamAgents(!showTeamAgents)}
+                  style={{ display: "flex", alignItems: "center", cursor: "pointer", padding: "4px", borderRadius: "var(--radius-md)", background: showTeamAgents ? "var(--bg-surface-elevated)" : "transparent" }}
+                  title="View team agents"
+                >
+                  <div style={{ display: "flex", marginRight: "8px" }}>
+                    {agents.slice(0, 3).map((agent, i) => (
+                      <div key={agent.id} style={{ marginLeft: i > 0 ? "-8px" : 0, borderRadius: "50%", border: "2px solid var(--bg-surface)", zIndex: 3 - i }}>
+                        <AgentAvatar name={agent.name} avatarSeed={agent.id} size={24} />
+                      </div>
+                    ))}
+                    {agents.length > 3 && (
+                      <div style={{ marginLeft: "-8px", borderRadius: "50%", border: "2px solid var(--bg-surface)", width: 24, height: 24, background: "var(--bg-surface-elevated)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, color: "var(--text-secondary)", zIndex: 0 }}>
+                        +{agents.length - 3}
+                      </div>
+                    )}
                   </div>
-                ))}
-                {agents.length > 3 && (
-                  <div style={{ marginLeft: "-8px", borderRadius: "50%", border: "2px solid var(--bg-surface)", width: 24, height: 24, background: "var(--bg-surface-elevated)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, color: "var(--text-secondary)", zIndex: 0 }}>
-                    +{agents.length - 3}
+                  <ChevronDown size={14} color="var(--text-secondary)" style={{ transform: showTeamAgents ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                </div>
+
+                {showTeamAgents && (
+                  <div style={{ position: "absolute", top: "100%", left: 0, marginTop: "8px", width: "260px", background: "var(--bg-surface)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-md)", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 100, overflow: "hidden" }}>
+                    <div style={{ padding: "12px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-surface-elevated)" }}>
+                      <h3 style={{ fontSize: "12px", fontWeight: 600, margin: 0, color: "var(--text-secondary)" }}>TEAM AGENTS ({agents.length})</h3>
+                    </div>
+                    <div style={{ maxHeight: "300px", overflowY: "auto", padding: "8px" }}>
+                      {agents.map(a => (
+                        <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "8px", borderRadius: "var(--radius-sm)" }}>
+                          <AgentAvatar name={a.name} avatarSeed={a.id} size={32} />
+                          <div>
+                            <div style={{ fontWeight: 500, fontSize: "13px" }}>{a.name}</div>
+                            {a.role_template && <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{a.role_template}</div>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
-              <ChevronDown size={14} color="var(--text-secondary)" style={{ transform: showTeamAgents ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
             </div>
+            <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
+              {onToggleExplorer && (
+                <button className="btn btn-icon btn-outline btn-sm" onClick={onToggleExplorer} title="Toggle File Explorer">
+                  <Folder size={14} />
+                </button>
+              )}
+              <button className={`btn btn-icon btn-outline btn-sm ${searchMode ? "card-active" : ""}`}
+                onClick={() => setSearchMode(s => !s)} title="Search messages">
+                <Search size={14} />
+              </button>
+              <button className="btn btn-icon btn-outline btn-sm"
+                onClick={() => setClearChatOpen(true)} title="Clear all chat messages"
+                style={{ color: "var(--color-danger)" }}>
+                <Trash2 size={14} />
+              </button>
+              <McpStatusIndicator />
+            </div>
+          </div>
+        </header>
 
-            {showTeamAgents && (
-              <div style={{ position: "absolute", top: "100%", left: 0, marginTop: "8px", width: "260px", background: "var(--bg-surface)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-md)", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 100, overflow: "hidden" }}>
-                <div style={{ padding: "12px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-surface-elevated)" }}>
-                  <h3 style={{ fontSize: "12px", fontWeight: 600, margin: 0, color: "var(--text-secondary)" }}>TEAM AGENTS ({agents.length})</h3>
-                </div>
-                <div style={{ maxHeight: "300px", overflowY: "auto", padding: "8px" }}>
-                  {agents.map(a => (
-                    <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "8px", borderRadius: "var(--radius-sm)" }}>
-                      <AgentAvatar name={a.name} avatarSeed={a.id} size={32} />
-                      <div>
-                        <div style={{ fontWeight: 500, fontSize: "13px" }}>{a.name}</div>
-                        {a.role_template && <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{a.role_template}</div>}
-                      </div>
+        {/* Search bar */}
+        {searchMode && (
+          <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", borderBottom: "1px solid var(--border-glass)", background: "var(--bg-glass-panel)" }}>
+            <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", gap: "var(--sp-sm)" }}>
+              <input className="input" style={{ flex: 1, minHeight: 32 }} placeholder="Search messages..."
+                value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") handleSearch(); }} autoFocus />
+              <button className="btn btn-primary btn-sm" onClick={handleSearch}><Search size={13} /> Search</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setSearchMode(false); setSearchResults([]); setSearchQuery(""); }}>Clear</button>
+            </div>
+          </div>
+        )}
+
+        {/* Messages */}
+        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-xl) var(--sp-2xl)" }}>
+          <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--sp-lg)", minHeight: "100%" }}>
+            {/* Load older button */}
+            {!searchMode && hasOlderMessages && messages.length >= 50 && (
+              <div style={{ display: "flex", justifyContent: "center", paddingBottom: 8 }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={loadOlderMessages}
+                  disabled={loadingOlder}
+                  style={{ fontSize: 12, color: "var(--color-mute)", border: "1px solid var(--color-hairline)", borderRadius: 20, padding: "3px 16px" }}
+                >
+                  {loadingOlder ? "Loading…" : "↑ Load older messages"}
+                </button>
+              </div>
+            )}
+            {displayMessages.map(msg => {
+              const isHuman = msg.sender_id === "human";
+              const isTool = msg.type === "tool_start" || msg.type === "tool_end";
+              const isApproval = msg.type === "approval_request";
+              const isQuestion = msg.type === "agent_question";
+              const isFileChange = msg.type === "file_change";
+              const isSystem = msg.sender_id === "system";
+              const isStreaming = msg.type === "streaming";
+              const isIntermediate = msg.is_intermediate === true || msg.type === "tool_trace";
+
+              if (isTool) return <ToolRow key={msg.id} msg={msg} />;
+
+              // Compact collapsible row for intermediate tool-trace records
+              if (isIntermediate) {
+                const isExpanded = expandedTraces.has(msg.id);
+                return (
+                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-start", marginLeft: 8, marginBottom: 2 }}>
+                    <AgentAvatar name={msg.sender_name || "agent"} id={msg.sender_id} size={22} isStreaming={isStreaming} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <button
+                        onClick={() => setExpandedTraces(prev => {
+                          const s = new Set(prev);
+                          isExpanded ? s.delete(msg.id) : s.add(msg.id);
+                          return s;
+                        })}
+                        style={{
+                          background: "none", border: "none", cursor: "pointer", padding: 0,
+                          display: "flex", alignItems: "center", gap: 4, color: "var(--color-mute)"
+                        }}
+                      >
+                        {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        <span className="caption" style={{ fontFamily: "monospace", fontSize: 10 }}>
+                          🛠️ {msg.sender_name} — {(msg.text || "").slice(0, 60)}{(msg.text || "").length > 60 ? "…" : ""}
+                        </span>
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: 4, opacity: 0.4 }}>{fmtTime(msg.timestamp)}</span>}
+                      </button>
+                      {isExpanded && (
+                        <div className="markdown-body" style={{ fontSize: 11, marginTop: 4, padding: "var(--sp-sm) var(--sp-md)", background: "var(--color-canvas-raised)", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "auto", maxHeight: 300 }}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text || ""}</ReactMarkdown>
+                        </div>
+                      )}
                     </div>
+                  </div>
+                );
+              }
+
+              if (isSystem) {
+                let icon = <Info size={14} color="var(--color-primary)" />;
+                let color = "var(--color-primary)";
+                const text = msg.text || "";
+                let cleanText = text;
+                if (text.startsWith("[TASK_")) {
+                  icon = <CheckSquare size={14} color="var(--color-success)" />;
+                  color = "var(--color-success)";
+                  cleanText = text.replace(/\[TASK_[^\]]+\]\s*/, "");
+                } else if (text.startsWith("[AGENT_")) {
+                  icon = <Users size={14} color="var(--color-warning)" />;
+                  color = "var(--color-warning)";
+                  cleanText = text.replace(/\[AGENT_[^\]]+\]\s*/, "");
+                } else if (text.startsWith("[MCP_") || text.startsWith("[TOOL_")) {
+                  icon = <Wrench size={14} color="var(--color-brand)" />;
+                  color = "var(--color-brand)";
+                  cleanText = text.replace(/\[(MCP|TOOL)_[^\]]+\]\s*/, "");
+                } else if (text.startsWith("[LEARNING_")) {
+                  icon = <Lightbulb size={14} color="#FBBF24" />;
+                  color = "#FBBF24";
+                  cleanText = text.replace(/\[LEARNING_[^\]]+\]\s*/, "");
+                }
+
+                cleanText = cleanText.replace(/ by (?:Human|Admin)(?=\s|$)/g, " by admin").replace(/\(Admin\)/gi, "(admin)");
+
+                return (
+                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", position: "relative", marginLeft: 8 }}>
+                    <div style={{ position: "absolute", top: 15, bottom: -15, left: 14, width: 2, background: "var(--border-glass)", zIndex: 0 }} />
+                    <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--bg-glass-panel)", border: `1px solid ${color}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, zIndex: 1, position: "relative" }}>
+                      {icon}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0, paddingTop: 4 }}>
+                      <span className="caption" style={{ color: "var(--color-mute)" }}>{cleanText}</span>
+                      {msg.timestamp && <span className="caption" style={{ marginLeft: "var(--sp-sm)", opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
+                    </div>
+                  </div>
+                );
+              }
+              if (isFileChange) return (
+                <div
+                  key={msg.id}
+                  onClick={() => msg.path && onOpenFile?.(msg.path)}
+                  style={{
+                    display: "flex", gap: "var(--sp-md)", alignItems: "center", background: "var(--bg-glass-panel)",
+                    padding: "10px 14px", borderRadius: 8, margin: "8px 0",
+                    cursor: msg.path && onOpenFile ? "pointer" : "default",
+                    border: "1px solid var(--color-hairline)",
+                    transition: "background 0.15s, border-color 0.15s",
+                  }}
+                  className="hover:bg-[var(--color-surface)]"
+                  title={msg.path && onOpenFile ? `Open ${msg.path} in editor` : undefined}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
+                    <div style={{ background: "var(--color-surface)", padding: 6, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <FileCode size={16} color="var(--color-brand)" />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                      <span className="body-sm" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <strong style={{ color: "var(--color-body)" }}>{msg.sender_name || "Agent"}</strong> modified <strong style={{ color: "var(--color-body)" }}>{msg.path?.split('/').pop() || msg.path}</strong>
+                      </span>
+                      <span className="caption" style={{ color: "var(--color-mute)" }}>{msg.path && onOpenFile ? "Click to open in editor" : "View details in the Activity Log tab"}</span>
+                    </div>
+                  </div>
+                  {msg.timestamp && <span className="caption" style={{ opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
+                </div>
+              );
+              if (isApproval) return (
+                <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} size={30} />
+                  <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><ApprovalCard msg={msg} /></div>
+                </div>
+              );
+              if (isQuestion) return (
+                <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} size={30} />
+                  <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
+                </div>
+              );
+
+              const isThinking = msg.type === "thinking";
+
+              let cleanText = msg.text || "";
+              let embeddedReasoning = "";
+
+              const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
+              let match;
+              while ((match = thinkRegex.exec(cleanText)) !== null) {
+                embeddedReasoning += match[1].trim() + "\n\n";
+              }
+              cleanText = cleanText.replace(thinkRegex, "");
+
+              const toolRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+              while ((match = toolRegex.exec(cleanText)) !== null) {
+                embeddedReasoning += "```json\n" + match[1].trim() + "\n```\n\n";
+              }
+              cleanText = cleanText.replace(toolRegex, "");
+
+              const actionRegex = /\[ACTION\]([\s\S]*?)\[\/ACTION\]/g;
+              while ((match = actionRegex.exec(cleanText)) !== null) {
+                embeddedReasoning += "```json\n" + match[1].trim() + "\n```\n\n";
+              }
+              cleanText = cleanText.replace(actionRegex, "");
+
+              // Strip out <function_calls> wrapper tags if the LLM output them
+              cleanText = cleanText.replace(/<function_calls>/g, "").replace(/<\/function_calls>/g, "");
+              cleanText = cleanText.trim();
+
+              let rawReasoning = msg.reasoning || "";
+              rawReasoning = rawReasoning.replace(/\[ACTION\][\s\S]*?\[\/ACTION\]/g, "");
+              rawReasoning = rawReasoning.replace(/<tool_call>([\s\S]*?)<\/tool_call>/g, "\n```json\n$1\n```\n");
+              rawReasoning = rawReasoning.replace(/<function_calls>|<\/function_calls>/g, "");
+              rawReasoning = rawReasoning.trim();
+
+              const finalReasoning = rawReasoning ? (rawReasoning + "\n\n" + embeddedReasoning).trim() : embeddedReasoning.trim();
+              let markdownText = cleanText;
+
+              if (onOpenFile) {
+                markdownText = markdownText.replace(
+                  /(^|[^`])@file:(\S+)/g,
+                  (_m: string, pre: string, p: string) => {
+                    const path = p.replace(/[),.;]+$/, "");
+                    const base = path.split("/").pop() || path;
+                    return `${pre}[\`📄 ${base}\`](file:${path})`;
+                  }
+                );
+
+                const parts = markdownText.split(/(```[\s\S]*?```|`[^`]*`|\[.*?\]\(.*?\))/g);
+                const fileRegex = /(^|\s|'|"|\()([a-zA-Z0-9_./-]+\.(?:md|ts|tsx|js|jsx|py|html|css|json|txt|yml|yaml|sh|bash|ini|env))(?=$|\s|'|"|\)|,|\.|\!|\?)/gi;
+
+                markdownText = parts.map((part: string, i: number) => {
+                  if (i % 2 === 0) {
+                    return part.replace(fileRegex, '$1[$2](file:$2)');
+                  }
+                  return part;
+                }).join('');
+              }
+              if (searchMode && searchQuery.trim()) {
+                const safeQuery = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const regex = new RegExp(`(${safeQuery})`, 'gi');
+                const parts = markdownText.split(/(```[\s\S]*?```|`[^`]*`|\[.*?\]\(.*?\))/g);
+                markdownText = parts.map((part: string, i: number) => (i % 2 === 0 ? part.replace(regex, '~~$1~~') : part)).join('');
+              }
+
+              return (
+                <div key={msg.id} className="animate-fade-in group" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", flexDirection: isHuman ? "row-reverse" : "row", width: "100%" }}>
+
+                  <AgentAvatar
+                    name={msg.sender_name || (isHuman ? "admin" : "Agent")}
+                    id={msg.sender_id}
+                    role={msg.role}
+                    size={32}
+                    isStreaming={isStreaming}
+                    isThinking={isThinking}
+                  />
+                  <div style={{ maxWidth: isHuman ? "78%" : "88%", minWidth: 0, position: "relative" }}>
+                    {!isHuman && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                        <span className="body-sm-strong">{msg.sender_name}</span>
+                        {msg.role && <span className="caption">{msg.role}</span>}
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
+                      </div>
+                    )}
+                    {isHuman && msg.timestamp && <div style={{ textAlign: "right", marginBottom: 3 }}><span className="caption">{fmtTime(msg.timestamp)}</span></div>}
+
+                    {/* Edit Mode vs Normal Mode */}
+                    {editingMsgId === msg.id ? (
+                      <div style={{ background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", border: "1px solid var(--color-primary)", padding: "var(--sp-sm)", borderRadius: "var(--radius-md)", boxShadow: "var(--shadow-clay)", display: "flex", flexDirection: "column", gap: "var(--sp-sm)", width: "100%", minWidth: 320 }}>
+                        <textarea
+                          className="input"
+                          style={{ minHeight: 80, resize: "vertical" }}
+                          value={editText}
+                          onChange={e => setEditText(e.target.value)}
+                          autoFocus
+                        />
+                        <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end" }}>
+                          <button className="btn btn-ghost btn-sm" onClick={() => setEditingMsgId(null)}>Cancel</button>
+                          <button className="btn btn-primary btn-sm" onClick={() => saveEdit(msg.id)}>Save</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{
+                        padding: "var(--sp-md) var(--sp-lg)", lineHeight: 1.6,
+                        background: isHuman ? "var(--bg-surface-raised)" : "var(--bg-surface)",
+                        border: isHuman ? "1px solid var(--border-subtle)" : "1px solid var(--border-subtle)",
+                        borderRadius: isHuman ? "var(--radius-md) 2px var(--radius-md) var(--radius-md)" : "2px var(--radius-md) var(--radius-md) var(--radius-md)",
+                        color: "var(--text-primary)",
+                        position: "relative", fontSize: "var(--text-sm)",
+                      }}>
+                        {isThinking ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", color: "var(--color-mute)" }}>
+                            <TypingIndicator />
+                            <span className="body-sm" style={{ opacity: 0.8 }}>Thinking...</span>
+                          </div>
+                        ) : isHuman ? (
+                          <div style={{ whiteSpace: "pre-wrap" }}>
+                            {cleanText}
+                            {msg.attachments && msg.attachments.length > 0 && (
+                              <div style={{ display: "flex", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)", flexWrap: "wrap" }}>
+                                {msg.attachments.map((att: any, i: number) => (
+                                  att.type?.startsWith("image/") ? (
+                                    <img key={i} src={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(0,217,146,0.2)" }} />
+                                  ) : (
+                                    <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(0,217,146,0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none" }}>📎 {att.name}</a>
+                                  )
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="markdown-body">
+                            <ReactMarkdown
+                              skipHtml={true}
+                              remarkPlugins={[remarkGfm]}
+                              components={markdownComponents}
+                            >
+                              {markdownText}
+                            </ReactMarkdown>
+                          </div>
+                        )}
+                        {isStreaming && <TypingIndicator />}
+                        {/* Stop Generating button — visible while streaming or thinking */}
+                        {(isStreaming || isThinking) && !isHuman && (
+                          <div style={{ marginTop: "var(--sp-sm)", display: "flex", justifyContent: "flex-end" }}>
+                            <button
+                              onClick={() => api.stopAgent(msg.sender_id)}
+                              style={{
+                                display: "inline-flex", alignItems: "center", gap: 6,
+                                padding: "4px 10px", fontSize: 11, cursor: "pointer",
+                                background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)",
+                                borderRadius: "var(--radius-sm)", color: "var(--color-danger)",
+                                transition: "background 0.15s",
+                              }}
+                              onMouseOver={e => (e.currentTarget.style.background = "rgba(239,68,68,0.2)")}
+                              onMouseOut={e => (e.currentTarget.style.background = "rgba(239,68,68,0.1)")}
+                            >
+                              <Square size={11} fill="currentColor" />
+                              Stop generating
+                            </button>
+                          </div>
+                        )}
+                        {/* Thoughts Panel — renders reasoning trace + tool calls */}
+                        {!isHuman && !isThinking && (
+                          <ThoughtsPanel reasoning={finalReasoning} isStreaming={isStreaming} components={markdownComponents} />
+                        )}
+                        {msg.pending_approval && msg.pending_approval.status !== "approved" && (
+                          <div style={{ marginTop: "var(--sp-md)" }}>
+                            <ApprovalCard msg={{ ...msg, ...msg.pending_approval, type: "approval_request" } as ChatMessage} />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Action Menu Hover — anchored right on top of this message bubble */}
+                    {!isThinking && !isStreaming && !isSystem && !isApproval && !isQuestion && editingMsgId !== msg.id && (
+                      <div className="msg-actions" style={{
+                        display: "flex", gap: 4, position: "absolute", top: -12,
+                        [isHuman ? "left" : "right"]: 0,
+                        background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)",
+                        border: "1px solid var(--border-glass)", boxShadow: "var(--shadow-clay-sm)",
+                        padding: "2px 4px", borderRadius: "var(--radius-md)",
+                        opacity: 0, transition: "opacity 0.15s ease", zIndex: 10,
+                      }}>
+                        <button className="btn btn-icon btn-ghost btn-sm" title="Copy message text"
+                          onClick={() => handleCopyMessage(msg.text || "", msg.id)}
+                          style={{ color: copiedMsgId === msg.id ? "var(--color-success, #4ade80)" : undefined }}>
+                          {copiedMsgId === msg.id ? <Check size={12} /> : <Copy size={12} />}
+                        </button>
+                        {!isHuman && (
+                          <>
+                            <button className="btn btn-icon btn-ghost btn-sm" title="Helpful"
+                              onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: prev[msg.id] === "up" ? undefined : "up" } as any))}
+                              style={{ color: feedbackState[msg.id] === "up" ? "var(--color-success, #4ade80)" : undefined }}>
+                              <ThumbsUp size={12} fill={feedbackState[msg.id] === "up" ? "currentColor" : "none"} />
+                            </button>
+                            <button className="btn btn-icon btn-ghost btn-sm" title="Not helpful"
+                              onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: prev[msg.id] === "down" ? undefined : "down" } as any))}
+                              style={{ color: feedbackState[msg.id] === "down" ? "var(--color-danger, #ef4444)" : undefined }}>
+                              <ThumbsDown size={12} fill={feedbackState[msg.id] === "down" ? "currentColor" : "none"} />
+                            </button>
+                          </>
+                        )}
+                        <button className="btn btn-icon btn-ghost btn-sm" title="Edit text only" onClick={() => { setEditingMsgId(msg.id); setEditText(msg.text || ""); }}>
+                          <Edit2 size={12} />
+                        </button>
+                        <button className="btn btn-icon btn-ghost btn-sm" title="Delete this message only" onClick={() => doDelete(msg.id)}>
+                          <Trash2 size={12} />
+                        </button>
+                        <button className="btn btn-icon btn-ghost btn-sm" style={{ color: "var(--color-warning)" }} title="Rollback context and file changes to this point" onClick={() => requestRollback(msg.id)}>
+                          <History size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              );
+            })}
+
+            {messages.length === 0 && !searchMode && (
+              <div className="empty-state" style={{ marginTop: 60 }}>
+                <Bot size={40} className="empty-state-icon" />
+                <h3>No messages yet</h3>
+                <p>Send a message to start collaborating with your AI agent team</p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-sm)", justifyContent: "center", marginTop: "var(--sp-md)" }}>
+                  {["Summarize our latest tasks", "What tools do you have?", "Research competitor pricing"].map(s => (
+                    <button key={s} className="btn btn-outline btn-sm" onClick={() => onSendMessage(s)}>{s}</button>
                   ))}
                 </div>
               </div>
             )}
           </div>
         </div>
-        <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
-          {onToggleExplorer && (
-            <button className="btn btn-icon btn-outline btn-sm" onClick={onToggleExplorer} title="Toggle File Explorer">
-              <Folder size={14} />
-            </button>
-          )}
-          <button className={`btn btn-icon btn-outline btn-sm ${searchMode ? "card-active" : ""}`}
-            onClick={() => setSearchMode(s => !s)} title="Search messages">
-            <Search size={14} />
-          </button>
-          <button className="btn btn-icon btn-outline btn-sm"
-            onClick={() => setClearChatOpen(true)} title="Clear all chat messages"
-            style={{ color: "var(--color-danger)" }}>
-            <Trash2 size={14} />
-          </button>
-          <McpStatusIndicator />
-        </div>
-      </header>
 
-      {/* Search bar */}
-      {searchMode && (
-        <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", borderBottom: "1px solid var(--border-glass)", background: "var(--bg-glass-panel)", display: "flex", gap: "var(--sp-sm)" }}>
-          <input className="input" style={{ flex: 1, minHeight: 32 }} placeholder="Search messages..."
-            value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") handleSearch(); }} autoFocus />
-          <button className="btn btn-primary btn-sm" onClick={handleSearch}><Search size={13} /> Search</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => { setSearchMode(false); setSearchResults([]); setSearchQuery(""); }}>Clear</button>
-        </div>
-      )}
-
-      {/* Messages */}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-2xl)", display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
-        {/* Load older button */}
-        {!searchMode && hasOlderMessages && messages.length >= 50 && (
-          <div style={{ display: "flex", justifyContent: "center", paddingBottom: 8 }}>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={loadOlderMessages}
-              disabled={loadingOlder}
-              style={{ fontSize: 12, color: "var(--color-mute)", border: "1px solid var(--color-hairline)", borderRadius: 20, padding: "3px 16px" }}
-            >
-              {loadingOlder ? "Loading…" : "↑ Load older messages"}
-            </button>
-          </div>
-        )}
-        {displayMessages.map(msg => {
-          const isHuman = msg.sender_id === "human";
-          const isTool = msg.type === "tool_start" || msg.type === "tool_end";
-          const isApproval = msg.type === "approval_request";
-          const isQuestion = msg.type === "agent_question";
-          const isFileChange = msg.type === "file_change";
-          const isSystem = msg.sender_id === "system";
-          const isStreaming = msg.type === "streaming";
-          const isIntermediate = msg.is_intermediate === true || msg.type === "tool_trace";
-
-          if (isTool) return <ToolRow key={msg.id} msg={msg} />;
-
-          // Compact collapsible row for intermediate tool-trace records
-          if (isIntermediate) {
-            const isExpanded = expandedTraces.has(msg.id);
-            return (
-              <div key={msg.id} style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-start", marginLeft: 8, marginBottom: 2 }}>
-                <AgentAvatar name={msg.sender_name || "agent"} id={msg.sender_id} size={22} isStreaming={isStreaming} />
-                <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Attachments preview */}
+        {attachments.length > 0 && (
+          <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
+            <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", gap: "var(--sp-sm)" }}>
+              {attachments.map((att, i) => (
+                <div key={i} style={{ position: "relative", width: 48, height: 48, borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "hidden", background: "var(--color-canvas-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {att.type?.startsWith("image/") ? (
+                    <img src={att.url} alt="attachment" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <div style={{ fontSize: 9, color: "var(--color-mute)" }}>File</div>
+                  )}
                   <button
-                    onClick={() => setExpandedTraces(prev => {
-                      const s = new Set(prev);
-                      isExpanded ? s.delete(msg.id) : s.add(msg.id);
-                      return s;
-                    })}
-                    style={{
-                      background: "none", border: "none", cursor: "pointer", padding: 0,
-                      display: "flex", alignItems: "center", gap: 4, color: "var(--color-mute)"
-                    }}
+                    onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
+                    style={{ position: "absolute", top: 2, right: 2, background: "rgba(0,0,0,0.5)", color: "white", border: "none", borderRadius: "50%", padding: 2, cursor: "pointer", display: "flex" }}
                   >
-                    {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                    <span className="caption" style={{ fontFamily: "monospace", fontSize: 10 }}>
-                      🛠️ {msg.sender_name} — {(msg.text || "").slice(0, 60)}{(msg.text || "").length > 60 ? "…" : ""}
-                    </span>
-                    {msg.timestamp && <span className="caption" style={{ marginLeft: 4, opacity: 0.4 }}>{fmtTime(msg.timestamp)}</span>}
-                  </button>
-                  {isExpanded && (
-                    <div className="markdown-body" style={{ fontSize: 11, marginTop: 4, padding: "var(--sp-sm) var(--sp-md)", background: "var(--color-canvas-raised)", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "auto", maxHeight: 300 }}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text || ""}</ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          }
-
-          if (isSystem) {
-            let icon = <Info size={14} color="var(--color-primary)" />;
-            let color = "var(--color-primary)";
-            const text = msg.text || "";
-            let cleanText = text;
-            if (text.startsWith("[TASK_")) {
-              icon = <CheckSquare size={14} color="var(--color-success)" />;
-              color = "var(--color-success)";
-              cleanText = text.replace(/\[TASK_[^\]]+\]\s*/, "");
-            } else if (text.startsWith("[AGENT_")) {
-              icon = <Users size={14} color="var(--color-warning)" />;
-              color = "var(--color-warning)";
-              cleanText = text.replace(/\[AGENT_[^\]]+\]\s*/, "");
-            } else if (text.startsWith("[MCP_") || text.startsWith("[TOOL_")) {
-              icon = <Wrench size={14} color="var(--color-brand)" />;
-              color = "var(--color-brand)";
-              cleanText = text.replace(/\[(MCP|TOOL)_[^\]]+\]\s*/, "");
-            } else if (text.startsWith("[LEARNING_")) {
-              icon = <Lightbulb size={14} color="#FBBF24" />;
-              color = "#FBBF24";
-              cleanText = text.replace(/\[LEARNING_[^\]]+\]\s*/, "");
-            }
-
-            cleanText = cleanText.replace(/ by (?:Human|Admin)(?=\s|$)/g, " by admin").replace(/\(Admin\)/gi, "(admin)");
-
-            return (
-              <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", position: "relative", marginLeft: 8 }}>
-                <div style={{ position: "absolute", top: 15, bottom: -15, left: 14, width: 2, background: "var(--border-glass)", zIndex: 0 }} />
-                <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--bg-glass-panel)", border: `1px solid ${color}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, zIndex: 1, position: "relative" }}>
-                  {icon}
-                </div>
-                <div style={{ flex: 1, minWidth: 0, paddingTop: 4 }}>
-                  <span className="caption" style={{ color: "var(--color-mute)" }}>{cleanText}</span>
-                  {msg.timestamp && <span className="caption" style={{ marginLeft: "var(--sp-sm)", opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
-                </div>
-              </div>
-            );
-          }
-          if (isFileChange) return (
-            <div
-              key={msg.id}
-              onClick={() => msg.path && onOpenFile?.(msg.path)}
-              style={{
-                display: "flex", gap: "var(--sp-md)", alignItems: "center", background: "var(--bg-glass-panel)",
-                padding: "10px 14px", borderRadius: 8, margin: "8px 0",
-                cursor: msg.path && onOpenFile ? "pointer" : "default",
-                border: "1px solid var(--color-hairline)",
-                transition: "background 0.15s, border-color 0.15s",
-              }}
-              className="hover:bg-[var(--color-surface)]"
-              title={msg.path && onOpenFile ? `Open ${msg.path} in editor` : undefined}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
-                <div style={{ background: "var(--color-surface)", padding: 6, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <FileCode size={16} color="var(--color-brand)" />
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                  <span className="body-sm" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    <strong style={{ color: "var(--color-body)" }}>{msg.sender_name || "Agent"}</strong> modified <strong style={{ color: "var(--color-body)" }}>{msg.path?.split('/').pop() || msg.path}</strong>
-                  </span>
-                  <span className="caption" style={{ color: "var(--color-mute)" }}>{msg.path && onOpenFile ? "Click to open in editor" : "View details in the Activity Log tab"}</span>
-                </div>
-              </div>
-              {msg.timestamp && <span className="caption" style={{ opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
-            </div>
-          );
-          if (isApproval) return (
-            <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-              <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} size={30} />
-              <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><ApprovalCard msg={msg} /></div>
-            </div>
-          );
-          if (isQuestion) return (
-            <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-              <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} size={30} />
-              <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
-            </div>
-          );
-
-          const ac = isHuman ? "var(--color-canvas-raised)" : avatarColor(msg.sender_name || "agent");
-          const isThinking = msg.type === "thinking";
-
-          let cleanText = msg.text || "";
-          let embeddedReasoning = "";
-
-          const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
-          let match;
-          while ((match = thinkRegex.exec(cleanText)) !== null) {
-            embeddedReasoning += match[1].trim() + "\n\n";
-          }
-          cleanText = cleanText.replace(thinkRegex, "");
-
-          const toolRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
-          while ((match = toolRegex.exec(cleanText)) !== null) {
-            embeddedReasoning += "```json\n" + match[1].trim() + "\n```\n\n";
-          }
-          cleanText = cleanText.replace(toolRegex, "");
-
-          const actionRegex = /\[ACTION\]([\s\S]*?)\[\/ACTION\]/g;
-          while ((match = actionRegex.exec(cleanText)) !== null) {
-            embeddedReasoning += "```json\n" + match[1].trim() + "\n```\n\n";
-          }
-          cleanText = cleanText.replace(actionRegex, "");
-
-          // Strip out <function_calls> wrapper tags if the LLM output them
-          cleanText = cleanText.replace(/<function_calls>/g, "").replace(/<\/function_calls>/g, "");
-          cleanText = cleanText.trim();
-
-          let rawReasoning = msg.reasoning || "";
-          // Strip raw [ACTION]...[/ACTION] blocks — needed for the live-streaming
-          // case where collapse_to_reasoning copies raw LLM text (with action tags).
-          // The backend now stores only clean text + formatted 🛠️ blocks in reasoning_text,
-          // but live messages may still have raw tags until they are replaced by the
-          // final persisted message on refresh.
-          rawReasoning = rawReasoning.replace(/\[ACTION\][\s\S]*?\[\/ACTION\]/g, "");
-          // Render <tool_call>...</tool_call> as code blocks instead of stripping
-          rawReasoning = rawReasoning.replace(/<tool_call>([\s\S]*?)<\/tool_call>/g, "\n```json\n$1\n```\n");
-          rawReasoning = rawReasoning.replace(/<function_calls>|<\/function_calls>/g, "");
-          rawReasoning = rawReasoning.trim();
-
-          const finalReasoning = rawReasoning ? (rawReasoning + "\n\n" + embeddedReasoning).trim() : embeddedReasoning.trim();
-          let markdownText = cleanText;
-          // Render @file:path references and bare file names as clickable links
-          // that open the file in the explorer.
-          if (onOpenFile) {
-            markdownText = markdownText.replace(
-              /(^|[^`])@file:(\S+)/g,
-              (_m: string, pre: string, p: string) => {
-                const path = p.replace(/[),.;]+$/, "");
-                const base = path.split("/").pop() || path;
-                return `${pre}[\`📄 ${base}\`](file:${path})`;
-              }
-            );
-
-            // Linkify bare file names (e.g., README.md, src/main.py)
-            // Split text by markdown code blocks or markdown links to avoid breaking them
-            const parts = markdownText.split(/(```[\s\S]*?```|`[^`]*`|\[.*?\]\(.*?\))/g);
-            // Matches file paths with common extensions, bounded by whitespace or punctuation
-            const fileRegex = /(^|\s|'|"|\()([a-zA-Z0-9_./-]+\.(?:md|ts|tsx|js|jsx|py|html|css|json|txt|yml|yaml|sh|bash|ini|env))(?=$|\s|'|"|\)|,|\.|\!|\?)/gi;
-
-            markdownText = parts.map((part: string, i: number) => {
-              if (i % 2 === 0) {
-                return part.replace(fileRegex, '$1[$2](file:$2)');
-              }
-              return part;
-            }).join('');
-          }
-          if (searchMode && searchQuery.trim()) {
-            const safeQuery = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const regex = new RegExp(`(${safeQuery})`, 'gi');
-            const parts = markdownText.split(/(```[\s\S]*?```|`[^`]*`|\[.*?\]\(.*?\))/g);
-            markdownText = parts.map((part: string, i: number) => (i % 2 === 0 ? part.replace(regex, '~~$1~~') : part)).join('');
-          }
-
-          return (
-            <div key={msg.id} className="animate-fade-in group" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", flexDirection: isHuman ? "row-reverse" : "row", position: "relative" }}>
-
-              <AgentAvatar
-                name={msg.sender_name || (isHuman ? "admin" : "Agent")}
-                id={msg.sender_id}
-                role={msg.role}
-                size={32}
-                isStreaming={isStreaming}
-                isThinking={isThinking}
-              />
-              <div style={{ maxWidth: "78%" }}>
-                {!isHuman && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
-                    <span className="body-sm-strong">{msg.sender_name}</span>
-                    {msg.role && <span className="caption">{msg.role}</span>}
-                    {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
-                  </div>
-                )}
-                {isHuman && msg.timestamp && <div style={{ textAlign: "right", marginBottom: 3 }}><span className="caption">{fmtTime(msg.timestamp)}</span></div>}
-
-                {/* Edit Mode vs Normal Mode */}
-                {editingMsgId === msg.id ? (
-                  <div style={{ background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", border: "1px solid var(--color-primary)", padding: "var(--sp-sm)", borderRadius: "var(--radius-md)", boxShadow: "var(--shadow-clay)", display: "flex", flexDirection: "column", gap: "var(--sp-sm)", width: "100%", minWidth: 400 }}>
-                    <textarea
-                      className="input"
-                      style={{ minHeight: 80, resize: "vertical" }}
-                      value={editText}
-                      onChange={e => setEditText(e.target.value)}
-                      autoFocus
-                    />
-                    <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end" }}>
-                      <button className="btn btn-ghost btn-sm" onClick={() => setEditingMsgId(null)}>Cancel</button>
-                      <button className="btn btn-primary btn-sm" onClick={() => saveEdit(msg.id)}>Save</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{
-                    padding: "var(--sp-md) var(--sp-lg)", lineHeight: 1.6,
-                    background: isHuman ? "var(--bg-surface-raised)" : "var(--bg-surface)",
-                    border: isHuman ? "1px solid var(--border-subtle)" : "1px solid var(--border-subtle)",
-                    borderRadius: isHuman ? "var(--radius-md) 2px var(--radius-md) var(--radius-md)" : "2px var(--radius-md) var(--radius-md) var(--radius-md)",
-                    color: "var(--text-primary)",
-                    position: "relative", fontSize: "var(--text-sm)",
-                  }}>
-                    {isThinking ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", color: "var(--color-mute)" }}>
-                        <TypingIndicator />
-                        <span className="body-sm" style={{ opacity: 0.8 }}>Thinking...</span>
-                      </div>
-                    ) : isHuman ? (
-                      <div style={{ whiteSpace: "pre-wrap" }}>
-                        {cleanText}
-                        {msg.attachments && msg.attachments.length > 0 && (
-                          <div style={{ display: "flex", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)", flexWrap: "wrap" }}>
-                            {msg.attachments.map((att: any, i: number) => (
-                              att.type?.startsWith("image/") ? (
-                                <img key={i} src={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(0,217,146,0.2)" }} />
-                              ) : (
-                                <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(0,217,146,0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none" }}>📎 {att.name}</a>
-                              )
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="markdown-body">
-                        <ReactMarkdown
-                          skipHtml={true}
-                          remarkPlugins={[remarkGfm]}
-                          components={markdownComponents}
-                        >
-                          {markdownText}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                    {isStreaming && <TypingIndicator />}
-                    {/* Stop Generating button — visible while streaming or thinking */}
-                    {(isStreaming || isThinking) && !isHuman && (
-                      <div style={{ marginTop: "var(--sp-sm)", display: "flex", justifyContent: "flex-end" }}>
-                        <button
-                          onClick={() => api.stopAgent(msg.sender_id)}
-                          style={{
-                            display: "inline-flex", alignItems: "center", gap: 6,
-                            padding: "4px 10px", fontSize: 11, cursor: "pointer",
-                            background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)",
-                            borderRadius: "var(--radius-sm)", color: "var(--color-danger)",
-                            transition: "background 0.15s",
-                          }}
-                          onMouseOver={e => (e.currentTarget.style.background = "rgba(239,68,68,0.2)")}
-                          onMouseOut={e => (e.currentTarget.style.background = "rgba(239,68,68,0.1)")}
-                        >
-                          <Square size={11} fill="currentColor" />
-                          Stop generating
-                        </button>
-                      </div>
-                    )}
-                    {/* Thoughts Panel — renders reasoning trace + tool calls */}
-                    {!isHuman && !isThinking && (
-                      <ThoughtsPanel reasoning={finalReasoning} isStreaming={isStreaming} components={markdownComponents} />
-                    )}
-                    {msg.pending_approval && msg.pending_approval.status !== "approved" && (
-                      <div style={{ marginTop: "var(--sp-md)" }}>
-                        <ApprovalCard msg={{ ...msg, ...msg.pending_approval, type: "approval_request" } as ChatMessage} />
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Action Menu Hover */}
-              {!isThinking && !isStreaming && !isSystem && !isApproval && !isQuestion && editingMsgId !== msg.id && (
-                <div className="msg-actions" style={{
-                  display: "flex", gap: 4, position: "absolute", top: -10,
-                  [isHuman ? "left" : "right"]: 0,
-                  background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", border: "1px solid var(--border-glass)", boxShadow: "var(--shadow-clay-sm)",
-                  padding: "2px 4px", borderRadius: "var(--radius-md)",
-                  opacity: 0, transition: "opacity 0.1s"
-                }}>
-                  <button className="btn btn-icon btn-ghost btn-sm" title="Copy message text"
-                    onClick={() => handleCopyMessage(msg.text || "", msg.id)}
-                    style={{ color: copiedMsgId === msg.id ? "var(--color-success, #4ade80)" : undefined }}>
-                    {copiedMsgId === msg.id ? <Check size={12} /> : <Copy size={12} />}
-                  </button>
-                  {!isHuman && (
-                    <>
-                      <button className="btn btn-icon btn-ghost btn-sm" title="Helpful"
-                        onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: prev[msg.id] === "up" ? undefined : "up" } as any))}
-                        style={{ color: feedbackState[msg.id] === "up" ? "var(--color-success, #4ade80)" : undefined }}>
-                        <ThumbsUp size={12} fill={feedbackState[msg.id] === "up" ? "currentColor" : "none"} />
-                      </button>
-                      <button className="btn btn-icon btn-ghost btn-sm" title="Not helpful"
-                        onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: prev[msg.id] === "down" ? undefined : "down" } as any))}
-                        style={{ color: feedbackState[msg.id] === "down" ? "var(--color-danger, #ef4444)" : undefined }}>
-                        <ThumbsDown size={12} fill={feedbackState[msg.id] === "down" ? "currentColor" : "none"} />
-                      </button>
-                    </>
-                  )}
-                  <button className="btn btn-icon btn-ghost btn-sm" title="Edit text only" onClick={() => { setEditingMsgId(msg.id); setEditText(msg.text || ""); }}>
-                    <Edit2 size={12} />
-                  </button>
-                  <button className="btn btn-icon btn-ghost btn-sm" title="Delete this message only" onClick={() => doDelete(msg.id)}>
-                    <Trash2 size={12} />
-                  </button>
-                  <button className="btn btn-icon btn-ghost btn-sm" style={{ color: "var(--color-warning)" }} title="Rollback context and file changes to this point" onClick={() => requestRollback(msg.id)}>
-                    <History size={12} />
+                    <XCircle size={10} />
                   </button>
                 </div>
-              )}
-
-            </div>
-          );
-        })}
-
-        {messages.length === 0 && !searchMode && (
-          <div className="empty-state" style={{ marginTop: 60 }}>
-            <Bot size={40} className="empty-state-icon" />
-            <h3>No messages yet</h3>
-            <p>Send a message to start collaborating with your AI agent team</p>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-sm)", justifyContent: "center", marginTop: "var(--sp-md)" }}>
-              {["Summarize our latest tasks", "What tools do you have?", "Research competitor pricing"].map(s => (
-                <button key={s} className="btn btn-outline btn-sm" onClick={() => onSendMessage(s)}>{s}</button>
               ))}
             </div>
           </div>
         )}
-      </div>
 
-      {/* Attachments preview */}
-      {attachments.length > 0 && (
-        <div style={{ flexShrink: 0, display: "flex", gap: "var(--sp-sm)", padding: "var(--sp-sm) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
-          {attachments.map((att, i) => (
-            <div key={i} style={{ position: "relative", width: 48, height: 48, borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "hidden", background: "var(--color-canvas-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              {att.type?.startsWith("image/") ? (
-                <img src={att.url} alt="attachment" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              ) : (
-                <div style={{ fontSize: 9, color: "var(--color-mute)" }}>File</div>
+        {/* Input */}
+        <div style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10 }}>
+          <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto" }}>
+            <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
+
+              <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileUpload} />
+              <button className="btn btn-sm btn-icon btn-ghost" title="Attach file" onClick={() => fileInputRef.current?.click()} disabled={uploading} style={{ flexShrink: 0, padding: "8px 12px" }}>
+                {uploading ? <Loader2 size={16} className="animate-spin" /> : <Folder size={16} />}
+              </button>
+
+              {/* Mention Dropdown — agents + project files */}
+              {mentionOpen && mentionItems.length > 0 && (
+                <div style={{
+                  position: "absolute", bottom: "100%", left: 0, marginBottom: "var(--sp-sm)",
+                  background: "var(--bg-glass-card)", backdropFilter: "var(--blur-lg)", WebkitBackdropFilter: "var(--blur-lg)", border: "1px solid var(--border-glass)",
+                  borderRadius: "var(--radius-md)", boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+                  maxHeight: 240, overflowY: "auto", minWidth: 240, maxWidth: 360, zIndex: 10
+                }}>
+                  {mentionItems.map((item, i) => {
+                    const isActive = i === mentionIndex;
+                    if (item.kind === "agent") {
+                      return (
+                        <div key={"a:" + item.id}
+                          style={{
+                            padding: "var(--sp-sm) var(--sp-md)", cursor: "pointer",
+                            background: isActive ? "var(--color-canvas-raised)" : "transparent",
+                            display: "flex", alignItems: "center", gap: "var(--sp-sm)"
+                          }}
+                          onMouseEnter={() => setMentionIndex(i)}
+                          onClick={() => insertMention(item)}
+                        >
+                          <AgentAvatar name={item.name} id={item.id} role={item.role} size={18} />
+                          <span className="body-sm-strong">{item.name}</span>
+                          <span className="caption" style={{ marginLeft: "auto" }}>{item.role}</span>
+                        </div>
+                      );
+                    }
+                    const base = item.path.split("/").pop();
+                    const dir = item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "";
+                    return (
+                      <div key={"f:" + item.path}
+                        style={{
+                          padding: "var(--sp-sm) var(--sp-md)", cursor: "pointer",
+                          background: isActive ? "var(--color-canvas-raised)" : "transparent",
+                          display: "flex", alignItems: "center", gap: "var(--sp-sm)"
+                        }}
+                        onMouseEnter={() => setMentionIndex(i)}
+                        onClick={() => insertMention(item)}
+                      >
+                        <FileCode size={15} color="var(--color-brand)" style={{ flexShrink: 0 }} />
+                        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
+                          <span className="body-sm" style={{ fontWeight: 500 }}>{base}</span>
+                          {dir && <span className="caption" style={{ fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{dir}</span>}
+                        </div>
+                        <span className="caption" style={{ marginLeft: "auto", fontSize: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>file</span>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
-              <button
-                onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
-                style={{ position: "absolute", top: 2, right: 2, background: "rgba(0,0,0,0.5)", color: "white", border: "none", borderRadius: "50%", padding: 2, cursor: "pointer", display: "flex" }}
-              >
-                <XCircle size={10} />
+
+              <textarea
+                ref={inputRef}
+                className="input" style={{ flex: 1, resize: "none", minHeight: 40, maxHeight: 160, lineHeight: 1.5, padding: "9px var(--sp-md)" }}
+                placeholder="Message your team... (@ to mention an agent or a file · Enter to send, Shift+Enter for newline)"
+                value={inputText} rows={1}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+              />
+              <button className={`btn btn-sm ${recording ? "btn-danger" : "btn-outline"}`}
+                onClick={toggleRecord} style={{ height: 40 }} title={recording ? "Stop recording" : "Voice input"}>
+                {transcribing ? <Loader2 size={14} className="animate-spin" /> : recording ? <MicOff size={14} /> : <Mic size={14} />}
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={!inputText.trim()} style={{ height: 40 }}>
+                <Send size={14} /> Send
               </button>
             </div>
-          ))}
+          </div>
         </div>
-      )}
-
-      {/* Input */}
-      <div style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10 }}>
-        <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
-
-          <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileUpload} />
-          <button className="btn btn-sm btn-icon btn-ghost" title="Attach file" onClick={() => fileInputRef.current?.click()} disabled={uploading} style={{ flexShrink: 0, padding: "8px 12px" }}>
-            {uploading ? <Loader2 size={16} className="animate-spin" /> : <Folder size={16} />}
-          </button>
-
-          {/* Mention Dropdown — agents + project files */}
-          {mentionOpen && mentionItems.length > 0 && (
-            <div style={{
-              position: "absolute", bottom: "100%", left: 0, marginBottom: "var(--sp-sm)",
-              background: "var(--bg-glass-card)", backdropFilter: "var(--blur-lg)", WebkitBackdropFilter: "var(--blur-lg)", border: "1px solid var(--border-glass)",
-              borderRadius: "var(--radius-md)", boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
-              maxHeight: 240, overflowY: "auto", minWidth: 240, maxWidth: 360, zIndex: 10
-            }}>
-              {mentionItems.map((item, i) => {
-                const isActive = i === mentionIndex;
-                if (item.kind === "agent") {
-                  return (
-                    <div key={"a:" + item.id}
-                      style={{
-                        padding: "var(--sp-sm) var(--sp-md)", cursor: "pointer",
-                        background: isActive ? "var(--color-canvas-raised)" : "transparent",
-                        display: "flex", alignItems: "center", gap: "var(--sp-sm)"
-                      }}
-                      onMouseEnter={() => setMentionIndex(i)}
-                      onClick={() => insertMention(item)}
-                    >
-                      <AgentAvatar name={item.name} id={item.id} role={item.role} size={18} />
-                      <span className="body-sm-strong">{item.name}</span>
-                      <span className="caption" style={{ marginLeft: "auto" }}>{item.role}</span>
-                    </div>
-                  );
-                }
-                const base = item.path.split("/").pop();
-                const dir = item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "";
-                return (
-                  <div key={"f:" + item.path}
-                    style={{
-                      padding: "var(--sp-sm) var(--sp-md)", cursor: "pointer",
-                      background: isActive ? "var(--color-canvas-raised)" : "transparent",
-                      display: "flex", alignItems: "center", gap: "var(--sp-sm)"
-                    }}
-                    onMouseEnter={() => setMentionIndex(i)}
-                    onClick={() => insertMention(item)}
-                  >
-                    <FileCode size={15} color="var(--color-brand)" style={{ flexShrink: 0 }} />
-                    <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
-                      <span className="body-sm" style={{ fontWeight: 500 }}>{base}</span>
-                      {dir && <span className="caption" style={{ fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{dir}</span>}
-                    </div>
-                    <span className="caption" style={{ marginLeft: "auto", fontSize: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>file</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          <textarea
-            ref={inputRef}
-            className="input" style={{ flex: 1, resize: "none", minHeight: 40, maxHeight: 160, lineHeight: 1.5, padding: "9px var(--sp-md)" }}
-            placeholder="Message your team... (@ to mention an agent or a file · Enter to send, Shift+Enter for newline)"
-            value={inputText} rows={1}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-          />
-          <button className={`btn btn-sm ${recording ? "btn-danger" : "btn-outline"}`}
-            onClick={toggleRecord} style={{ height: 40 }} title={recording ? "Stop recording" : "Voice input"}>
-            {transcribing ? <Loader2 size={14} className="animate-spin" /> : recording ? <MicOff size={14} /> : <Mic size={14} />}
-          </button>
-          <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={!inputText.trim()} style={{ height: 40 }}>
-            <Send size={14} /> Send
-          </button>
-        </div>
-      </div>
 
       <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
 

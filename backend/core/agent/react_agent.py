@@ -263,34 +263,20 @@ class ReACTAgent:
         )
         capabilities_block = env_block + temporal_block + capabilities_block
 
+        # ── Editable prompt blocks (configurable in Settings → Prompt Blocks) ──
+        from core.agent.prompt_blocks import get_block
+
         # Scratchpad awareness
-        scratchpad_block = (
-            "SCRATCHPADS:\n"
-            "- Your personal scratchpad (private to you): read_scratchpad(target='personal') / "
-            "write_scratchpad(content=..., target='personal') / update_scratchpad(content=..., target='personal') / "
-            "clear_scratchpad(target='personal')\n"
-            "- Shared team scratchpad (visible to all agents): read_scratchpad(target='team') / "
-            "write_scratchpad(content=..., target='team') / update_scratchpad(content=..., target='team') / "
-            "clear_scratchpad(target='team')\n"
-            "Use write_scratchpad to append a new timestamped note, update_scratchpad to replace the whole pad, "
-            "and clear_scratchpad to wipe it. Use your personal pad for notes, partial plans, and cross-session "
-            "memory. Write to the team pad to share discoveries, breadcrumbs, or decisions your teammates need to know.\n\n"
-        )
-        capabilities_block += scratchpad_block
+        _scratchpad = get_block("scratchpads")
+        if _scratchpad:
+            capabilities_block += _scratchpad
 
-        # Documentation file awareness — frictionless .md creation
-        doc_block = (
-            "DOCUMENTATION FILES:\n"
-            "- You can create and edit Markdown/plain-text docs (e.g. implementation.md, taskstracker.md, "
-            "PLAN.md, README.md) in the project/team workspace with write_file / edit_file / append_file — "
-            "these writes are ALWAYS frictionless (no approval required) because .md/.txt files are "
-            "non-executable and sandboxed.\n"
-            "- Use a dedicated doc (e.g. taskstracker.md for cross-task progress, implementation.md for a "
-            "build plan) to keep durable, human-readable state that the team can open and read in real time.\n\n"
-        )
-        capabilities_block += doc_block
+        # Documentation file awareness
+        _docs = get_block("docs")
+        if _docs:
+            capabilities_block += _docs
 
-        # Workspace temp-file path — agents must use this path for any temporary or intermediate files
+        # Workspace temp-file path — compute the actual runtime path, then inject
         from core.config import CAROLE_HOME_DIR
         _project_slug = self.project_id[:8] if self.project_id else "workspace"
         _team_slug = self.team_id[:8] if self.team_id else "team"
@@ -299,7 +285,6 @@ class ReACTAgent:
                 _proj_obj, _ = row
                 import re as _re
                 _project_slug = _re.sub(r'[^a-zA-Z0-9_-]+', '-', _proj_obj.name).strip('-') or _project_slug
-            # Resolve team slug from roster
             _team_rec = next((t for t in teammates if str(t.team_id) == self.team_id), None)
             if not _team_rec:
                 from core.memory.models import Team as _Team2
@@ -313,66 +298,22 @@ class ReACTAgent:
         except Exception:
             pass
         _carole_dir = str(CAROLE_HOME_DIR / "workspaces" / _project_slug / ".carole" / _team_slug)
-        # Ensure the directory exists so agents can write to it immediately
         import pathlib as _pl
         _pl.Path(_carole_dir).mkdir(parents=True, exist_ok=True)
-        workspace_path_block = (
-            "TEMPORARY FILES — MANDATORY PATH RULE:\n"
-            "When you need to create temporary, intermediate, or scratch files during a task "
-            "(e.g. download caches, script outputs, data files, Playwright scripts), "
-            "you MUST save them inside this dedicated directory — NOT in the project workspace or arbitrary paths:\n"
-            f"  {_carole_dir}\n"
-            "Example paths:\n"
-            f"  {_carole_dir}\\news_results.json\n"
-            f"  {_carole_dir}\\temp_script.py\n"
-            f"  {_carole_dir}\\report_draft.md\n"
-            "This directory is auto-created and scoped to your project+team. "
-            "It keeps the codebase clean and separates ephemeral data from source files.\n\n"
-        )
-        capabilities_block += workspace_path_block
+        _workspace = get_block("workspace_paths", carole_dir=_carole_dir)
+        if _workspace:
+            capabilities_block += _workspace
 
-        # Scheduler awareness — agents know they can create/manage recurring tasks
-        scheduler_block = (
-            "SCHEDULED TASKS (CRON SCHEDULER):\n"
-            "You have a built-in persistent cron scheduler. Use it to automate recurring work — "
-            "the system will trigger you automatically with the specified prompt on schedule, "
-            "even when no user is active.\n"
-            "Scheduler tools:\n"
-            "  create_scheduled_task(name, cron_expression, prompt)  — create a new recurring task\n"
-            "  list_scheduled_tasks()                                  — list all team tasks\n"
-            "  update_scheduled_task(task_id, ...)                    — pause/resume/reschedule\n"
-            "  delete_scheduled_task(task_id)                         — permanently remove\n"
-            "Cron expression quick reference:\n"
-            "  '*/2 * * * *'   → every 2 minutes\n"
-            "  '0 * * * *'     → every hour\n"
-            "  '0 9 * * 1-5'  → 9am on weekdays\n"
-            "  '0 9 * * *'    → every day at 9am\n"
-            "IMPORTANT: The cron worker sends the prompt EXACTLY as written — it has NO extra context. "
-            "Write the prompt to be fully self-contained so you can act on it without prior history.\n\n"
-        )
-        capabilities_block += scheduler_block
-
+        # Scheduler awareness
+        _scheduler = get_block("scheduler")
+        if _scheduler:
+            capabilities_block += _scheduler
 
         # Browser automation — 3-Tier architecture
-        browser_block = (
-            "BROWSER AUTOMATION — 3-TIER SYSTEM:\n"
-            "Choose the right tier based on task complexity:\n\n"
-            "TIER 1 — PLAYWRIGHT MCP TOOLS (Default for most web tasks):\n"
-            "Use your playwright_* tools (e.g. playwright_navigate, playwright_click, playwright_fill,\n"
-            "playwright_evaluate) for interactive browsing. These tools maintain a persistent browser\n"
-            "context and are the fastest, most reliable option for standard web interaction.\n\n"
-            "TIER 2 — BUILT-IN STEP-BY-STEP TOOLS (Lightweight fallback):\n"
-            "If Playwright MCP tools are unavailable, use browser_navigate / browser_click / browser_type.\n"
-            "ALWAYS call browser_get_interactive_elements first — never guess CSS selectors.\n\n"
-            "TIER 3 — EPHEMERAL PLAYWRIGHT SCRIPT (Nuclear option):\n"
-            "If Tier 1 and Tier 2 both fail 3+ times (timeouts, bot detection, missing elements), STOP.\n"
-            "Write a complete Python Playwright script using write_file, then run it via run_command.\n"
-            "Use get_by_role()/get_by_text()/get_by_label() — NOT raw CSS selectors.\n"
-            "Include --disable-blink-features=AutomationControlled in launch args.\n\n"
-            "ESCALATION RULE: After 3 consecutive failures in any tier, escalate to the next tier.\n"
-            "Do NOT keep retrying the same failing approach — it wastes your loop budget.\n\n"
-        )
-        capabilities_block += browser_block
+        _browser = get_block("browser")
+        if _browser:
+            capabilities_block += _browser
+
 
         # Reasoning guidelines & Output Efficiency
         identity_rule = f"\n\nCRITICAL IDENTITY RULE: You are {self.name} ({self.role}). You MUST speak in the first person ('I', 'me'). NEVER refer to {self.name} in the third person. NEVER pretend to be someone else."

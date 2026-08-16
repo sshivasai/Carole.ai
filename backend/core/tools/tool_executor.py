@@ -442,6 +442,156 @@ def register_builtin_tools():
     logger.info("🔧 [ToolRegistry] Registered %d built-in tools.", len(builtins))
 
 
+# ============================================================
+# Access Control Infrastructure
+# ============================================================
+
+# Map UI permission levels → internal gate levels
+_PERM_ALIAS: Dict[str, str] = {
+    "allow":      "safe",
+    "judge":      "judge",
+    "always_ask": "human",
+    "block":      "block",
+    # legacy aliases
+    "safe":       "safe",
+    "human":      "human",
+}
+
+# Map tool names → high-level action category
+_TOOL_CATEGORY: Dict[str, str] = {
+    # view / read
+    "read_file": "view", "list_directory": "view", "grep_search": "view",
+    "glob_search": "view", "diff_files": "view", "find_function": "view",
+    "find_todos": "view", "count_lines": "view", "analyze_imports": "view",
+    "check_syntax": "view", "analyze_impact": "view", "workspace_tree": "view",
+    "read_scratchpad": "view",
+    # edit
+    "edit_file": "edit", "append_file": "edit",
+    # create / write
+    "write_file": "create", "create_directory": "create",
+    "copy_file": "create", "move_file": "create",
+    # delete
+    "delete_file": "delete",
+    # execute / shell
+    "execute_command": "execute",
+    # git
+    "git_status": "git", "git_diff": "git", "git_log": "git",
+    "git_add": "git", "git_commit": "git", "git_push": "git",
+    "git_pull": "git", "git_branch": "git", "git_checkout": "git",
+    "git_stash": "git", "git_clone": "git",
+    # web
+    "web_search": "web", "web_fetch": "web", "http_request": "web",
+    # browser
+    "browser_navigate": "browser", "browser_click": "browser",
+    "browser_click_text": "browser", "browser_type": "browser",
+    "browser_press_key": "browser", "browser_select_option": "browser",
+    "browser_checkbox": "browser", "browser_screenshot": "browser",
+    "browser_screenshot_element": "browser", "browser_get_text": "browser",
+    "browser_get_html": "browser", "browser_eval_js": "browser",
+    "browser_wait": "browser", "browser_scroll": "browser",
+    "browser_hover": "browser", "browser_clear_cookies": "browser",
+    "join_meeting": "browser", "join_google_meet": "browser",
+    "send_google_meet_chat": "browser",
+    # subagents
+    "spawn_agent": "subagents", "hire_subagent": "subagents",
+    "send_message": "subagents", "team_broadcast": "subagents",
+    "delegate_subtask": "subagents",
+    # scheduler
+    "create_scheduled_task": "scheduler", "list_scheduled_tasks": "scheduler",
+    "update_scheduled_task": "scheduler", "delete_scheduled_task": "scheduler",
+}
+
+# Default gate level per category when no override exists
+_CATEGORY_DEFAULTS: Dict[str, str] = {
+    "view":      "safe",
+    "edit":      "judge",
+    "create":    "judge",
+    "delete":    "human",
+    "execute":   "judge",
+    "git":       "safe",
+    "web":       "safe",
+    "browser":   "safe",
+    "subagents": "safe",
+    "scheduler": "judge",
+}
+
+
+def _resolve_gate_level(tool_name: str, permissions: Dict[str, Any]) -> str:
+    """
+    Resolve the effective gate level for a tool from a structured
+    AccessControlConfig dict.
+
+    Priority (highest → lowest):
+      1. Per-tool overrides  (permissions["overrides"][tool_name])
+      2. Category permission (permissions["categories"][category])
+      3. _CATEGORY_DEFAULTS
+      4. Tool spec default   (caller's fallback)
+    """
+    overrides = permissions.get("overrides", {})
+    if tool_name in overrides:
+        raw = overrides[tool_name]
+        return _PERM_ALIAS.get(raw, raw)
+
+    category = _TOOL_CATEGORY.get(tool_name, "mcp")
+    categories = permissions.get("categories", {})
+    if category in categories:
+        raw = categories[category]
+        return _PERM_ALIAS.get(raw, raw)
+
+    if category in _CATEGORY_DEFAULTS:
+        return _CATEGORY_DEFAULTS[category]
+
+    return "judge"  # safe conservative default for unknown tools
+
+
+def _matches_skip_judge(tool_name: str, arguments: Dict[str, Any], permissions: Dict[str, Any]) -> bool:
+    """
+    Returns True if the tool call matches a user-configured skip-judge
+    whitelist entry, allowing it to bypass Judge evaluation and execute
+    instantly (same as 'safe').
+    """
+    skip = permissions.get("custom_skip_judge", {})
+    if not skip:
+        return False
+
+    import fnmatch
+
+    # File-pattern whitelist — applies to write_file / edit_file / append_file
+    file_patterns = skip.get("file_patterns", [])
+    if file_patterns and tool_name in {"write_file", "edit_file", "append_file", "read_file"}:
+        path = (arguments.get("relative_path") or arguments.get("path") or
+                arguments.get("value") or "")
+        if path:
+            for pat in file_patterns:
+                if fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(path.replace("\\", "/"), pat):
+                    return True
+
+    # Command-prefix whitelist — applies to execute_command
+    cmd_prefixes = skip.get("command_prefixes", [])
+    if cmd_prefixes and tool_name == "execute_command":
+        cmd = arguments.get("command") or arguments.get("value") or ""
+        if cmd:
+            for prefix in cmd_prefixes:
+                if cmd.strip().startswith(prefix.strip()):
+                    return True
+
+    return False
+
+
+def _apply_judge_disabled_fallback(permissions: Dict[str, Any]) -> str:
+    """
+    When the Judge LLM is disabled (enable_judge=False), return the
+    configured fallback gate level for actions nominally set to 'judge'.
+
+      judge_fallback='allow'      → 'safe'   (Autonomy mode)
+      judge_fallback='always_ask' → 'human'  (Strict mode, default)
+    """
+    fallback = permissions.get("judge_fallback", "always_ask")
+    if fallback == "allow":
+        return "safe"
+    return "human"
+
+
 class ToolExecutor:
     async def execute(
         self,
@@ -463,27 +613,51 @@ class ToolExecutor:
         if not spec:
             return f"Error: Tool '{tool_name}' is not registered in the system."
 
-        # Permission level: agent-specific override → tool default
-        gate_level = permissions.get(tool_name, spec.permission_default)
+        # ── Permission resolution ─────────────────────────────────────────────
+        # Supports both legacy flat {tool_name: level} dicts AND the new
+        # structured AccessControlConfig schema with categories/overrides.
+        is_structured = isinstance(permissions, dict) and "categories" in permissions
 
-        # Apply granular permissions if provided
+        # Granular ToolPermissionContext (always_deny / always_allow) takes top priority
         if permission_context:
             if tool_name in permission_context.always_deny:
-                logger.info("🛑 [Executor] Tool '%s' execution automatically denied by always_deny rule.", tool_name)
+                logger.info("🛑 [Executor] Tool '%s' denied by always_deny rule.", tool_name)
                 return f"✗ Execution Cancelled: '{tool_name}' is explicitly denied by permission context."
             if tool_name in permission_context.always_allow:
-                logger.info("✓ [Executor] Tool '%s' execution automatically allowed by always_allow rule.", tool_name)
+                logger.info("✓ [Executor] Tool '%s' allowed by always_allow rule.", tool_name)
                 return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
 
-        # 0. Documentation fast-path — writing/editing .md/.txt notes (e.g.
-        # implementation.md, taskstracker.md) is always frictionless. These are
-        # non-executable, workspace-sandboxed files, so we skip the Judge/human
-        # gate entirely. Applies regardless of the configured gate level so the
-        # user never has to approve an agent's planning notes.
+        # Resolve gate level from structured config or legacy flat map
+        if is_structured:
+            gate_level = _resolve_gate_level(tool_name, permissions)
+        else:
+            raw = (permissions or {}).get(tool_name, spec.permission_default)
+            gate_level = _PERM_ALIAS.get(raw, raw)
+
+        # ── Structured-config extras ──────────────────────────────────────────
+        if is_structured:
+            # Block — hard deny, no override
+            if gate_level == "block":
+                logger.info("🛑 [Executor] Tool '%s' blocked by access control policy.", tool_name)
+                return (f"✗ Execution Blocked: '{tool_name}' is disabled by your Access Control policy. "
+                        "Update permissions in Agent Settings → Access Control.")
+
+            # Skip-judge whitelist fast-path
+            if gate_level == "judge" and _matches_skip_judge(tool_name, arguments, permissions):
+                logger.info("⚡ [Executor] Skip-judge whitelist match for '%s'.", tool_name)
+                gate_level = "safe"
+
+            # Judge disabled → apply fallback
+            if gate_level == "judge" and not permissions.get("enable_judge", True):
+                gate_level = _apply_judge_disabled_fallback(permissions)
+                logger.info("⚡ [Executor] Judge disabled — fallback gate='%s' for '%s'.", gate_level, tool_name)
+
+        # ── Documentation fast-path (frictionless .md/.txt writes) ───────────
         if _is_doc_write(tool_name, arguments):
             logger.info("📝 [Executor] Frictionless doc write for '%s' (tool=%s).", agent_name, tool_name)
             return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
 
+        # ── Gate dispatch ─────────────────────────────────────────────────────
         # 1. Safe — instant execution
         if gate_level == "safe":
             return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
@@ -858,9 +1032,10 @@ async def _snapshot_file(relative_path: str, team_id: str, message_id: str | Non
     """Save the current file content to FileBackup before it is modified.
 
     If the file does not exist (newly created), `backup_file_name` is saved as NULL.
-    If `message_id` is None, the snapshot is skipped.
+    Saves snapshot whether or not a message_id is present so all modifications
+    show up in Activity Log and File History.
     """
-    if not message_id:
+    if not team_id:
         return
     try:
         import uuid as _uuid
@@ -870,13 +1045,14 @@ async def _snapshot_file(relative_path: str, team_id: str, message_id: str | Non
         from core.memory.database import async_session
         from core.memory.models import FileBackup
         from core.tools.file_tools import file_tools as _ft
-        from core.config import CAROLE_HOME_DIR
 
-        abs_path = str(_ft._resolve_safe_path(relative_path))
+        project_id = await _team_project_id(team_id)
+        resolved_path = await _ft._resolve_safe_path(relative_path, project_id=project_id)
+        abs_path = str(resolved_path)
         p = Path(abs_path)
         
         backup_file_name = None
-        if p.exists():
+        if p.exists() and p.is_file():
             path_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
             team_carole_dir = await _ft.get_team_carole_dir(team_id)
             history_dir = team_carole_dir / "file-history"
@@ -893,10 +1069,17 @@ async def _snapshot_file(relative_path: str, team_id: str, message_id: str | Non
             shutil.copy2(abs_path, backup_path)
 
         async with async_session() as db:
+            msg_uuid = None
+            if message_id:
+                try:
+                    msg_uuid = _uuid.UUID(message_id) if isinstance(message_id, str) else message_id
+                except Exception:
+                    msg_uuid = None
+
             backup = FileBackup(
                 id=_uuid.uuid4(),
                 team_id=_uuid.UUID(team_id) if isinstance(team_id, str) else team_id,
-                message_id=_uuid.UUID(message_id) if isinstance(message_id, str) else message_id,
+                message_id=msg_uuid,
                 file_path=abs_path,
                 backup_file_name=backup_file_name,
                 operation=operation,

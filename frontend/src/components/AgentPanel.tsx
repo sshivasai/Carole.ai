@@ -1,11 +1,12 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import type { AgentConfig, ScheduledTask } from "@/lib/types";
-import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock } from "lucide-react";
+import type { AgentConfig, ScheduledTask, AccessControlConfig } from "@/lib/types";
+import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock, Shield } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 import AgentAvatar from "./AgentAvatar";
 import CronTaskModal from "./CronTaskModal";
+import AccessControlMatrix, { DEFAULT_ACCESS_CONTROL } from "./AccessControlMatrix";
 
 interface Props {
   agents: AgentConfig[];
@@ -183,6 +184,7 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   initial?: AgentConfig; teamId: string; roleTemplates: any[];
   onSave: (a: AgentConfig) => void; onClose: () => void;
 }) {
+  const [activeTab, setActiveTab] = useState<"general" | "access">("general");
   const [name, setName] = useState(initial?.name || "");
   const [role, setRole] = useState(initial?.role || "researcher");
   const [persona, setPersona] = useState(initial?.personality || "");
@@ -190,6 +192,13 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   const [loading, setLoading] = useState(false);
   const [catalog, setCatalog] = useState<Record<string, any>>({});
   const [catalogLoaded, setCatalogLoaded] = useState(false);
+
+  // Access Control state
+  const [accessControl, setAccessControl] = useState<AccessControlConfig>(() => {
+    const tp = initial?.tool_permissions;
+    if (tp && typeof tp === "object" && "categories" in tp) return tp as AccessControlConfig;
+    return { ...DEFAULT_ACCESS_CONTROL, categories: { ...DEFAULT_ACCESS_CONTROL.categories }, overrides: {}, custom_skip_judge: { file_patterns: [], command_prefixes: [] } };
+  });
 
   // Primary model state
   const [primProvider, setPrimProvider] = useState("openrouter");
@@ -269,6 +278,7 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
         personality: persona,
         skills: skills.split(",").map(s => s.trim()).filter(Boolean),
         team_id: teamId,
+        tool_permissions: accessControl,
       };
       const saved = initial
         ? await api.updateAgent(initial.id, data)
@@ -289,7 +299,39 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
 
   return (
     <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
-      {roleTemplates.length > 0 && (
+      {/* Tab switcher */}
+      <div style={{ display: "flex", gap: 4, background: "var(--color-canvas-raised)", padding: 4, borderRadius: "var(--radius-md)", border: "1px solid var(--color-hairline)" }}>
+        {(["general", "access"] as const).map(tab => (
+          <button key={tab} type="button" onClick={() => setActiveTab(tab)}
+            style={{ flex: 1, padding: "6px 12px", borderRadius: "var(--radius-sm)", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, transition: "all 0.15s",
+              background: activeTab === tab ? "var(--color-primary)" : "transparent",
+              color: activeTab === tab ? "#000" : "var(--color-mute)",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            {tab === "general" ? <Cpu size={12} /> : <Shield size={12} />}
+            {tab === "general" ? "General & Models" : "Access Control"}
+          </button>
+        ))}
+      </div>
+
+      {/* Access Control tab */}
+      {activeTab === "access" && (
+        <div style={{ overflowY: "auto", maxHeight: 500, paddingRight: 2 }}>
+          <p className="caption" style={{ margin: "0 0 var(--sp-md)" }}>
+            Configure per-agent permissions. These override global defaults and control which tools this agent can use without friction.
+          </p>
+          <AccessControlMatrix value={accessControl} onChange={setAccessControl} />
+          <div style={{ display: "flex", gap: "var(--sp-md)", justifyContent: "flex-end", marginTop: "var(--sp-xl)", paddingTop: "var(--sp-md)", borderTop: "1px solid var(--color-hairline)" }}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-primary btn-sm" disabled={loading || !name.trim()}>
+              {loading ? <Loader2 size={13} className="animate-spin" /> : <Shield size={13} />}
+              {initial ? "Save Changes" : "Create Agent"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* General tab */}
+      {activeTab === "general" && roleTemplates.length > 0 && (
         <div className="form-group">
           <label className="form-label">Quick Template</label>
           <select className="input" onChange={e => e.target.value && applyTemplate(e.target.value)} defaultValue="">
@@ -298,90 +340,98 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
           </select>
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-md)" }}>
-        <div className="form-group">
-          <label className="form-label">Name *</label>
-          <input className="input" placeholder="Agent Alpha" value={name} onChange={e => setName(e.target.value)} required />
+      {activeTab === "general" && (
+        <>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-md)" }}>
+          <div className="form-group">
+            <label className="form-label">Name *</label>
+            <input className="input" placeholder="Agent Alpha" value={name} onChange={e => setName(e.target.value)} required />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Role</label>
+            <select className="input" value={role} onChange={e => { setRole(e.target.value); applyTemplate(e.target.value); }}>
+              {["orchestrator", "architect", "coder", "debugger", "researcher", "writer", "analyst", "custom"].map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
         </div>
-        <div className="form-group">
-          <label className="form-label">Role</label>
-          <select className="input" value={role} onChange={e => { setRole(e.target.value); applyTemplate(e.target.value); }}>
-            {["orchestrator", "architect", "coder", "debugger", "researcher", "writer", "analyst", "custom"].map(r => <option key={r} value={r}>{r}</option>)}
+
+        {/* Primary model */}
+        <div>
+          <p className="form-label" style={{ marginBottom: "var(--sp-sm)" }}>Primary Model</p>
+          <ModelSelector
+            label="Primary"
+            catalog={catalog}
+            provider={primProvider}
+            model={primModel}
+            onProviderChange={handlePrimProviderChange}
+            onModelChange={setPrimModel}
+          />
+        </div>
+
+        {/* Fallback model toggle */}
+        <div>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            style={{ gap: "var(--sp-sm)", fontSize: 12 }}
+            onClick={() => { setShowFallback(f => !f); if (!showFallback && !fallModel) { const first = catalog[fallProvider]?.models?.[0]?.value || ""; setFallModel(first); } }}
+          >
+            {showFallback ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {showFallback ? "Remove fallback model" : "＋ Add fallback model"}
+          </button>
+          {showFallback && (
+            <div style={{ marginTop: "var(--sp-sm)", padding: "var(--sp-md)", border: "1px dashed var(--color-hairline)", borderRadius: "var(--radius-md)" }}>
+              <p className="caption" style={{ marginBottom: "var(--sp-sm)", color: "var(--color-mute)" }}>
+                ⚡ Used automatically if the primary model returns an error (e.g. quota, bad key, outage).
+              </p>
+              <ModelSelector
+                label="Fallback"
+                catalog={catalog}
+                provider={fallProvider}
+                model={fallModel}
+                onProviderChange={handleFallProviderChange}
+                onModelChange={setFallModel}
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "var(--sp-xs)" }}>
+            Reasoning Effort
+            <span style={{ fontSize: 11, color: "var(--color-mute)", fontWeight: "normal" }}>
+              (For OpenAI o-series, Anthropic Claude 3.7+, and OpenRouter models)
+            </span>
+          </label>
+          <select className="input" value={reasoning} onChange={e => setReasoning(e.target.value)}>
+            <option value="none">Disabled (Standard completion)</option>
+            <option value="low">Low (Fast, less detailed)</option>
+            <option value="medium">Medium (Balanced)</option>
+            <option value="high">High (Deep thinking, expensive)</option>
           </select>
         </div>
-      </div>
+        </>
+      )}
 
-      {/* Primary model */}
-      <div>
-        <p className="form-label" style={{ marginBottom: "var(--sp-sm)" }}>Primary Model</p>
-        <ModelSelector
-          label="Primary"
-          catalog={catalog}
-          provider={primProvider}
-          model={primModel}
-          onProviderChange={handlePrimProviderChange}
-          onModelChange={setPrimModel}
-        />
-      </div>
-
-      {/* Fallback model toggle */}
-      <div>
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          style={{ gap: "var(--sp-sm)", fontSize: 12 }}
-          onClick={() => { setShowFallback(f => !f); if (!showFallback && !fallModel) { const first = catalog[fallProvider]?.models?.[0]?.value || ""; setFallModel(first); } }}
-        >
-          {showFallback ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-          {showFallback ? "Remove fallback model" : "＋ Add fallback model"}
-        </button>
-        {showFallback && (
-          <div style={{ marginTop: "var(--sp-sm)", padding: "var(--sp-md)", border: "1px dashed var(--color-hairline)", borderRadius: "var(--radius-md)" }}>
-            <p className="caption" style={{ marginBottom: "var(--sp-sm)", color: "var(--color-mute)" }}>
-              ⚡ Used automatically if the primary model returns an error (e.g. quota, bad key, outage).
-            </p>
-            <ModelSelector
-              label="Fallback"
-              catalog={catalog}
-              provider={fallProvider}
-              model={fallModel}
-              onProviderChange={handleFallProviderChange}
-              onModelChange={setFallModel}
-            />
+      {activeTab === "general" && (
+        <>
+          <div className="form-group">
+            <label className="form-label">Personality / System Prompt</label>
+            <textarea className="input" style={{ minHeight: 80 }} placeholder="You are a helpful research assistant…" value={persona} onChange={e => setPersona(e.target.value)} />
           </div>
-        )}
-      </div>
-
-      <div className="form-group" style={{ marginBottom: 0 }}>
-        <label className="form-label" style={{ display: "flex", alignItems: "center", gap: "var(--sp-xs)" }}>
-          Reasoning Effort
-          <span style={{ fontSize: 11, color: "var(--color-mute)", fontWeight: "normal" }}>
-            (For OpenAI o-series, Anthropic Claude 3.7+, and OpenRouter models)
-          </span>
-        </label>
-        <select className="input" value={reasoning} onChange={e => setReasoning(e.target.value)}>
-          <option value="none">Disabled (Standard completion)</option>
-          <option value="low">Low (Fast, less detailed)</option>
-          <option value="medium">Medium (Balanced)</option>
-          <option value="high">High (Deep thinking, expensive)</option>
-        </select>
-      </div>
-
-      <div className="form-group">
-        <label className="form-label">Personality / System Prompt</label>
-        <textarea className="input" style={{ minHeight: 80 }} placeholder="You are a helpful research assistant…" value={persona} onChange={e => setPersona(e.target.value)} />
-      </div>
-      <div className="form-group">
-        <label className="form-label">Skills (comma-separated)</label>
-        <input className="input" placeholder="web_search, code_execution, browser" value={skills} onChange={e => setSkills(e.target.value)} />
-      </div>
-      <div style={{ display: "flex", gap: "var(--sp-md)", justifyContent: "flex-end" }}>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
-        <button type="submit" className="btn btn-primary btn-sm" disabled={loading || !name.trim()}>
-          {loading ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
-          {initial ? "Save Changes" : "Create Agent"}
-        </button>
-      </div>
+          <div className="form-group">
+            <label className="form-label">Skills (comma-separated)</label>
+            <input className="input" placeholder="web_search, code_execution, browser" value={skills} onChange={e => setSkills(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: "var(--sp-md)", justifyContent: "flex-end" }}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-primary btn-sm" disabled={loading || !name.trim()}>
+              {loading ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
+              {initial ? "Save Changes" : "Create Agent"}
+            </button>
+          </div>
+        </>
+      )}
     </form>
   );
 }
@@ -395,14 +445,16 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
   const [cronModalOpen, setCronModalOpen] = useState(false);
   const [editingCronTask, setEditingCronTask] = useState<ScheduledTask | undefined>(undefined);
+  const [agentToDelete, setAgentToDelete] = useState<AgentConfig | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<ScheduledTask | null>(null);
 
-  useEffect(() => { 
-    api.listRoleTemplates().then(setTemplates).catch(() => { }); 
+  useEffect(() => {
+    api.listRoleTemplates().then(setTemplates).catch(() => { });
   }, []);
 
   useEffect(() => {
     if (teamId) {
-      api.listScheduledTasks(teamId).then(setScheduledTasks).catch(() => {});
+      api.listScheduledTasks(teamId).then(setScheduledTasks).catch(() => { });
     } else {
       setScheduledTasks([]);
     }
@@ -424,7 +476,7 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
       onAgentsChange(agents.filter(a => a.id !== agentId));
       onToast("Agent deleted", "success");
     } catch { onToast("Failed to delete agent", "error"); }
-    finally { setDeletingId(null); }
+    finally { setDeletingId(null); setAgentToDelete(null); }
   };
 
   if (!teamId) return (
@@ -458,14 +510,14 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)", overflowY: "auto" }}>
-          {agents.map(agent => (
+          {agents.map(a => (
             <AgentCard
-              key={agent.id}
-              agent={agent}
-              isThinking={streamingAgents.has(agent.id)}
-              queueDepth={agentQueues[agent.id] ?? 0}
-              onEdit={() => { setEditingAgent(agent); setModalOpen(true); }}
-              onDelete={() => handleDelete(agent.id)}
+              key={a.id}
+              agent={a}
+              isThinking={streamingAgents.has(a.id)}
+              queueDepth={agentQueues?.[a.id] || 0}
+              onEdit={() => { setEditingAgent(a); setModalOpen(true); }}
+              onDelete={() => setAgentToDelete(a)}
             />
           ))}
         </div>
@@ -482,7 +534,7 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
               <Clock size={13} /> New Task
             </button>
           </div>
-          
+
           {scheduledTasks.length === 0 ? (
             <div className="empty-state" style={{ padding: "var(--sp-xl)" }}>
               <p className="caption">No scheduled tasks yet.</p>
@@ -505,8 +557,8 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
-                    <button 
-                      className="btn btn-outline btn-sm" 
+                    <button
+                      className="btn btn-outline btn-sm"
                       onClick={async () => {
                         try {
                           const res = await api.updateScheduledTask(task.id, { is_active: !task.is_active });
@@ -520,20 +572,11 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
                       {task.is_active ? "Pause" : "Activate"}
                     </button>
                     <button className="btn btn-icon-sm btn-ghost" onClick={() => { setEditingCronTask(task); setCronModalOpen(true); }}><Edit2 size={13} /></button>
-                    <button 
-                      className="btn btn-icon-sm btn-ghost" 
+                    <button
+                      className="btn btn-icon-sm btn-ghost"
                       style={{ color: "var(--color-danger)" }}
-                      onClick={async () => {
-                        if (confirm("Are you sure you want to delete this scheduled task?")) {
-                          try {
-                            await api.deleteScheduledTask(task.id);
-                            setScheduledTasks(prev => prev.filter(t => t.id !== task.id));
-                            onToast("Task deleted", "success");
-                          } catch {
-                            onToast("Failed to delete task", "error");
-                          }
-                        }
-                      }}
+                      onClick={() => setTaskToDelete(task)}
+                      title="Delete scheduled task"
                     >
                       <Trash2 size={13} />
                     </button>
@@ -550,7 +593,49 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
         <AgentForm initial={editingAgent} teamId={teamId} roleTemplates={templates} onSave={handleSaved} onClose={() => { setModalOpen(false); setEditingAgent(undefined); }} />
       </Modal>
 
-      <CronTaskModal 
+      {/* Delete Agent Confirmation */}
+      {agentToDelete && (
+        <Modal open={true} onClose={() => setAgentToDelete(null)} title="Delete Agent" maxWidth={400}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+            <p className="body-sm" style={{ color: "var(--color-body)", margin: 0 }}>
+              Are you sure you want to delete agent <strong>"{agentToDelete.name}"</strong>? This will remove all their system prompts and history.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)" }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setAgentToDelete(null)}>Cancel</button>
+              <button className="btn btn-danger btn-sm" onClick={() => handleDelete(agentToDelete.id)}>Delete Agent</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Delete Scheduled Task Confirmation */}
+      {taskToDelete && (
+        <Modal open={true} onClose={() => setTaskToDelete(null)} title="Delete Scheduled Task" maxWidth={400}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+            <p className="body-sm" style={{ color: "var(--color-body)", margin: 0 }}>
+              Are you sure you want to delete scheduled task <strong>"{taskToDelete.name}"</strong>? This will stop all future automated runs.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)" }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setTaskToDelete(null)}>Cancel</button>
+              <button className="btn btn-danger btn-sm" onClick={async () => {
+                try {
+                  await api.deleteScheduledTask(taskToDelete.id);
+                  setScheduledTasks(prev => prev.filter(t => t.id !== taskToDelete.id));
+                  onToast("Task deleted", "success");
+                } catch {
+                  onToast("Failed to delete task", "error");
+                } finally {
+                  setTaskToDelete(null);
+                }
+              }}>
+                Delete Task
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      <CronTaskModal
         open={cronModalOpen}
         onClose={() => { setCronModalOpen(false); setEditingCronTask(undefined); }}
         teamId={teamId}
