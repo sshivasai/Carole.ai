@@ -35,6 +35,28 @@ from core.config import (
 logger = logging.getLogger("carole.react_agent")
 
 
+from dataclasses import dataclass
+
+@dataclass
+class ASTNode:
+    original_message: Dict[str, Any]
+
+@dataclass
+class ThoughtNode(ASTNode):
+    pass
+
+@dataclass
+class ActionNode(ASTNode):
+    pass
+
+@dataclass
+class ObservationNode(ASTNode):
+    pass
+
+@dataclass
+class ErrorNode(ASTNode):
+    pass
+
 class ReACTAgent:
     def __init__(
         self, agent_id: str, team_id: str, project_id: str,
@@ -268,6 +290,69 @@ class ReACTAgent:
         )
         capabilities_block += doc_block
 
+        # Workspace temp-file path — agents must use this path for any temporary or intermediate files
+        from core.config import CAROLE_HOME_DIR
+        _project_slug = self.project_id[:8] if self.project_id else "workspace"
+        _team_slug = self.team_id[:8] if self.team_id else "team"
+        try:
+            if row:
+                _proj_obj, _ = row
+                import re as _re
+                _project_slug = _re.sub(r'[^a-zA-Z0-9_-]+', '-', _proj_obj.name).strip('-') or _project_slug
+            # Resolve team slug from roster
+            _team_rec = next((t for t in teammates if str(t.team_id) == self.team_id), None)
+            if not _team_rec:
+                from core.memory.models import Team as _Team2
+                from core.memory.database import async_session as _asy
+                async with _asy() as _tdb:
+                    import uuid as _uu
+                    _tr = (await _tdb.execute(select(_Team2).where(_Team2.id == _uu.UUID(self.team_id)))).scalar_one_or_none()
+                    if _tr:
+                        import re as _re2
+                        _team_slug = _re2.sub(r'[^a-zA-Z0-9_-]+', '-', _tr.name).strip('-') or _team_slug
+        except Exception:
+            pass
+        _carole_dir = str(CAROLE_HOME_DIR / "workspaces" / _project_slug / ".carole" / _team_slug)
+        # Ensure the directory exists so agents can write to it immediately
+        import pathlib as _pl
+        _pl.Path(_carole_dir).mkdir(parents=True, exist_ok=True)
+        workspace_path_block = (
+            "TEMPORARY FILES — MANDATORY PATH RULE:\n"
+            "When you need to create temporary, intermediate, or scratch files during a task "
+            "(e.g. download caches, script outputs, data files, Playwright scripts), "
+            "you MUST save them inside this dedicated directory — NOT in the project workspace or arbitrary paths:\n"
+            f"  {_carole_dir}\n"
+            "Example paths:\n"
+            f"  {_carole_dir}\\news_results.json\n"
+            f"  {_carole_dir}\\temp_script.py\n"
+            f"  {_carole_dir}\\report_draft.md\n"
+            "This directory is auto-created and scoped to your project+team. "
+            "It keeps the codebase clean and separates ephemeral data from source files.\n\n"
+        )
+        capabilities_block += workspace_path_block
+
+        # Scheduler awareness — agents know they can create/manage recurring tasks
+        scheduler_block = (
+            "SCHEDULED TASKS (CRON SCHEDULER):\n"
+            "You have a built-in persistent cron scheduler. Use it to automate recurring work — "
+            "the system will trigger you automatically with the specified prompt on schedule, "
+            "even when no user is active.\n"
+            "Scheduler tools:\n"
+            "  create_scheduled_task(name, cron_expression, prompt)  — create a new recurring task\n"
+            "  list_scheduled_tasks()                                  — list all team tasks\n"
+            "  update_scheduled_task(task_id, ...)                    — pause/resume/reschedule\n"
+            "  delete_scheduled_task(task_id)                         — permanently remove\n"
+            "Cron expression quick reference:\n"
+            "  '*/2 * * * *'   → every 2 minutes\n"
+            "  '0 * * * *'     → every hour\n"
+            "  '0 9 * * 1-5'  → 9am on weekdays\n"
+            "  '0 9 * * *'    → every day at 9am\n"
+            "IMPORTANT: The cron worker sends the prompt EXACTLY as written — it has NO extra context. "
+            "Write the prompt to be fully self-contained so you can act on it without prior history.\n\n"
+        )
+        capabilities_block += scheduler_block
+
+
         # Browser automation — 3-Tier architecture
         browser_block = (
             "BROWSER AUTOMATION — 3-TIER SYSTEM:\n"
@@ -431,10 +516,56 @@ class ReACTAgent:
 
         return new_msgs
 
+    def _parse_to_ast(self, messages: List[Dict[str, Any]]) -> List['ASTNode']:
+        ast = []
+        _ERROR_PATTERNS = (
+            "Error — Missing Tool Call Tag",
+            "Error — No [ACTION] tag found",
+            "Error: Tool",
+            "✗ Tool",
+            "Unknown tool:",
+            "CRITICAL ERROR — Code in Chat Detected",
+            "CRITICAL ERROR — Plan Without Execution Detected"
+        )
+        
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            
+            if role == "assistant":
+                ast.append(ThoughtNode(msg))
+                if isinstance(content, str) and "[ACTION]" in content and "[/ACTION]" in content:
+                    ast.append(ActionNode(msg))
+            elif role == "user":
+                is_error = False
+                if isinstance(content, str):
+                    is_error = "[OBSERVATION]" in content and any(pat in content for pat in _ERROR_PATTERNS)
+                if is_error:
+                    ast.append(ErrorNode(msg))
+                else:
+                    ast.append(ObservationNode(msg))
+            else:
+                ast.append(ThoughtNode(msg))
+                
+        return ast
+
     def _snip_dead_ends(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Stage 2: Remove failed tool calls that were corrected."""
-        # V1: Passthrough. Full AST-based snipping will be implemented in future PR.
-        return messages
+        """Stage 2: Remove failed tool call dead-ends from context.
+
+        Uses the AST-level parser from core.agent.context_ast for precise,
+        token-safe pruning. A dead-end is an assistant message with NO valid
+        [ACTION] block immediately followed by a user message containing ONLY
+        error observations. This correctly avoids snipping valid reasoning turns
+        that happen to look similar to failed turns in naive text matching.
+        """
+        if len(messages) < 2:
+            return messages
+
+        from core.agent.context_ast import ast_snip_dead_ends
+        pruned, snipped = ast_snip_dead_ends(messages)
+        if snipped:
+            self._log.info("_snip_dead_ends [AST]: removed %d dead-end pairs.", snipped)
+        return pruned
 
     async def _rolling_compact(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Stage 4: Summarize the oldest messages, keeping the most recent N."""

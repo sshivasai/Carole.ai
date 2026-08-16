@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { WSEvent } from "@/lib/types";
+import { api } from "@/hooks/useApi";
 
 export function getWsBase(): string {
   if (process.env.NEXT_PUBLIC_API_URL) {
@@ -66,14 +67,21 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
     }, HEARTBEAT_INTERVAL_MS);
   }, [stopHeartbeat]);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (!teamId || !isMounted.current) return;
 
-    // Append JWT so the backend can authenticate the WS upgrade (Finding #4).
-    // Browsers cannot set custom headers on WebSocket connections, so the token
-    // is passed as a query param. The server will close with code 4001 if missing.
-    const token = getWsToken();
-    const url = `${getWsBase()}/ws/chat/${teamId}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+    let ticket = "";
+    try {
+      const res = await api.getWsTicket();
+      ticket = res.ticket;
+    } catch (err) {
+      console.warn("Failed to fetch WS ticket:", err);
+      // Fallback: The backend will reject if strict, but maybe local dev is lenient
+    }
+
+    if (!isMounted.current) return;
+
+    const url = `${getWsBase()}/ws/chat/${teamId}${ticket ? `?ticket=${encodeURIComponent(ticket)}` : ""}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

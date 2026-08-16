@@ -18,7 +18,10 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
   const xtermRef = useRef<TerminalType | null>(null);
   const fitAddonRef = useRef<FitAddonType | null>(null);
 
-  const isRunning = useRef(false);
+  // Track the timestamp of the last executed trigger command.
+  // Using a timestamp instead of a boolean allows the same command text to
+  // fire again (e.g., re-running a file) as long as it's a new trigger event.
+  const lastExecutedTs = useRef<number>(0);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -66,12 +69,17 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
       xtermRef.current = term;
       fitAddonRef.current = fitAddon;
 
-      // Connect WebSocket — append JWT for backend auth (Finding #4).
-      // Browsers cannot set custom headers on WS upgrades, so the token is
-      // passed as a query param. The server closes with 4001 if it is missing.
-      const wsToken = getWsToken();
+      let ticket = "";
+      try {
+        const { api } = await import("@/hooks/useApi");
+        const res = await api.getWsTicket();
+        ticket = res.ticket;
+      } catch (err) {
+        console.warn("Failed to fetch terminal WS ticket:", err);
+      }
+
       const wsUrl = `${getWsBase()}/api/terminal/ws/${projectId || "default"}${
-        wsToken ? `?token=${encodeURIComponent(wsToken)}` : ""
+        ticket ? `?ticket=${encodeURIComponent(ticket)}` : ""
       }`;
 
       const ws = new WebSocket(wsUrl);
@@ -86,10 +94,10 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
       ws.onopen = () => {
         // Send initial size
         ws.send(JSON.stringify({ action: "resize", cols: term.cols, rows: term.rows }));
-        // Execute trigger command if it arrived before init
-        if (triggerCommand && triggerCommand.cmd && !isRunning.current) {
+        // Execute trigger command if it arrived before init and hasn't been run yet
+        if (triggerCommand && triggerCommand.cmd && triggerCommand.ts > lastExecutedTs.current) {
           ws.send(JSON.stringify({ action: "input", data: triggerCommand.cmd + "\n" }));
-          isRunning.current = true; // Mark as running so we don't repeat
+          lastExecutedTs.current = triggerCommand.ts;
         }
       };
 
@@ -145,9 +153,9 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
 
   useEffect(() => {
     // Handle triggers that happen after terminal is initialized
-    if (triggerCommand && triggerCommand.cmd && xtermRef.current && !isRunning.current) {
+    if (triggerCommand && triggerCommand.cmd && xtermRef.current && triggerCommand.ts > lastExecutedTs.current) {
       executeCmd(triggerCommand.cmd);
-      isRunning.current = true;
+      lastExecutedTs.current = triggerCommand.ts;
     }
   }, [triggerCommand]);
 

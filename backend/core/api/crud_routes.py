@@ -96,6 +96,12 @@ class LearningCreate(BaseModel):
     lesson_rule: str
     team_id: Optional[str] = None
 
+class LearningUpdate(BaseModel):
+    task_summary: Optional[str] = None
+    lesson_rule: Optional[str] = None
+    project_id: Optional[str] = None
+    team_id: Optional[str] = None
+
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)  # Finding #13
     owner_id: Optional[str] = None
@@ -298,16 +304,23 @@ async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_d
     
     return {"id": str(learning.id), "task_summary": learning.task_summary, "lesson_rule": learning.lesson_rule}
 
-@router.get("/learnings/{project_id}")
+@router.get("/learnings")
 async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db)):
     from core.memory.models import Learning
-    stmt = select(Learning).where(Learning.project_id == uuid.UUID(project_id)).order_by(Learning.created_at.desc())
+    from sqlalchemy import or_
+    stmt = select(Learning).where(
+        or_(
+            Learning.project_id == uuid.UUID(project_id),
+            Learning.project_id.is_(None)
+        )
+    ).order_by(Learning.created_at.desc())
     result = await db.execute(stmt)
     return [
         {
             "id": str(l.id),
             "task_summary": l.task_summary,
             "lesson_rule": l.lesson_rule,
+            "project_id": str(l.project_id) if l.project_id else None,
             "team_id": str(l.team_id) if l.team_id else None,
             "created_at": l.created_at.isoformat() if l.created_at else None,
         }
@@ -315,7 +328,7 @@ async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db)):
     ]
 
 @router.put("/learnings/{learning_id}")
-async def update_learning(learning_id: str, body: LearningCreate, db: AsyncSession = Depends(get_db)):
+async def update_learning(learning_id: str, body: LearningUpdate, db: AsyncSession = Depends(get_db)):
     from core.memory.models import Learning
     
     stmt = select(Learning).where(Learning.id == uuid.UUID(learning_id))
@@ -324,8 +337,15 @@ async def update_learning(learning_id: str, body: LearningCreate, db: AsyncSessi
     if not learning:
         raise HTTPException(status_code=404, detail="Learning not found")
         
-    learning.task_summary = body.task_summary
-    learning.lesson_rule = body.lesson_rule
+    if body.task_summary is not None:
+        learning.task_summary = body.task_summary
+    if body.lesson_rule is not None:
+        learning.lesson_rule = body.lesson_rule
+    if body.project_id == "null":
+        learning.project_id = None
+        from core.memory.lancedb_client import lancedb_client
+        await lancedb_client.update_project_id(learning_id, None)
+
     await db.flush()
     return {"status": "updated", "id": learning_id}
 
@@ -506,6 +526,47 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
     return {"status": "deleted", "id": agent_id}
 
 
+@router.post("/agents/{agent_id}/clone")
+async def clone_agent(agent_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    """Clone an existing agent within the same team.
+
+    Duplicates the agent's name, role, model, system_prompt, skills,
+    tool_permissions, and personality. The new agent is appended with ' (Copy)'.
+    """
+    result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Verify the requesting user owns this agent's team
+    await _assert_team_access(db, str(source.team_id), user["sub"])
+
+    new_agent = Agent(
+        id=uuid.uuid4(),
+        team_id=source.team_id,
+        name=f"{source.name} (Copy)",
+        role=source.role,
+        model=source.model,
+        fallback_model=source.fallback_model,
+        reasoning_effort=source.reasoning_effort,
+        system_prompt=source.system_prompt,
+        personality=source.personality,
+        skills=list(source.skills) if source.skills else [],
+        tool_permissions=dict(source.tool_permissions) if source.tool_permissions else {},
+        custom_instructions=source.custom_instructions,
+    )
+    db.add(new_agent)
+    await db.commit()
+    await db.refresh(new_agent)
+    return {
+        "id": str(new_agent.id),
+        "name": new_agent.name,
+        "role": new_agent.role,
+        "model": new_agent.model,
+        "team_id": str(new_agent.team_id),
+    }
+
+
 # ============================================================
 # Delete endpoints for Projects, Teams, Users
 # ============================================================
@@ -583,19 +644,45 @@ async def get_team(team_id: str, db: AsyncSession = Depends(get_db)):
 # ============================================================
 
 @router.get("/messages/{team_id}")
-async def list_messages(team_id: str, limit: int = 100, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+async def list_messages(
+    team_id: str,
+    limit: int = 100,
+    before: Optional[str] = None,  # cursor: return messages older than this message id
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """List messages for a team with optional cursor-based pagination.
+
+    Use the `before` param (a message id) to load older messages beyond the
+    initial page — enables the "Load older messages" button in the UI.
+    """
     # Finding #8 — verify the authenticated user owns this team
     await _assert_team_access(db, team_id, user["sub"])
     # Clamp limit to prevent large data dumps
     limit = min(limit, 500)
     from sqlalchemy import nulls_last
+
+    query = select(Message).where(Message.team_id == uuid.UUID(team_id))
+
+    # Cursor pagination: if 'before' is provided, only return messages created
+    # before that message's created_at timestamp (older messages).
+    if before:
+        try:
+            cursor_msg = (await db.execute(
+                select(Message).where(Message.id == uuid.UUID(before))
+            )).scalar_one_or_none()
+            if cursor_msg and cursor_msg.created_at:
+                query = query.where(Message.created_at < cursor_msg.created_at)
+        except (ValueError, Exception):
+            pass  # Invalid cursor — just return latest page
+
     result = await db.execute(
-        select(Message)
-        .where(Message.team_id == uuid.UUID(team_id))
+        query
         .order_by(Message.created_at.desc(), nulls_last(Message.sequence.desc()))
         .limit(limit)
     )
     messages = result.scalars().all()
+    # messages were ordered desc, so we reverse them for chronological UI presentation
     messages.reverse()
     return [
         {
@@ -611,6 +698,59 @@ async def list_messages(team_id: str, limit: int = 100, db: AsyncSession = Depen
     ]
 
 
+@router.get("/teams/{team_id}/export")
+async def export_messages(
+    team_id: str,
+    format: str = "json",
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """Export all messages for a team as JSON or Markdown.
+
+    Useful for archiving conversation history or creating fine-tuning datasets.
+    Supported formats: json | markdown
+    """
+    await _assert_team_access(db, team_id, user["sub"])
+    from sqlalchemy import nulls_last
+    from fastapi.responses import PlainTextResponse
+    import json as _json
+
+    result = await db.execute(
+        select(Message)
+        .where(Message.team_id == uuid.UUID(team_id))
+        .where(Message.is_intermediate == False)  # noqa: E712
+        .order_by(Message.created_at.asc(), nulls_last(Message.sequence.asc()))
+    )
+    msgs = result.scalars().all()
+
+    if format == "markdown":
+        lines = ["# Conversation Export\n"]
+        for m in msgs:
+            ts = m.created_at.strftime("%Y-%m-%d %H:%M") if m.created_at else ""
+            sender = getattr(m, "sender_name", None) or m.sender_id or "Unknown"
+            lines.append(f"### {sender} ({ts})\n")
+            lines.append((m.text or "") + "\n\n")
+        return PlainTextResponse(
+            content="".join(lines),
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="export-{team_id[:8]}.md"'}
+        )
+    else:
+        payload = [
+            {
+                "id": str(m.id),
+                "sender_name": getattr(m, "sender_name", None),
+                "text": m.text,
+                "created_at": m.created_at.isoformat() + "Z" if m.created_at else None,
+                "attachments": getattr(m, "attachments", []) or [],
+            }
+            for m in msgs
+        ]
+        return PlainTextResponse(
+            content=_json.dumps(payload, indent=2, default=str),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="export-{team_id[:8]}.json"'}
+        )
 
 
 @router.get("/messages/search/{team_id}")
@@ -1892,3 +2032,59 @@ async def save_settings(body: AppSettings):
     await close_all()
 
     return {"status": "saved", "reloaded": True}
+
+# ============================================================
+# Entity Memory Endpoints (Wave 5.1)
+# ============================================================
+
+from core.memory.models import EntityMemory
+
+class EntityMemoryCreate(BaseModel):
+    team_id: Optional[str] = None
+    project_id: Optional[str] = None
+    key: str
+    value: str
+
+@router.get("/memories/entities")
+async def list_entity_memories(
+    team_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    if not team_id and not project_id:
+        return []
+    
+    stmt = select(EntityMemory)
+    if team_id:
+        stmt = stmt.where(EntityMemory.team_id == uuid.UUID(team_id))
+    if project_id:
+        stmt = stmt.where(EntityMemory.project_id == uuid.UUID(project_id))
+        
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+@router.post("/memories/entities")
+async def create_entity_memory(
+    body: EntityMemoryCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    mem = EntityMemory(
+        team_id=uuid.UUID(body.team_id) if body.team_id else None,
+        project_id=uuid.UUID(body.project_id) if body.project_id else None,
+        key=body.key,
+        value=body.value
+    )
+    db.add(mem)
+    await db.commit()
+    await db.refresh(mem)
+    return mem
+
+@router.delete("/memories/entities/{memory_id}")
+async def delete_entity_memory(
+    memory_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = delete(EntityMemory).where(EntityMemory.id == uuid.UUID(memory_id))
+    await db.execute(stmt)
+    await db.commit()
+    return {"status": "deleted"}

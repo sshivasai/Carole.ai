@@ -43,6 +43,8 @@ from core.api.plugin_routes import router as plugin_router
 from core.api.skill_routes import router as skill_router
 from core.api.model_routes import router as model_router
 from core.api.scratchpad_routes import router as scratchpad_router
+from core.api.cron_routes import router as cron_router
+from core.api.notification_routes import router as notification_router
 
 import logging
 import importlib
@@ -170,10 +172,12 @@ async def lifespan(app: FastAPI):
             name=f"{mcp['server_name']}_mcp_server",
         )
 
-    # Start background Dream Worker
+    # Start background Dream Worker and Cron Worker
     # FIX B1: Store strong reference in app.state so asyncio cannot garbage-collect the task.
-    logger.info("🚀 [Lifespan] Starting Background 'Dream' Worker...")
+    logger.info("🚀 [Lifespan] Starting Background Workers...")
     dream_task = asyncio.create_task(dream_worker.start(), name="dream_worker")
+    from core.agent.cron_worker import cron_worker
+    cron_task = asyncio.create_task(cron_worker.start(), name="cron_worker")
 
     # FIX B4: Periodic EventBus topic sweeper — cleans up inactive topics every 5 min.
     # Prevents the event bus subscriber dict from growing unbounded over a long server uptime.
@@ -190,13 +194,14 @@ async def lifespan(app: FastAPI):
     sweeper_task = asyncio.create_task(_topic_sweeper(), name="topic_sweeper")
 
     # Store all background task references in app.state
-    app.state.background_tasks = [dream_task, sweeper_task]
+    app.state.background_tasks = [dream_task, sweeper_task, cron_task]
 
     yield  # Server is now running
 
     # --- SHUTDOWN ---
     logger.info("🛑 [Lifespan] Cleaning up resources...")
     dream_worker.stop()
+    cron_worker.stop()
 
     # Cancel and await all background tasks gracefully
     for bg_task in getattr(app.state, "background_tasks", []):
@@ -294,6 +299,8 @@ app.include_router(search_router)
 app.include_router(plugin_router)
 app.include_router(skill_router, prefix="/api/skills")
 app.include_router(model_router)
+app.include_router(cron_router)
+app.include_router(notification_router)
 
 
 # ============================================================
@@ -337,20 +344,20 @@ async def ws_status(team_id: str):
 async def websocket_endpoint(
     websocket: WebSocket,
     team_id: str,
-    token: str = Query(default=""),
+    ticket: str = Query(default=""),
 ):
     """
     WebSocket endpoint representing the real-time EventBus gateway for a Team.
     Binds to Pub/Sub topic 'team:{team_id}' and bridges client <-> EventBus.
 
-    Finding #4 — Requires a valid JWT via ?token=<jwt> query param.
+    Finding #4 — Requires a valid short-lived ticket via ?ticket=<ticket> query param.
     Browsers cannot set custom headers on WebSocket upgrades.
     """
-    from core.auth.auth_service import _decode_jwt
-    payload = _decode_jwt(token) if token else None
-    if not payload:
+    from core.auth.auth_service import auth_service
+    user_id = auth_service.verify_ws_ticket(ticket) if ticket else None
+    if not user_id:
         await websocket.close(code=4001)
-        logger.warning("Chat WS rejected — missing or invalid token for team %s", team_id)
+        logger.warning("Chat WS rejected — missing or invalid ticket for team %s", team_id)
         return
 
     await websocket.accept()

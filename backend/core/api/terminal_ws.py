@@ -169,27 +169,28 @@ manager = TerminalSessionManager()
 async def terminal_websocket(
     websocket: WebSocket,
     project_id: str,
-    token: str = Query(default=""),
+    ticket: str = Query(default=""),
 ):
     """
-    WebSocket terminal endpoint. Requires a valid JWT passed as ?token=<jwt>.
-    Browsers cannot set custom headers on WebSocket upgrades, so the token is
+    WebSocket terminal endpoint. Requires a valid short-lived JWT ticket passed as ?ticket=<ticket>.
+    Browsers cannot set custom headers on WebSocket upgrades, so the ticket is
     accepted as a query parameter. The connection is refused (close code 4001)
-    if the token is missing or invalid.
+    if the ticket is missing or invalid.
     """
     # Authenticate BEFORE accepting the connection
-    payload = _decode_jwt(token) if token else None
-    if not payload:
+    from core.auth.auth_service import auth_service
+    user_id = auth_service.verify_ws_ticket(ticket) if ticket else None
+    if not user_id:
         # WS 4001 = Unauthorized (application-level close code)
         await websocket.close(code=4001)
-        logger.warning("Terminal WS rejected — missing or invalid token for project %s", project_id)
+        logger.warning("Terminal WS rejected — missing or invalid ticket for project %s", project_id)
         return
 
     import uuid
     session_id = str(uuid.uuid4())
     logger.info(
         "Terminal WS opened: project=%s user=%s session=%s",
-        project_id, payload.get("email", payload.get("sub", "unknown")), session_id
+        project_id, user_id, session_id
     )
     await manager.connect(websocket, session_id, project_id)
 

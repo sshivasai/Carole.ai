@@ -77,6 +77,24 @@ class AutoDreamWorker:
         (up to 3 teams in parallel via semaphore)."""
         cycle_start = time.monotonic()
         async with async_session() as db:
+            from core.memory.models import Learning
+            from sqlalchemy import update, delete
+            
+            # Wave 5.4: Confidence decay (reduce by 0.1 each cycle)
+            await db.execute(update(Learning).values(confidence_score=Learning.confidence_score - 0.1))
+            
+            # Find and prune dead memories (confidence < 0.2)
+            stmt_prune = select(Learning.id).where(Learning.confidence_score < 0.2)
+            prune_result = await db.execute(stmt_prune)
+            prune_ids = prune_result.scalars().all()
+            
+            if prune_ids:
+                from core.memory.lancedb_client import lancedb_client
+                for p_id in prune_ids:
+                    await lancedb_client.delete_learning(str(p_id))
+                await db.execute(delete(Learning).where(Learning.id.in_(prune_ids)))
+                logger.info("💤 [Dream] Pruned %d low-confidence memory rules.", len(prune_ids))
+                
             result = await db.execute(select(Team))
             teams = result.scalars().all()
 

@@ -37,7 +37,7 @@ class LanceDBClient:
 
     async def insert_learning(
         self,
-        project_id: str,
+        project_id: Optional[str],
         task_summary: str,
         lesson_rule: str,
         vector: List[float],
@@ -46,7 +46,7 @@ class LanceDBClient:
         """Insert a new learning into the vector store (non-blocking)."""
         data = [{
             "id": str(uuid.uuid4()),
-            "project_id": project_id,
+            "project_id": project_id or "",
             "team_id": team_id or "",
             "task_summary": task_summary,
             "lesson_rule": lesson_rule,
@@ -109,8 +109,8 @@ class LanceDBClient:
             safe_project_id = _safe_id(project_id)
             safe_team_id = _safe_id(team_id) if team_id else None
 
-            # Match exact project AND (exact team OR project-wide learnings with empty team_id)
-            filter_str = f"project_id = '{safe_project_id}'"
+            # Match (exact project OR global) AND (exact team OR project-wide learnings with empty team_id)
+            filter_str = f"(project_id = '{safe_project_id}' OR project_id = '')"
             if safe_team_id:
                 filter_str += f" AND (team_id = '{safe_team_id}' OR team_id = '')"
             else:
@@ -143,6 +143,26 @@ class LanceDBClient:
             logger.error("LanceDB delete failed: %s", e)
             return False
 
+    async def update_project_id(self, learning_id: str, new_project_id: Optional[str]) -> bool:
+        """Update the project_id of an existing learning (non-blocking)."""
+        return await asyncio.to_thread(self._sync_update_project_id, learning_id, new_project_id)
 
+    def _sync_update_project_id(self, learning_id: str, new_project_id: Optional[str]) -> bool:
+        try:
+            db = self._get_db()
+            if self.table_name not in db.table_names():
+                return False
+            table = db.open_table(self.table_name)
+            
+            import re as _re
+            safe_id = _re.sub(r"[^a-zA-Z0-9_\-]", "", learning_id) if learning_id else ""
+            if not safe_id: return False
+            
+            # LanceDB update syntax
+            table.update(where=f"id = '{safe_id}'", values={"project_id": new_project_id or ""})
+            return True
+        except Exception as e:
+            logger.error("LanceDB update failed: %s", e)
+            return False
 # Singleton
 lancedb_client = LanceDBClient()

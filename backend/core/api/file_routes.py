@@ -322,3 +322,134 @@ async def delete_file_log(log_id: str, db: AsyncSession = Depends(get_db), user:
     await db.delete(backup)
     await db.commit()
     return {"status": "success", "message": "File activity log deleted"}
+
+
+# ============================================================
+# File Version History API (Wave 2.3)
+# ============================================================
+
+@router.get("/history")
+async def list_file_history(
+    path: str = Query(..., description="Relative file path"),
+    project_id: str | None = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """List backup snapshots for a specific file path.
+
+    Returns entries in reverse-chronological order (newest first).
+    Each entry has enough metadata to render a history list in the UI.
+    """
+    from core.memory.models import FileBackup
+    from sqlalchemy import select
+    from core.config import CAROLE_HOME_DIR
+    import pathlib
+
+    # Resolve the absolute path for this relative path + project
+    root = await file_tools.get_workspace_root(project_id)
+    abs_path = str((root / path).resolve())
+
+    # Also match the path with forward/backslash variants
+    stmt = (
+        select(FileBackup)
+        .where(FileBackup.file_path.contains(path.replace("/", "\\").split("\\")[-1]))
+        .order_by(FileBackup.created_at.desc())
+        .limit(50)
+    )
+    result = await db.execute(stmt)
+    backups = result.scalars().all()
+
+    # Filter to those whose file_path resolves to the same base name
+    filename = pathlib.Path(path).name
+    filtered = [b for b in backups if pathlib.Path(b.file_path).name == filename]
+
+    return [
+        {
+            "id": str(b.id),
+            "file_path": b.file_path,
+            "operation": b.operation,
+            "backup_file_name": b.backup_file_name,
+            "created_at": b.created_at.isoformat() + "Z" if b.created_at else None,
+            "has_content": bool(b.backup_file_name),
+        }
+        for b in filtered
+    ]
+
+
+@router.get("/history/content/{backup_id}")
+async def get_backup_content(
+    backup_id: str,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the original content of a specific backup snapshot."""
+    if not _valid_uuid(backup_id):
+        raise HTTPException(status_code=400, detail="Invalid backup id")
+
+    from core.memory.models import FileBackup
+    from sqlalchemy import select
+    import uuid
+
+    result = await db.execute(select(FileBackup).where(FileBackup.id == uuid.UUID(backup_id)))
+    backup = result.scalar_one_or_none()
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    if not backup.backup_file_name:
+        return {"content": "", "note": "No backup file recorded for this entry (create operation)."}
+
+    team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id))
+    history_dir = team_carole_dir / "file-history"
+    backup_path = history_dir / backup.backup_file_name
+
+    if not backup_path.exists():
+        raise HTTPException(status_code=404, detail="Backup file not found on disk")
+
+    try:
+        content = backup_path.read_text(encoding="utf-8")
+        return {"content": content, "backup_id": backup_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read backup: {e}")
+
+
+@router.post("/history/restore/{backup_id}")
+async def restore_backup(
+    backup_id: str,
+    project_id: str | None = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore a file to a backup snapshot.
+
+    Copies the backup file back to the live file path, effectively reverting
+    the file to its pre-change state. The current file is overwritten.
+    """
+    if not _valid_uuid(backup_id):
+        raise HTTPException(status_code=400, detail="Invalid backup id")
+
+    from core.memory.models import FileBackup
+    from sqlalchemy import select
+    import uuid
+    import shutil
+
+    result = await db.execute(select(FileBackup).where(FileBackup.id == uuid.UUID(backup_id)))
+    backup = result.scalar_one_or_none()
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    if not backup.backup_file_name:
+        raise HTTPException(status_code=400, detail="No backup content available for this entry")
+
+    team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id))
+    history_dir = team_carole_dir / "file-history"
+    backup_path = history_dir / backup.backup_file_name
+
+    if not backup_path.exists():
+        raise HTTPException(status_code=404, detail="Backup file not found on disk")
+
+    target_path = backup.file_path
+    try:
+        shutil.copy2(str(backup_path), target_path)
+        return {"status": "success", "message": f"Restored '{target_path}' from backup."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Restore failed: {e}")

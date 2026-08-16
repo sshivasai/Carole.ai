@@ -106,6 +106,7 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
   getMe: () => apiFetch<any>("/api/auth/me"),
+  getWsTicket: () => apiFetch<{ ticket: string }>("/api/auth/ws-ticket", { method: "POST" }),
 
   // ── Users ──
   listUsers: () => apiFetch<any[]>("/api/users"),
@@ -126,6 +127,21 @@ export const api = {
   createTeam: (name: string, projectId: string) =>
     apiFetch<any>("/api/teams", { method: "POST", body: JSON.stringify({ name, project_id: projectId }) }),
   deleteTeam: (teamId: string, deleteContent?: boolean) => apiFetch<any>(`/api/teams/${teamId}${deleteContent ? '?delete_content=true' : ''}`, { method: "DELETE" }),
+
+  // ── Notifications ──
+  listNotifications: (limit = 50) => apiFetch<{ notifications: import("../lib/types").Notification[]; unread_count: number }>(`/api/notifications?limit=${limit}`),
+  markNotificationsRead: (notificationId?: string) =>
+    apiFetch<any>("/api/notifications/read", { method: "POST", body: JSON.stringify({ notification_id: notificationId ?? null }) }),
+  deleteNotification: (notificationId: string) => apiFetch<any>(`/api/notifications/${notificationId}`, { method: "DELETE" }),
+  clearAllNotifications: () => apiFetch<any>("/api/notifications", { method: "DELETE" }),
+
+  // ── Scheduled Tasks (Cron) ──
+  listScheduledTasks: (teamId: string) => apiFetch<any[]>(`/api/cron/${teamId}`),
+  createScheduledTask: (teamId: string, task: { name: string; agent_id: string; cron_expression: string; prompt: string }) =>
+    apiFetch<any>(`/api/cron/${teamId}`, { method: "POST", body: JSON.stringify(task) }),
+  updateScheduledTask: (taskId: string, task: { name?: string; cron_expression?: string; prompt?: string; is_active?: boolean }) =>
+    apiFetch<any>(`/api/cron/${taskId}`, { method: "PUT", body: JSON.stringify(task) }),
+  deleteScheduledTask: (taskId: string) => apiFetch<any>(`/api/cron/${taskId}`, { method: "DELETE" }),
 
   // ── Models & Catalog ──
   listModels: () => apiFetch<Record<string, any>>("/api/models"),
@@ -157,7 +173,11 @@ export const api = {
     const qs = teamId ? `?team_id=${teamId}` : "";
     return apiFetch<any>(`/api/upload${qs}`, { method: "POST", body: formData });
   },
-  listMessages: (teamId: string, limit = 50) => apiFetch<any[]>(`/api/messages/${teamId}?limit=${limit}`),
+  listMessages: (teamId: string, opts?: { limit?: number; before?: string }) => {
+    const params = new URLSearchParams({ limit: String(opts?.limit ?? 100) });
+    if (opts?.before) params.set("before", opts.before);
+    return apiFetch<any[]>(`/api/messages/${teamId}?${params}`);
+  },
   searchMessages: (teamId: string, query: string, limit = 10) =>
     apiFetch<any[]>(`/api/messages/search/${teamId}?q=${encodeURIComponent(query)}&limit=${limit}`),
   editMessage: (messageId: string, text: string) =>
@@ -183,13 +203,29 @@ export const api = {
       body: JSON.stringify({ author_id: authorId, author_name: authorName, text }),
     }),
 
-  // ── Learnings ──
-  listLearnings: (projectId: string) => apiFetch<any[]>(`/api/learnings/${projectId}`),
+  // ── Memory / Learning ──
+  listLearnings: (projectId: string, teamId?: string) => {
+    const qs = new URLSearchParams({ project_id: projectId });
+    if (teamId) qs.set("team_id", teamId);
+    return apiFetch<any[]>(`/api/learnings?${qs}`);
+  },
   createLearning: (data: { project_id: string; task_summary: string; lesson_rule: string; team_id?: string }) =>
     apiFetch<any>("/api/learnings", { method: "POST", body: JSON.stringify(data) }),
-  updateLearning: (learningId: string, data: { task_summary?: string; lesson_rule?: string }) =>
+  updateLearning: (learningId: string, data: { task_summary?: string; lesson_rule?: string; project_id?: string | null }) =>
     apiFetch<any>(`/api/learnings/${learningId}`, { method: "PUT", body: JSON.stringify(data) }),
-  deleteLearning: (learningId: string) => apiFetch<any>(`/api/learnings/${learningId}`, { method: "DELETE" }),
+  deleteLearning: (learningId: string) =>
+    apiFetch<any>(`/api/learnings/${learningId}`, { method: "DELETE" }),
+
+  listEntityMemories: (projectId?: string, teamId?: string) => {
+    const qs = new URLSearchParams();
+    if (projectId) qs.set("project_id", projectId);
+    if (teamId) qs.set("team_id", teamId);
+    return apiFetch<any[]>(`/api/memories/entities?${qs}`);
+  },
+  createEntityMemory: (data: { project_id?: string; team_id?: string; key: string; value: string }) =>
+    apiFetch<any>("/api/memories/entities", { method: "POST", body: JSON.stringify(data) }),
+  deleteEntityMemory: (memoryId: string) =>
+    apiFetch<any>(`/api/memories/entities/${memoryId}`, { method: "DELETE" }),
 
   // ── Scratchpads ──
   listScratchpads: (teamId: string) =>
@@ -304,6 +340,23 @@ export const api = {
     apiFetch<any>(`/api/files/delete?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`, { method: "DELETE" }),
   getFileLogs: (teamId: string) => apiFetch<any[]>(`/api/files/logs/${teamId}`),
   deleteFileLog: (logId: string) => apiFetch<any>(`/api/files/logs/${logId}`, { method: "DELETE" }),
+
+  // File Version History (Wave 2.3)
+  getFileHistory: (path: string, projectId?: string) =>
+    apiFetch<any[]>(`/api/files/history?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`),
+  getBackupContent: (backupId: string) =>
+    apiFetch<{ content: string; backup_id: string }>(`/api/files/history/content/${backupId}`),
+  restoreFileBackup: (backupId: string, projectId?: string) =>
+    apiFetch<any>(`/api/files/history/restore/${backupId}${projectId ? `?project_id=${projectId}` : ""}`, { method: "POST" }),
+
+  // Agent clone (Wave 2.2)
+  cloneAgent: (agentId: string) => apiFetch<any>(`/api/agents/${agentId}/clone`, { method: "POST" }),
+
+  // Bulk export (Wave 2.5)
+  exportConversation: (teamId: string, format: "json" | "markdown" = "markdown") =>
+    `/api/teams/${teamId}/export?format=${format}`,
+
+
 
   // ── Terminal ──
   executeTerminal: (command: string, projectId?: string, timeout: number = 60.0) =>

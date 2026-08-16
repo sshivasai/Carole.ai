@@ -37,8 +37,13 @@ class FileTools:
         workspaces_dir = CAROLE_HOME_DIR / "workspaces"
         if not workspaces_dir.exists():
             workspaces_dir.mkdir(parents=True, exist_ok=True)
-            
+
         if project_id:
+            # Check cache first — avoids a DB round-trip on every file tool call.
+            cached = self._project_workspace_cache.get(project_id)
+            if cached:
+                return cached
+
             from core.memory.database import async_session
             from core.memory.models import Project
             from sqlalchemy import select
@@ -57,13 +62,21 @@ class FileTools:
                     slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
                     if not slug:
                         slug = str(project.id)[:8]
-                    return (workspaces_dir / slug).resolve()
+                    root = (workspaces_dir / slug).resolve()
+                    self._project_workspace_cache[project_id] = root
+                    return root
 
             # Fallback if project not found
-            return (workspaces_dir / project_id).resolve()
+            fallback = (workspaces_dir / project_id).resolve()
+            self._project_workspace_cache[project_id] = fallback
+            return fallback
 
         # No project scope: fall back to the configured workspace root.
         return self.workspace_root
+
+    # In-process cache: project_id -> project workspace root. Avoids a DB round
+    # trip on every file operation for the same project.
+    _project_workspace_cache: dict = {}
 
     # In-process cache: team_id -> project workspace root. Avoids a DB round
     # trip on every shell/git invocation for the same team.

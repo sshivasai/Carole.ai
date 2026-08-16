@@ -345,6 +345,35 @@ def register_builtin_tools():
                   "text": {"type": "string", "required": True}},
                  "safe", _wrap_comment_on_task),
 
+        # ---- Scheduled Tasks (Cron) ----
+        ToolSpec("create_scheduled_task",
+                 "Create a recurring scheduled task that will automatically trigger an agent with a prompt on a cron schedule. "
+                 "Use standard 5-field cron syntax: '*/2 * * * *' = every 2 mins, '0 9 * * 1-5' = 9am weekdays, '0 * * * *' = hourly. "
+                 "The task will be stored in the database and picked up by the background cron worker automatically.",
+                 "scheduler",
+                 {"name": {"type": "string", "required": True, "description": "Human-readable name for this scheduled task, e.g. 'Check Tech News'"},
+                  "cron_expression": {"type": "string", "required": True, "description": "5-field cron expression, e.g. '*/2 * * * *' for every 2 minutes"},
+                  "prompt": {"type": "string", "required": True, "description": "The exact prompt text the agent will receive when this task triggers. Be specific and self-contained."}},
+                 "safe", _wrap_create_scheduled_task),
+        ToolSpec("list_scheduled_tasks",
+                 "List all scheduled tasks for the current team, including their status (active/paused), cron expression, and last run time.",
+                 "scheduler", {},
+                 "safe", _wrap_list_scheduled_tasks),
+        ToolSpec("update_scheduled_task",
+                 "Update a scheduled task: pause/resume it, change its cron schedule, or change the prompt it sends. Provide only the fields you want to change.",
+                 "scheduler",
+                 {"task_id": {"type": "string", "required": True, "description": "The UUID of the scheduled task to update"},
+                  "is_active": {"type": "boolean", "required": False, "description": "true to resume, false to pause"},
+                  "cron_expression": {"type": "string", "required": False, "description": "New cron schedule"},
+                  "prompt": {"type": "string", "required": False, "description": "New prompt content"},
+                  "name": {"type": "string", "required": False, "description": "New display name"}},
+                 "safe", _wrap_update_scheduled_task),
+        ToolSpec("delete_scheduled_task",
+                 "Permanently delete a scheduled task so it will never run again.",
+                 "scheduler",
+                 {"task_id": {"type": "string", "required": True, "description": "The UUID of the scheduled task to delete"}},
+                 "judge", _wrap_delete_scheduled_task),
+
         # ---- Interaction ----
         ToolSpec("ask_user", "Ask the human a clarifying question and wait for their answer", "interaction",
                  {"question": {"type": "string", "required": True}},
@@ -1317,6 +1346,44 @@ async def _wrap_comment_on_task(args: Dict[str, Any], team_id: str) -> str:
     agent_id = args.get("_agent_id", "unknown")
     agent_name = args.get("_agent_name", "Agent")
     return await task_tools.comment_on_task(task_id, text, agent_id, agent_name)
+
+
+
+# ---- Cron / Scheduled Task Wrappers ----
+
+async def _wrap_create_scheduled_task(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.cron_task_tools import cron_task_tools
+    name = args.get("name", "").strip()
+    cron_expression = args.get("cron_expression", "").strip()
+    prompt = args.get("prompt", "").strip()
+    agent_id = args.get("_agent_id", "")
+    if not name or not cron_expression or not prompt:
+        return "Error: 'name', 'cron_expression', and 'prompt' are all required."
+    return await cron_task_tools.create_scheduled_task(agent_id, team_id, name, cron_expression, prompt)
+
+async def _wrap_list_scheduled_tasks(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.cron_task_tools import cron_task_tools
+    return await cron_task_tools.list_scheduled_tasks(team_id)
+
+async def _wrap_update_scheduled_task(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.cron_task_tools import cron_task_tools
+    task_id = args.get("task_id", "").strip()
+    if not task_id:
+        return "Error: 'task_id' is required."
+    return await cron_task_tools.update_scheduled_task(
+        task_id=task_id,
+        is_active=args.get("is_active"),
+        cron_expression=args.get("cron_expression"),
+        prompt=args.get("prompt"),
+        name=args.get("name"),
+    )
+
+async def _wrap_delete_scheduled_task(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.cron_task_tools import cron_task_tools
+    task_id = args.get("task_id", "").strip()
+    if not task_id:
+        return "Error: 'task_id' is required."
+    return await cron_task_tools.delete_scheduled_task(task_id)
 
 
 # ---- Scratchpad Wrappers ----

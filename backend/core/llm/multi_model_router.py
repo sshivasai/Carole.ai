@@ -133,6 +133,34 @@ class MultiModelRouter:
         automatically falls back to fallback_model (if configured).
         Emits a visible ⚠️ warning chunk before retrying.
         """
+        # --- Budget Enforcement (API-08) ---
+        # Check if the project has a budget limit set and whether it has been exceeded.
+        # This runs before every LLM call to prevent silent overspending.
+        if project_id:
+            try:
+                from core.memory.database import async_session
+                from core.memory.models import Project
+                from sqlalchemy import select
+                import uuid as _uuid
+                async with async_session() as _db:
+                    proj = (await _db.execute(
+                        select(Project).where(Project.id == _uuid.UUID(project_id))
+                    )).scalar_one_or_none()
+                    if proj and proj.budget_limit_usd is not None:
+                        limit = float(proj.budget_limit_usd)
+                        spent = float(proj.total_spend_usd or 0)
+                        if spent >= limit:
+                            msg = (
+                                f"🚫 **Budget limit reached** — this project has a ${limit:.2f} budget "
+                                f"and has spent ${spent:.4f}. LLM calls are blocked. "
+                                f"Raise the budget in Project Settings to continue."
+                            )
+                            logger.warning("Budget exceeded for project %s (%.4f / %.2f)", project_id, spent, limit)
+                            yield msg
+                            return
+            except Exception as _be:
+                logger.debug("Budget check skipped due to error: %s", _be)
+
         error_chunk: Optional[str] = None
         primary_yielded_content = False
 
@@ -159,6 +187,7 @@ class MultiModelRouter:
                     yield chunk
             else:
                 yield error_chunk
+
 
     async def generate_stream(
         self,

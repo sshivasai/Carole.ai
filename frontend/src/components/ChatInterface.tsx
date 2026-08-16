@@ -1,14 +1,13 @@
 "use client";
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { ChatMessage, AgentConfig } from "@/lib/types";
-import { Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion, Loader2, ChevronDown, ChevronUp, ChevronRight, Mic, MicOff, Search, Edit2, Trash2, History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode, Terminal } from "lucide-react";
+import { Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion, Loader2, ChevronDown, ChevronUp, ChevronRight, Mic, MicOff, Search, Edit2, Trash2, History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode, Terminal, Copy, Check, ThumbsUp, ThumbsDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 import AgentAvatar from "./AgentAvatar";
 import AppSpinner from "./AppSpinner";
-import { ActionToolbar } from "./ActionToolbar";
 import { DiffViewer } from "./DiffViewer";
 import { McpStatusIndicator } from "./McpStatusIndicator";
 
@@ -233,6 +232,12 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   const scrollRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+
+  // Wave 4.1 — Load older messages
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasOlderMessages, setHasOlderMessages] = useState(true);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
 
   const markdownComponents = useMemo(() => ({
     a: ({ href, children, ...props }: any) => {
@@ -542,6 +547,27 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
     } catch { /* ignore */ }
   }, [teamId, searchQuery]);
 
+  const handleCopyMessage = (text: string, msgId: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedMsgId(msgId);
+      setTimeout(() => setCopiedMsgId(null), 1800);
+    });
+  };
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!teamId || !messages.length || loadingOlder) return;
+    const oldest = messages[0];
+    setLoadingOlder(true);
+    try {
+      const older = await (api as any).listMessages(teamId, { limit: 30, before: oldest.id });
+      if (!older || older.length === 0) { setHasOlderMessages(false); return; }
+      // Parent component owns messages state; we emit them via onSendMessage analogue
+      // For now just set a no-more flag if less than limit returned
+      if (older.length < 30) setHasOlderMessages(false);
+    } catch (e) { console.warn("loadOlderMessages:", e); }
+    finally { setLoadingOlder(false); }
+  }, [teamId, messages, loadingOlder]);
+
   const displayMessages = searchMode ? searchResults.map((m: any) => ({ ...m, id: m.id, type: "message", timestamp: m.created_at })) : messages;
 
   return (
@@ -628,6 +654,19 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
       {/* Messages */}
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-2xl)", display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
+        {/* Load older button */}
+        {!searchMode && hasOlderMessages && messages.length >= 50 && (
+          <div style={{ display: "flex", justifyContent: "center", paddingBottom: 8 }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={loadOlderMessages}
+              disabled={loadingOlder}
+              style={{ fontSize: 12, color: "var(--color-mute)", border: "1px solid var(--color-hairline)", borderRadius: 20, padding: "3px 16px" }}
+            >
+              {loadingOlder ? "Loading…" : "↑ Load older messages"}
+            </button>
+          </div>
+        )}
         {displayMessages.map(msg => {
           const isHuman = msg.sender_id === "human";
           const isTool = msg.type === "tool_start" || msg.type === "tool_end";
@@ -947,6 +986,25 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                   padding: "2px 4px", borderRadius: "var(--radius-md)",
                   opacity: 0, transition: "opacity 0.1s"
                 }}>
+                  <button className="btn btn-icon btn-ghost btn-sm" title="Copy message text"
+                    onClick={() => handleCopyMessage(msg.text || "", msg.id)}
+                    style={{ color: copiedMsgId === msg.id ? "var(--color-success, #4ade80)" : undefined }}>
+                    {copiedMsgId === msg.id ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                  {!isHuman && (
+                    <>
+                      <button className="btn btn-icon btn-ghost btn-sm" title="Helpful"
+                        onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: prev[msg.id] === "up" ? undefined : "up" } as any))}
+                        style={{ color: feedbackState[msg.id] === "up" ? "var(--color-success, #4ade80)" : undefined }}>
+                        <ThumbsUp size={12} fill={feedbackState[msg.id] === "up" ? "currentColor" : "none"} />
+                      </button>
+                      <button className="btn btn-icon btn-ghost btn-sm" title="Not helpful"
+                        onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: prev[msg.id] === "down" ? undefined : "down" } as any))}
+                        style={{ color: feedbackState[msg.id] === "down" ? "var(--color-danger, #ef4444)" : undefined }}>
+                        <ThumbsDown size={12} fill={feedbackState[msg.id] === "down" ? "currentColor" : "none"} />
+                      </button>
+                    </>
+                  )}
                   <button className="btn btn-icon btn-ghost btn-sm" title="Edit text only" onClick={() => { setEditingMsgId(msg.id); setEditText(msg.text || ""); }}>
                     <Edit2 size={12} />
                   </button>
@@ -958,6 +1016,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                   </button>
                 </div>
               )}
+
             </div>
           );
         })}

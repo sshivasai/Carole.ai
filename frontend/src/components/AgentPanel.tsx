@@ -1,10 +1,11 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import type { AgentConfig } from "@/lib/types";
-import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu } from "lucide-react";
+import type { AgentConfig, ScheduledTask } from "@/lib/types";
+import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 import AgentAvatar from "./AgentAvatar";
+import CronTaskModal from "./CronTaskModal";
 
 interface Props {
   agents: AgentConfig[];
@@ -391,7 +392,21 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
   const [templates, setTemplates] = useState<any[]>([]);
   const [, setDeletingId] = useState<string | null>(null);
 
-  useEffect(() => { api.listRoleTemplates().then(setTemplates).catch(() => { }); }, []);
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const [cronModalOpen, setCronModalOpen] = useState(false);
+  const [editingCronTask, setEditingCronTask] = useState<ScheduledTask | undefined>(undefined);
+
+  useEffect(() => { 
+    api.listRoleTemplates().then(setTemplates).catch(() => { }); 
+  }, []);
+
+  useEffect(() => {
+    if (teamId) {
+      api.listScheduledTasks(teamId).then(setScheduledTasks).catch(() => {});
+    } else {
+      setScheduledTasks([]);
+    }
+  }, [teamId]);
 
   const handleSaved = (saved: AgentConfig) => {
     const existing = agents.find(a => a.id === saved.id);
@@ -456,10 +471,101 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
         </div>
       )}
 
+      {agents.length > 0 && (
+        <div style={{ marginTop: "var(--sp-2xl)" }}>
+          <div className="flex-between" style={{ marginBottom: "var(--sp-lg)" }}>
+            <div>
+              <h2 className="display-sm">Scheduled Tasks</h2>
+              <p className="caption">Automate agents to run periodically via cron schedules</p>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={() => { setEditingCronTask(undefined); setCronModalOpen(true); }}>
+              <Clock size={13} /> New Task
+            </button>
+          </div>
+          
+          {scheduledTasks.length === 0 ? (
+            <div className="empty-state" style={{ padding: "var(--sp-xl)" }}>
+              <p className="caption">No scheduled tasks yet.</p>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
+              {scheduledTasks.map(task => (
+                <div key={task.id} className="card" style={{ padding: "var(--sp-md)", display: "flex", alignItems: "center", gap: "var(--sp-md)" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                      <span className="body-sm-strong">{task.name}</span>
+                      <span className={`badge ${task.is_active ? 'badge-primary' : 'badge-gray'}`}>
+                        {task.is_active ? "Active" : "Inactive"}
+                      </span>
+                    </div>
+                    <div className="caption" style={{ marginTop: 4, display: "flex", gap: 12 }}>
+                      <span style={{ fontFamily: "monospace" }}>{task.cron_expression}</span>
+                      <span>Agent: {agents.find(a => a.id === task.agent_id)?.name || "Unknown"}</span>
+                      {task.last_run_at && <span>Last run: {new Date(task.last_run_at).toLocaleString()}</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
+                    <button 
+                      className="btn btn-outline btn-sm" 
+                      onClick={async () => {
+                        try {
+                          const res = await api.updateScheduledTask(task.id, { is_active: !task.is_active });
+                          setScheduledTasks(prev => prev.map(t => t.id === task.id ? res : t));
+                          onToast(`Task ${res.is_active ? 'activated' : 'paused'}`, "success");
+                        } catch {
+                          onToast("Failed to update task", "error");
+                        }
+                      }}
+                    >
+                      {task.is_active ? "Pause" : "Activate"}
+                    </button>
+                    <button className="btn btn-icon-sm btn-ghost" onClick={() => { setEditingCronTask(task); setCronModalOpen(true); }}><Edit2 size={13} /></button>
+                    <button 
+                      className="btn btn-icon-sm btn-ghost" 
+                      style={{ color: "var(--color-danger)" }}
+                      onClick={async () => {
+                        if (confirm("Are you sure you want to delete this scheduled task?")) {
+                          try {
+                            await api.deleteScheduledTask(task.id);
+                            setScheduledTasks(prev => prev.filter(t => t.id !== task.id));
+                            onToast("Task deleted", "success");
+                          } catch {
+                            onToast("Failed to delete task", "error");
+                          }
+                        }
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <Modal open={modalOpen} onClose={() => { setModalOpen(false); setEditingAgent(undefined); }}
         title={editingAgent ? "Edit Agent" : "New Agent"} maxWidth={520}>
         <AgentForm initial={editingAgent} teamId={teamId} roleTemplates={templates} onSave={handleSaved} onClose={() => { setModalOpen(false); setEditingAgent(undefined); }} />
       </Modal>
+
+      <CronTaskModal 
+        open={cronModalOpen}
+        onClose={() => { setCronModalOpen(false); setEditingCronTask(undefined); }}
+        teamId={teamId}
+        agents={agents}
+        existingTask={editingCronTask}
+        onSave={(saved) => {
+          if (editingCronTask) {
+            setScheduledTasks(prev => prev.map(t => t.id === saved.id ? saved : t));
+            onToast("Scheduled task updated", "success");
+          } else {
+            setScheduledTasks(prev => [saved, ...prev]);
+            onToast("Scheduled task created", "success");
+          }
+        }}
+      />
     </div>
   );
 }

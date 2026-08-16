@@ -14,7 +14,7 @@ Multi-Tenant Hierarchical Architecture:
 
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Uuid, Integer
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Uuid, Integer, Numeric, Float, Index, func
 from .database import Base
 
 class User(Base):
@@ -44,9 +44,9 @@ class Project(Base):
     # Each Project belongs to a User Account
     owner_id = Column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     
-    # Cost Management
-    budget_limit_usd = Column(String(20), nullable=True)
-    total_spend_usd = Column(String(20), nullable=False, default="0.00")
+    # Cost Management — stored as Numeric for SQL aggregation
+    budget_limit_usd = Column(Numeric(10, 4), nullable=True)
+    total_spend_usd = Column(Numeric(10, 4), nullable=False, default=0.0)
     
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -126,13 +126,21 @@ class Message(Base):
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
+    # Composite indexes for hot query paths: team_id + created_at is the most
+    # common access pattern (loading chat history). team_id + sender_id is used
+    # for per-agent history filtering.
+    __table_args__ = (
+        Index('ix_messages_team_created', 'team_id', 'created_at'),
+        Index('ix_messages_team_sender', 'team_id', 'sender_id'),
+    )
+
 class Learning(Base):
     __tablename__ = "learnings"
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     
-    # Bound primarily to the parent Project boundary
-    project_id = Column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    # Bound primarily to the parent Project boundary (NULL means global cross-project knowledge)
+    project_id = Column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
     
     # OPTIONAL Scope Boundaries:
     # 1. If team_id is NULL, knowledge is shared Project-wide (all teams).
@@ -146,6 +154,10 @@ class Learning(Base):
     lesson_rule = Column(Text, nullable=False)   # Concrete rule to avoid future mistakes
     
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    
+    # Wave 5.4: Confidence decay
+    confidence_score = Column(Float, default=1.0, server_default="1.0", nullable=False)
+    last_validated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -181,6 +193,33 @@ class TaskComment(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class ScheduledTask(Base):
+    __tablename__ = "scheduled_tasks"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id = Column(Uuid, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    
+    name = Column(String(100), nullable=False)
+    cron_expression = Column(String(100), nullable=False)
+    prompt = Column(Text, nullable=False)
+    
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id = Column(String(100), nullable=False, index=True) # ID from auth token (sub)
+    title = Column(String(200), nullable=False)
+    message = Column(Text, nullable=False)
+    type = Column(String(50), default="info") # e.g. "info", "success", "error", "warning"
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class TokenUsage(Base):
     """
     Tracks LLM token usage and estimated cost per agent call.
@@ -197,10 +236,12 @@ class TokenUsage(Base):
     model = Column(String(80), nullable=False)
     provider = Column(String(30), nullable=False)        # anthropic | openai | google | qwen | ollama
 
-    prompt_tokens = Column(String(20), nullable=True)   # stored as string for flexibility
-    completion_tokens = Column(String(20), nullable=True)
-    total_tokens = Column(String(20), nullable=True)
-    estimated_cost_usd = Column(String(20), nullable=True)  # e.g. "0.0024"
+    # Stored as Integer/Numeric for proper SQL aggregation (SUM, AVG, GROUP BY).
+    # Previously stored as String which prevented cost analytics queries.
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    estimated_cost_usd = Column(Numeric(12, 8), nullable=True)  # e.g. 0.00240000
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -269,6 +310,27 @@ class Skill(Base):
     mcp_servers = Column(JSON, nullable=True, default=list)
     
     is_active = Column(Boolean, default=True, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class EntityMemory(Base):
+    """
+    Explicit fact store for agents ("Remember that X = Y").
+    Facts are injected into the system prompt as 'KNOWN FACTS'.
+    """
+    __tablename__ = "entity_memories"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    # Scope: can be bound to a team, or broadly to a project
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=True)
+    project_id = Column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    
+    # Fact key (e.g. 'user_preference', 'repo_linter')
+    key = Column(String(255), nullable=False)
+    # Fact value (e.g. 'Prefers TypeScript over JS')
+    value = Column(Text, nullable=False)
     
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

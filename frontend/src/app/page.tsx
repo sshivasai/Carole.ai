@@ -22,6 +22,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/hooks/useApi";
 import FileExplorerPanel from "@/components/FileExplorerPanel";
+import KeyboardShortcutsModal from "@/components/KeyboardShortcutsModal";
 import type { AgentConfig, ChatMessage, TaskItem, BrowserScreenshotEvent, LearningItem, ScratchpadItem } from "@/lib/types";
 
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -183,6 +184,7 @@ function AppShell() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [learnings, setLearnings] = useState<LearningItem[]>([]);
+  const [entityMemories, setEntityMemories] = useState<any[]>([]);
   const [screenshots, setScreenshots] = useState<BrowserScreenshotEvent[]>([]);
   const [appLoading, setAppLoading] = useState(true);
   const [streamingAgents, setStreamingAgents] = useState<Set<string>>(new Set());
@@ -192,9 +194,19 @@ function AppShell() {
   // A file path the explorer should open automatically (set when the user
   // clicks a file-change card in chat).
   const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null);
-  // Queue depth per agent — { [agent_id]: number }
   const [agentQueues, setAgentQueues] = useState<Record<string, number>>({});
   const [scratchpads, setScratchpads] = useState<ScratchpadItem[]>([]);
+
+  useEffect(() => {
+    const handleGlobalKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setExplorerOpen(o => !o);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKey);
+    return () => window.removeEventListener("keydown", handleGlobalKey);
+  }, []);
 
   const handleWSEvent = useCallback((evt: any) => {
     if (evt.type === "thought_delta" && evt.sender_id) {
@@ -273,11 +285,12 @@ function AppShell() {
   // Load teams when project changes
   useEffect(() => {
     if (!projectId) return;
-    Promise.all([api.listTeams(projectId), api.listLearnings(projectId)])
-      .then(([tms, lrn]) => {
+    Promise.all([api.listTeams(projectId), api.listLearnings(projectId), api.listEntityMemories(projectId, undefined)])
+      .then(([tms, lrn, entities]) => {
         setTeams(tms);
         setTeamId(tms.length > 0 ? tms[0].id : null);
         setLearnings(lrn);
+        setEntityMemories(entities);
       }).catch(console.error);
   }, [projectId]);
 
@@ -428,8 +441,8 @@ function AppShell() {
           )}
           {activeView === "memory" && (
             <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <MemoryView learnings={learnings} projectId={projectId} teamId={teamId}
-                onLearningsChange={setLearnings} onToast={(msg, type) => toast.show(msg, type)} />
+              <MemoryView learnings={learnings} entityMemories={entityMemories} projectId={projectId} teamId={teamId}
+                onLearningsChange={setLearnings} onEntityMemoriesChange={setEntityMemories} onToast={(msg, type) => toast.show(msg, type)} />
             </div>
           )}
           {activeView === "scratchpad" && (
@@ -473,6 +486,7 @@ function AppShell() {
         </main>
 
         <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
+        <KeyboardShortcutsModal />
       </Panel>
     </PanelGroup>
   );

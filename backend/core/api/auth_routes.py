@@ -58,14 +58,35 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
 
 @router.get("/me")
 async def get_me(
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    authorization: Optional[str] = Header(None),
+    authorization: str = Header(None)
 ):
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
+        raise HTTPException(status_code=401, detail="Missing or invalid token.")
 
-    token = authorization[7:]  # Strip "Bearer "
-    user = await auth_service.get_current_user(db=db, token=token)
+    token = authorization.split(" ")[1]
+    user = await auth_service.get_current_user(db, token)
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+        raise HTTPException(status_code=401, detail="Invalid token.")
+
     return user
+
+
+@router.post("/ws-ticket")
+async def get_ws_ticket(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    authorization: str = Header(None)
+):
+    """Returns a short-lived (30s) WebSocket ticket for authentication."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token.")
+
+    token = authorization.split(" ")[1]
+    user = await auth_service.get_current_user(db, token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+
+    ticket = auth_service.generate_ws_ticket(user["id"])
+    return {"ticket": ticket}

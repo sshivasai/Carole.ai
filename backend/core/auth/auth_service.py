@@ -257,6 +257,24 @@ class AuthService:
         }
         return _create_jwt(payload)
 
+    def generate_ws_ticket(self, user_id: str) -> str:
+        """Generates a short-lived (30s) JWT ticket for WebSocket authentication."""
+        payload = {
+            "sub": user_id,
+            "type": "ws_ticket",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 30,  # 30 seconds expiry
+        }
+        return _create_jwt(payload)
+
+    def verify_ws_ticket(self, ticket: str) -> Optional[str]:
+        """Verifies a WebSocket ticket and returns the user_id if valid."""
+        payload = _decode_jwt(ticket)
+        if not payload:
+            return None
+        if payload.get("type") != "ws_ticket":
+            return None
+        return payload.get("sub")
 
 # Singleton
 auth_service = AuthService()
