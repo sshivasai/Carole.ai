@@ -516,6 +516,51 @@ _CATEGORY_DEFAULTS: Dict[str, str] = {
 }
 
 
+def _get_effective_permissions(permissions: Any) -> Dict[str, Any]:
+    """
+    Combines agent-level permissions with global system defaults from ~/.carole/config.json.
+    """
+    from core.llm.config_manager import load_config
+    global_cfg = load_config().get("access_control", {})
+    if not isinstance(permissions, dict):
+        permissions = {}
+
+    # If it's a legacy flat dict like {"read_file": "safe"}, treat that as overrides
+    if "categories" not in permissions and any(isinstance(v, str) for v in permissions.values() if not str(v).startswith("__")):
+        flat_overrides = {k: v for k, v in permissions.items() if isinstance(v, str) and not k.startswith("__")}
+        return {
+            "enable_judge": global_cfg.get("enable_judge", True),
+            "judge_fallback": global_cfg.get("judge_fallback", "always_ask"),
+            "categories": global_cfg.get("categories", _CATEGORY_DEFAULTS),
+            "overrides": {**global_cfg.get("overrides", {}), **flat_overrides},
+            "custom_skip_judge": global_cfg.get("custom_skip_judge", {"file_patterns": [], "command_prefixes": []}),
+        }
+
+    # Structured config: merge agent with global defaults
+    merged_categories = {**_CATEGORY_DEFAULTS, **global_cfg.get("categories", {}), **permissions.get("categories", {})}
+    merged_overrides = {**global_cfg.get("overrides", {}), **permissions.get("overrides", {})}
+    
+    global_skip = global_cfg.get("custom_skip_judge", {})
+    agent_skip = permissions.get("custom_skip_judge", {})
+    merged_file_patterns = list(dict.fromkeys(
+        (global_skip.get("file_patterns") or []) + (agent_skip.get("file_patterns") or [])
+    ))
+    merged_cmd_prefixes = list(dict.fromkeys(
+        (global_skip.get("command_prefixes") or []) + (agent_skip.get("command_prefixes") or [])
+    ))
+
+    return {
+        "enable_judge": permissions.get("enable_judge", global_cfg.get("enable_judge", True)),
+        "judge_fallback": permissions.get("judge_fallback", global_cfg.get("judge_fallback", "always_ask")),
+        "categories": merged_categories,
+        "overrides": merged_overrides,
+        "custom_skip_judge": {
+            "file_patterns": merged_file_patterns,
+            "command_prefixes": merged_cmd_prefixes,
+        },
+    }
+
+
 def _resolve_gate_level(tool_name: str, permissions: Dict[str, Any]) -> str:
     """
     Resolve the effective gate level for a tool from a structured
@@ -556,14 +601,17 @@ def _matches_skip_judge(tool_name: str, arguments: Dict[str, Any], permissions: 
 
     import fnmatch
 
-    # File-pattern whitelist — applies to write_file / edit_file / append_file
+    # File-pattern whitelist — applies to file tools
     file_patterns = skip.get("file_patterns", [])
-    if file_patterns and tool_name in {"write_file", "edit_file", "append_file", "read_file"}:
+    if file_patterns and tool_name in {"write_file", "edit_file", "append_file", "read_file", "copy_file", "move_file", "delete_file"}:
         path = (arguments.get("relative_path") or arguments.get("path") or
+                arguments.get("source") or arguments.get("destination") or
                 arguments.get("value") or "")
         if path:
+            norm_path = path.replace("\\", "/")
             for pat in file_patterns:
-                if fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(path.replace("\\", "/"), pat):
+                norm_pat = pat.replace("\\", "/")
+                if fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(norm_path, norm_pat):
                     return True
 
     # Command-prefix whitelist — applies to execute_command
@@ -571,8 +619,9 @@ def _matches_skip_judge(tool_name: str, arguments: Dict[str, Any], permissions: 
     if cmd_prefixes and tool_name == "execute_command":
         cmd = arguments.get("command") or arguments.get("value") or ""
         if cmd:
+            cmd_stripped = cmd.strip()
             for prefix in cmd_prefixes:
-                if cmd.strip().startswith(prefix.strip()):
+                if cmd_stripped.startswith(prefix.strip()):
                     return True
 
     return False
@@ -613,12 +662,7 @@ class ToolExecutor:
         if not spec:
             return f"Error: Tool '{tool_name}' is not registered in the system."
 
-        # ── Permission resolution ─────────────────────────────────────────────
-        # Supports both legacy flat {tool_name: level} dicts AND the new
-        # structured AccessControlConfig schema with categories/overrides.
-        is_structured = isinstance(permissions, dict) and "categories" in permissions
-
-        # Granular ToolPermissionContext (always_deny / always_allow) takes top priority
+        # ── Granular runtime context (always_deny / always_allow) takes top priority ──
         if permission_context:
             if tool_name in permission_context.always_deny:
                 logger.info("🛑 [Executor] Tool '%s' denied by always_deny rule.", tool_name)
@@ -627,30 +671,25 @@ class ToolExecutor:
                 logger.info("✓ [Executor] Tool '%s' allowed by always_allow rule.", tool_name)
                 return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
 
-        # Resolve gate level from structured config or legacy flat map
-        if is_structured:
-            gate_level = _resolve_gate_level(tool_name, permissions)
-        else:
-            raw = (permissions or {}).get(tool_name, spec.permission_default)
-            gate_level = _PERM_ALIAS.get(raw, raw)
+        # ── Permission resolution ─────────────────────────────────────────────
+        effective_permissions = _get_effective_permissions(permissions)
+        gate_level = _resolve_gate_level(tool_name, effective_permissions)
 
-        # ── Structured-config extras ──────────────────────────────────────────
-        if is_structured:
-            # Block — hard deny, no override
-            if gate_level == "block":
-                logger.info("🛑 [Executor] Tool '%s' blocked by access control policy.", tool_name)
-                return (f"✗ Execution Blocked: '{tool_name}' is disabled by your Access Control policy. "
-                        "Update permissions in Agent Settings → Access Control.")
+        # 1. Block — hard deny, no override, no evaluation
+        if gate_level == "block":
+            logger.info("🛑 [Executor] Tool '%s' blocked by access control policy.", tool_name)
+            return (f"✗ Execution Blocked: '{tool_name}' is disabled by your Access Control policy. "
+                    "Update permissions in Agent Settings → Access Control.")
 
-            # Skip-judge whitelist fast-path
-            if gate_level == "judge" and _matches_skip_judge(tool_name, arguments, permissions):
-                logger.info("⚡ [Executor] Skip-judge whitelist match for '%s'.", tool_name)
-                gate_level = "safe"
+        # 2. Skip-judge whitelist fast-path
+        if gate_level == "judge" and _matches_skip_judge(tool_name, arguments, effective_permissions):
+            logger.info("⚡ [Executor] Skip-judge whitelist match for '%s'.", tool_name)
+            gate_level = "safe"
 
-            # Judge disabled → apply fallback
-            if gate_level == "judge" and not permissions.get("enable_judge", True):
-                gate_level = _apply_judge_disabled_fallback(permissions)
-                logger.info("⚡ [Executor] Judge disabled — fallback gate='%s' for '%s'.", gate_level, tool_name)
+        # 3. Judge disabled → apply fallback
+        if gate_level == "judge" and not effective_permissions.get("enable_judge", True):
+            gate_level = _apply_judge_disabled_fallback(effective_permissions)
+            logger.info("⚡ [Executor] Judge disabled — fallback gate='%s' for '%s'.", gate_level, tool_name)
 
         # ── Documentation fast-path (frictionless .md/.txt writes) ───────────
         if _is_doc_write(tool_name, arguments):
@@ -1499,9 +1538,18 @@ async def _wrap_create_task(args: Dict[str, Any], team_id: str) -> str:
     priority = args.get("priority", "medium")
     assignee = args.get("assignee")
     blocked_by_task_id = args.get("blocked_by_task_id")
+    agent_name = args.get("_agent_name")
     if not title:
         return "Error: Missing 'title'."
-    return await task_tools.create_task(team_id, title, description, priority, assignee, blocked_by_task_id)
+    return await task_tools.create_task(
+        team_id=team_id,
+        title=title,
+        description=description,
+        priority=priority,
+        assignee_name=assignee,
+        blocked_by_task_id=blocked_by_task_id,
+        creator_agent_name=agent_name
+    )
 
 async def _wrap_list_tasks(args: Dict[str, Any], team_id: str) -> str:
     from core.tools.task_tools import task_tools

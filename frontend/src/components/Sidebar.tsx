@@ -94,8 +94,8 @@ export default function Sidebar({
     return (
       <nav className={`${styles.sidebar} ${styles.collapsedSidebar}`}>
         <div className={styles.sidebarLogo} style={{ padding: "var(--sp-md) 0", justifyContent: "center" }}>
-          <button className={styles.collapseBtn} onClick={() => setIsCollapsed(false)} title="Expand Sidebar">
-            <Menu size={20} />
+          <button className={styles.collapseBtn} onClick={() => setIsCollapsed(false)} title="Expand Sidebar" style={{ padding: 4 }}>
+            <img src="/branding/logo-mark-animated.webp" alt="Carole.ai" width={28} height={28} style={{ objectFit: "contain", filter: "drop-shadow(0 0 6px rgba(0, 217, 146, 0.4))" }} />
           </button>
         </div>
         <div className={styles.sidebarNav} style={{ padding: "var(--sp-md) 0", display: "flex", flexDirection: "column", alignItems: "center" }}>
@@ -114,7 +114,13 @@ export default function Sidebar({
     <nav className={styles.sidebar}>
       {/* Logo */}
       <div className={styles.sidebarLogo}>
-        <div className={styles.sidebarLogoMark}>C</div>
+        <div className={styles.sidebarLogoBrand}>
+          <img src="/branding/logo-mark-animated.webp" alt="Carole.ai Logo" className={styles.sidebarLogoImg} />
+          <div className={styles.sidebarLogoTextGroup}>
+            <span className={styles.sidebarLogoText}>Carole<span className={styles.sidebarLogoAi}>.ai</span></span>
+            <span className={styles.sidebarLogoSub}>AI Agent Platform</span>
+          </div>
+        </div>
         <button className={styles.collapseBtn} onClick={() => setIsCollapsed(true)} title="Collapse Sidebar">
           <ChevronLeft size={16} />
         </button>

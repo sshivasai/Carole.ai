@@ -3,9 +3,23 @@ import { ThemeProvider } from "../hooks/useTheme";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://carole.ai"),
   title: "Carole.ai — Multi-Agent Collaboration Platform",
   description: "Orchestrate AI agent teams with real-time chat, browser automation, task boards, and semantic memory.",
   keywords: ["AI agents", "multi-agent", "collaboration", "automation"],
+  icons: {
+    icon: [
+      { url: "/branding/logo-mark.png", type: "image/png" },
+      { url: "/favicon.ico" },
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
+  },
+  openGraph: {
+    title: "Carole.ai — Multi-Agent Collaboration Platform",
+    description: "AI Agents. Real Work.",
+    images: [{ url: "/branding/logo-full.png", width: 1080, height: 1080 }],
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

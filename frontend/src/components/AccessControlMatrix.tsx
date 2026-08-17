@@ -20,19 +20,19 @@ export const DEFAULT_ACCESS_CONTROL: AccessControlConfig = {
 };
 
 const PRESETS: Record<string, { label: string; icon: string; desc: string; cats: Partial<Record<ActionCategory, PermissionLevel>>; judge: boolean; fallback: "allow" | "always_ask" }> = {
-  autonomy:  { label: "Full Autonomy",  icon: "??", desc: "High trust, minimal friction",             judge: false, fallback: "allow",      cats: { view:"allow",edit:"allow",create:"allow",delete:"always_ask",execute:"allow",git:"allow",web:"allow",browser:"allow",subagents:"allow",scheduler:"allow" } },
-  guarded:   { label: "Guarded",        icon: "???", desc: "Safe actions allowed, modifications judged", judge: true,  fallback: "always_ask", cats: { view:"allow",edit:"judge",create:"judge",delete:"always_ask",execute:"judge",git:"allow",web:"allow",browser:"allow",subagents:"allow",scheduler:"judge" } },
-  readonly:  { label: "Read-Only",      icon: "??", desc: "Blocks execution, deletion, and file edits", judge: true,  fallback: "always_ask", cats: { view:"allow",edit:"block",create:"block",delete:"block",execute:"block",git:"allow",web:"allow",browser:"allow",subagents:"block",scheduler:"block" } },
-  supervised:{ label: "Supervised",     icon: "??", desc: "Always asks before workspace changes",       judge: false, fallback: "always_ask", cats: { view:"allow",edit:"always_ask",create:"always_ask",delete:"always_ask",execute:"always_ask",git:"always_ask",web:"allow",browser:"allow",subagents:"always_ask",scheduler:"always_ask" } },
+  autonomy:  { label: "Full Autonomy",  icon: "", desc: "High trust, minimal friction",             judge: false, fallback: "allow",      cats: { view:"allow",edit:"allow",create:"allow",delete:"always_ask",execute:"allow",git:"allow",web:"allow",browser:"allow",subagents:"allow",scheduler:"allow" } },
+  guarded:   { label: "Guarded",        icon: "?", desc: "Safe actions allowed, modifications judged", judge: true,  fallback: "always_ask", cats: { view:"allow",edit:"judge",create:"judge",delete:"always_ask",execute:"judge",git:"allow",web:"allow",browser:"allow",subagents:"allow",scheduler:"judge" } },
+  readonly:  { label: "Read-Only",      icon: "", desc: "Blocks execution, deletion, and file edits", judge: true,  fallback: "always_ask", cats: { view:"allow",edit:"block",create:"block",delete:"block",execute:"block",git:"allow",web:"allow",browser:"allow",subagents:"block",scheduler:"block" } },
+  supervised:{ label: "Supervised",     icon: "", desc: "Always asks before workspace changes",       judge: false, fallback: "always_ask", cats: { view:"allow",edit:"always_ask",create:"always_ask",delete:"always_ask",execute:"always_ask",git:"always_ask",web:"allow",browser:"allow",subagents:"always_ask",scheduler:"always_ask" } },
 };
 
 const CATEGORIES: { key: ActionCategory; label: string; desc: string; Icon: React.ElementType; tools: string }[] = [
-  { key:"view",      label:"View / Read",     desc:"read_file, list_directory, grep_search, diff_files…",                 Icon:Eye,       tools:"read_file, list_directory, grep_search, glob_search, diff_files, workspace_tree" },
+  { key:"view",      label:"View / Read",     desc:"read_file, list_directory, grep_search, diff_files...",                 Icon:Eye,       tools:"read_file, list_directory, grep_search, glob_search, diff_files, workspace_tree" },
   { key:"edit",      label:"Edit Files",      desc:"edit_file, append_file",                                              Icon:FileEdit,  tools:"edit_file, append_file" },
   { key:"create",    label:"Create / Write",  desc:"write_file, create_directory, copy_file, move_file",                  Icon:FilePlus,  tools:"write_file, create_directory, copy_file, move_file" },
   { key:"delete",    label:"Delete",          desc:"delete_file, workspace deletions",                                    Icon:Trash2,    tools:"delete_file" },
   { key:"execute",   label:"Execute / Shell", desc:"execute_command, shell scripts",                                      Icon:Terminal,  tools:"execute_command" },
-  { key:"git",       label:"Git Operations",  desc:"git_status, git_diff, git_log, git_commit, git_push…",                Icon:GitBranch, tools:"git_status, git_diff, git_log, git_add, git_commit, git_push, git_pull, git_branch" },
+  { key:"git",       label:"Git Operations",  desc:"git_status, git_diff, git_log, git_commit, git_push...",                Icon:GitBranch, tools:"git_status, git_diff, git_log, git_add, git_commit, git_push, git_pull, git_branch" },
   { key:"web",       label:"Web & Search",    desc:"web_search, web_fetch, http_request",                                 Icon:Globe,     tools:"web_search, web_fetch, http_request" },
   { key:"browser",   label:"Browser",         desc:"browser_navigate, browser_click, browser_type, screenshots",          Icon:Monitor,   tools:"browser_navigate, browser_click, browser_type, browser_screenshot" },
   { key:"subagents", label:"Subagents",       desc:"spawn_agent, hire_subagent, send_message, team_broadcast",            Icon:Users,     tools:"spawn_agent, hire_subagent, send_message, team_broadcast" },
@@ -49,10 +49,10 @@ const OVERRIDE_TOOLS = [
 ];
 
 const PERM_CFG: Record<PermissionLevel, { label:string; color:string; bg:string; border:string; emoji:string }> = {
-  allow:      { label:"Allow",      color:"#00d992", bg:"rgba(0,217,146,0.15)",   border:"rgba(0,217,146,0.4)",   emoji:"??" },
-  judge:      { label:"Judge",      color:"#a78bfa", bg:"rgba(167,139,250,0.15)", border:"rgba(167,139,250,0.4)", emoji:"??" },
-  always_ask: { label:"Always Ask", color:"#fbbf24", bg:"rgba(251,191,36,0.15)",  border:"rgba(251,191,36,0.4)",  emoji:"??" },
-  block:      { label:"Block",      color:"#f87171", bg:"rgba(248,113,113,0.15)", border:"rgba(248,113,113,0.4)", emoji:"??" },
+  allow:      { label:"Allow",      color:"#00d992", bg:"rgba(0,217,146,0.15)",   border:"rgba(0,217,146,0.4)",   emoji:"" },
+  judge:      { label:"Judge",      color:"#a78bfa", bg:"rgba(167,139,250,0.15)", border:"rgba(167,139,250,0.4)", emoji:"" },
+  always_ask: { label:"Always Ask", color:"#fbbf24", bg:"rgba(251,191,36,0.15)",  border:"rgba(251,191,36,0.4)",  emoji:"" },
+  block:      { label:"Block",      color:"#f87171", bg:"rgba(248,113,113,0.15)", border:"rgba(248,113,113,0.4)", emoji:"" },
 };
 
 function Pill({ level, active, onClick, small }: { level:PermissionLevel; active:boolean; onClick?:()=>void; small?:boolean }) {
@@ -91,7 +91,7 @@ function ChipInput({ chips, placeholder, onAdd, onRemove }: { chips:string[]; pl
       ))}
       <input value={input} onChange={e => setInput(e.target.value)}
         onKeyDown={e => { if (e.key==="Enter"||e.key===",") { e.preventDefault(); commit(); } if (e.key==="Backspace"&&!input&&chips.length>0) onRemove(chips[chips.length-1]); }}
-        placeholder={chips.length===0 ? placeholder : "Add more…"}
+        placeholder={chips.length===0 ? placeholder : "Add more..."}
         style={{ background:"none", border:"none", outline:"none", color:"var(--color-body)", fontSize:12, flex:1, minWidth:80, padding:0 }} />
       {input.trim() && (
         <button type="button" onClick={commit} style={{ padding:"2px 8px", fontSize:11, background:"rgba(0,217,146,0.15)", border:"1px solid rgba(0,217,146,0.3)", borderRadius:8, color:"var(--color-primary)", cursor:"pointer" }}>
@@ -133,7 +133,7 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"var(--sp-xl)" }}>
 
-      {/* 1 — Judge Toggle */}
+      {/* 1 ... Judge Toggle */}
       <div style={{
         padding:"var(--sp-lg)", borderRadius:"var(--radius-md)", transition:"all 0.3s ease",
         background: judgeOn ? "linear-gradient(135deg,rgba(167,139,250,0.08),rgba(0,217,146,0.05))" : "rgba(248,113,113,0.05)",
@@ -164,12 +164,12 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
             </div>
             <p className="caption" style={{ margin:0 }}>
               {judgeOn
-                ? "?? An AI model evaluates each action's safety. Safe operations execute instantly; risky ones escalate to you."
-                : "? Judge LLM is offline — zero evaluation latency & token cost. Configure fallback for ?? Judge actions below."}
+                ? " An AI model evaluates each action's safety. Safe operations execute instantly; risky ones escalate to you."
+                : "? Judge LLM is offline ... zero evaluation latency & token cost. Configure fallback for  Judge actions below."}
             </p>
             {!judgeOn && (
               <div style={{ marginTop:"var(--sp-md)" }}>
-                <span className="caption" style={{ display:"block", marginBottom:6 }}>When Judge is OFF, treat <strong>?? Judge</strong> actions as:</span>
+                <span className="caption" style={{ display:"block", marginBottom:6 }}>When Judge is OFF, treat <strong> Judge</strong> actions as:</span>
                 <div style={{ display:"flex", gap:"var(--sp-sm)" }}>
                   {(["allow","always_ask"] as const).map(fb => {
                     const a = value.judge_fallback===fb;
@@ -180,7 +180,7 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
                         background: a ? (fb==="allow" ? "rgba(0,217,146,0.12)" : "rgba(251,191,36,0.12)") : "transparent",
                         color: a ? (fb==="allow" ? "#00d992" : "#fbbf24") : "var(--color-mute)",
                       }}>
-                        {fb==="allow" ? "?? Auto-Allow (Autonomy)" : "?? Always Ask (Strict)"}
+                        {fb==="allow" ? " Auto-Allow (Autonomy)" : " Always Ask (Strict)"}
                       </button>
                     );
                   })}
@@ -191,7 +191,7 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
         </div>
       </div>
 
-      {/* 2 — Quick Presets */}
+      {/* 2 ... Quick Presets */}
       <div>
         <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:"var(--sp-sm)" }}>
           <Zap size={13} color="var(--color-primary)" />
@@ -211,12 +211,12 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
         </div>
       </div>
 
-      {/* 3 — Action Permissions Grid */}
+      {/* 3 ... Action Permissions Grid */}
       <div>
         <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:"var(--sp-md)" }}>
           <Cpu size={13} color="var(--color-primary)" />
           <span className="body-sm-strong" style={{ fontSize:12 }}>Action Permissions</span>
-          {!judgeOn && <span style={{ fontSize:10, color:"var(--color-mute)" }}>(?? Judge option hidden)</span>}
+          {!judgeOn && <span style={{ fontSize:10, color:"var(--color-mute)" }}>( Judge option hidden)</span>}
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:"var(--sp-sm)" }}>
           {CATEGORIES.map(({ key, label, desc, Icon }) => (
@@ -230,7 +230,7 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
                     <div className="body-sm-strong" style={{ fontSize:12 }}>{label}</div>
                     <button type="button" onClick={() => setTooltipCat(tooltipCat===key ? null : key)}
                       style={{ background:"none", border:"none", padding:0, cursor:"pointer", display:"flex", alignItems:"center", gap:3, color:"var(--color-mute)", fontSize:10 }}>
-                      <Info size={9} /><span style={{ fontFamily:"monospace" }}>{desc.length>45 ? desc.slice(0,45)+"…" : desc}</span>
+                      <Info size={9} /><span style={{ fontFamily:"monospace" }}>{desc.length>45 ? desc.slice(0,45)+"..." : desc}</span>
                     </button>
                   </div>
                 </div>
@@ -246,17 +246,17 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
         </div>
       </div>
 
-      {/* 4 — Skip-Judge Whitelist */}
+      {/* 4 ... Skip-Judge Whitelist */}
       {judgeOn && (
         <div>
           <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:"var(--sp-sm)" }}>
             <Zap size={13} color="#fbbf24" />
             <span className="body-sm-strong" style={{ fontSize:12 }}>Skip-Judge Whitelist</span>
-            <span className="caption" style={{ fontSize:10, color:"var(--color-mute)" }}>— matching paths/commands execute instantly</span>
+            <span className="caption" style={{ fontSize:10, color:"var(--color-mute)" }}>... matching paths/commands execute instantly</span>
           </div>
           <div style={{ display:"flex", flexDirection:"column", gap:"var(--sp-md)" }}>
             <div>
-              <label className="caption" style={{ display:"block", marginBottom:4 }}>?? Safe File Patterns <span style={{ color:"var(--color-mute)", fontSize:10 }}>(glob, press Enter to add)</span></label>
+              <label className="caption" style={{ display:"block", marginBottom:4 }}> Safe File Patterns <span style={{ color:"var(--color-mute)", fontSize:10 }}>(glob, press Enter to add)</span></label>
               <ChipInput chips={value.custom_skip_judge.file_patterns} placeholder="*.md, docs/**, .carole/**" onAdd={addFP} onRemove={delFP} />
             </div>
             <div>
@@ -267,7 +267,7 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
         </div>
       )}
 
-      {/* 5 — Granular Tool Overrides */}
+      {/* 5 ... Granular Tool Overrides */}
       <div>
         <button type="button" onClick={() => setShowOverrides(v=>!v)}
           style={{ display:"flex", alignItems:"center", gap:"var(--sp-sm)", background:"none", border:"none", cursor:"pointer", color:"var(--color-body)", padding:0, width:"100%", textAlign:"left" }}>
@@ -284,7 +284,7 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
         </button>
         {showOverrides && (
           <div style={{ marginTop:"var(--sp-md)", padding:"var(--sp-lg)", borderRadius:"var(--radius-sm)", border:"1px solid var(--color-hairline)", background:"var(--color-canvas-raised)" }}>
-            <input className="input" style={{ marginBottom:"var(--sp-md)", fontSize:12 }} placeholder="Search tools…"
+            <input className="input" style={{ marginBottom:"var(--sp-md)", fontSize:12 }} placeholder="Search tools..."
               value={overrideSearch} onChange={e => setOverrideSearch(e.target.value)} />
             <div style={{ display:"flex", flexDirection:"column", gap:"var(--sp-sm)", maxHeight:300, overflowY:"auto" }}>
               {filteredTools.map(tool => {
@@ -317,4 +317,6 @@ export default function AccessControlMatrix({ value, onChange }: Props) {
     </div>
   );
 }
+
+
 

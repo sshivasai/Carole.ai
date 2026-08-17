@@ -21,22 +21,31 @@ export default function LoadingScreen({ steps = [] }: Props) {
       {/* Animated logo */}
       <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{
-          position: "absolute", width: 80, height: 80, borderRadius: "50%",
+          position: "absolute", width: 96, height: 96, borderRadius: "50%",
           background: "var(--color-primary-glow)", animation: "pulse 2s ease-in-out infinite",
+          filter: "blur(20px)",
         }} />
-        <div style={{
-          width: 56, height: 56, borderRadius: "var(--radius-md)",
-          background: "var(--color-primary)", display: "flex", alignItems: "center",
-          justifyContent: "center", fontSize: 28, fontWeight: 700, color: "var(--color-on-primary)",
-          position: "relative", zIndex: 1, boxShadow: "0 0 30px var(--color-primary-glow)",
-        }}>
-          C
-        </div>
+        <img
+          src="/branding/logo-mark-animated.webp"
+          alt="Carole.ai"
+          width={68}
+          height={68}
+          style={{
+            position: "relative",
+            zIndex: 1,
+            objectFit: "contain",
+            filter: "drop-shadow(0 0 20px var(--color-primary-glow))",
+          }}
+        />
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <h1 className="display-md" style={{ marginBottom: "var(--sp-xs)" }}>Carole.ai</h1>
-        <p className="caption">Multi-Agent Collaboration Platform</p>
+        <h1 className="display-md" style={{ marginBottom: "var(--sp-2xs)", letterSpacing: "-0.03em" }}>
+          Carole<span style={{ color: "var(--color-primary)" }}>.ai</span>
+        </h1>
+        <p className="caption" style={{ letterSpacing: "0.06em", color: "var(--color-mute)" }}>
+          AI AGENTS. REAL WORK.
+        </p>
       </div>
 
       {steps.length > 0 && (

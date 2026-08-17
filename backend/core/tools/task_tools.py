@@ -68,7 +68,7 @@ class TaskTools:
     async def create_task(
         self, team_id: str, title: str, description: str = "",
         priority: str = "medium", assignee_name: str = None,
-        blocked_by_task_id: str = None
+        blocked_by_task_id: str = None, creator_agent_name: str = None
     ) -> str:
         """Creates a task and optionally assigns it to an agent by name."""
         async with async_session() as db:
@@ -108,8 +108,13 @@ class TaskTools:
                 },
             })
 
-            # If assigned, wake the agent via chat @mention
-            if assignee_agent:
+            # If assigned, wake the agent via chat @mention (suppress if assigned to oneself)
+            is_self_assignment = (
+                assignee_agent is not None
+                and creator_agent_name is not None
+                and assignee_agent.name.strip().lower() == creator_agent_name.strip().lower()
+            )
+            if assignee_agent and not is_self_assignment:
                 from core.chat.message_router import message_router
                 if blocked_by_task_id:
                     assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} a new task '{title}' (ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
@@ -223,9 +228,9 @@ class TaskTools:
                 },
             })
 
-            # Broadcast a visible chat message so the team knows
+            # Broadcast a visible chat message so the team knows (plain name, not @mention to prevent self-wakeup)
             from core.chat.message_router import message_router
-            updater = f" by @{agent_name}" if agent_name else ""
+            updater = f" by {agent_name}" if agent_name else ""
             chat_text = f"[TASK_UPDATE] Task '{task.title}' moved to '{task.status}'{updater}"
             await message_router.route_message(
                 text=chat_text,
@@ -235,8 +240,13 @@ class TaskTools:
                 attachments=[]
             )
 
-            # If a new assignee was set, wake them via @mention
-            if new_assignee_agent:
+            # If a new assignee was set, wake them via @mention (suppress if assigned to oneself)
+            is_self_update = (
+                new_assignee_agent is not None
+                and agent_name is not None
+                and new_assignee_agent.name.strip().lower() == agent_name.strip().lower()
+            )
+            if new_assignee_agent and not is_self_update:
                 if task.blocked_by_task_id:
                     assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
                 else:

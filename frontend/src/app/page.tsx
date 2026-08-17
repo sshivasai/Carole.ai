@@ -154,6 +154,8 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
         return m;
       });
     }
+    case "chat_cleared":
+      return [];
     case "message_deleted":
       return prev.filter(m => m.id !== evt.message_id);
     case "message_rewind":
@@ -215,7 +217,7 @@ function AppShell() {
       setStreamingAgents(s => { const n = new Set(s); n.delete(evt.sender_id!); return n; });
     }
 
-    if (["thought_delta", "thought_reset", "stream_reasoning", "message", "approval_request", "approval_update", "approval_resolved", "agent_question", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "file_change", "collapse_to_reasoning"].includes(evt.type)) {
+    if (["thought_delta", "thought_reset", "stream_reasoning", "message", "approval_request", "approval_update", "approval_resolved", "agent_question", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "chat_cleared", "file_change", "collapse_to_reasoning"].includes(evt.type)) {
       setMessages(prev => {
         const updated = applyWSEvent(prev, evt);
         return updated.length > 150 ? updated.slice(-150) : updated;
@@ -393,6 +395,10 @@ function AppShell() {
                             return mts < pivot;
                           }));
                         }
+                      }}
+                      onClearChat={() => {
+                        setMessages([]);
+                        toast.success("Chat cleared");
                       }}
                       teamId={teamId}
                       projectId={projectId}

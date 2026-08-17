@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="frontend/public/branding/logo-full-animated.gif" alt="Carole.ai Logo" width="280" />
+</p>
+
 # Carole.ai
+
+**AI AGENTS. REAL WORK.**
 
 Carole.ai is an advanced AI-powered assistant and development environment with a robust suite of features including Hybrid GraphRAG, zero-cost meeting integration, MCP (Model Context Protocol) expansion, and a native real-time Kanban board.
 

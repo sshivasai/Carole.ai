@@ -1,6 +1,6 @@
 import asyncio
 from sqlalchemy import select
-from core.memory.database import async_session
+from core.memory.database import async_session, engine
 from core.memory.models import Agent
 from core.prompts import build_agent_system_prompt
 
@@ -19,6 +19,7 @@ async def migrate_prompts():
             agent.system_prompt = new_prompt
             print(f"Updated prompt for agent {agent.name}")
         await db.commit()
+    await engine.dispose()
 
 if __name__ == "__main__":
     asyncio.run(migrate_prompts())

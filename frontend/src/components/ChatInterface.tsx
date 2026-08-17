@@ -17,6 +17,7 @@ interface Props {
   onSendMessage: (text: string, attachments?: any[]) => void;
   onDeleteMessage?: (id: string) => void;
   onRollbackMessage?: (id: string) => void;
+  onClearChat?: () => void;
   teamId: string | null;
   projectId?: string | null;
   onToggleExplorer?: () => void;
@@ -221,7 +222,7 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
   );
 }
 
-export default function ChatInterface({ messages, agents, onSendMessage, onDeleteMessage, onRollbackMessage, teamId, projectId, onToggleExplorer, onOpenFile }: Props) {
+export default function ChatInterface({ messages, agents, onSendMessage, onDeleteMessage, onRollbackMessage, onClearChat, teamId, projectId, onToggleExplorer, onOpenFile }: Props) {
   const [inputText, setInputText] = useState("");
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -501,11 +502,9 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   const doClearChatConfirm = async () => {
     if (!teamId) return;
     setClearChatOpen(false);
+    if (onClearChat) onClearChat();
     try {
       await api.clearTeamChat(teamId);
-      // The backend publishes a 'chat_cleared' websocket event.
-      // A full page reload is the simplest way to clear all local state reliably.
-      window.location.reload();
     } catch (e: any) {
       console.error("clearTeamChat failed:", e);
     }

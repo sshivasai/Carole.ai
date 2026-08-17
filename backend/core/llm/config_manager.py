@@ -46,6 +46,27 @@ _DEFAULT_CONFIG = {
             "zenrows": "",
             "twocaptcha": ""
         }
+    },
+    "access_control": {
+        "enable_judge": True,
+        "judge_fallback": "always_ask",
+        "categories": {
+            "view": "allow",
+            "edit": "judge",
+            "create": "judge",
+            "delete": "always_ask",
+            "execute": "judge",
+            "git": "allow",
+            "web": "allow",
+            "browser": "allow",
+            "subagents": "allow",
+            "scheduler": "judge"
+        },
+        "overrides": {},
+        "custom_skip_judge": {
+            "file_patterns": [],
+            "command_prefixes": []
+        }
     }
 }
 
@@ -86,6 +107,15 @@ def load_config() -> dict:
         merged["browser_automation"] = {**merged["browser_automation"], **raw_ba}
         if "api_keys" in raw_ba:
             merged["browser_automation"]["api_keys"] = {**merged["browser_automation"]["api_keys"], **raw_ba["api_keys"]}
+        
+        raw_ac = raw.get("access_control", {})
+        merged["access_control"] = {**merged["access_control"], **raw_ac}
+        if "categories" in raw_ac:
+            merged["access_control"]["categories"] = {**merged["access_control"]["categories"], **raw_ac["categories"]}
+        if "overrides" in raw_ac:
+            merged["access_control"]["overrides"] = {**merged["access_control"]["overrides"], **raw_ac["overrides"]}
+        if "custom_skip_judge" in raw_ac:
+            merged["access_control"]["custom_skip_judge"] = {**merged["access_control"]["custom_skip_judge"], **raw_ac["custom_skip_judge"]}
         
         # also pass through any other top-level keys like agent_settings or default_models
         for key, value in raw.items():

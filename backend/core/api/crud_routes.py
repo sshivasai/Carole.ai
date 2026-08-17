@@ -14,7 +14,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import get_db
-from core.memory.models import User, Project, Team, Agent, Message, Task
+from core.memory.models import User, Project, Team, Agent, Message, Task, FileBackup
 from core.tools.tool_registry import ToolRegistry
 from core.config import DEFAULT_FAST_MODEL
 from core.auth.auth_middleware import require_auth
@@ -946,16 +946,32 @@ async def delete_message(message_id: str, db: AsyncSession = Depends(get_db)):
 @router.delete("/teams/{team_id}/messages")
 async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db)):
     """Delete all messages for a team permanently."""
-    from sqlalchemy import delete
+    from sqlalchemy import delete, update
     import shutil
     from core.tools.file_tools import file_tools
     
-    # 1. Delete DB Messages
-    stmt = delete(Message).where(Message.team_id == uuid.UUID(team_id))
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid team_id")
+
+    # 1. Unlink message_id on FileBackup records to ensure foreign key safety
+    try:
+        await db.execute(
+            update(FileBackup)
+            .where(FileBackup.team_id == team_uuid)
+            .values(message_id=None)
+        )
+    except Exception as e:
+        import logging as _log
+        _log.getLogger("carole.chat").warning(f"Failed to unlink file backups before clearing messages: {e}")
+
+    # 2. Delete DB Messages
+    stmt = delete(Message).where(Message.team_id == team_uuid)
     await db.execute(stmt)
     await db.commit()
 
-    # 2. Delete Chat Media from Disk
+    # 3. Delete Chat Media from Disk
     try:
         team_carole_dir = await file_tools.get_team_carole_dir(team_id)
         chat_media_dir = team_carole_dir / "Chat_Media"

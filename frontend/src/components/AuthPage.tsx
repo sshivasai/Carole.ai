@@ -45,16 +45,43 @@ export default function AuthPage() {
 
       <div style={{ width: "100%", maxWidth: 420, position: "relative", zIndex: 1 }}>
         {/* Logo */}
-        <div style={{ textAlign: "center", marginBottom: "var(--sp-4xl)" }}>
+        <div style={{ textAlign: "center", marginBottom: "var(--sp-3xl)" }}>
           <div style={{
-            width: 52, height: 52, borderRadius: "var(--radius-md)",
-            background: "var(--color-primary)", display: "inline-flex",
-            alignItems: "center", justifyContent: "center",
-            fontSize: 26, fontWeight: 700, color: "var(--color-on-primary)",
-            boxShadow: "0 0 30px var(--color-primary-glow)", marginBottom: "var(--sp-lg)",
-          }}>C</div>
-          <h1 className="display-md" style={{ marginBottom: "var(--sp-xs)" }}>Carole.ai</h1>
-          <p className="caption">Multi-agent AI collaboration platform</p>
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: "var(--sp-md)",
+            position: "relative",
+          }}>
+            <div style={{
+              position: "absolute",
+              width: 96,
+              height: 96,
+              borderRadius: "50%",
+              background: "var(--color-primary-glow)",
+              filter: "blur(24px)",
+              opacity: 0.6,
+              pointerEvents: "none",
+            }} />
+            <img
+              src="/branding/logo-mark-animated.webp"
+              alt="Carole.ai Logo"
+              width={76}
+              height={76}
+              style={{
+                position: "relative",
+                zIndex: 1,
+                objectFit: "contain",
+                filter: "drop-shadow(0 4px 20px rgba(0, 217, 146, 0.45))",
+              }}
+            />
+          </div>
+          <h1 className="display-md" style={{ marginBottom: "var(--sp-2xs)", letterSpacing: "-0.03em" }}>
+            Carole<span style={{ color: "var(--color-primary)" }}>.ai</span>
+          </h1>
+          <p className="caption" style={{ letterSpacing: "0.06em", color: "var(--color-mute)", fontSize: 13 }}>
+            AI AGENTS. REAL WORK.
+          </p>
         </div>
 
         {/* Tab toggle */}
