@@ -178,6 +178,24 @@ function AppShell() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [activeView, setActiveView] = useState("chat");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("carole_sidebar_collapsed");
+      if (saved !== null) setSidebarCollapsed(saved === "true");
+    } catch {}
+  }, []);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem("carole_sidebar_collapsed", String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
   const [projects, setProjects] = useState<any[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [teams, setTeams] = useState<any[]>([]);
@@ -352,149 +370,146 @@ function AppShell() {
   }
 
   return (
-    <PanelGroup direction="horizontal" autoSaveId="app-layout" style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
-      <Panel id="sidebar-panel" order={1} defaultSize={20} minSize={10} maxSize={40} style={{ display: "flex", flexShrink: 0, minWidth: 0 }}>
-        <Sidebar
-          activeView={activeView}
-          onViewChange={setActiveView}
-          connected={connected}
-          projects={projects}
-          projectId={projectId}
-          onProjectChange={setProjectId}
-          onProjectCreated={handleProjectCreated}
-          teams={teams}
-          teamId={teamId}
-          onTeamChange={setTeamId}
-          onTeamCreated={handleTeamCreated}
-        />
-      </Panel>
-      <PanelResizeHandle className="resize-handle" />
+    <div style={{ display: "flex", width: "100vw", height: "100vh", overflow: "hidden", background: "var(--bg-app)" }}>
+      <Sidebar
+        activeView={activeView}
+        onViewChange={setActiveView}
+        connected={connected}
+        projects={projects}
+        projectId={projectId}
+        onProjectChange={setProjectId}
+        onProjectCreated={handleProjectCreated}
+        teams={teams}
+        teamId={teamId}
+        onTeamChange={setTeamId}
+        onTeamCreated={handleTeamCreated}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={handleToggleSidebar}
+      />
 
-      <Panel id="main-panel" order={2} style={{ display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
-        <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", background: "var(--bg-app)", position: "relative" }}>
-          {activeView === "chat" && (
-            <div className="animate-entrance" style={{ display: "flex", flex: 1, minHeight: 0, width: "100%" }}>
-              <PanelGroup direction="horizontal" autoSaveId="chat-layout">
-                <Panel id="chat-main-panel" order={1} defaultSize={70} minSize={30} style={{ display: "flex", minWidth: 0, flexDirection: "column" }}>
-                  <div style={{ display: "flex", flex: 1, minWidth: 0, minHeight: 0 }}>
-                    <ChatInterface
-                      messages={messages}
-                      agents={agents}
-                      onSendMessage={handleSendMessage}
-                      onDeleteMessage={(id) => {
-                        api.deleteMessage(id).catch(console.error);
-                        setMessages(prev => prev.filter(m => m.id !== id));
-                      }}
-                      onRollbackMessage={(id) => {
-                        api.rollbackFromMessage(id).catch(console.error);
-                        const pivotMsg = messages.find(m => m.id === id);
-                        if (pivotMsg && pivotMsg.timestamp) {
-                          const pivot = new Date(pivotMsg.timestamp).getTime();
-                          setMessages(prev => prev.filter(m => {
-                            const mts = typeof m.timestamp === "number" ? m.timestamp : new Date(m.timestamp || 0).getTime();
-                            return mts < pivot;
-                          }));
-                        }
-                      }}
-                      onClearChat={() => {
-                        setMessages([]);
-                        toast.success("Chat cleared");
-                      }}
-                      teamId={teamId}
-                      projectId={projectId}
-                      onToggleExplorer={() => setExplorerOpen(o => !o)}
-                      onOpenFile={(path: string) => {
-                        setExplorerOpen(true);
-                        setPendingOpenFile(path);
-                      }}
+      <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", background: "var(--bg-app)", position: "relative", width: "100%" }}>
+        {activeView === "chat" && (
+          <div className="animate-entrance" style={{ display: "flex", flex: 1, minHeight: 0, width: "100%" }}>
+            <PanelGroup direction="horizontal" autoSaveId="chat-layout">
+              <Panel id="chat-main-panel" order={1} defaultSize={70} minSize={30} style={{ display: "flex", minWidth: 0, flexDirection: "column" }}>
+                <div style={{ display: "flex", flex: 1, minWidth: 0, minHeight: 0 }}>
+                  <ChatInterface
+                    messages={messages}
+                    agents={agents}
+                    onSendMessage={handleSendMessage}
+                    onDeleteMessage={(id) => {
+                      api.deleteMessage(id).catch(console.error);
+                      setMessages(prev => prev.filter(m => m.id !== id));
+                    }}
+                    onRollbackMessage={(id) => {
+                      api.rollbackFromMessage(id).catch(console.error);
+                      const pivotMsg = messages.find(m => m.id === id);
+                      if (pivotMsg && pivotMsg.timestamp) {
+                        const pivot = new Date(pivotMsg.timestamp).getTime();
+                        setMessages(prev => prev.filter(m => {
+                          const mts = typeof m.timestamp === "number" ? m.timestamp : new Date(m.timestamp || 0).getTime();
+                          return mts < pivot;
+                        }));
+                      }
+                    }}
+                    onClearChat={() => {
+                      setMessages([]);
+                      toast.success("Chat cleared");
+                    }}
+                    teamId={teamId}
+                    projectId={projectId}
+                    onToggleExplorer={() => setExplorerOpen(o => !o)}
+                    onOpenFile={(path: string) => {
+                      setExplorerOpen(true);
+                      setPendingOpenFile(path);
+                    }}
+                  />
+                </div>
+              </Panel>
+              {explorerOpen && (
+                <>
+                  <PanelResizeHandle className="resize-handle" />
+                  <Panel id="chat-explorer-panel" order={2} defaultSize={30} minSize={20} style={{ display: "flex", minWidth: 0 }}>
+                    <FileExplorerPanel
+                      onClose={() => setExplorerOpen(false)}
+                      projectId={projectId || undefined}
+                      teamId={teamId || undefined}
+                      lastFileChange={lastFileChange}
+                      pendingOpenFile={pendingOpenFile}
+                      onPendingOpenConsumed={() => setPendingOpenFile(null)}
                     />
-                  </div>
-                </Panel>
-                {explorerOpen && (
-                  <>
-                    <PanelResizeHandle className="resize-handle" />
-                    <Panel id="chat-explorer-panel" order={2} defaultSize={30} minSize={20} style={{ display: "flex", minWidth: 0 }}>
-                      <FileExplorerPanel
-                        onClose={() => setExplorerOpen(false)}
-                        projectId={projectId || undefined}
-                        teamId={teamId || undefined}
-                        lastFileChange={lastFileChange}
-                        pendingOpenFile={pendingOpenFile}
-                        onPendingOpenConsumed={() => setPendingOpenFile(null)}
-                      />
-                    </Panel>
-                  </>
-                )}
-              </PanelGroup>
-            </div>
-          )}
-          {activeView === "tasks" && (
-            <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <KanbanBoard tasks={tasks} agents={agents} teamId={teamId} onTasksChange={setTasks} />
-            </div>
-          )}
-          {activeView === "agents" && (
-            <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <AgentPanel agents={agents} teamId={teamId} streamingAgents={streamingAgents}
-                agentQueues={agentQueues}
-                onAgentsChange={setAgents} onToast={(msg, type) => toast.show(msg, type)} />
-            </div>
-          )}
-          {activeView === "browser" && (
-            <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <BrowserView screenshots={screenshots} />
-            </div>
-          )}
-          {activeView === "memory" && (
-            <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <MemoryView learnings={learnings} entityMemories={entityMemories} projectId={projectId} teamId={teamId}
-                onLearningsChange={setLearnings} onEntityMemoriesChange={setEntityMemories} onToast={(msg, type) => toast.show(msg, type)} />
-            </div>
-          )}
-          {activeView === "scratchpad" && (
-            <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <ScratchpadPanel teamId={teamId} agents={agents} scratchpads={scratchpads}
-                onScratchpadsChange={setScratchpads}
-                onToast={(msg, type) => toast.show(msg, type as any)} />
-            </div>
-          )}
-          {activeView === "settings" && (
-            <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <SettingsPanel teamId={teamId} projectId={projectId} agents={agents}
-                onToast={(msg, type) => toast.show(msg, type as any)}
-                onTeamDeleted={handleTeamDeleted}
-                onProjectDeleted={handleProjectDeleted} />
-            </div>
-          )}
-          {activeView === "plugins" && (
-            <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <PluginStudio onToast={(msg, type) => toast.show(msg, type as any)} />
-            </div>
-          )}
-          {activeView === "skills" && (
-            <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-              <SkillsStudio teamId={teamId} onToast={(msg, type) => toast.show(msg, type as any)} />
-            </div>
-          )}
-          {activeView === "mcp" && (
-            <div className="animate-entrance" style={{ padding: "var(--space-6)", height: "100%", overflowY: "auto" }}>
-              <div className="card">
-                <div className="section-header">
-                  <h3 className="display-sm">MCP Servers</h3>
-                  <p className="caption">Model Context Protocol server integrations for this team.</p>
-                </div>
-                <div style={{ padding: "var(--sp-lg)" }}>
-                  <McpIntegration teamId={teamId} agents={agents} onToast={(msg, type) => toast.show(msg, type as any)} />
-                </div>
+                  </Panel>
+                </>
+              )}
+            </PanelGroup>
+          </div>
+        )}
+        {activeView === "tasks" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <KanbanBoard tasks={tasks} agents={agents} teamId={teamId} onTasksChange={setTasks} />
+          </div>
+        )}
+        {activeView === "agents" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <AgentPanel agents={agents} teamId={teamId} streamingAgents={streamingAgents}
+              agentQueues={agentQueues}
+              onAgentsChange={setAgents} onToast={(msg, type) => toast.show(msg, type)} />
+          </div>
+        )}
+        {activeView === "browser" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <BrowserView screenshots={screenshots} />
+          </div>
+        )}
+        {activeView === "memory" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <MemoryView learnings={learnings} entityMemories={entityMemories} projectId={projectId} teamId={teamId}
+              onLearningsChange={setLearnings} onEntityMemoriesChange={setEntityMemories} onToast={(msg, type) => toast.show(msg, type)} />
+          </div>
+        )}
+        {activeView === "scratchpad" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <ScratchpadPanel teamId={teamId} agents={agents} scratchpads={scratchpads}
+              onScratchpadsChange={setScratchpads}
+              onToast={(msg, type) => toast.show(msg, type as any)} />
+          </div>
+        )}
+        {activeView === "settings" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <SettingsPanel teamId={teamId} projectId={projectId} agents={agents}
+              onToast={(msg, type) => toast.show(msg, type as any)}
+              onTeamDeleted={handleTeamDeleted}
+              onProjectDeleted={handleProjectDeleted} />
+          </div>
+        )}
+        {activeView === "plugins" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <PluginStudio onToast={(msg, type) => toast.show(msg, type as any)} />
+          </div>
+        )}
+        {activeView === "skills" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <SkillsStudio teamId={teamId} onToast={(msg, type) => toast.show(msg, type as any)} />
+          </div>
+        )}
+        {activeView === "mcp" && (
+          <div className="animate-entrance" style={{ padding: "var(--space-6)", height: "100%", overflowY: "auto" }}>
+            <div className="card">
+              <div className="section-header">
+                <h3 className="display-sm">MCP Servers</h3>
+                <p className="caption">Model Context Protocol server integrations for this team.</p>
+              </div>
+              <div style={{ padding: "var(--sp-lg)" }}>
+                <McpIntegration teamId={teamId} agents={agents} onToast={(msg, type) => toast.show(msg, type as any)} />
               </div>
             </div>
-          )}
-        </main>
+          </div>
+        )}
+      </main>
 
-        <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
-        <KeyboardShortcutsModal />
-      </Panel>
-    </PanelGroup>
+      <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
+      <KeyboardShortcutsModal />
+    </div>
   );
 }
 

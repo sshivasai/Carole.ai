@@ -21,6 +21,8 @@ interface Props {
   teamId: string | null;
   onTeamChange: (id: string) => void;
   onTeamCreated: (t: any) => void;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 const NAV = [
@@ -67,11 +69,16 @@ export default function Sidebar({
   activeView, onViewChange, connected,
   projects, projectId, onProjectChange, onProjectCreated,
   teams, teamId, onTeamChange, onTeamCreated,
+  isCollapsed: controlledCollapsed,
+  onToggleCollapse,
 }: Props) {
   const { user, logout } = useAuth();
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddTeam, setShowAddTeam] = useState(false);
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [internalCollapsed, setInternalCollapsed] = useState(false);
+
+  const isCollapsed = controlledCollapsed !== undefined ? controlledCollapsed : internalCollapsed;
+  const toggleCollapse = onToggleCollapse || (() => setInternalCollapsed(prev => !prev));
 
   const handleAddProject = useCallback(async (name: string) => {
     const p = await api.createProject(name, user?.id);
@@ -86,25 +93,32 @@ export default function Sidebar({
     setShowAddTeam(false);
   }, [projectId, onTeamCreated]);
 
-  const userInitials = user
-    ? `${user.first_name?.[0] || ""}${user.last_name?.[0] || ""}`.toUpperCase() || user.email[0].toUpperCase()
-    : "?";
-
   if (isCollapsed) {
     return (
       <nav className={`${styles.sidebar} ${styles.collapsedSidebar}`}>
-        <div className={styles.sidebarLogo} style={{ padding: "var(--sp-md) 0", justifyContent: "center" }}>
-          <button className={styles.collapseBtn} onClick={() => setIsCollapsed(false)} title="Expand Sidebar" style={{ padding: 4 }}>
+        <div className={styles.sidebarLogo} style={{ padding: "var(--sp-sm) 0", justifyContent: "center", minHeight: 56 }}>
+          <button className={styles.collapseBtn} onClick={toggleCollapse} title="Expand Sidebar" style={{ padding: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <img src="/branding/logo-mark-animated.webp" alt="Carole.ai" width={28} height={28} style={{ objectFit: "contain", filter: "drop-shadow(0 0 6px rgba(0, 217, 146, 0.4))" }} />
           </button>
         </div>
-        <div className={styles.sidebarNav} style={{ padding: "var(--sp-md) 0", display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div className={styles.sidebarNav} style={{ padding: "var(--sp-sm) 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
           {NAV.map(({ id, label, Icon }) => (
             <button key={id} className={`${styles.navItem} ${activeView === id ? styles.active : ""}`}
-              onClick={() => onViewChange(id)} title={label} style={{ justifyContent: "center", padding: "10px 0" }}>
+              onClick={() => onViewChange(id)} title={label} style={{ justifyContent: "center", padding: "10px 0", width: 44, borderRadius: "var(--radius-sm)" }}>
               <Icon size={18} className={styles.navItemIcon} style={{ margin: 0 }} />
             </button>
           ))}
+        </div>
+        <div className={styles.sidebarFooter} style={{ padding: "var(--sp-sm) 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+          <div className={`${styles.connDot} ${connected ? styles.live : styles.offline}`} title={connected ? "Connected" : "Connecting..."} />
+          {user && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+              <AgentAvatar name={user.first_name || user.email} id={user.id || user.email} role="human" size={28} />
+              <button className={`btn btn-icon-sm btn-ghost ${styles.footerActionBtn}`} onClick={toggleCollapse} title="Expand sidebar">
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          )}
         </div>
       </nav>
     );
@@ -121,7 +135,7 @@ export default function Sidebar({
             <span className={styles.sidebarLogoSub}>AI Agent Platform</span>
           </div>
         </div>
-        <button className={styles.collapseBtn} onClick={() => setIsCollapsed(true)} title="Collapse Sidebar">
+        <button className={styles.collapseBtn} onClick={toggleCollapse} title="Collapse Sidebar">
           <ChevronLeft size={16} />
         </button>
       </div>

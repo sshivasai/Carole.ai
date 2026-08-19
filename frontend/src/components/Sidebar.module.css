@@ -1,16 +1,18 @@
 /* Sidebar */
 .sidebar {
-  width: 100%;
-  min-width: 0;
+  width: 250px;
+  min-width: 250px;
+  max-width: 250px;
   height: 100vh;
   background: var(--color-canvas);
-  border-right: none;
+  border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   overflow: hidden;
   position: relative;
   z-index: 10;
+  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.2s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Logo */
