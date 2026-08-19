@@ -1387,12 +1387,21 @@ class ReACTAgent:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # 2. Try Python AST kwargs  (e.g.  key="value", other=True)
+        # 2. Try Python AST kwargs & positional args (e.g. key="value", or "arg1", "arg2")
         try:
             import ast as _ast
             tree = _ast.parse(f"_dummy({raw_args})", mode="eval")
             arguments = {}
-            for kw in tree.body.keywords:  # type: ignore[attr-defined]
+            if hasattr(tree.body, "args") and tree.body.args:
+                pos_vals = []
+                for a in tree.body.args:
+                    try:
+                        pos_vals.append(_ast.literal_eval(a))
+                    except Exception:
+                        pass
+                if pos_vals:
+                    arguments["_positional_args"] = pos_vals
+            for kw in getattr(tree.body, "keywords", []):  # type: ignore[attr-defined]
                 arguments[kw.arg] = _ast.literal_eval(kw.value)
             if arguments:
                 return tool_name, arguments

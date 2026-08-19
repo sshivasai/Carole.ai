@@ -56,3 +56,47 @@ async def test_code_analysis_tools_direct(tmp_path):
     res = code_analysis_tools.count_lines("code.py")
     assert "4" in res
 
+
+@pytest.mark.asyncio
+async def test_subagent_and_spawn_arg_parsing():
+    from core.tools.tool_executor import _wrap_hire_subagent, _wrap_spawn_agent
+    from unittest.mock import patch, AsyncMock
+
+    with patch("core.tools.agent_tools.agent_tools.hire_subagent", new_callable=AsyncMock) as mock_hire:
+        mock_hire.return_value = "Subagent hired"
+
+        # 1. Positional args (role, task)
+        res = await _wrap_hire_subagent(
+            {"_positional_args": ["Python Developer", "Create hello.txt"]},
+            team_id="team-1"
+        )
+        assert res == "Subagent hired"
+        mock_hire.assert_called_with("Python Developer", "Specialist in Python Developer", "Create hello.txt", "team-1", "", model=None)
+
+        # 2. Raw value string with comma-separated arguments
+        res = await _wrap_hire_subagent(
+            {"value": '"Python Developer", "Create hello.txt"'},
+            team_id="team-1"
+        )
+        assert res == "Subagent hired"
+
+        # 3. Standard kwargs with role and task
+        res = await _wrap_hire_subagent(
+            {"role": "Tester", "task": "Run tests"},
+            team_id="team-1"
+        )
+        assert res == "Subagent hired"
+        mock_hire.assert_called_with("Tester", "Specialist in Tester", "Run tests", "team-1", "", model=None)
+
+    with patch("core.tools.agent_tools.agent_tools.spawn_agent", new_callable=AsyncMock) as mock_spawn:
+        mock_spawn.return_value = "Agent spawned"
+
+        # Positional spawn
+        res = await _wrap_spawn_agent(
+            {"_positional_args": ["Nova", "Build UI"]},
+            team_id="team-1"
+        )
+        assert res == "Agent spawned"
+        mock_spawn.assert_called_with("Nova", "Build UI", "team-1", parent_coordinator_id=None)
+
+

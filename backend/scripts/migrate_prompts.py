@@ -1,4 +1,10 @@
 import asyncio
+import sys
+import os
+
+# Ensure backend root is in sys.path when executed directly
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from sqlalchemy import select
 from core.memory.database import async_session, engine
 from core.memory.models import Agent
@@ -20,6 +26,7 @@ async def migrate_prompts():
             print(f"Updated prompt for agent {agent.name}")
         await db.commit()
     await engine.dispose()
+    print("Agent prompts migrated successfully.")
 
 if __name__ == "__main__":
     asyncio.run(migrate_prompts())

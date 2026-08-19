@@ -11,6 +11,7 @@ Permission Levels:
 3. "human" - Blocks the execution flow until the human approves via the REST API.
 """
 
+import re
 import uuid
 import asyncio
 import logging
@@ -1499,8 +1500,26 @@ async def _wrap_browser_switch_to_frame(args: Dict[str, Any], team_id: str) -> s
 
 
 async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
-    name = args.get("agent_name") or args.get("name") or args.get("value", "")
+    pos = args.get("_positional_args", [])
+    name = args.get("agent_name") or args.get("name") or ""
     task = args.get("task") or args.get("prompt", "")
+
+    if pos:
+        if len(pos) >= 1 and not name:
+            name = str(pos[0])
+        if len(pos) >= 2 and not task:
+            task = str(pos[1])
+
+    if not name and "value" in args:
+        val_str = str(args["value"]).strip()
+        parts = [p.strip().strip('"').strip("'") for p in re.findall(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', val_str)]
+        if len(parts) >= 1 and not name:
+            name = parts[0]
+        if len(parts) >= 2 and not task:
+            task = parts[1]
+        elif len(parts) == 0 and not name:
+            name = val_str
+
     if not name or not task:
         return "Error: Missing 'agent_name' or 'task'."
     parent_id = args.get("_agent_id")
@@ -1512,13 +1531,55 @@ async def _wrap_hire_subagent(args: Dict[str, Any], team_id: str) -> str:
     if agent_name.startswith("Subagent-") or agent_name.startswith("Sub-"):
         return "Error: Subagents are not permitted to hire further subagents (Maximum depth of 1 reached)."
     
+    pos = args.get("_positional_args", [])
     role = args.get("role", "")
     expertise = args.get("expertise", "")
     task = args.get("task", "")
     model = args.get("model")
-    
-    if not role or not expertise or not task:
-        return "Error: Missing 'role', 'expertise', or 'task'."
+
+    # Positional args support: hire_subagent("role", "task") or hire_subagent("role", "task", "constraints")
+    if pos:
+        if len(pos) == 1 and not task:
+            task = str(pos[0])
+        elif len(pos) == 2:
+            if not role:
+                role = str(pos[0])
+            if not task:
+                task = str(pos[1])
+            if not expertise:
+                expertise = f"Specialist in {role}"
+        elif len(pos) >= 3:
+            if not role:
+                role = str(pos[0])
+            # If 2nd argument looks like the task or expertise
+            if not task:
+                task = str(pos[1]) if len(str(pos[1])) > len(str(pos[2])) else f"{pos[1]}\n{pos[2]}"
+            if not expertise:
+                expertise = str(pos[2]) if str(pos[2]) != task else f"Specialist in {role}"
+
+    # Fallback if raw 'value' string was provided
+    if not task and "value" in args:
+        val_str = str(args["value"]).strip()
+        parts = [p.strip().strip('"').strip("'") for p in re.findall(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', val_str)]
+        if len(parts) >= 2:
+            if not role:
+                role = parts[0]
+            if len(parts) == 2 and not task:
+                task = parts[1]
+                if not expertise:
+                    expertise = f"Specialist in {role}"
+            elif len(parts) >= 3:
+                if not task:
+                    task = parts[1] if len(parts[1]) > len(parts[2]) else f"{parts[1]}\n{parts[2]}"
+                if not expertise:
+                    expertise = parts[2] if parts[2] != task else f"Specialist in {role}"
+
+    # Default expertise to role if not explicitly provided
+    if role and task and not expertise:
+        expertise = f"Specialist in {role}"
+
+    if not role or not task:
+        return "Error: Missing 'role' or 'task' for hire_subagent. Example: hire_subagent(role='Python Developer', expertise='Scripting', task='...')"
         
     agent_id = args.get("_agent_id", "")
     return await agent_tools.hire_subagent(role, expertise, task, team_id, agent_id, model=model)

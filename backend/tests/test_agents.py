@@ -34,15 +34,17 @@ async def test_agent_creation_and_crud(client: AsyncClient):
     }
     signup_res = await client.post("/api/auth/signup", json=signup_payload)
     user_id = signup_res.json()["user"]["id"]
+    token = signup_res.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
 
     # Create project
     proj_payload = {"name": "Test Project", "owner_id": user_id}
-    proj_res = await client.post("/api/projects", json=proj_payload)
+    proj_res = await client.post("/api/projects", json=proj_payload, headers=headers)
     proj_id = proj_res.json()["id"]
 
     # Create team
     team_payload = {"name": "Test Team", "project_id": proj_id}
-    team_res = await client.post("/api/teams", json=team_payload)
+    team_res = await client.post("/api/teams", json=team_payload, headers=headers)
     team_id = team_res.json()["id"]
 
     # 2. Create an Agent scoped to the Team
@@ -57,7 +59,7 @@ async def test_agent_creation_and_crud(client: AsyncClient):
         "skills": ["file_write", "git_commit"],
         "tool_permissions": {"file_write": "safe"}
     }
-    res = await client.post("/api/agents", json=agent_payload)
+    res = await client.post("/api/agents", json=agent_payload, headers=headers)
     assert res.status_code == 200
     agent = res.json()
     assert agent["name"] == "Alex"
@@ -67,7 +69,7 @@ async def test_agent_creation_and_crud(client: AsyncClient):
     agent_id = agent["id"]
 
     # 3. List agents in team
-    res = await client.get(f"/api/agents/{team_id}")
+    res = await client.get(f"/api/agents/{team_id}", headers=headers)
     assert res.status_code == 200
     agents = res.json()
     assert len(agents) == 1
@@ -75,18 +77,18 @@ async def test_agent_creation_and_crud(client: AsyncClient):
 
     # 4. Update agent config
     update_payload = {"name": "Alex Modified", "personality": "casual"}
-    res = await client.put(f"/api/agents/{agent_id}", json=update_payload)
+    res = await client.put(f"/api/agents/{agent_id}", json=update_payload, headers=headers)
     assert res.status_code == 200
 
     # Fetch agents again to verify update
-    res = await client.get(f"/api/agents/{team_id}")
+    res = await client.get(f"/api/agents/{team_id}", headers=headers)
     agents = res.json()
     assert agents[0]["name"] == "Alex Modified"
 
     # 5. Delete agent
-    res = await client.delete(f"/api/agents/{agent_id}")
+    res = await client.delete(f"/api/agents/{agent_id}", headers=headers)
     assert res.status_code == 200
 
     # Ensure list is now empty
-    res = await client.get(f"/api/agents/{team_id}")
+    res = await client.get(f"/api/agents/{team_id}", headers=headers)
     assert len(res.json()) == 0

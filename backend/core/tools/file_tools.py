@@ -266,11 +266,11 @@ class FileTools:
                 )
             async with lock:
                 from core.knowledge.code_graph import code_graph
-                code_graph.mark_file_active(relative_path, agent_name, project_id)
+                await code_graph.mark_file_active(relative_path, agent_name, project_id)
                 try:
                     return await asyncio.to_thread(_sync_write)
                 finally:
-                    code_graph.clear_file_active(relative_path, project_id)
+                    await code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
             return FileChangeResult(message=f"Error writing file: {str(e)}")
 
@@ -298,11 +298,11 @@ class FileTools:
                 )
             async with lock:
                 from core.knowledge.code_graph import code_graph
-                code_graph.mark_file_active(relative_path, agent_name, project_id)
+                await code_graph.mark_file_active(relative_path, agent_name, project_id)
                 try:
                     return await asyncio.to_thread(_sync_edit)
                 finally:
-                    code_graph.clear_file_active(relative_path, project_id)
+                    await code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
             return FileChangeResult(message=f"Error editing file: {str(e)}")
 
@@ -327,11 +327,11 @@ class FileTools:
                 )
             async with lock:
                 from core.knowledge.code_graph import code_graph
-                code_graph.mark_file_active(relative_path, agent_name, project_id)
+                await code_graph.mark_file_active(relative_path, agent_name, project_id)
                 try:
                     return await asyncio.to_thread(_sync_append)
                 finally:
-                    code_graph.clear_file_active(relative_path, project_id)
+                    await code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
             return FileChangeResult(message=f"Error appending to file: {str(e)}")
 
@@ -347,11 +347,11 @@ class FileTools:
                 return f"Success: Deleted '{relative_path}'."
             async with lock:
                 from core.knowledge.code_graph import code_graph
-                code_graph.mark_file_active(relative_path, agent_name, project_id)
+                await code_graph.mark_file_active(relative_path, agent_name, project_id)
                 try:
                     return await asyncio.to_thread(_sync_delete)
                 finally:
-                    code_graph.clear_file_active(relative_path, project_id)
+                    await code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
             return f"Error deleting file: {str(e)}"
 
