@@ -224,19 +224,15 @@ class AgentTools:
         task_id = str(uuid.uuid4())
         subagent_name = f"Sub-{role.replace(' ', '')}_{task_id[:4]}"
 
-        # Build system prompt from registry: personality.subagent + any matching role framework
-        # This avoids duplicating behavioral rules already in prompts.json
-        personality_block = get_prompt("personality.subagent", name=subagent_name, role=role)
-        role_slug = f"role.{role.lower().replace(' ', '_')}"
-        role_block = get_prompt(role_slug)  # Returns '' if slug doesn't exist
+        from core.prompts import build_agent_system_prompt
+        base_prompt = build_agent_system_prompt(name=subagent_name, role=role, personality="subagent")
 
         sys_prompt = (
-            f"{personality_block}\n\n"
-            f"Role: {role} | Expertise: {expertise}\n\n"
-            f"{role_block}\n".rstrip() + "\n\n" if role_block else
-            f"{personality_block}\n\nRole: {role} | Expertise: {expertise}\n\n"
-        ) + (
-            "Your final response MUST end with:\n"
+            f"{base_prompt}\n\n"
+            f"SPECIALIZATION & SCOPE:\nRole: {role} | Expertise: {expertise}\n\n"
+            f"SUBAGENT COMPLETION PROTOCOL:\n"
+            "You were hired for this specific task. Execute the necessary actions (e.g. write_file, execute_command, etc.) using [ACTION]tool_name(...) tags.\n"
+            "When the task is complete, your final response MUST end with:\n"
             f"<task-notification>\n"
             f"  <task_id>{task_id}</task_id>\n"
             f"  <agent>{subagent_name}</agent>\n"

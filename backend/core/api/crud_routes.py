@@ -33,7 +33,7 @@ async def _get_human_name(db: AsyncSession, team_id: Optional[uuid.UUID] = None)
                 stmt_user = select(User).where(User.id == proj_obj.owner_id)
                 user_obj = (await db.execute(stmt_user)).scalar_one_or_none()
                 if user_obj:
-                    user_name = (user_obj.first_name or f"{user_obj.first_name or ''} {user_obj.last_name or ''}").strip()
+                    user_name = f"{user_obj.first_name or ''} {user_obj.last_name or ''}".strip()
                     if not user_name and user_obj.email:
                         user_name = user_obj.email.split("@")[0]
 
@@ -41,7 +41,7 @@ async def _get_human_name(db: AsyncSession, team_id: Optional[uuid.UUID] = None)
         stmt_user = select(User).limit(1)
         user_obj = (await db.execute(stmt_user)).scalar_one_or_none()
         if user_obj:
-            user_name = (user_obj.first_name or f"{user_obj.first_name or ''} {user_obj.last_name or ''}").strip()
+            user_name = f"{user_obj.first_name or ''} {user_obj.last_name or ''}".strip()
             if not user_name and user_obj.email:
                 user_name = user_obj.email.split("@")[0]
 
@@ -166,7 +166,7 @@ class McpServerCreate(BaseModel):
     team_id: str
     server_name: str
     command: str
-    args: str
+    args: List[str] = []  # List instead of comma-separated string to support args with commas
     agent_id: Optional[str] = None
     env_vars: Optional[dict] = None
 
@@ -201,7 +201,7 @@ async def list_users(db: AsyncSession = Depends(get_db), user: dict = Depends(re
 # ============================================================
 
 @router.post("/projects")
-async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)):
+async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     # If owner_id is provided, make sure it is valid; otherwise fetch the first user or default
     owner_uuid = None
     if body.owner_id:
@@ -231,12 +231,12 @@ async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)
     return {"id": str(project.id), "name": project.name}
 
 @router.get("/projects")
-async def list_projects(db: AsyncSession = Depends(get_db)):
+async def list_projects(db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Project).order_by(Project.created_at.desc()))
     return [{"id": str(p.id), "name": p.name, "owner_id": str(p.owner_id)} for p in result.scalars().all()]
 
 @router.put("/projects/{project_id}")
-async def update_project(project_id: str, body: ProjectUpdate, db: AsyncSession = Depends(get_db)):
+async def update_project(project_id: str, body: ProjectUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Project).where(Project.id == uuid.UUID(project_id)))
     project = result.scalar_one_or_none()
     if not project:
@@ -267,7 +267,7 @@ async def update_project(project_id: str, body: ProjectUpdate, db: AsyncSession 
 # ============================================================
 
 @router.post("/learnings")
-async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_db)):
+async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.llm.multi_model_router import llm_router
     from core.memory.models import Learning
     from core.memory.lancedb_client import lancedb_client
@@ -305,7 +305,7 @@ async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_d
     return {"id": str(learning.id), "task_summary": learning.task_summary, "lesson_rule": learning.lesson_rule}
 
 @router.get("/learnings")
-async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db)):
+async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import Learning
     from sqlalchemy import or_
     stmt = select(Learning).where(
@@ -328,7 +328,7 @@ async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db)):
     ]
 
 @router.put("/learnings/{learning_id}")
-async def update_learning(learning_id: str, body: LearningUpdate, db: AsyncSession = Depends(get_db)):
+async def update_learning(learning_id: str, body: LearningUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import Learning
     
     stmt = select(Learning).where(Learning.id == uuid.UUID(learning_id))
@@ -350,7 +350,7 @@ async def update_learning(learning_id: str, body: LearningUpdate, db: AsyncSessi
     return {"status": "updated", "id": learning_id}
 
 @router.delete("/learnings/{learning_id}")
-async def delete_learning(learning_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_learning(learning_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import Learning
     await db.execute(delete(Learning).where(Learning.id == uuid.UUID(learning_id)))
     await db.flush()
@@ -363,7 +363,7 @@ async def delete_learning(learning_id: str, db: AsyncSession = Depends(get_db)):
 # ============================================================
 
 @router.post("/teams")
-async def create_team(body: TeamCreate, db: AsyncSession = Depends(get_db)):
+async def create_team(body: TeamCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     team = Team(name=body.name, project_id=uuid.UUID(body.project_id))
     db.add(team)
     await db.flush()
@@ -371,7 +371,7 @@ async def create_team(body: TeamCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/teams/{project_id}")
-async def list_teams(project_id: str, db: AsyncSession = Depends(get_db)):
+async def list_teams(project_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(
         select(Team).where(Team.project_id == uuid.UUID(project_id)).order_by(Team.created_at.desc())
     )
@@ -448,7 +448,7 @@ async def list_agents(team_id: str, db: AsyncSession = Depends(get_db), user: di
     ]
 
 @router.put("/agents/{agent_id}")
-async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depends(get_db)):
+async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
     agent = result.scalar_one_or_none()
     if not agent:
@@ -508,7 +508,7 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
     }
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
     agent = result.scalar_one_or_none()
     if agent:
@@ -623,7 +623,7 @@ async def delete_user(user_id: str, db: AsyncSession = Depends(get_db), user: di
 # ============================================================
 
 @router.get("/projects/single/{project_id}")
-async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
+async def get_project(project_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Project).where(Project.id == uuid.UUID(project_id)))
     p = result.scalar_one_or_none()
     if not p:
@@ -631,7 +631,7 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
     return {"id": str(p.id), "name": p.name, "owner_id": str(p.owner_id)}
 
 @router.get("/teams/single/{team_id}")
-async def get_team(team_id: str, db: AsyncSession = Depends(get_db)):
+async def get_team(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Team).where(Team.id == uuid.UUID(team_id)))
     t = result.scalar_one_or_none()
     if not t:
@@ -798,7 +798,7 @@ _UPLOAD_DIR = str(_CAROLE_HOME_DIR / "uploads")
 os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
 @router.post("/upload")
-async def upload_file(file: UploadFile = File(...), team_id: Optional[str] = None):
+async def upload_file(file: UploadFile = File(...), team_id: Optional[str] = None, user: dict = Depends(require_auth)):
     """Handles file uploads for multimodal chat support, organizing them by workspace."""
     import uuid
     import os
@@ -913,7 +913,7 @@ class MessageEdit(BaseModel):
 
 
 @router.put("/messages/{message_id}")
-async def edit_message(message_id: str, body: MessageEdit, db: AsyncSession = Depends(get_db)):
+async def edit_message(message_id: str, body: MessageEdit, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Edit a single message's text only. No deletion, no rollback."""
     msg = await db.get(Message, uuid.UUID(message_id))
     if not msg:
@@ -925,7 +925,7 @@ async def edit_message(message_id: str, body: MessageEdit, db: AsyncSession = De
 
 
 @router.delete("/messages/{message_id}")
-async def delete_message(message_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_message(message_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Delete a single message only. No rollback, no cascade to later messages."""
     msg = await db.get(Message, uuid.UUID(message_id))
     if not msg:
@@ -944,7 +944,7 @@ async def delete_message(message_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/teams/{team_id}/messages")
-async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db)):
+async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Delete all messages for a team permanently."""
     from sqlalchemy import delete, update
     import shutil
@@ -989,7 +989,7 @@ async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/messages/{message_id}/rollback")
-async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_db)):
+async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """
     Rollback: delete this message AND all messages that came after it in the
     same team, then replay FileBackup records in reverse to restore the workspace.
@@ -1022,6 +1022,8 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
 
     # 2. Collect file backups for those messages, oldest-first so we replay in
     #    correct chronological order (but we restore in reverse = newest first)
+    restored: list = []
+    deleted_files: list = []
     if later_ids:
         from core.memory.models import FileBackup
         backups = (await db.execute(
@@ -1112,7 +1114,7 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
 # ============================================================
 
 @router.post("/agents/{agent_id}/stop")
-async def stop_agent(agent_id: str, cancel_all: bool = False):
+async def stop_agent(agent_id: str, cancel_all: bool = False, user: dict = Depends(require_auth)):
     """
     Cancel the currently executing agent loop.
     If cancel_all=true, also drains the entire queue so no further
@@ -1124,7 +1126,7 @@ async def stop_agent(agent_id: str, cancel_all: bool = False):
 
 
 @router.get("/agents/{agent_id}/queue")
-async def get_agent_queue(agent_id: str):
+async def get_agent_queue(agent_id: str, user: dict = Depends(require_auth)):
     """
     Return the current queue status for an agent:
     - queue_depth: number of tasks waiting
@@ -1140,7 +1142,7 @@ async def get_agent_queue(agent_id: str):
 # ============================================================
 
 @router.post("/tasks")
-async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
+async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.chat.event_bus import event_bus
     from core.chat.message_router import message_router
 
@@ -1225,7 +1227,7 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db)):
     return {"id": str(task.id), "title": task.title, "status": task.status}
 
 @router.get("/tasks/{team_id}")
-async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     stmt = select(Task).where(Task.team_id == uuid.UUID(team_id))
     if status:
         stmt = stmt.where(Task.status == status)
@@ -1244,7 +1246,7 @@ async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSessio
     ]
 
 @router.put("/tasks/{task_id}")
-async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends(get_db)):
+async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
     task = result.scalar_one_or_none()
     if not task:
@@ -1313,7 +1315,7 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
 from core.memory.models import TaskComment
 
 @router.delete("/tasks/{task_id}")
-async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_task(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
     task = result.scalar_one_or_none()
     if not task:
@@ -1354,7 +1356,7 @@ async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
     return {"status": "deleted", "id": task_id}
 
 @router.post("/tasks/{task_id}/comments")
-async def create_task_comment(task_id: str, body: TaskCommentCreate, db: AsyncSession = Depends(get_db)):
+async def create_task_comment(task_id: str, body: TaskCommentCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
     task = result.scalar_one_or_none()
     if not task:
@@ -1390,7 +1392,7 @@ async def create_task_comment(task_id: str, body: TaskCommentCreate, db: AsyncSe
     }
 
 @router.get("/tasks/{task_id}/comments")
-async def list_task_comments(task_id: str, db: AsyncSession = Depends(get_db)):
+async def list_task_comments(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     stmt = select(TaskComment).where(TaskComment.task_id == uuid.UUID(task_id)).order_by(TaskComment.created_at.asc())
     result = await db.execute(stmt)
     comments = result.scalars().all()
@@ -1436,7 +1438,7 @@ async def get_default_model_catalog():
 
 
 @router.post("/models/catalog")
-async def save_model_catalog_endpoint(body: dict):
+async def save_model_catalog_endpoint(body: dict, user: dict = Depends(require_auth)):
     """
     Saves the model catalog to ~/.carole/supported_models.json.
     Accepts the full catalog object (same shape as GET response).
@@ -1447,7 +1449,7 @@ async def save_model_catalog_endpoint(body: dict):
 
 
 @router.post("/models/catalog/reset")
-async def reset_model_catalog_endpoint():
+async def reset_model_catalog_endpoint(user: dict = Depends(require_auth)):
     """
     Deletes ~/.carole/supported_models.json so factory defaults take effect.
     Returns the factory defaults so the UI can refresh immediately.
@@ -1476,7 +1478,7 @@ async def get_default_prompts():
 
 
 @router.post("/prompts")
-async def save_prompts_endpoint(body: dict):
+async def save_prompts_endpoint(body: dict, user: dict = Depends(require_auth)):
     """
     Saves prompts to ~/.carole/prompts.json.
     Accepts a flat dict of { slug: template_string }.
@@ -1487,7 +1489,7 @@ async def save_prompts_endpoint(body: dict):
 
 
 @router.post("/prompts/reset")
-async def reset_prompts_endpoint():
+async def reset_prompts_endpoint(user: dict = Depends(require_auth)):
     """
     Deletes ~/.carole/prompts.json so factory defaults take effect.
     Returns the factory defaults so the UI can refresh immediately.
@@ -1524,33 +1526,10 @@ async def get_role_template(role: str):
     return template
 
 
-# ============================================================
-# Semantic Search (pgvector)
-# ============================================================
 
-@router.get("/messages/search/{team_id}")
-async def search_messages(team_id: str, q: str, limit: int = 10, db: AsyncSession = Depends(get_db)):
-    """Simple text search over past team messages using ILIKE."""
-    from core.memory.models import Message
-
-    stmt = (
-        select(Message)
-        .where(Message.team_id == uuid.UUID(team_id))
-        .where(Message.text.ilike(f"%{q}%"))
-        .order_by(Message.created_at.desc())
-        .limit(limit)
-    )
-    result = await db.execute(stmt)
-    messages = result.scalars().all()
-
-    return [
-        {
-            "id": str(m.id), "sender_id": m.sender_id,
-            "text": m.text,
-            "created_at": m.created_at.isoformat() if m.created_at else None,
-        }
-        for m in messages
-    ]
+# NOTE: search_messages is defined earlier in this file (line ~757) with proper
+# auth checking, LIKE metachar escaping, and ownership verification.
+# The duplicate unsafe version that previously appeared here has been removed.
 
 
 # ============================================================
@@ -1558,7 +1537,7 @@ async def search_messages(team_id: str, q: str, limit: int = 10, db: AsyncSessio
 # ============================================================
 
 @router.post("/audio/transcribe/{team_id}")
-async def transcribe_audio_upload(team_id: str, file: UploadFile = File(...)):
+async def transcribe_audio_upload(team_id: str, file: UploadFile = File(...), user: dict = Depends(require_auth)):
     """
     Accepts an audio file upload, transcribes it via OpenAI Whisper,
     and broadcasts the transcription to the team EventBus.
@@ -1583,6 +1562,7 @@ async def transcribe_audio_upload(team_id: str, file: UploadFile = File(...)):
 @router.post("/seed")
 async def seed_demo(db: AsyncSession = Depends(get_db)):
     """Creates a demo user, project, team, and 3 agents for quick testing."""
+    from core.auth.auth_service import _hash_password
     # Check if already seeded
     existing = await db.execute(select(User).limit(1))
     if existing.scalar_one_or_none():
@@ -1590,7 +1570,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
 
     user = User(
         email="admin@carole.ai",
-        hashed_password="demo",
+        hashed_password=_hash_password("demo123"),  # properly hashed — login with demo123
         first_name="Admin",
         last_name="User",
         is_verified=True,
@@ -1689,7 +1669,8 @@ async def upload_knowledge(
     project_id: str,
     team_id: Optional[str] = None,
     file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
 ):
     """
     Ingests an uploaded file (PDF, TXT, MD) into the learnings table (pgvector).
@@ -1708,7 +1689,7 @@ async def upload_knowledge(
 # ============================================================
 
 @router.get("/usage/{project_id}")
-async def get_project_usage(project_id: str, db: AsyncSession = Depends(get_db)):
+async def get_project_usage(project_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """
     Returns estimated token usage and cost for all agents in the project.
     """
@@ -1774,13 +1755,13 @@ async def get_mcp_status():
     return safe_statuses
 
 @router.post("/mcp")
-async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_db)):
+async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import McpServer
     from core.tools.mcp_client import mcp_manager
     import asyncio
     
-    # Parse args
-    args_list = [arg.strip() for arg in body.args.split(",") if arg.strip()]
+    # args is now List[str] directly — no splitting needed
+    args_list = body.args
 
     server = McpServer(
         team_id=uuid.UUID(body.team_id),
@@ -1850,7 +1831,7 @@ async def list_global_mcps():
     return results
 
 @router.post("/mcp/global/{server_name}/toggle")
-async def toggle_global_mcp(server_name: str):
+async def toggle_global_mcp(server_name: str, user: dict = Depends(require_auth)):
     import json
     import asyncio
     from core.config import GLOBAL_MCPS, DISABLED_GLOBAL_MCPS_FILE
@@ -1894,7 +1875,7 @@ async def toggle_global_mcp(server_name: str):
     return {"ok": True, "server_name": server_name, "is_disabled": is_disabling}
 
 @router.get("/mcp/{team_id}")
-async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db)):
+async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import McpServer
     stmt = select(McpServer).where(McpServer.team_id == uuid.UUID(team_id))
     result = await db.execute(stmt)
@@ -1911,7 +1892,7 @@ async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db)):
     ]
 
 @router.delete("/mcp/{server_id}")
-async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import McpServer
     from core.tools.mcp_client import mcp_manager
     stmt = select(McpServer).where(McpServer.id == uuid.UUID(server_id))
@@ -1999,7 +1980,7 @@ async def get_settings():
 
 
 @router.post("/settings")
-async def save_settings(body: AppSettings):
+async def save_settings(body: AppSettings, user: dict = Depends(require_auth)):
     """
     Saves API keys and provider config to ~/.carole/config.json and hot-reloads
     the LLM router so changes take effect immediately without a server restart.
@@ -2068,7 +2049,8 @@ class EntityMemoryCreate(BaseModel):
 async def list_entity_memories(
     team_id: Optional[str] = None,
     project_id: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
 ):
     if not team_id and not project_id:
         return []
@@ -2085,7 +2067,8 @@ async def list_entity_memories(
 @router.post("/memories/entities")
 async def create_entity_memory(
     body: EntityMemoryCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
 ):
     mem = EntityMemory(
         team_id=uuid.UUID(body.team_id) if body.team_id else None,
@@ -2101,7 +2084,8 @@ async def create_entity_memory(
 @router.delete("/memories/entities/{memory_id}")
 async def delete_entity_memory(
     memory_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
 ):
     stmt = delete(EntityMemory).where(EntityMemory.id == uuid.UUID(memory_id))
     await db.execute(stmt)
@@ -2119,7 +2103,7 @@ async def get_prompt_blocks():
 
 
 @router.put("/settings/prompt-blocks")
-async def save_prompt_blocks(updates: list[dict]):
+async def save_prompt_blocks(updates: list[dict], user: dict = Depends(require_auth)):
     """Save one or more prompt block overrides. Send a list of { key, enabled, content }."""
     from core.agent.prompt_blocks import save_blocks
     save_blocks(updates)
@@ -2128,7 +2112,7 @@ async def save_prompt_blocks(updates: list[dict]):
 
 
 @router.post("/settings/prompt-blocks/{key}/reset")
-async def reset_prompt_block(key: str):
+async def reset_prompt_block(key: str, user: dict = Depends(require_auth)):
     """Reset a single prompt block back to its default content."""
     from core.agent.prompt_blocks import reset_block
     try:

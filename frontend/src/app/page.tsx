@@ -179,22 +179,37 @@ function AppShell() {
 
   const [activeView, setActiveView] = useState("chat");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(260);
 
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("carole_sidebar_collapsed");
-      if (saved !== null) setSidebarCollapsed(saved === "true");
+      const savedCollapsed = localStorage.getItem("carole_sidebar_collapsed");
+      if (savedCollapsed !== null) setSidebarCollapsed(savedCollapsed === "true");
+      const savedWidth = localStorage.getItem("carole_sidebar_width");
+      if (savedWidth !== null) {
+        const parsed = parseInt(savedWidth, 10);
+        if (!isNaN(parsed) && parsed >= 180 && parsed <= 500) {
+          setSidebarWidth(parsed);
+        }
+      }
     } catch {}
   }, []);
 
-  const handleToggleSidebar = useCallback(() => {
+  const handleToggleSidebar = useCallback((forceState?: boolean) => {
     setSidebarCollapsed(prev => {
-      const next = !prev;
+      const next = forceState !== undefined ? forceState : !prev;
       try {
         localStorage.setItem("carole_sidebar_collapsed", String(next));
       } catch {}
       return next;
     });
+  }, []);
+
+  const handleWidthChange = useCallback((newWidth: number) => {
+    setSidebarWidth(newWidth);
+    try {
+      localStorage.setItem("carole_sidebar_width", String(newWidth));
+    } catch {}
   }, []);
   const [projects, setProjects] = useState<any[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -385,6 +400,8 @@ function AppShell() {
         onTeamCreated={handleTeamCreated}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={handleToggleSidebar}
+        width={sidebarWidth}
+        onWidthChange={handleWidthChange}
       />
 
       <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", background: "var(--bg-app)", position: "relative", width: "100%" }}>

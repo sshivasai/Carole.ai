@@ -352,13 +352,16 @@ async def list_file_history(
 
     stmt = (
         select(FileBackup)
+        .where(
+            FileBackup.file_path.ilike(f"%{filename}")
+        )
         .order_by(FileBackup.created_at.desc())
         .limit(100)
     )
     result = await db.execute(stmt)
     backups = result.scalars().all()
 
-    # Match by exact path, ending relative path, or filename
+    # Fine-grained match: prefer exact path match, then relative-path suffix, then filename
     filtered = [
         b for b in backups
         if b.file_path and (
@@ -453,6 +456,18 @@ async def restore_backup(
         raise HTTPException(status_code=404, detail="Backup file not found on disk")
 
     target_path = backup.file_path
+
+    # Sandbox check: ensure the restore destination is within the workspace
+    from core.tools.file_tools import file_tools as _ft
+    workspace_root = await _ft.get_workspace_root_for_team(str(backup.team_id))
+    try:
+        Path(target_path).resolve().relative_to(workspace_root.resolve())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Restore target path is outside the allowed workspace. Refusing to overwrite."
+        )
+
     try:
         shutil.copy2(str(backup_path), target_path)
         return {"status": "success", "message": f"Restored '{target_path}' from backup."}

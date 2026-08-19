@@ -22,7 +22,9 @@ interface Props {
   onTeamChange: (id: string) => void;
   onTeamCreated: (t: any) => void;
   isCollapsed?: boolean;
-  onToggleCollapse?: () => void;
+  onToggleCollapse?: (collapsed?: boolean) => void;
+  width?: number;
+  onWidthChange?: (width: number) => void;
 }
 
 const NAV = [
@@ -71,14 +73,61 @@ export default function Sidebar({
   teams, teamId, onTeamChange, onTeamCreated,
   isCollapsed: controlledCollapsed,
   onToggleCollapse,
+  width = 260,
+  onWidthChange,
 }: Props) {
   const { user, logout } = useAuth();
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddTeam, setShowAddTeam] = useState(false);
   const [internalCollapsed, setInternalCollapsed] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
 
   const isCollapsed = controlledCollapsed !== undefined ? controlledCollapsed : internalCollapsed;
-  const toggleCollapse = onToggleCollapse || (() => setInternalCollapsed(prev => !prev));
+  const toggleCollapse = useCallback((forceState?: boolean) => {
+    if (onToggleCollapse) {
+      onToggleCollapse(forceState);
+    } else {
+      setInternalCollapsed(prev => forceState !== undefined ? forceState : !prev);
+    }
+  }, [onToggleCollapse]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    const startX = e.clientX;
+    const startWidth = isCollapsed ? 64 : width;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX;
+      const targetWidth = startWidth + delta;
+      if (targetWidth < 120) {
+        if (!isCollapsed) toggleCollapse(true);
+      } else {
+        if (isCollapsed) toggleCollapse(false);
+        const clamped = Math.max(180, Math.min(500, targetWidth));
+        onWidthChange?.(clamped);
+      }
+    };
+
+    const onMouseUp = () => {
+      setIsResizing(false);
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [isCollapsed, width, toggleCollapse, onWidthChange]);
+
+  const handleDoubleClickHandle = useCallback(() => {
+    if (isCollapsed) {
+      toggleCollapse(false);
+    } else if (width !== 260) {
+      onWidthChange?.(260);
+    } else {
+      toggleCollapse(true);
+    }
+  }, [isCollapsed, width, toggleCollapse, onWidthChange]);
 
   const handleAddProject = useCallback(async (name: string) => {
     const p = await api.createProject(name, user?.id);
@@ -93,11 +142,20 @@ export default function Sidebar({
     setShowAddTeam(false);
   }, [projectId, onTeamCreated]);
 
+  const effectiveWidth = isCollapsed ? 64 : width;
+  const transitionStyle = isResizing ? "none" : "width 0.2s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.2s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.2s cubic-bezier(0.4, 0, 0.2, 1)";
+
   if (isCollapsed) {
     return (
-      <nav className={`${styles.sidebar} ${styles.collapsedSidebar}`}>
+      <nav
+        className={`${styles.sidebar} ${styles.collapsedSidebar}`}
+        style={{
+          width: 64, minWidth: 64, maxWidth: 64,
+          transition: transitionStyle
+        }}
+      >
         <div className={styles.sidebarLogo} style={{ padding: "var(--sp-sm) 0", justifyContent: "center", minHeight: 56 }}>
-          <button className={styles.collapseBtn} onClick={toggleCollapse} title="Expand Sidebar" style={{ padding: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <button className={styles.collapseBtn} onClick={() => toggleCollapse(false)} title="Expand Sidebar" style={{ padding: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <img src="/branding/logo-mark-animated.webp" alt="Carole.ai" width={28} height={28} style={{ objectFit: "contain", filter: "drop-shadow(0 0 6px rgba(0, 217, 146, 0.4))" }} />
           </button>
         </div>
@@ -114,18 +172,32 @@ export default function Sidebar({
           {user && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
               <AgentAvatar name={user.first_name || user.email} id={user.id || user.email} role="human" size={28} />
-              <button className={`btn btn-icon-sm btn-ghost ${styles.footerActionBtn}`} onClick={toggleCollapse} title="Expand sidebar">
+              <button className={`btn btn-icon-sm btn-ghost ${styles.footerActionBtn}`} onClick={() => toggleCollapse(false)} title="Expand sidebar">
                 <ChevronRight size={14} />
               </button>
             </div>
           )}
         </div>
+        <div
+          className={`${styles.resizeHandle} ${isResizing ? styles.isResizing : ""}`}
+          onMouseDown={handleMouseDown}
+          onDoubleClick={handleDoubleClickHandle}
+          title="Drag to resize sidebar · Double click to expand"
+        />
       </nav>
     );
   }
 
   return (
-    <nav className={styles.sidebar}>
+    <nav
+      className={styles.sidebar}
+      style={{
+        width: effectiveWidth,
+        minWidth: effectiveWidth,
+        maxWidth: effectiveWidth,
+        transition: transitionStyle
+      }}
+    >
       {/* Logo */}
       <div className={styles.sidebarLogo}>
         <div className={styles.sidebarLogoBrand}>
@@ -135,7 +207,7 @@ export default function Sidebar({
             <span className={styles.sidebarLogoSub}>AI Agent Platform</span>
           </div>
         </div>
-        <button className={styles.collapseBtn} onClick={toggleCollapse} title="Collapse Sidebar">
+        <button className={styles.collapseBtn} onClick={() => toggleCollapse(true)} title="Collapse Sidebar">
           <ChevronLeft size={16} />
         </button>
       </div>
@@ -216,6 +288,12 @@ export default function Sidebar({
           </div>
         )}
       </div>
+      <div
+        className={`${styles.resizeHandle} ${isResizing ? styles.isResizing : ""}`}
+        onMouseDown={handleMouseDown}
+        onDoubleClick={handleDoubleClickHandle}
+        title="Drag to resize sidebar · Double click to reset width"
+      />
     </nav>
   );
 }

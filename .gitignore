@@ -45,6 +45,8 @@ Thumbs.db
 
 # Credentials and Secrets
 backend/credentials.json
+backend/.env
+backend/.env.*
 token.json
 *.pem
 *.key

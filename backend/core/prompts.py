@@ -187,6 +187,12 @@ def build_agent_system_prompt(name: str, role: str, personality: str = "professi
     _ROLE_ALIASES = {
         "coordinator": "orchestrator",
         "software engineer": "coder",
+        "python developer": "coder",
+        "python engineer": "coder",
+        "backend developer": "coder",
+        "frontend developer": "coder",
+        "full stack developer": "coder",
+        "web developer": "coder",
         "code reviewer": "reviewer",
         "technical writer": "writer",
         "documentation specialist": "writer",
@@ -194,11 +200,14 @@ def build_agent_system_prompt(name: str, role: str, personality: str = "professi
         "data analyst": "analyst",
         "devops engineer": "devops",
         "test engineer": "tester",
+        "qa engineer": "tester",
         "ui/ux designer": "coder",   # Designers use coder framework
     }
     role_key = role.strip().lower()
     role_key = _ROLE_ALIASES.get(role_key, role_key)
     role_prompt = get_prompt(f"role.{role_key}", name=name, role=role)
+    if not role_prompt and ("developer" in role_key or "engineer" in role_key or "programmer" in role_key):
+        role_prompt = get_prompt("role.coder", name=name, role=role)
 
     markdown_rules   = get_prompt("system.markdown_rules")
     behavioral_rules = get_prompt("system.behavioral_rules", name=name, role=role)
@@ -218,4 +227,8 @@ def build_agent_system_prompt(name: str, role: str, personality: str = "professi
         prompt += f"\n{coordinator_directives}\n"
         
     return prompt
+
+
+# Backward compatibility alias
+build_system_prompt = build_agent_system_prompt
 

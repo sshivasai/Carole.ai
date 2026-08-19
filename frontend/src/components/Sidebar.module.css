@@ -95,7 +95,28 @@
 }
 
 .collapsedSidebar {
-  width: 60px;
+  width: 64px !important;
+  min-width: 64px !important;
+  max-width: 64px !important;
+}
+
+/* Resize Drag Handle */
+.resizeHandle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 50;
+  background: transparent;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.resizeHandle:hover,
+.resizeHandle.isResizing {
+  background: var(--color-primary);
+  box-shadow: 0 0 8px rgba(0, 217, 146, 0.6);
 }
 
 /* Entity Blocks */

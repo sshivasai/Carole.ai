@@ -846,40 +846,48 @@ class ReACTAgent:
             thought_buffer = re.sub(r'^\[[^\]]+\]:\s*', '', thought_buffer, count=1)
 
             action_call = self._parse_action(thought_buffer)
+            if not action_call and self._current_reasoning_buffer:
+                action_call = self._parse_action(self._current_reasoning_buffer)
 
             if not action_call:
-                # Heuristic: does this look like a malformed tool call rather
-                # than a genuine final answer? If the model emitted something
-                # tool-call-like (wrong tag spelling, XML-style <tool>, JSON
-                # function_call, or a bare `word(` near the end) we treat it as
-                # a parse failure and ask the model to retry with the exact
-                # [ACTION]tool_name(args)[/ACTION] format instead of silently
-                # stopping.
-                _lower = thought_buffer.lower()
+                # Heuristic: does this look like a malformed tool call or reasoning-only turn
+                # rather than a genuine final answer?
+                _combined_text = (thought_buffer + "\n" + (self._current_reasoning_buffer or "")).strip()
+                _lower = _combined_text.lower()
                 action_promise_triggers = [
                     "[action", "[tool", "<tool", "tool_call", "function_call",
                     "writing the file", "writing to", "creating the file", "creating a file",
                     "i'll create", "i will create", "i'll write", "i will write",
                     "let me write", "let me create", "let me execute", "running the command",
-                    "saving to", "creating file",
+                    "saving to", "creating file", "write_file", "execute_command", "read_file",
                     # Step narration triggers — agent describing what it WILL do without doing it
                     "i'll now", "i will now", "i'll move on", "i'll work on", "i will work on",
                     "i'll get that set up", "i'll finalize", "i'll build",
                     "next, i'll", "next i'll", "now i'll", "now i will",
                     "i'll proceed", "first, i'll",
-                    "let me handle", "let me proceed",
+                    "let me handle", "let me proceed", "let me do this",
+                    # Delegation-intent triggers — agent promising to delegate without calling the tool
+                    "i'll hire", "i will hire", "i'll spawn", "i will spawn",
+                    "i'll delegate", "i will delegate", "i'll assign", "i will assign",
+                    "i'll use hire_subagent", "i'll use spawn_agent",
+                    "hiring a", "spawning a", "delegating to",
+                    "i'll kick off", "i will kick off",
+                    "i'll send", "i will send a message",
                 ]
                 # Only match actual snake_case tool call patterns (e.g. write_file(), execute_command()),
                 # NOT any word followed by a paren (which falsely fires on "README.md (see above)")
                 looks_like_tool_call = any(
                     sig in _lower for sig in action_promise_triggers
-                ) or bool(re.search(r"\b[a-z]+(?:_[a-z]+)+\s*\(", thought_buffer[-200:]))
+                ) or bool(re.search(r"\b[a-z]+(?:_[a-z]+)+\s*\(", _combined_text[-300:]))
+
+                # Detect reasoning without content: model generated thoughts into reasoning but left content empty
+                has_thought_without_action = not thought_buffer.strip() and bool(self._current_reasoning_buffer)
 
                 # Detect plan-only responses: model outputs a numbered plan/steps
                 # list AND contains intent language but no ACTION tag was found.
                 # This is the classic "I'll create X... I'll create Y... [stops]" failure.
                 # Only trigger on the very first loop to avoid flagging long multi-step final answers.
-                has_numbered_plan = bool(re.search(r"^\s*\d+[\.\)]\s+\S", thought_buffer, re.MULTILINE)) and loop_count <= 1
+                has_numbered_plan = bool(re.search(r"^\s*\d+[\.\)]\s+\S", _combined_text, re.MULTILINE)) and loop_count <= 1
                 has_plan_header = any(p in _lower for p in ["plan:", "here's my plan", "here is my plan", "my plan is", "the plan is"]) and loop_count <= 1
 
                 # Detect code-in-chat: model pastes ``` code blocks instead of using write_file.
@@ -888,8 +896,15 @@ class ReACTAgent:
                 is_plan_without_action = (has_numbered_plan or has_plan_header)
                 is_code_in_chat = has_code_block and loop_count <= max_loops - 1
 
-                if (looks_like_tool_call or is_plan_without_action or is_code_in_chat) and loop_count < max_loops - 1:
-                    if is_code_in_chat and not looks_like_tool_call:
+                if (looks_like_tool_call or is_plan_without_action or is_code_in_chat or has_thought_without_action) and loop_count < max_loops - 1:
+                    if has_thought_without_action:
+                        correction = (
+                            "[OBSERVATION] You have completed your reasoning. Now execute your planned tool action immediately using the required format:\n"
+                            "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                            "For example: [ACTION]write_file({\"relative_path\": \"hello_subagent.txt\", \"content\": \"Hello from subagent!\"})[/ACTION]\n"
+                            "Execute your tool call NOW.[/OBSERVATION]"
+                        )
+                    elif is_code_in_chat and not looks_like_tool_call:
                         correction = (
                             "[OBSERVATION] CRITICAL ERROR — Code in Chat Detected.\n"
                             "You pasted a code block into chat instead of writing it to a file. This is strictly forbidden.\n"
@@ -906,13 +921,32 @@ class ReACTAgent:
                             "Start executing your first planned step RIGHT NOW. Do not stop until ALL steps are done.[/OBSERVATION]"
                         )
                     else:
-                        correction = (
-                            "[OBSERVATION] Error — Missing Tool Call Tag.\n"
-                            "You indicated an action but did not include an [ACTION] tag. Use this exact format:\n"
-                            "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                            "For example: [ACTION]read_file({\"relative_path\": \"backend/main.py\"})[/ACTION]\n"
-                            "Execute the tool call now.[/OBSERVATION]"
+                        # Check if it was a delegation promise specifically
+                        _is_delegation_promise = any(
+                            phrase in _lower for phrase in [
+                                "i'll hire", "i will hire", "i'll spawn", "i will spawn",
+                                "i'll delegate", "i will delegate", "hiring a", "spawning a",
+                                "i'll kick off", "i will kick off",
+                            ]
                         )
+                        if _is_delegation_promise:
+                            correction = (
+                                "[OBSERVATION] CRITICAL ERROR — Delegation Promise Without Execution.\n"
+                                "You said you would hire/spawn an agent but did NOT include the [ACTION] tag. Saying you will do something is NOT doing it.\n"
+                                "You MUST immediately call the tool. Exact format required:\n"
+                                "  [ACTION]hire_subagent({\"role\": \"Python Developer\", \"expertise\": \"file I/O\", \"task\": \"Create a file named hello.txt with content Hello\"})[/ACTION]\n"
+                                "Or to spawn an existing teammate:\n"
+                                "  [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION]\n"
+                                "Execute the delegation tool call NOW.[/OBSERVATION]"
+                            )
+                        else:
+                            correction = (
+                                "[OBSERVATION] Error — Missing Tool Call Tag.\n"
+                                "You indicated an action but did not include an [ACTION] tag. Use this exact format:\n"
+                                "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                                "For example: [ACTION]read_file({\"relative_path\": \"backend/main.py\"})[/ACTION]\n"
+                                "Execute the tool call now.[/OBSERVATION]"
+                            )
                     # FIX L2: Alternating-turn constraint.
                     # The messages list may end with a `user` message (the last observation).
                     # Injecting another `user` message back-to-back violates the

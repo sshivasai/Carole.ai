@@ -143,7 +143,8 @@ def _decode_jwt(token: str) -> Optional[dict]:
 
     try:
         payload = json.loads(_b64url_decode(p))
-    except (json.JSONDecodeError, Exception):
+    except Exception as _e:
+        logger.debug("JWT payload decode failed: %s", _e)
         return None
 
     # Check expiry

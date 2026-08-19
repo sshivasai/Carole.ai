@@ -517,10 +517,14 @@ class FileTools:
             abs_a = (workspace / path_a).resolve()
             abs_b = (workspace / path_b).resolve()
 
-            # Sandbox check
-            if not str(abs_a).startswith(str(workspace)):
+            # Sandbox check — use relative_to() for case-safe enforcement on Windows
+            try:
+                abs_a.relative_to(workspace)
+            except ValueError:
                 return f"Error: path_a '{path_a}' is outside the workspace."
-            if not str(abs_b).startswith(str(workspace)):
+            try:
+                abs_b.relative_to(workspace)
+            except ValueError:
                 return f"Error: path_b '{path_b}' is outside the workspace."
             if not abs_a.exists():
                 return f"Error: File not found: {path_a}"

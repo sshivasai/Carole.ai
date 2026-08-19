@@ -11,10 +11,13 @@ Endpoints:
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 
 from fastapi import APIRouter, Request
+
+logger = logging.getLogger("carole.google_auth")
 from fastapi.responses import RedirectResponse, JSONResponse
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as GoogleRequest
@@ -108,10 +111,11 @@ async def google_status():
     email = None
     try:
         import httpx
-        resp = await httpx.AsyncClient().get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {creds.token}"}
-        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {creds.token}"}
+            )
         if resp.status_code == 200:
             email = resp.json().get("email")
     except Exception:
@@ -243,11 +247,12 @@ async def google_disconnect():
     if creds:
         try:
             import httpx
-            await httpx.AsyncClient().post(
-                "https://oauth2.googleapis.com/revoke",
-                params={"token": creds.token},
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    "https://oauth2.googleapis.com/revoke",
+                    params={"token": creds.token},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
         except Exception:
             pass  # Best-effort revoke; always delete local token
 
