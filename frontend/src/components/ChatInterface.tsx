@@ -1,7 +1,13 @@
 "use client";
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { ChatMessage, AgentConfig } from "@/lib/types";
-import { Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion, Loader2, ChevronDown, ChevronUp, ChevronRight, Mic, MicOff, Search, Edit2, Trash2, History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode, Terminal, Copy, Check, ThumbsUp, ThumbsDown } from "lucide-react";
+import { 
+  Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion, 
+  Loader2, ChevronDown, ChevronUp, ChevronRight, Search, Edit2, Trash2, 
+  History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode, 
+  Terminal, Copy, Check, ThumbsUp, ThumbsDown, Cpu, Scale, Sparkles, 
+  FileText, Globe, GitBranch, CheckCircle2, AlertTriangle, ShieldCheck
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/hooks/useApi";
@@ -35,6 +41,64 @@ function fmtTime(ts?: string | number) {
   return new Date(typeof ts === "number" ? ts : ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+export function getToolMeta(toolName: string) {
+  if (!toolName) return { label: "Tool", icon: Wrench, className: "tool-pill" };
+  const lower = toolName.toLowerCase();
+  if (lower.startsWith("mcp_")) {
+    return { label: "MCP", icon: Wrench, className: "tool-pill-mcp" };
+  }
+  if (["write_file", "edit_file", "read_file", "append_file", "delete_file", "list_directory", "copy_file", "move_file"].some(t => lower.includes(t))) {
+    return { label: "File", icon: FileText, className: "tool-pill-file" };
+  }
+  if (["execute_command", "bash", "shell", "terminal"].some(t => lower.includes(t))) {
+    return { label: "Shell", icon: Terminal, className: "tool-pill-bash" };
+  }
+  if (["hire_subagent", "spawn_agent"].some(t => lower.includes(t))) {
+    return { label: "Subagent", icon: Cpu, className: "tool-pill-subagent" };
+  }
+  if (lower.startsWith("browser_")) {
+    return { label: "Browser", icon: Globe, className: "tool-pill-browser" };
+  }
+  if (lower.startsWith("git_")) {
+    return { label: "Git", icon: GitBranch, className: "tool-pill-git" };
+  }
+  if (["write_scratchpad", "read_scratchpad", "update_memory", "search_learnings"].some(t => lower.includes(t))) {
+    return { label: "Memory", icon: Lightbulb, className: "tool-pill-memory" };
+  }
+  return { label: "Action", icon: Wrench, className: "tool-pill" };
+}
+
+function TaskNotificationCard({ text }: { text: string }) {
+  const taskIdMatch = text.match(/<task_id>(.*?)<\/task_id>/);
+  const agentMatch = text.match(/<agent>(.*?)<\/agent>/);
+  const statusMatch = text.match(/<status>(.*?)<\/status>/);
+  const resultMatch = text.match(/<result>([\s\S]*?)<\/result>/);
+
+  const taskId = taskIdMatch ? taskIdMatch[1].trim() : "";
+  const agentName = agentMatch ? agentMatch[1].trim() : "";
+  const status = statusMatch ? statusMatch[1].trim() : "completed";
+  const result = resultMatch ? resultMatch[1].trim() : text;
+
+  const isSuccess = status.toLowerCase() === "completed" || status.toLowerCase() === "success";
+
+  return (
+    <div className="task-notif-card" style={{ maxWidth: 640 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13 }}>{isSuccess ? "✅" : "⚠️"}</span>
+          <span className="body-sm-strong" style={{ color: isSuccess ? "#34d399" : "#f87171" }}>
+            Subagent Task {isSuccess ? "Completed" : "Report"}
+          </span>
+          {agentName && <span className="subagent-chip" style={{ fontSize: 10 }}>🤖 {agentName}</span>}
+        </div>
+        {taskId && <span className="caption" style={{ fontFamily: "monospace", fontSize: 10, opacity: 0.7 }}>ID: {taskId.slice(0, 8)}</span>}
+      </div>
+      <div className="markdown-body" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--color-ink)" }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{result}</ReactMarkdown>
+      </div>
+    </div>
+  );
+}
 
 function ApprovalCard({ msg }: { msg: ChatMessage }) {
   const backendStatus = (msg as any).status;
@@ -60,36 +124,60 @@ function ApprovalCard({ msg }: { msg: ChatMessage }) {
       setLoading(false);
     }
   };
-  const borderColor = status === "pending" ? "var(--color-warning)" : status === "approved" ? "var(--color-primary)" : "var(--color-danger)";
+
+  const isJudgeEvaluating = msg.text?.includes("Judge AI is evaluating") || msg.text?.includes("Judge");
+  const toolMeta = getToolMeta(msg.tool_name || "");
+  const ToolIcon = toolMeta.icon;
+
+  const borderColor = status === "pending" ? (isJudgeEvaluating ? "var(--color-primary)" : "var(--color-warning)") : status === "approved" ? "var(--color-success)" : "var(--color-danger)";
+
   return (
-    <div style={{ border: `1px solid ${borderColor}`, borderRadius: "var(--radius-md)", padding: "var(--sp-lg)", background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", boxShadow: "var(--shadow-clay)", display: "flex", flexDirection: "column", gap: "var(--sp-md)", maxWidth: 460 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-        <span style={{ fontSize: 14 }}>🛑</span>
-        <span className="body-sm-strong">Approval Required</span>
-        {status !== "pending" && <span className={`pill ${status === "approved" ? "pill-live" : "pill-error"}`}>{status.toUpperCase()}</span>}
+    <div className="judge-card-evaluating" style={{ border: `1px solid ${borderColor}`, display: "flex", flexDirection: "column", gap: "var(--sp-md)", maxWidth: 500 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+          {isJudgeEvaluating ? <Scale size={16} color="var(--color-primary)" className="animate-pulse" /> : <AlertTriangle size={16} color="var(--color-warning)" />}
+          <span className="body-sm-strong">{isJudgeEvaluating ? "Judge AI Security Gate" : "Approval Required"}</span>
+        </div>
+        {status !== "pending" ? (
+          <span className={`pill ${status === "approved" ? "pill-live" : "pill-error"}`}>{status.toUpperCase()}</span>
+        ) : (
+          <span className="pill" style={{ background: "rgba(167, 139, 250, 0.15)", color: "var(--color-primary-soft)", border: "1px solid rgba(167, 139, 250, 0.3)" }}>
+            PENDING DECISION
+          </span>
+        )}
       </div>
-      <div className="body-sm">
-        <span className="text-mute">Agent </span><strong>{msg.sender_name}</strong>
-        <span className="text-mute"> wants to run </span>
-        <span className="code-inline">{msg.tool_name}</span>
+
+      <div className="body-sm" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span className="text-mute">Agent</span>
+        <strong style={{ color: "var(--color-ink)" }}>{msg.sender_name}</strong>
+        <span className="text-mute">requests execution:</span>
+        <span className={toolMeta.className} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <ToolIcon size={11} /> {msg.tool_name}
+        </span>
       </div>
+
       {msg.text && (
-        <div className="body-sm text-mute" style={{ whiteSpace: "pre-wrap", background: "var(--color-canvas)", padding: "var(--sp-sm)", borderRadius: "var(--radius-sm)", borderLeft: "2px solid var(--color-warning)" }}>
+        <div className="body-sm" style={{ whiteSpace: "pre-wrap", background: "var(--color-canvas)", padding: "var(--sp-sm) var(--sp-md)", borderRadius: "var(--radius-sm)", borderLeft: "2px solid var(--color-primary)", color: "var(--color-body)", fontSize: 11 }}>
           {msg.text}
         </div>
       )}
+
       {msg.arguments && Object.keys(msg.arguments).length > 0 && (
-        <pre style={{ fontSize: 10, background: "var(--color-canvas)", borderRadius: "var(--radius-xs)", padding: "var(--sp-sm) var(--sp-md)", overflowX: "auto", maxHeight: 120, border: "1px solid var(--color-hairline)", margin: 0 }}>
-          {JSON.stringify(msg.arguments, null, 2)}
-        </pre>
+        <div style={{ background: "var(--color-canvas)", borderRadius: "var(--radius-xs)", padding: "var(--sp-sm) var(--sp-md)", border: "1px solid var(--color-hairline)" }}>
+          <div className="caption" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4, color: "var(--color-mute)" }}>Arguments:</div>
+          <pre style={{ fontSize: 10, overflowX: "auto", maxHeight: 140, margin: 0, color: "var(--color-ink)", fontFamily: "var(--font-mono, monospace)" }}>
+            {JSON.stringify(msg.arguments, null, 2)}
+          </pre>
+        </div>
       )}
+
       {status === "pending" && (
-        <div style={{ display: "flex", gap: "var(--sp-md)" }}>
+        <div style={{ display: "flex", gap: "var(--sp-md)", marginTop: 2 }}>
           <button className="btn btn-primary btn-sm" style={{ flex: 1 }} disabled={loading} onClick={() => decide(true)}>
-            {loading ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />} Approve
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />} Approve Override
           </button>
           <button className="btn btn-danger btn-sm" style={{ flex: 1 }} disabled={loading} onClick={() => decide(false)}>
-            <XCircle size={12} /> Deny
+            <XCircle size={12} /> Deny Execution
           </button>
         </div>
       )}
@@ -135,12 +223,22 @@ function ToolRow({ msg }: { msg: ChatMessage }) {
   const [open, setOpen] = useState(false);
   const isEnd = msg.type === "tool_end";
   const obs = msg.text || "";
+  const toolMeta = getToolMeta(msg.tool_name || "");
+  const ToolIcon = toolMeta.icon;
+
   return (
-    <div style={{ paddingLeft: 36, display: "flex", flexDirection: "column", gap: 2 }}>
+    <div style={{ paddingLeft: 36, display: "flex", flexDirection: "column", gap: 2, margin: "2px 0" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute)", fontSize: 11 }}>
-        <Wrench size={11} style={{ color: isEnd ? "var(--color-primary)" : "var(--color-warning)" }} />
-        <span className="code-inline" style={{ padding: "0 4px", fontSize: 10 }}>{msg.tool_name}</span>
-        <span>{isEnd ? "done" : "running…"}</span>
+        <span className={toolMeta.className} style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+          <ToolIcon size={10} /> {toolMeta.label}
+        </span>
+        <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--color-ink)", fontWeight: 500 }}>
+          {msg.tool_name}
+        </span>
+        <span style={{ fontSize: 10, color: isEnd ? "var(--color-success)" : "var(--color-warning)", display: "flex", alignItems: "center", gap: 3 }}>
+          {isEnd ? <Check size={10} /> : <AppSpinner size={10} />}
+          {isEnd ? "completed" : "running…"}
+        </span>
         {isEnd && obs && (
           <button onClick={() => setOpen(o => !o)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)", display: "flex", padding: 0 }}>
             {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
@@ -158,7 +256,7 @@ function ToolRow({ msg }: { msg: ChatMessage }) {
 
 function TypingIndicator() {
   return (
-    <span className="typing-indicator" title="Agent is typing...">
+    <span className="typing-indicator" title="Agent is working...">
       <span className="typing-dot" style={{ animationDelay: "0ms" }} />
       <span className="typing-dot" style={{ animationDelay: "200ms" }} />
       <span className="typing-dot" style={{ animationDelay: "400ms" }} />
@@ -169,10 +267,15 @@ function TypingIndicator() {
 function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: string; isStreaming?: boolean; components?: any }) {
   const [open, setOpen] = useState<boolean>(Boolean(isStreaming));
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [elapsedSecs, setElapsedSecs] = useState(0);
 
   useEffect(() => {
     if (isStreaming) {
       setOpen(true);
+      const interval = setInterval(() => setElapsedSecs(s => s + 1), 1000);
+      return () => clearInterval(interval);
+    } else {
+      setElapsedSecs(0);
     }
   }, [isStreaming]);
 
@@ -194,11 +297,13 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
         }}
       >
         {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        <span style={{ fontSize: 10, letterSpacing: "0.3px", fontWeight: 600 }}>🧠 Thoughts & Activity</span>
+        <span style={{ fontSize: 10, letterSpacing: "0.3px", fontWeight: 600, color: "var(--color-primary-soft)" }}>
+          🧠 Reasoning Trace & Tool Activity
+        </span>
         {isStreaming && (
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 6, color: "var(--color-primary)", fontSize: 10 }}>
             <AppSpinner size={12} />
-            <span style={{ fontSize: 9, opacity: 0.85, fontWeight: 500 }}>Working in background...</span>
+            <span style={{ fontSize: 9, opacity: 0.9, fontWeight: 500 }}>Executing ({elapsedSecs}s)...</span>
           </span>
         )}
       </button>
@@ -210,7 +315,7 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
             marginTop: "var(--sp-sm)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)",
             border: "1px solid var(--border-glass)", borderRadius: "var(--radius-sm)",
             padding: "var(--sp-md)", fontSize: 11, color: "var(--color-body)",
-            lineHeight: 1.6, maxHeight: 300, overflowY: "auto"
+            lineHeight: 1.6, maxHeight: 320, overflowY: "auto"
           }}
         >
           <ReactMarkdown skipHtml={true} remarkPlugins={[remarkGfm]} components={components}>
@@ -224,15 +329,11 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
 
 export default function ChatInterface({ messages, agents, onSendMessage, onDeleteMessage, onRollbackMessage, onClearChat, teamId, projectId, onToggleExplorer, onOpenFile }: Props) {
   const [inputText, setInputText] = useState("");
-  const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showTeamAgents, setShowTeamAgents] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const mediaRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
 
   // Wave 4.1 — Load older messages
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -510,33 +611,6 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
     }
   };
 
-  const toggleRecord = async () => {
-    if (recording) {
-      mediaRef.current?.stop();
-      setRecording(false);
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mr = new MediaRecorder(stream);
-        chunksRef.current = [];
-        mr.ondataavailable = e => chunksRef.current.push(e.data);
-        mr.onstop = async () => {
-          stream.getTracks().forEach(t => t.stop());
-          if (!teamId) return;
-          setTranscribing(true);
-          try {
-            const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-            const res = await api.transcribeAudio(teamId, blob);
-            if (res.text) setInputText(t => t + res.text);
-          } catch { /* ignore */ }
-          finally { setTranscribing(false); }
-        };
-        mr.start();
-        mediaRef.current = mr;
-        setRecording(true);
-      } catch { /* microphone denied */ }
-    }
-  };
 
   const handleSearch = useCallback(async () => {
     if (!teamId || !searchQuery.trim()) return;
@@ -573,56 +647,74 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
     <div style={{ flex: 1, minHeight: 0, height: "100%", width: "100%", position: "relative" }}>
       <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Header */}
-        <header className="section-header" style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", background: "var(--bg-surface)" }}>
-          <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <header className="section-header" style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", background: "var(--bg-surface)", borderBottom: "1px solid var(--border-glass)" }}>
+          <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "var(--sp-md)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-lg)" }}>
               <div>
-                <h2 className="display-sm">Team Chat</h2>
+                <h2 className="display-sm" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  Team Chat
+                  <span className="pill pill-live" style={{ fontSize: 9, padding: "1px 6px" }}>
+                    <span className="live-dot" /> LIVE
+                  </span>
+                </h2>
                 <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
               </div>
               
               <div style={{ position: "relative" }}>
                 <div 
                   onClick={() => setShowTeamAgents(!showTeamAgents)}
-                  style={{ display: "flex", alignItems: "center", cursor: "pointer", padding: "4px", borderRadius: "var(--radius-md)", background: showTeamAgents ? "var(--bg-surface-elevated)" : "transparent" }}
-                  title="View team agents"
+                  className="live-team-presence"
+                  style={{ cursor: "pointer" }}
+                  title="View active team agents and subagents"
                 >
-                  <div style={{ display: "flex", marginRight: "8px" }}>
+                  <div style={{ display: "flex", marginRight: "4px" }}>
                     {agents.slice(0, 3).map((agent, i) => (
                       <div key={agent.id} style={{ marginLeft: i > 0 ? "-8px" : 0, borderRadius: "50%", border: "2px solid var(--bg-surface)", zIndex: 3 - i }}>
-                        <AgentAvatar name={agent.name} avatarSeed={agent.id} size={24} />
+                        <AgentAvatar name={agent.name} avatarSeed={agent.id} size={22} />
                       </div>
                     ))}
                     {agents.length > 3 && (
-                      <div style={{ marginLeft: "-8px", borderRadius: "50%", border: "2px solid var(--bg-surface)", width: 24, height: 24, background: "var(--bg-surface-elevated)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, color: "var(--text-secondary)", zIndex: 0 }}>
+                      <div style={{ marginLeft: "-8px", borderRadius: "50%", border: "2px solid var(--bg-surface)", width: 22, height: 22, background: "var(--color-canvas-raised)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "var(--color-primary-soft)", zIndex: 0 }}>
                         +{agents.length - 3}
                       </div>
                     )}
                   </div>
-                  <ChevronDown size={14} color="var(--text-secondary)" style={{ transform: showTeamAgents ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                  <span style={{ fontSize: 11, fontWeight: 600, color: "var(--color-ink)" }}>
+                    {agents.length} Agent{agents.length !== 1 ? "s" : ""}
+                  </span>
+                  <ChevronDown size={12} color="var(--color-mute)" style={{ transform: showTeamAgents ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
                 </div>
 
                 {showTeamAgents && (
-                  <div style={{ position: "absolute", top: "100%", left: 0, marginTop: "8px", width: "260px", background: "var(--bg-surface)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-md)", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 100, overflow: "hidden" }}>
-                    <div style={{ padding: "12px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-surface-elevated)" }}>
-                      <h3 style={{ fontSize: "12px", fontWeight: 600, margin: 0, color: "var(--text-secondary)" }}>TEAM AGENTS ({agents.length})</h3>
+                  <div style={{ position: "absolute", top: "100%", left: 0, marginTop: "8px", width: "280px", background: "var(--bg-glass-card)", backdropFilter: "var(--blur-lg)", WebkitBackdropFilter: "var(--blur-lg)", border: "1px solid var(--border-glass)", borderRadius: "var(--radius-md)", boxShadow: "0 12px 36px rgba(0,0,0,0.5)", zIndex: 100, overflow: "hidden" }}>
+                    <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border-glass)", background: "rgba(255,255,255,0.02)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.5px", color: "var(--color-mute)", textTransform: "uppercase" }}>TEAM PRESENCE</span>
+                      <span className="caption" style={{ fontSize: 10, color: "var(--color-primary)" }}>{agents.length} available</span>
                     </div>
-                    <div style={{ maxHeight: "300px", overflowY: "auto", padding: "8px" }}>
-                      {agents.map(a => (
-                        <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "8px", borderRadius: "var(--radius-sm)" }}>
-                          <AgentAvatar name={a.name} avatarSeed={a.id} size={32} />
-                          <div>
-                            <div style={{ fontWeight: 500, fontSize: "13px" }}>{a.name}</div>
-                            {a.role_template && <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{a.role_template}</div>}
+                    <div style={{ maxHeight: "300px", overflowY: "auto", padding: "6px" }}>
+                      {agents.map(a => {
+                        const isSub = a.name.startsWith("Sub-") || a.name.startsWith("Subagent-");
+                        return (
+                          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "7px 10px", borderRadius: "var(--radius-sm)", transition: "background var(--t-fast)" }} className="hover:bg-[var(--color-canvas-raised)]">
+                            <AgentAvatar name={a.name} avatarSeed={a.id} size={28} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 600, fontSize: "12px", color: "var(--color-ink)", display: "flex", alignItems: "center", gap: 5 }}>
+                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                                {isSub && <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>SUB</span>}
+                              </div>
+                              <div className="caption" style={{ fontSize: "10px", color: "var(--color-mute)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {a.role || a.model || "Active Agent"}
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
               </div>
             </div>
-            <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
+            <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "center" }}>
               {onToggleExplorer && (
                 <button className="btn btn-icon btn-outline btn-sm" onClick={onToggleExplorer} title="Toggle File Explorer">
                   <Folder size={14} />
@@ -686,6 +778,12 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               // Compact collapsible row for intermediate tool-trace records
               if (isIntermediate) {
                 const isExpanded = expandedTraces.has(msg.id);
+                // Extract tool name if formatted like 🛠️ **tool_name**
+                const toolNameMatch = (msg.text || "").match(/🛠️\s*\*\*([^\*]+)\*\*/);
+                const toolName = toolNameMatch ? toolNameMatch[1] : "Tool Action";
+                const toolMeta = getToolMeta(toolName);
+                const ToolIcon = toolMeta.icon;
+
                 return (
                   <div key={msg.id} style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-start", marginLeft: 8, marginBottom: 2 }}>
                     <AgentAvatar name={msg.sender_name || "agent"} id={msg.sender_id} size={22} isStreaming={isStreaming} />
@@ -697,15 +795,23 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                           return s;
                         })}
                         style={{
-                          background: "none", border: "none", cursor: "pointer", padding: 0,
-                          display: "flex", alignItems: "center", gap: 4, color: "var(--color-mute)"
+                          background: "var(--bg-glass-card)", border: "1px solid var(--border-glass)",
+                          borderRadius: "var(--radius-sm)", cursor: "pointer", padding: "4px 8px",
+                          display: "inline-flex", alignItems: "center", gap: 6, color: "var(--color-body)",
+                          transition: "all var(--t-fast)"
                         }}
                       >
-                        {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                        <span className="caption" style={{ fontFamily: "monospace", fontSize: 10 }}>
-                          🛠️ {msg.sender_name} — {(msg.text || "").slice(0, 60)}{(msg.text || "").length > 60 ? "…" : ""}
+                        {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                        <span className={toolMeta.className} style={{ fontSize: 9, padding: "1px 5px" }}>
+                          <ToolIcon size={9} /> {toolMeta.label}
                         </span>
-                        {msg.timestamp && <span className="caption" style={{ marginLeft: 4, opacity: 0.4 }}>{fmtTime(msg.timestamp)}</span>}
+                        <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--color-ink)", fontWeight: 500 }}>
+                          {toolName}
+                        </span>
+                        <span className="caption" style={{ fontSize: 10, color: "var(--color-mute)" }}>
+                          ({msg.sender_name})
+                        </span>
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: 4, opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
                       </button>
                       {isExpanded && (
                         <div className="markdown-body" style={{ fontSize: 11, marginTop: 4, padding: "var(--sp-sm) var(--sp-md)", background: "var(--color-canvas-raised)", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "auto", maxHeight: 300 }}>
@@ -795,6 +901,24 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                   <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
                 </div>
               );
+
+              // Check if message is a subagent task notification report
+              const isTaskNotification = Boolean(msg.text?.includes("<task-notification>"));
+              if (isTaskNotification) {
+                return (
+                  <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                    <AgentAvatar name={msg.sender_name || "Subagent"} id={msg.sender_id} size={32} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                        <span className="body-sm-strong">{msg.sender_name}</span>
+                        <span className="subagent-chip" style={{ fontSize: 9, padding: "1px 5px" }}>WORKER REPORT</span>
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
+                      </div>
+                      <TaskNotificationCard text={msg.text || ""} />
+                    </div>
+                  </div>
+                );
+              }
 
               const isThinking = msg.type === "thinking";
 
@@ -908,7 +1032,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                         {isThinking ? (
                           <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", color: "var(--color-mute)" }}>
                             <TypingIndicator />
-                            <span className="body-sm" style={{ opacity: 0.8 }}>Thinking...</span>
+                            <span className="body-sm" style={{ opacity: 0.8 }}>Thinking & analyzing...</span>
                           </div>
                         ) : isHuman ? (
                           <div style={{ whiteSpace: "pre-wrap" }}>
@@ -917,9 +1041,11 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                               <div style={{ display: "flex", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)", flexWrap: "wrap" }}>
                                 {msg.attachments.map((att: any, i: number) => (
                                   att.type?.startsWith("image/") ? (
-                                    <img key={i} src={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(0,217,146,0.2)" }} />
+                                    <img key={i} src={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(167, 139, 250, 0.2)" }} />
                                   ) : (
-                                    <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(0,217,146,0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none" }}>📎 {att.name}</a>
+                                    <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(167, 139, 250, 0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                      📎 {att.name}
+                                    </a>
                                   )
                                 ))}
                               </div>
@@ -1033,22 +1159,58 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
         {/* Attachments preview */}
         {attachments.length > 0 && (
           <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
-            <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", gap: "var(--sp-sm)" }}>
-              {attachments.map((att, i) => (
-                <div key={i} style={{ position: "relative", width: 48, height: 48, borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "hidden", background: "var(--color-canvas-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {att.type?.startsWith("image/") ? (
-                    <img src={att.url} alt="attachment" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ) : (
-                    <div style={{ fontSize: 9, color: "var(--color-mute)" }}>File</div>
-                  )}
-                  <button
-                    onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
-                    style={{ position: "absolute", top: 2, right: 2, background: "rgba(0,0,0,0.5)", color: "white", border: "none", borderRadius: "50%", padding: 2, cursor: "pointer", display: "flex" }}
-                  >
-                    <XCircle size={10} />
-                  </button>
-                </div>
-              ))}
+            <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "var(--sp-sm)" }}>
+              {attachments.map((att, i) => {
+                const isImage = att.type?.startsWith("image/");
+                const ext = (att.name || "").split(".").pop()?.toLowerCase() ?? "";
+                const typeLabel: Record<string, string> = {
+                  pdf: "PDF", doc: "DOC", docx: "DOCX", xls: "XLS", xlsx: "XLSX",
+                  ppt: "PPT", pptx: "PPTX", txt: "TXT", csv: "CSV",
+                  json: "JSON", md: "MD", py: "PY", ts: "TS", tsx: "TSX", js: "JS",
+                };
+                const label = typeLabel[ext] ?? ext.toUpperCase() ?? "FILE";
+                return (
+                  <div key={i} style={{
+                    position: "relative",
+                    borderRadius: "var(--radius-sm)",
+                    border: "1px solid var(--color-hairline)",
+                    overflow: "hidden",
+                    background: "var(--color-canvas-soft)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    ...(isImage ? { width: 56, height: 56 } : { height: 44, maxWidth: 180, padding: "0 10px", gap: 6 })
+                  }}>
+                    {isImage ? (
+                      <img src={att.url} alt={att.name ?? "attachment"} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : (
+                      <>
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+                          background: "var(--color-primary-glow)", color: "var(--color-primary)",
+                          borderRadius: 3, padding: "2px 5px", flexShrink: 0
+                        }}>{label}</span>
+                        <span style={{
+                          fontSize: 11, color: "var(--color-mute)",
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          maxWidth: 110
+                        }} title={att.name}>{att.name}</span>
+                      </>
+                    )}
+                    <button
+                      onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
+                      style={{
+                        position: "absolute", top: 2, right: 2,
+                        background: "rgba(0,0,0,0.55)", color: "white",
+                        border: "none", borderRadius: "50%", padding: 2,
+                        cursor: "pointer", display: "flex", lineHeight: 1
+                      }}
+                    >
+                      <XCircle size={10} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -1058,7 +1220,13 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
           <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto" }}>
             <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
 
-              <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileUpload} />
+              <input
+                type="file"
+                ref={fileInputRef}
+                style={{ display: "none" }}
+                onChange={handleFileUpload}
+                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.json,.md,.py,.ts,.tsx,.js,.jsx"
+              />
               <button className="btn btn-sm btn-icon btn-ghost" title="Attach file" onClick={() => fileInputRef.current?.click()} disabled={uploading} style={{ flexShrink: 0, padding: "8px 12px" }}>
                 {uploading ? <Loader2 size={16} className="animate-spin" /> : <Folder size={16} />}
               </button>
@@ -1122,11 +1290,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                 onChange={handleChange}
                 onKeyDown={handleKeyDown}
               />
-              <button className={`btn btn-sm ${recording ? "btn-danger" : "btn-outline"}`}
-                onClick={toggleRecord} style={{ height: 40 }} title={recording ? "Stop recording" : "Voice input"}>
-                {transcribing ? <Loader2 size={14} className="animate-spin" /> : recording ? <MicOff size={14} /> : <Mic size={14} />}
-              </button>
-              <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={!inputText.trim()} style={{ height: 40 }}>
+              <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={!inputText.trim() && attachments.length === 0} style={{ height: 40 }}>
                 <Send size={14} /> Send
               </button>
             </div>

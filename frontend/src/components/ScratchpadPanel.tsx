@@ -222,22 +222,78 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
           const empty = !p.content?.trim();
           const Icon = p.target === "team" ? Users : UserIcon;
           return (
-            <button key={k} onClick={() => setSelectedKey(k)}
+            <button
+              key={k}
+              onClick={() => setSelectedKey(k)}
               className={active ? "active" : ""}
               style={{
-                display: "flex", width: "100%", alignItems: "center", gap: "var(--sp-sm)",
-                padding: "var(--sp-sm) var(--sp-md)", borderRadius: 8, marginBottom: 2,
-                textAlign: "left", cursor: "pointer",
-                background: active ? "var(--color-primary-soft, rgba(99,102,241,0.12))" : "transparent",
-                border: "none", color: active ? "var(--color-primary)" : "var(--color-text)",
-              }}>
-              <Icon size={15} style={{ flexShrink: 0 }} />
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13 }}>
+                display: "flex",
+                width: "100%",
+                alignItems: "center",
+                gap: "var(--sp-sm)",
+                padding: "8px 12px",
+                borderRadius: 8,
+                marginBottom: 3,
+                textAlign: "left",
+                cursor: "pointer",
+                background: active
+                  ? "var(--color-primary-glow)"
+                  : "transparent",
+                border: active
+                  ? "1px solid rgba(167, 139, 250, 0.35)"
+                  : "1px solid transparent",
+                color: active
+                  ? "var(--color-primary)"
+                  : "var(--color-ink)",
+                fontWeight: active ? 700 : 500,
+                transition: "all var(--t-fast)",
+              }}
+            >
+              <Icon
+                size={15}
+                style={{
+                  flexShrink: 0,
+                  color: active ? "var(--color-primary)" : "var(--color-mute)",
+                }}
+              />
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontSize: 13,
+                  fontWeight: active ? 700 : 500,
+                  color: active ? "var(--color-ink-strong)" : "var(--color-ink)",
+                }}
+              >
                 {p.target === "team" ? "Team (Common)" : p.agent_name}
               </span>
-              {empty
-                ? <span style={{ fontSize: 10, opacity: 0.5 }}>empty</span>
-                : <span style={{ fontSize: 10, opacity: 0.6 }}>{relativeTime(p.updated_at)}</span>}
+              {empty ? (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontFamily: "var(--font-mono, monospace)",
+                    color: "var(--color-mute)",
+                    padding: "1px 5px",
+                    borderRadius: 4,
+                    background: "var(--color-canvas-raised)",
+                  }}
+                >
+                  empty
+                </span>
+              ) : (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontFamily: "var(--font-mono, monospace)",
+                    color: active ? "var(--color-primary)" : "var(--color-mute)",
+                  }}
+                >
+                  {relativeTime(p.updated_at)}
+                </span>
+              )}
             </button>
           );
         })}

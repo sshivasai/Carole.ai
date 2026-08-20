@@ -106,3 +106,46 @@ async def init_db(force_recreate: bool = False):
                     # Duplicate column error is expected on existing databases
                     if "duplicate column name" not in str(e).lower():
                         logger.info("DB Migration Notice: %s", e)
+
+        # 5. Fix file_backups.message_id NOT NULL constraint mismatch.
+        #    The initial migration created this column as NOT NULL, but the
+        #    SQLAlchemy model defines it as nullable=True. Subagents hit an
+        #    IntegrityError on every write_file because they have no
+        #    active_message_id at their first tool call.
+        #    SQLite doesn't support ALTER COLUMN, so we use the recommended
+        #    table-rebuild approach.
+        if _is_sqlite:
+            try:
+                # Check current nullability via PRAGMA table_info
+                result = await conn.execute(text("PRAGMA table_info(file_backups)"))
+                rows = result.fetchall()
+                col_info = {row[1]: row for row in rows}  # name -> row
+                msg_id_col = col_info.get("message_id")
+                # notnull=1 means it's NOT NULL — we need to make it nullable
+                if msg_id_col and msg_id_col[3] == 1:
+                    logger.info("DB Migration: Fixing file_backups.message_id NOT NULL → nullable...")
+                    await conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS file_backups_new ("
+                        "  id TEXT NOT NULL, "
+                        "  team_id TEXT NOT NULL, "
+                        "  message_id TEXT NULL, "
+                        "  file_path TEXT NOT NULL, "
+                        "  backup_file_name VARCHAR(255), "
+                        "  operation VARCHAR(20) NOT NULL DEFAULT 'write_file', "
+                        "  created_at DATETIME, "
+                        "  PRIMARY KEY (id), "
+                        "  FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE, "
+                        "  FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE"
+                        ")"
+                    ))
+                    await conn.execute(text(
+                        "INSERT INTO file_backups_new "
+                        "SELECT id, team_id, message_id, file_path, backup_file_name, operation, created_at "
+                        "FROM file_backups"
+                    ))
+                    await conn.execute(text("DROP TABLE file_backups"))
+                    await conn.execute(text("ALTER TABLE file_backups_new RENAME TO file_backups"))
+                    logger.info("DB Migration: file_backups.message_id is now nullable.")
+            except Exception as e:
+                logger.warning("DB Migration: Could not fix file_backups.message_id: %s", e)
+

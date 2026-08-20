@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import type { AgentConfig, ScheduledTask, AccessControlConfig } from "@/lib/types";
-import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock, Shield } from "lucide-react";
+import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock, Shield, Shuffle, Sparkles, RefreshCw } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 import AgentAvatar from "./AgentAvatar";
@@ -28,20 +28,43 @@ function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const roleColor = ROLE_COLORS[agent.role] || ROLE_COLORS.default;
+  const isSubagent = agent.name.startsWith("Sub-") || agent.name.startsWith("Subagent-") || agent.role === "subagent";
 
   return (
-    <div className="card" style={{ padding: "var(--sp-lg)", display: "flex", flexDirection: "column", gap: "var(--sp-md)", position: "relative", transition: "all var(--t-fast)" }}>
+    <div 
+      className={`card ${isThinking ? "status-ring-thinking" : ""}`} 
+      style={{ 
+        padding: "var(--sp-lg)", 
+        display: "flex", 
+        flexDirection: "column", 
+        gap: "var(--sp-md)", 
+        position: "relative", 
+        transition: "all var(--t-fast)",
+        border: isSubagent ? "1px solid rgba(251, 191, 36, 0.45)" : isThinking ? "1px solid var(--color-primary)" : "1px solid var(--border-subtle)",
+        background: isSubagent ? "linear-gradient(135deg, rgba(251, 191, 36, 0.04), var(--bg-surface))" : "var(--bg-surface)",
+      }}
+    >
       <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 4 }}>
         <button className="btn btn-icon-sm btn-ghost" onClick={onEdit} title="Edit agent"><Edit2 size={12} /></button>
         <button className="btn btn-icon-sm btn-ghost" style={{ color: "var(--color-danger)" }} onClick={onDelete} title="Delete agent"><Trash2 size={12} /></button>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)" }}>
-        <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={38} isThinking={isThinking} />
+        <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={40} isThinking={isThinking} isSubagent={isSubagent} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-            <span className="body-sm-strong">{agent.name}</span>
-            {isThinking && <span className="pill pill-thinking" style={{ fontSize: 10 }}><span className="animate-pulse" style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} /> thinking</span>}
+          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", flexWrap: "wrap" }}>
+            <span className="body-sm-strong" style={{ fontSize: 13 }}>{agent.name}</span>
+            {isSubagent && (
+              <span className="subagent-chip" style={{ fontSize: 9, padding: "1px 5px" }}>
+                SUBAGENT
+              </span>
+            )}
+            {isThinking && (
+              <span className="pill pill-thinking" style={{ fontSize: 10 }}>
+                <span className="animate-pulse" style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />
+                working
+              </span>
+            )}
             {!isThinking && queueDepth > 0 && (
               <span style={{
                 fontSize: 10, padding: "1px 6px", borderRadius: 8,
@@ -52,14 +75,14 @@ function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
               </span>
             )}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginTop: 2 }}>
-            <span className="badge badge-gray" style={{ fontSize: 9 }}>{agent.role}</span>
-            <span className="caption" style={{ fontFamily: "monospace", fontSize: 11 }}>{agent.model}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginTop: 4, flexWrap: "wrap" }}>
+            <span className="badge badge-gray" style={{ fontSize: 9, textTransform: "capitalize" }}>{agent.role}</span>
+            <span className="caption" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--color-primary-soft)" }}>{agent.model}</span>
           </div>
           {agent.fallback_model && (
             <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
               <span style={{ fontSize: 10, color: "var(--color-mute)" }}>↩ fallback:</span>
-              <span className="caption" style={{ fontFamily: "monospace", fontSize: 10, color: "var(--color-mute)" }}>{agent.fallback_model}</span>
+              <span className="caption" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 10, color: "var(--color-mute)" }}>{agent.fallback_model}</span>
             </div>
           )}
         </div>
@@ -67,18 +90,18 @@ function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
 
       {agent.skills && agent.skills.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {agent.skills.map(s => <span key={s} className="code-inline" style={{ fontSize: 11 }}>{s}</span>)}
+          {agent.skills.map(s => <span key={s} className="code-inline" style={{ fontSize: 10, padding: "2px 6px" }}>{s}</span>)}
         </div>
       )}
 
       {agent.personality && (
         <button onClick={() => setExpanded(e => !e)} className="btn btn-ghost btn-sm" style={{ justifyContent: "flex-start", padding: "2px 0", gap: 4, fontSize: 11, color: "var(--color-mute)" }}>
           {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-          {expanded ? "Hide" : "Show"} personality
+          {expanded ? "Hide" : "Show"} instructions
         </button>
       )}
       {expanded && agent.personality && (
-        <p className="caption" style={{ borderLeft: "2px solid var(--color-hairline)", paddingLeft: "var(--sp-sm)", color: "var(--color-body)" }}>
+        <p className="caption" style={{ borderLeft: "2px solid var(--color-primary)", paddingLeft: "var(--sp-sm)", color: "var(--color-body)", background: "var(--color-canvas)", padding: "6px 8px", borderRadius: "0 var(--radius-xs) var(--radius-xs) 0", margin: 0 }}>
           {agent.personality}
         </p>
       )}
@@ -166,13 +189,13 @@ function ModelSelector({
 
         {/* Special model info banners */}
         {model === "openrouter/auto" && (
-          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#a78bfa" }}>
-            🔀 <strong>Auto Router</strong> — NotDiamond picks the best model per prompt.
+          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#a78bfa", display: "flex", alignItems: "center", gap: 5 }}>
+            <Shuffle size={12} /> <strong>Auto Router</strong> — NotDiamond picks the best model per prompt.
           </p>
         )}
         {model === "openrouter/free" && (
-          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#00d992" }}>
-            ⚡ <strong>Auto Free</strong> — Randomly selects a free model. Reasoning is automatically enabled.
+          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#00d992", display: "flex", alignItems: "center", gap: 5 }}>
+            <Sparkles size={12} /> <strong>Auto Free</strong> — Randomly selects a free model. Reasoning is automatically enabled.
           </p>
         )}
       </div>
@@ -381,8 +404,8 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
           </button>
           {showFallback && (
             <div style={{ marginTop: "var(--sp-sm)", padding: "var(--sp-md)", border: "1px dashed var(--color-hairline)", borderRadius: "var(--radius-md)" }}>
-              <p className="caption" style={{ marginBottom: "var(--sp-sm)", color: "var(--color-mute)" }}>
-                ⚡ Used automatically if the primary model returns an error (e.g. quota, bad key, outage).
+              <p className="caption" style={{ marginBottom: "var(--sp-sm)", color: "var(--color-mute)", display: "flex", alignItems: "center", gap: 5 }}>
+                <RefreshCw size={11} /> Used automatically if the primary model returns an error (e.g. quota, bad key, outage).
               </p>
               <ModelSelector
                 label="Fallback"
@@ -509,17 +532,49 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
           </button>
         </div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)", overflowY: "auto" }}>
-          {agents.map(a => (
-            <AgentCard
-              key={a.id}
-              agent={a}
-              isThinking={streamingAgents.has(a.id)}
-              queueDepth={agentQueues?.[a.id] || 0}
-              onEdit={() => { setEditingAgent(a); setModalOpen(true); }}
-              onDelete={() => setAgentToDelete(a)}
-            />
-          ))}
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-xl)", overflowY: "auto" }}>
+          {/* Primary Core Team Agents */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "var(--sp-md)" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.5px", color: "var(--color-mute)", textTransform: "uppercase" }}>
+                CORE AGENTS ({agents.filter(a => !a.name.startsWith("Sub-") && !a.name.startsWith("Subagent-")).length})
+              </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)" }}>
+              {agents.filter(a => !a.name.startsWith("Sub-") && !a.name.startsWith("Subagent-")).map(a => (
+                <AgentCard
+                  key={a.id}
+                  agent={a}
+                  isThinking={streamingAgents.has(a.id)}
+                  queueDepth={agentQueues?.[a.id] || 0}
+                  onEdit={() => { setEditingAgent(a); setModalOpen(true); }}
+                  onDelete={() => setAgentToDelete(a)}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Active Temporary Subagents (if any) */}
+          {agents.some(a => a.name.startsWith("Sub-") || a.name.startsWith("Subagent-")) && (
+            <div style={{ borderTop: "1px dashed var(--border-glass)", paddingTop: "var(--sp-lg)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "var(--sp-md)" }}>
+                <span className="subagent-chip" style={{ fontSize: 10 }}>🤖 TEMPORARY SUBAGENTS</span>
+                <span className="caption" style={{ color: "var(--color-mute)" }}>Specialist workers spawned for specific subtasks (Depth 1 guarded)</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)" }}>
+                {agents.filter(a => a.name.startsWith("Sub-") || a.name.startsWith("Subagent-")).map(a => (
+                  <AgentCard
+                    key={a.id}
+                    agent={a}
+                    isThinking={streamingAgents.has(a.id)}
+                    queueDepth={agentQueues?.[a.id] || 0}
+                    onEdit={() => { setEditingAgent(a); setModalOpen(true); }}
+                    onDelete={() => setAgentToDelete(a)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

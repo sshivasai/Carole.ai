@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="privGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="50%" stop-color="#06b6d4" />
+      <stop offset="100%" stop-color="#3b82f6" />
+    </linearGradient>
+    <linearGradient id="privBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b" stop-opacity="0.6" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.9" />
+    </linearGradient>
+    <filter id="privGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  
+  <!-- Background Rounded Box -->
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#privBg)" stroke="url(#privGrad)" stroke-width="2" />
+  
+  <!-- Local Private Server & Lock Emblem -->
+  <g filter="url(#privGlow)">
+    <!-- Server Stack Base -->
+    <rect x="18" y="34" width="28" height="14" rx="4" fill="#0f172a" stroke="url(#privGrad)" stroke-width="2" />
+    <circle cx="23" cy="41" r="1.5" fill="#10b981" />
+    <circle cx="28" cy="41" r="1.5" fill="#06b6d4" />
+    <line x1="34" y1="41" x2="42" y2="41" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" />
+    
+    <!-- Lock Shackle on Top -->
+    <path d="M26 34 V25 A6 6 0 0 1 38 25 V34" stroke="url(#privGrad)" stroke-width="3" stroke-linecap="round" fill="none" />
+    <!-- Center Keyhole -->
+    <circle cx="32" cy="41" r="2" fill="#10b981" />
+  </g>
+</svg>

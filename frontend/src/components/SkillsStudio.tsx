@@ -158,10 +158,12 @@ export default function SkillsStudio({ teamId, onToast }: { teamId: string | nul
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-sm)",
                     padding: "8px 12px", width: "100%", textAlign: "left",
-                    background: activeSkillId === s.id ? "var(--color-primary-glow-sm)" : "transparent",
-                    color: activeSkillId === s.id ? "var(--color-primary)" : "var(--color-ink)",
-                    border: "none", borderRadius: "var(--radius-sm)", cursor: "pointer",
-                    fontSize: 13, fontWeight: activeSkillId === s.id ? 500 : 400
+                    background: activeSkillId === s.id ? "var(--color-primary-glow)" : "transparent",
+                    color: activeSkillId === s.id ? "var(--color-ink-strong)" : "var(--color-ink)",
+                    border: activeSkillId === s.id ? "1px solid rgba(167, 139, 250, 0.35)" : "1px solid transparent",
+                    borderRadius: "var(--radius-sm, 7px)", cursor: "pointer",
+                    fontSize: 13, fontWeight: activeSkillId === s.id ? 700 : 500,
+                    transition: "all var(--t-fast)",
                   }}
                 >
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>

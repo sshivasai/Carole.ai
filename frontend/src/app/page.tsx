@@ -15,6 +15,8 @@ import McpIntegration from "@/components/McpIntegration";
 import ScratchpadPanel from "@/components/ScratchpadPanel";
 import LoadingScreen from "@/components/LoadingScreen";
 import AuthPage from "@/components/AuthPage";
+import AuthModal from "@/components/AuthModal";
+import LandingPage from "@/components/LandingPage";
 import ToastContainer from "@/components/Toast";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
@@ -385,7 +387,7 @@ function AppShell() {
   }
 
   return (
-    <div style={{ display: "flex", width: "100vw", height: "100vh", overflow: "hidden", background: "var(--bg-app)" }}>
+    <div className="schematic-bg" style={{ display: "flex", width: "100vw", height: "100vh", overflow: "hidden", background: "var(--bg-app)" }}>
       <Sidebar
         activeView={activeView}
         onViewChange={setActiveView}
@@ -404,7 +406,7 @@ function AppShell() {
         onWidthChange={handleWidthChange}
       />
 
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", background: "var(--bg-app)", position: "relative", width: "100%" }}>
+      <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", background: "transparent", position: "relative", width: "100%" }}>
         {activeView === "chat" && (
           <div className="animate-entrance" style={{ display: "flex", flex: 1, minHeight: 0, width: "100%" }}>
             <PanelGroup direction="horizontal" autoSaveId="chat-layout">
@@ -532,8 +534,37 @@ function AppShell() {
 
 function AppContent() {
   const { user, loading } = useAuth();
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+
   if (loading) return <LoadingScreen steps={["Checking authentication…"]} />;
-  if (!user) return <AuthPage />;
+  
+  if (!user) {
+    return (
+      <>
+        <LandingPage
+          onLaunchApp={() => {
+            setAuthMode("login");
+            setShowAuthModal(true);
+          }}
+          onSignIn={() => {
+            setAuthMode("login");
+            setShowAuthModal(true);
+          }}
+          onSignUp={() => {
+            setAuthMode("signup");
+            setShowAuthModal(true);
+          }}
+        />
+        <AuthModal
+          isOpen={showAuthModal}
+          initialMode={authMode}
+          onClose={() => setShowAuthModal(false)}
+        />
+      </>
+    );
+  }
+
   return <AppShell />;
 }
 

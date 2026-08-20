@@ -23,7 +23,7 @@ from core.tools.file_tools import file_tools, FileChangeResult
 from core.tools.shell_tools import shell_tools
 from core.tools.git_tools import git_tools
 from core.tools.web_tools import web_tools
-from core.tools.agent_tools import agent_tools
+from core.tools.agent_tools import agent_tools, _running_subagent_tasks
 from core.tools.browser_tool import browser_tool
 from core.tools.interaction_tools import interaction_tools
 from core.tools.code_analysis_tools import code_analysis_tools
@@ -1527,9 +1527,25 @@ async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
 
 async def _wrap_hire_subagent(args: Dict[str, Any], team_id: str) -> str:
     agent_name = args.get("_agent_name", "")
-    # Enforce 1-Level Only Guardrail (check new prefix format too)
+    # Belt-and-suspenders depth guard (primary guard is 'subagents': 'block' in permissions)
     if agent_name.startswith("Subagent-") or agent_name.startswith("Sub-"):
-        return "Error: Subagents are not permitted to hire further subagents (Maximum depth of 1 reached)."
+        return (
+            "Error: Subagents cannot hire further subagents (max depth 1). "
+            "You are already a temporary specialist — complete the task yourself using "
+            "the available file, shell, and web tools. Do NOT retry hire_subagent."
+        )
+
+    # Per-team concurrency cap: prevent cascade spawning (e.g. Archer hiring 5+ agents)
+    # Count active subagent tasks whose name is associated with this team.
+    # We use a simple global count cap — this avoids complex per-team tracking.
+    _MAX_CONCURRENT_SUBAGENTS = 3
+    active_count = sum(1 for t in _running_subagent_tasks if not t.done())
+    if active_count >= _MAX_CONCURRENT_SUBAGENTS:
+        return (
+            f"Error: Too many subagents already running ({active_count}/{_MAX_CONCURRENT_SUBAGENTS}). "
+            "Wait for existing subagents to complete before hiring more. "
+            "Check for <task-notification> messages from running subagents."
+        )
     
     pos = args.get("_positional_args", [])
     role = args.get("role", "")

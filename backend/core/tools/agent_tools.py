@@ -88,19 +88,21 @@ def _make_done_callback(
         except asyncio.CancelledError:
             return
         if exc is not None:
-            # Schedule the async publish on the running loop.
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = None
             coro = _publish_failure_notification(
                 task_id, parent_coordinator_id, team_id, agent_name, exc
             )
-            if loop is not None and loop.is_running():
+            # Use get_running_loop() — get_event_loop() is deprecated in 3.10+
+            # and raises RuntimeError during shutdown when no loop is running.
+            try:
+                loop = asyncio.get_running_loop()
                 asyncio.ensure_future(coro, loop=loop)
-            else:
-                # Fallback: create a task on the current running loop if any.
-                asyncio.create_task(coro)
+            except RuntimeError:
+                # No running event loop (e.g. shutdown) — log and skip.
+                logger.warning(
+                    "[done_callback] No running event loop for failure notification "
+                    "(subagent=%s task_id=%s). Skipping.",
+                    agent_name, task_id,
+                )
     return _cb
 
 
@@ -242,6 +244,10 @@ class AgentTools:
         )
 
         # Correct tool_permissions format — keys match the tool category names in tool_executor.py
+        # NOTE: "subagents" is explicitly blocked so hired subagents can never
+        # call hire_subagent / spawn_agent / send_message. This is enforced at
+        # the AccessControl gate before any tool code runs, making the depth
+        # guard in _wrap_hire_subagent a belt-and-suspenders fallback only.
         subagent_permissions = {
             "file_read": "allow",
             "file_write": "allow",
@@ -250,6 +256,7 @@ class AgentTools:
             "code_analysis": "allow",
             "memory": "allow",
             "interaction": "allow",
+            "subagents": "block",  # Subagents CANNOT hire or spawn further agents
         }
 
         async with async_session() as db:

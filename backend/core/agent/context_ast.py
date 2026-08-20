@@ -105,13 +105,48 @@ def _parse_action_node(block: str) -> ActionNode:
     return ActionNode(raw_block=block, tool_name=stripped, args_raw="")
 
 
+def _extract_text(content: Any) -> str:
+    """Safely coerce message content to a plain string for regex matching.
+
+    LLM message dicts can use two content formats:
+      - str  : simple text (most common)
+      - list : multipart content blocks e.g. [{"type": "text", "text": "..."}, {"type": "image", ...}]
+               used when the message contains image/file attachments.
+
+    Returns a joined string of all text parts, or "" if content is None/empty.
+    """
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                # Anthropic-style: {"type": "text", "text": "..."}
+                if block.get("type") == "text":
+                    parts.append(block.get("text") or "")
+                # OpenAI-style: {"role": ..., "content": "..."}
+                elif "content" in block and isinstance(block["content"], str):
+                    parts.append(block["content"])
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    # Fallback: stringify whatever we got
+    return str(content)
+
+
 def parse_messages(messages: List[Dict[str, Any]]) -> List[ConvNode]:
     """Convert a flat list of LLM message dicts into a typed AST."""
     nodes: List[ConvNode] = []
 
     for msg in messages:
         role = msg.get("role", "")
-        content = msg.get("content") or ""
+        raw_content = msg.get("content")
+        # Always work with a plain string for regex parsing.
+        # Multipart content (list of blocks with images, etc.) is
+        # flattened to its text parts so regexes don't crash.
+        content = _extract_text(raw_content)
 
         if role == "assistant":
             # Extract all [ACTION] blocks
@@ -134,6 +169,7 @@ def parse_messages(messages: List[Dict[str, Any]]) -> List[ConvNode]:
             nodes.append(PlainNode(original=msg))
 
     return nodes
+
 
 
 # ─── Pruner ─────────────────────────────────────────────────────────

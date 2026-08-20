@@ -65,7 +65,7 @@ function GlobalAccessControlCard({ onToast }: { onToast: (msg: string, type: any
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
           <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, fontWeight: 700, background: config.enable_judge ? "rgba(167,139,250,0.15)" : "rgba(251,191,36,0.15)", color: config.enable_judge ? "#a78bfa" : "#fbbf24", border: `1px solid ${config.enable_judge ? "rgba(167,139,250,0.35)" : "rgba(251,191,36,0.35)"}` }}>
-            {config.enable_judge ? "⚖️ Judge ON" : "⚡ Judge OFF"}
+            {config.enable_judge ? "Judge ON" : "Judge OFF"}
           </span>
           {expanded ? <ChevronUp size={15} color="var(--color-mute)" /> : <ChevronDown size={15} color="var(--color-mute)" />}
         </div>

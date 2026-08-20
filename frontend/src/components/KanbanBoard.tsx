@@ -100,19 +100,25 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
               onDragOver={e => { e.preventDefault(); }}
               onDrop={e => handleDrop(col.id, e)}
               style={{
-                flex: "1 0 260px", display: "flex", flexDirection: "column",
-                background: "var(--color-canvas-soft)", border: "1px solid var(--color-hairline)",
+                flex: "1 0 280px", display: "flex", flexDirection: "column",
+                background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)",
+                WebkitBackdropFilter: "var(--blur-md)", border: "1px solid var(--border-glass)",
                 borderRadius: "var(--radius-md)", overflow: "hidden",
-                transition: "border-color var(--t-fast)",
+                boxShadow: "var(--shadow-clay-sm)",
+                transition: "border-color var(--t-fast), box-shadow var(--t-fast)",
               }}>
               {/* Header */}
-              <div style={{ padding: "var(--sp-md) var(--sp-lg)", borderBottom: "1px solid var(--color-hairline)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ padding: "var(--sp-md) var(--sp-lg)", borderBottom: "1px solid var(--border-glass)", background: "rgba(255,255,255,0.02)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-                  <col.Icon size={14} color={col.color} />
-                  <span className="label" style={{ color: "var(--color-ink)" }}>{col.label}</span>
+                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: "var(--color-canvas)", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${col.color}` }}>
+                    <col.Icon size={12} color={col.color} />
+                  </div>
+                  <span className="label" style={{ color: "var(--color-ink)", fontWeight: 600 }}>{col.label}</span>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-                  <span className="pill pill-idle" style={{ fontSize: 10, padding: "1px 7px" }}>{colTasks.length}</span>
+                  <span className="pill" style={{ fontSize: 10, padding: "1px 7px", background: "var(--color-canvas)", border: "1px solid var(--color-hairline)", fontWeight: 700 }}>
+                    {colTasks.length}
+                  </span>
                   {teamId && (
                     <button className="btn btn-icon-sm btn-ghost" onClick={() => setAddingCol(addingCol === col.id ? null : col.id)} title="Add task">
                       <Plus size={12} />
@@ -128,40 +134,68 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
                     onAdded={t => handleTaskAdded(col.id, t)}
                     onCancel={() => setAddingCol(null)} />
                 )}
-                {colTasks.map(task => (
-                  <div key={task.id}
-                    draggable onDragStart={() => setDraggingId(task.id)}
-                    onClick={() => setSelectedTask(task)}
-                    style={{
-                      background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)",
-                      borderRadius: "var(--radius-sm)", padding: "var(--sp-md)",
-                      cursor: "pointer", display: "flex", flexDirection: "column", gap: "var(--sp-sm)",
-                      transition: "transform var(--t-fast), border-color var(--t-fast)",
-                      opacity: draggingId === task.id ? 0.5 : 1,
-                    }}
-                    onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)")}
-                    onMouseLeave={e => (e.currentTarget.style.borderColor = "var(--color-hairline)")}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <span className={`badge ${PRIORITY_BADGE[task.priority] || "badge-gray"}`}>{task.priority}</span>
-                      {task.blocked_by_task_id && (
-                        <span className="badge badge-warn" style={{ fontSize: 9 }}>Blocked</span>
+                {colTasks.map(task => {
+                  const assignedAgent = agents.find(a => a.id === task.assigned_agent_id);
+
+                  return (
+                    <div key={task.id}
+                      draggable onDragStart={() => setDraggingId(task.id)}
+                      onClick={() => setSelectedTask(task)}
+                      className="card"
+                      style={{
+                        padding: "var(--sp-md)",
+                        cursor: "grab", display: "flex", flexDirection: "column", gap: "var(--sp-sm)",
+                        transition: "all var(--t-fast)",
+                        opacity: draggingId === task.id ? 0.4 : 1,
+                        transform: draggingId === task.id ? "scale(0.98)" : "none",
+                        border: "1px solid var(--border-glass)",
+                        background: "var(--color-canvas-raised)",
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.borderColor = "var(--color-primary-soft)";
+                        e.currentTarget.style.transform = "translateY(-2px)";
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.borderColor = "var(--border-glass)";
+                        e.currentTarget.style.transform = "none";
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <span className={`badge ${PRIORITY_BADGE[task.priority] || "badge-gray"}`} style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: 0.3 }}>
+                          {task.priority}
+                        </span>
+                        {task.blocked_by_task_id && (
+                          <span className="badge badge-warn" style={{ fontSize: 9, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                            <Lock size={9} /> Blocked
+                          </span>
+                        )}
+                      </div>
+                      <span className="body-sm-strong" style={{ fontSize: 12, lineHeight: 1.4, color: "var(--color-ink)" }}>{task.title}</span>
+                      {task.description && (
+                        <p className="caption" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", color: "var(--color-mute)", margin: 0, fontSize: 11 }}>
+                          {task.description}
+                        </p>
                       )}
+                      <div className="divider-dashed" style={{ margin: "2px 0" }} />
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 10, color: "var(--color-mute)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          {assignedAgent ? (
+                            <>
+                              <span style={{ fontSize: 10, color: "var(--color-body)", fontWeight: 500 }}>{assignedAgent.name}</span>
+                            </>
+                          ) : (
+                            <span style={{ fontStyle: "italic", opacity: 0.7 }}>Unassigned</span>
+                          )}
+                        </div>
+                        {task.created_at && (
+                          <span className="caption" style={{ fontSize: 9 }}>{new Date(task.created_at).toLocaleDateString([], { month: "short", day: "numeric" })}</span>
+                        )}
+                      </div>
                     </div>
-                    <span className="body-sm-strong">{task.title}</span>
-                    {task.description && (
-                      <p className="caption" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                        {task.description}
-                      </p>
-                    )}
-                    <div className="divider-dashed" style={{ margin: "2px 0" }} />
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--color-mute)" }}>
-                      <span>{getAgentName(task.assigned_agent_id)}</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {colTasks.length === 0 && addingCol !== col.id && (
-                  <div style={{ textAlign: "center", padding: "var(--sp-xl) 0", color: "var(--color-mute)", fontSize: 12, border: "1px dashed var(--color-hairline)", borderRadius: "var(--radius-sm)", margin: "var(--sp-sm)" }}>
+                  <div style={{ textAlign: "center", padding: "var(--sp-xl) 0", color: "var(--color-mute)", fontSize: 11, border: "1px dashed var(--border-glass)", borderRadius: "var(--radius-sm)", margin: "var(--sp-sm)" }}>
                     Drop tasks here
                   </div>
                 )}

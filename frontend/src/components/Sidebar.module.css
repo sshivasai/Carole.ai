@@ -1,30 +1,41 @@
-/* Sidebar */
+/* ==========================================================================
+   Carole.ai Sidebar Styles — Editorial Developer Platform Design
+   ========================================================================== */
+
 .sidebar {
-  width: 250px;
-  min-width: 250px;
-  max-width: 250px;
+  width: 260px;
+  min-width: 260px;
+  max-width: 260px;
   height: 100vh;
   background: var(--color-canvas);
-  border-right: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--color-hairline);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   overflow: hidden;
   position: relative;
   z-index: 10;
-  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.2s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+              min-width 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+              max-width 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: var(--font-family-sans, sans-serif);
 }
 
-/* Logo */
+/* ==========================================================================
+   Header & Brand Logo
+   ========================================================================== */
 .sidebarLogo {
-  padding: var(--sp-md) var(--sp-lg);
+  padding: 12px 16px;
   border-bottom: 1px solid var(--color-hairline);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-md);
+  gap: 10px;
   flex-shrink: 0;
   min-height: 56px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--color-canvas-soft);
 }
 
 .sidebarLogoBrand {
@@ -32,66 +43,88 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1;
   text-decoration: none;
   user-select: none;
+  overflow: hidden;
+  cursor: pointer;
 }
 
 .sidebarLogoImg {
   width: 32px;
   height: 32px;
   object-fit: contain;
-  filter: drop-shadow(0 0 8px rgba(0, 217, 146, 0.35));
-  transition: transform var(--t-fast);
+  filter: drop-shadow(0 0 10px rgba(167, 139, 250, 0.45));
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
   flex-shrink: 0;
 }
 
 .sidebarLogoBrand:hover .sidebarLogoImg {
-  transform: scale(1.06);
+  transform: scale(1.08);
 }
 
-.sidebarLogoTextGroup {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.15;
-  min-width: 0;
-}
-
-.sidebarLogoText {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--color-ink);
-  letter-spacing: -0.02em;
-}
-
-.sidebarLogoAi {
-  color: var(--color-primary);
-  font-weight: 700;
-}
-
-.sidebarLogoSub {
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--color-mute);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+.sidebarLogoWordmark {
+  height: 24px;
+  max-width: 140px;
+  width: auto;
+  object-fit: contain;
+  object-position: left center;
+  filter: drop-shadow(0 1px 4px rgba(167, 139, 250, 0.15));
+  transition: opacity 0.15s ease;
+  flex-shrink: 1;
 }
 
 .collapseBtn {
-  background: none;
-  border: none;
-  padding: 4px;
+  background: var(--color-canvas-raised);
+  border: 1px solid var(--color-hairline);
+  padding: 6px;
   color: var(--color-mute);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: color var(--t-fast);
-  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+  border-radius: var(--radius-sm, 7px);
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .collapseBtn:hover {
-  color: var(--color-ink);
+  color: var(--color-ink-strong);
+  border-color: var(--color-primary-soft);
+  background: var(--color-canvas-soft);
+}
+
+.sidebarLogoCollapsed {
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  width: 100%;
+  border-bottom: 1px solid var(--color-hairline);
+  box-sizing: border-box;
+  background: var(--color-canvas-soft);
+}
+
+.collapsedLogoBtn {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 auto;
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.15s ease;
+}
+
+.collapsedLogoBtn:hover {
   background: var(--color-canvas-raised);
+  transform: scale(1.08);
 }
 
 .collapsedSidebar {
@@ -100,7 +133,9 @@
   max-width: 64px !important;
 }
 
-/* Resize Drag Handle */
+/* ==========================================================================
+   Resize Drag Handle
+   ========================================================================== */
 .resizeHandle {
   position: absolute;
   top: 0;
@@ -116,63 +151,74 @@
 .resizeHandle:hover,
 .resizeHandle.isResizing {
   background: var(--color-primary);
-  box-shadow: 0 0 8px rgba(0, 217, 146, 0.6);
+  box-shadow: 0 0 10px var(--color-primary-glow);
 }
 
-/* Entity Blocks */
+/* ==========================================================================
+   Entity Selectors (Team & Project)
+   ========================================================================== */
 .entityBlock {
-  padding: var(--sp-xs) var(--sp-md);
+  padding: 10px 14px;
   border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-canvas);
 }
 
 .entityLabel {
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 1px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--color-mute);
-  margin-bottom: 3px;
+  margin-bottom: 6px;
+  font-family: var(--font-family-mono, monospace);
 }
 
 .entitySelect {
   width: 100%;
-  padding: 4px var(--sp-sm);
-  font-family: var(--font-sans);
-  font-size: 11px;
-  color: var(--color-ink);
+  padding: 6px 10px;
+  font-family: var(--font-family-sans, sans-serif);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-ink-strong);
   background: var(--color-canvas-soft);
   border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm, 7px);
   outline: none;
   cursor: pointer;
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 8px center;
-  padding-right: 20px;
-  transition: border-color var(--t-fast);
+  background-position: right 10px center;
+  padding-right: 28px;
+  transition: all 0.15s ease;
+}
+
+.entitySelect:hover {
+  border-color: var(--color-hairline-soft);
 }
 
 .entitySelect:focus {
-  border-color: var(--color-primary-soft);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-glow-sm);
 }
 
 .entityAddBtn {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  color: var(--color-mute);
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-primary);
   background: none;
   border: none;
   cursor: pointer;
-  padding: 3px 0;
-  margin-top: 2px;
-  transition: color var(--t-fast);
+  padding: 4px 0;
+  margin-top: 4px;
+  transition: opacity 0.15s ease;
 }
 
 .entityAddBtn:hover {
-  color: var(--color-primary);
+  opacity: 0.8;
 }
 
 .entityAddBtn:disabled {
@@ -180,183 +226,229 @@
   cursor: not-allowed;
 }
 
-/* Inline add form */
+/* Inline form for adding entity */
 .inlineForm {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .inlineInput {
   width: 100%;
-  padding: 4px var(--sp-sm);
-  font-size: 11px;
-  font-family: var(--font-sans);
-  color: var(--color-ink);
-  background: var(--color-canvas-raised);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-family-sans, sans-serif);
+  color: var(--color-ink-strong);
+  background: var(--color-canvas-soft);
   border: 1px solid var(--color-primary-soft);
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-xs, 6px);
   outline: none;
   box-shadow: 0 0 0 2px var(--color-primary-glow-sm);
 }
 
-.inlineBtn {
-  font-size: 10px !important;
-  min-height: 22px !important;
-}
-
-/* Section labels */
+/* ==========================================================================
+   Section Labels & Navigation Items
+   ========================================================================== */
 .sidebarSection {
-  padding: var(--sp-sm) var(--sp-md) var(--sp-xs);
+  padding: 14px 16px 6px;
 }
 
 .sidebarSectionLabel {
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 1.2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--color-mute);
+  font-family: var(--font-family-mono, monospace);
 }
 
-/* Nav */
 .sidebarNav {
   flex: 1;
   overflow-y: auto;
-  padding-bottom: var(--sp-xs);
+  padding: 6px 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .navItem {
   display: flex;
   align-items: center;
-  gap: var(--sp-sm);
-  padding: 5px var(--sp-md);
-  font-size: 11.5px;
-  font-weight: 400;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--color-body);
   cursor: pointer;
-  transition: all var(--t-fast);
-  border: none;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 8px);
   background: none;
   width: 100%;
   text-align: left;
-  border-left: 2px solid transparent;
+  user-select: none;
 }
 
 .navItem:hover {
-  color: var(--color-ink);
-  background: rgba(255, 255, 255, 0.03);
+  color: var(--color-ink-strong);
+  background: var(--color-canvas-soft);
+  border-color: var(--color-hairline);
 }
 
 .navItem.active {
   color: var(--color-primary);
   background: var(--color-primary-glow-sm);
-  border-left-color: var(--color-primary);
-  font-weight: 500;
+  border-color: rgba(167, 139, 250, 0.3);
+  font-weight: 700;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
 .navItemIcon {
-  width: 15px;
-  height: 15px;
+  width: 17px;
+  height: 17px;
   flex-shrink: 0;
-  opacity: 0.65;
-  transition: opacity var(--t-fast);
+  opacity: 0.75;
+  transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
-.navItem:hover .navItemIcon,
+.navItem:hover .navItemIcon {
+  opacity: 1;
+  transform: scale(1.06);
+}
+
 .navItem.active .navItemIcon {
   opacity: 1;
+  color: var(--color-primary);
 }
 
-/* Footer */
+.navBadge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-canvas-raised);
+  border: 1px solid var(--color-hairline);
+  font-size: 10.5px;
+  font-family: var(--font-family-mono, monospace);
+  font-weight: 700;
+  color: var(--color-mute);
+}
+
+.navItem.active .navBadge {
+  background: var(--color-primary);
+  color: #ffffff;
+  border-color: var(--color-primary);
+}
+
+/* ==========================================================================
+   Footer & User Profile
+   ========================================================================== */
 .sidebarFooter {
   border-top: 1px solid var(--color-hairline);
   flex-shrink: 0;
+  background: var(--color-canvas-soft);
 }
 
 .connBadge {
   display: flex;
   align-items: center;
-  gap: var(--sp-sm);
-  padding: var(--sp-sm) var(--sp-lg);
+  gap: 8px;
+  padding: 8px 16px;
   font-size: 11px;
+  font-family: var(--font-family-mono, monospace);
   color: var(--color-mute);
+  border-bottom: 1px solid var(--color-hairline);
 }
 
 .connDot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
 .connDot.live {
-  background: var(--color-primary);
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
   animation: livePulse 2s infinite;
 }
 
 .connDot.offline {
-  background: var(--color-mute);
+  background: #ef4444;
 }
 
 .userRow {
   display: flex;
   align-items: center;
-  gap: var(--sp-xs);
-  padding: var(--sp-xs) var(--sp-md) var(--sp-sm);
+  gap: 10px;
+  padding: 10px 14px;
   min-width: 0;
 }
 
 .userAvatar {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   background: var(--color-primary-glow);
-  border: 1px solid var(--color-primary);
+  border: 1.5px solid var(--color-primary);
   color: var(--color-primary);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   flex-shrink: 0;
 }
 
 .userName {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-ink);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--color-ink-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .userEmail {
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--color-mute);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--font-family-mono, monospace);
 }
 
 .footerActionBtn {
-  padding: 4px !important;
-  min-height: 26px !important;
-  min-width: 26px !important;
-  width: 26px !important;
-  height: 26px !important;
+  padding: 6px !important;
+  min-height: 28px !important;
+  min-width: 28px !important;
+  width: 28px !important;
+  height: 28px !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  border-radius: var(--radius-xs) !important;
+  border-radius: var(--radius-sm, 7px) !important;
   flex-shrink: 0 !important;
+  background: var(--color-canvas) !important;
+  border: 1px solid var(--color-hairline) !important;
+  color: var(--color-mute) !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
 }
 
-.logoutBtn {
-  opacity: 0.6;
+.footerActionBtn:hover {
+  background: var(--color-canvas-raised) !important;
+  color: var(--color-ink-strong) !important;
+  border-color: var(--color-primary-soft) !important;
 }
 
 .logoutBtn:hover {
-  opacity: 1;
-  color: var(--color-danger) !important;
+  color: #ef4444 !important;
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  background: rgba(239, 68, 68, 0.1) !important;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
 }

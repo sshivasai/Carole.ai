@@ -1,13 +1,16 @@
+/* ==========================================================================
+   Carole.ai Kanban Board Styles — Editorial Developer Platform Design
+   ========================================================================== */
+
 .kanbanContainer {
   display: flex;
   flex-direction: column;
   height: 100%;
   width: 100%;
-  padding: 20px;
+  padding: 24px;
   background: var(--color-canvas);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-hairline);
   overflow: hidden;
+  font-family: var(--font-family-sans, sans-serif);
 }
 
 .kanbanEmpty {
@@ -18,39 +21,46 @@
   color: var(--color-mute);
   font-style: italic;
   background: var(--color-canvas-soft);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg, 12px);
+  border: 1px dashed var(--color-hairline);
 }
 
 .kanbanHeader {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 22px;
+  flex-shrink: 0;
 }
 
 .kanbanHeader h3 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
+  font-family: var(--font-family-display, sans-serif);
+  font-size: 22px;
+  font-weight: 800;
   color: var(--color-ink-strong);
-  letter-spacing: -0.4px;
+  letter-spacing: -0.03em;
 }
 
 .loadingSpinner {
   font-size: 12px;
+  font-family: var(--font-family-mono, monospace);
   color: var(--color-primary);
-  animation: pulse 1.5s infinite;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .kanbanBoard {
   display: flex;
-  gap: 16px;
+  gap: 20px;
   overflow-x: auto;
   flex: 1;
-  padding-bottom: 8px;
+  padding-bottom: 12px;
+  align-items: stretch;
 }
 
-/* Hide scrollbar for a sleeker look */
+/* Custom Sleek Scrollbar */
 .kanbanBoard::-webkit-scrollbar {
   height: 6px;
 }
@@ -67,49 +77,58 @@
 
 .kanbanColumn {
   flex: 1;
-  min-width: 260px;
-  background: var(--color-canvas-soft);
-  border-radius: var(--radius-md);
+  min-width: 280px;
+  max-width: 380px;
+  background: var(--bg-glass-card, var(--color-canvas-soft));
+  border-radius: var(--radius-lg, 14px);
   border: 1px solid var(--color-hairline);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  box-shadow: var(--shadow-clay-sm, 0 4px 16px rgba(0, 0, 0, 0.04));
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.kanbanColumn:hover {
+  border-color: rgba(167, 139, 250, 0.3);
 }
 
 .columnHeader {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 16px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--color-hairline);
-  background: var(--color-canvas);
+  background: var(--color-canvas-raised);
 }
 
 .columnTitle {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 800;
   text-transform: uppercase;
-  color: var(--color-mute);
-  letter-spacing: 1.2px;
+  color: var(--color-ink-strong);
+  letter-spacing: 0.08em;
+  font-family: var(--font-family-mono, monospace);
 }
 
 .columnCount {
   font-size: 11px;
+  font-family: var(--font-family-mono, monospace);
   background: var(--color-canvas-soft);
-  color: var(--color-ink);
+  color: var(--color-primary);
   padding: 2px 8px;
-  border-radius: var(--radius-pill);
+  border-radius: 9999px;
   border: 1px solid var(--color-hairline);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .columnBody {
   flex: 1;
-  padding: 12px;
+  padding: 14px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .columnBody::-webkit-scrollbar {
@@ -125,41 +144,45 @@
 
 .emptyCard {
   text-align: center;
-  padding: 24px 0;
+  padding: 32px 16px;
   color: var(--color-mute);
-  font-size: 12px;
-  border: 1px dashed rgba(79, 93, 117, 0.4);
-  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  border: 1px dashed var(--color-hairline);
+  border-radius: var(--radius-md, 10px);
+  background: var(--color-canvas);
 }
 
 .taskCard {
   background: var(--color-canvas);
   border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-md);
-  padding: 14px;
+  border-radius: var(--radius-md, 10px);
+  padding: 14px 16px;
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   flex-direction: column;
   gap: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
 
 .taskCard:hover {
-  border-color: var(--color-hairline-soft);
-  background: var(--color-canvas-raised);
+  transform: translateY(-2px);
+  border-color: var(--color-primary-soft);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(167, 139, 250, 0.2);
 }
 
 .taskTitle {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-ink);
-  line-height: 1.4;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--color-ink-strong);
+  line-height: 1.45;
+  letter-spacing: -0.01em;
 }
 
 .taskDesc {
   font-size: 12px;
   color: var(--color-body);
-  line-height: 1.5;
+  line-height: 1.55;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -170,34 +193,52 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 4px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-hairline);
 }
 
 .badge {
   font-size: 10px;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 6px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
   text-transform: uppercase;
+  font-family: var(--font-family-mono, monospace);
+  letter-spacing: 0.04em;
 }
 
-.priority-low { background: rgba(52, 211, 153, 0.15); color: var(--accent-green); }
-.priority-medium { background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); }
-.priority-high { background: rgba(245, 158, 11, 0.15); color: var(--accent-yellow); }
-.priority-critical { background: rgba(239, 68, 68, 0.15); color: var(--accent-red); }
+.priority-low {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.priority-medium {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.priority-high {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.priority-critical {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
 
 .assignee {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--color-mute);
   display: flex;
   align-items: center;
-  gap: 4px;
-}
-
-@keyframes pulse {
-  0% { opacity: 0.6; }
-  50% { opacity: 1; }
-  100% { opacity: 0.6; }
+  gap: 6px;
+  font-weight: 600;
 }
 
 .addTaskSection {
@@ -207,26 +248,30 @@
 .addTaskBtn {
   width: 100%;
   padding: 10px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px dashed rgba(255, 255, 255, 0.2);
-  border-radius: 8px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
+  background: var(--color-canvas);
+  border: 1px dashed var(--color-hairline);
+  border-radius: var(--radius-md, 8px);
+  color: var(--color-mute);
+  font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .addTaskBtn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-primary);
-  border-color: rgba(255, 255, 255, 0.4);
+  background: var(--color-canvas-soft);
+  color: var(--color-primary);
+  border-color: var(--color-primary-soft);
 }
 
 .addTaskForm {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md, 8px);
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -235,31 +280,24 @@
 
 .taskInput, .taskTextarea, .taskSelect {
   width: 100%;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--color-canvas-soft);
+  border: 1px solid var(--color-hairline);
   border-radius: 6px;
-  color: var(--text-primary);
-  padding: 8px;
-  font-size: 13px;
+  color: var(--color-ink-strong);
+  padding: 8px 10px;
+  font-size: 12.5px;
+  font-family: var(--font-family-sans, sans-serif);
+  outline: none;
+  transition: border-color 0.15s ease;
 }
 
 .taskInput:focus, .taskTextarea:focus, .taskSelect:focus {
-  outline: none;
-  border-color: var(--accent-blue);
+  border-color: var(--color-primary);
 }
 
 .taskTextarea {
   resize: vertical;
   min-height: 60px;
-}
-
-.taskSelect {
-  cursor: pointer;
-}
-
-.taskSelect option {
-  background: #1e1e2e;
-  color: #fff;
 }
 
 .formActions {
@@ -270,35 +308,36 @@
 }
 
 .cancelBtn, .submitBtn {
-  padding: 6px 12px;
+  padding: 6px 14px;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   border: none;
+  transition: all 0.15s ease;
 }
 
 .cancelBtn {
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--color-mute);
+  border: 1px solid var(--color-hairline);
 }
 
 .cancelBtn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-primary);
+  background: var(--color-canvas-raised);
+  color: var(--color-ink);
 }
 
 .submitBtn {
-  background: var(--accent-blue);
-  color: white;
+  background: var(--color-primary);
+  color: #ffffff;
 }
 
 .submitBtn:hover:not(:disabled) {
-  background: #2563eb;
+  filter: brightness(1.1);
 }
 
 .submitBtn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
-

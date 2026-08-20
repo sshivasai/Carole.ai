@@ -2,7 +2,8 @@
 
 import React from "react";
 import Avatar from "boring-avatars";
-import { User, Shield } from "lucide-react";
+import { User, Shield, Sparkles, Cpu } from "lucide-react";
+import PrettyAvatar, { PrettyAvatarPreset } from "./PrettyAvatar";
 
 interface AgentAvatarProps {
   name: string;
@@ -11,6 +12,7 @@ interface AgentAvatarProps {
   size?: number;
   isStreaming?: boolean;
   isThinking?: boolean;
+  isSubagent?: boolean;
   role?: string;
   className?: string;
   style?: React.CSSProperties;
@@ -25,6 +27,8 @@ const PALETTES = [
   ["#84cc16", "#10b981", "#06b6d4", "#3b82f6", "#a855f7"],
 ];
 
+const SUBAGENT_PALETTE = ["#fbbf24", "#f59e0b", "#d97706", "#b45309", "#78350f"];
+
 const VARIANTS: ("beam" | "marble" | "pixel" | "sunset" | "ring" | "bauhaus")[] = [
   "beam", "marble", "pixel", "sunset", "ring", "bauhaus"
 ];
@@ -38,6 +42,18 @@ function stringToHash(str: string): number {
   return Math.abs(hash);
 }
 
+function getPresetFromName(name: string, role?: string): PrettyAvatarPreset | null {
+  const n = (name || "").toLowerCase();
+  const r = (role || "").toLowerCase();
+  if (n.includes("archer") || r.includes("orchestrator") || r.includes("coordinator")) return "archer";
+  if (n.includes("coder") || n.includes("dev") || r.includes("coder") || r.includes("engineer")) return "coder";
+  if (n.includes("judge") || r.includes("judge") || r.includes("security")) return "judge";
+  if (n.includes("research") || r.includes("researcher") || r.includes("analyst")) return "researcher";
+  if (n.includes("qa") || n.includes("test") || r.includes("qa")) return "qa";
+  if (n.startsWith("sub-") || n.startsWith("subagent") || r.includes("subagent")) return "subagent";
+  return null;
+}
+
 export default function AgentAvatar({
   name,
   id,
@@ -45,18 +61,35 @@ export default function AgentAvatar({
   size = 32,
   isStreaming = false,
   isThinking = false,
+  isSubagent: explicitSubagent,
   role,
   className = "",
   style = {},
 }: AgentAvatarProps) {
+  const isSubagent = explicitSubagent || name.startsWith("Sub-") || name.startsWith("Subagent-") || role?.toLowerCase() === "subagent";
   const seed = avatarSeed || id || name || "agent";
   const hash = stringToHash(seed);
   const variant = VARIANTS[hash % VARIANTS.length];
-  const palette = PALETTES[hash % PALETTES.length];
+  const palette = isSubagent ? SUBAGENT_PALETTE : PALETTES[hash % PALETTES.length];
   const isActive = isStreaming || isThinking;
 
   const isHuman = name.toLowerCase() === "human" || name.toLowerCase() === "user" || role === "human";
   const isSystem = name.toLowerCase() === "system" || role === "system";
+
+  const preset = getPresetFromName(name, role);
+
+  if (!isHuman && !isSystem && preset && size >= 28) {
+    return (
+      <PrettyAvatar
+        preset={preset}
+        name={name}
+        size={size}
+        isWorking={isActive}
+        className={className}
+        style={style}
+      />
+    );
+  }
 
   return (
     <div
@@ -81,7 +114,9 @@ export default function AgentAvatar({
             position: "absolute",
             inset: -3,
             borderRadius: "50%",
-            background: "conic-gradient(from 0deg, #00d992, #3b82f6, #8b5cf6, #ec4899, #00d992)",
+            background: isSubagent
+              ? "conic-gradient(from 0deg, #f59e0b, #fbbf24, #d97706, #f59e0b)"
+              : "conic-gradient(from 0deg, var(--color-primary), #3b82f6, #8b5cf6, #ec4899, var(--color-primary))",
             animation: "avatarSpinAura 2.5s linear infinite",
             opacity: 0.85,
             zIndex: 0,
@@ -107,10 +142,15 @@ export default function AgentAvatar({
             ? "linear-gradient(135deg, #3b82f6, #1d4ed8)"
             : isSystem
             ? "linear-gradient(135deg, #64748b, #334155)"
+            : isSubagent
+            ? "linear-gradient(135deg, #78350f, #451a03)"
             : "var(--color-surface)",
           boxShadow: isActive
-            ? "0 0 12px var(--color-primary-glow, rgba(0, 217, 146, 0.4))"
+            ? isSubagent
+              ? "0 0 12px rgba(245, 158, 11, 0.5)"
+              : "0 0 12px var(--color-primary-glow, rgba(167, 139, 250, 0.4))"
             : "0 2px 6px rgba(0, 0, 0, 0.2)",
+          border: isSubagent ? "1.5px solid rgba(251, 191, 36, 0.6)" : "none",
           transition: "transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease",
         }}
       >
@@ -122,6 +162,31 @@ export default function AgentAvatar({
           <Avatar size={size} name={seed} variant={variant} colors={palette} />
         )}
       </div>
+
+      {/* Subagent Mini Badge Overlay */}
+      {isSubagent && (
+        <span
+          title="Temporary Subagent"
+          style={{
+            position: "absolute",
+            bottom: -2,
+            right: -2,
+            width: Math.max(12, size * 0.38),
+            height: Math.max(12, size * 0.38),
+            borderRadius: "50%",
+            background: "#f59e0b",
+            border: "1.5px solid var(--color-canvas)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.4)",
+          }}
+        >
+          <Cpu size={Math.max(7, size * 0.22)} color="#ffffff" />
+        </span>
+      )}
     </div>
   );
 }
+

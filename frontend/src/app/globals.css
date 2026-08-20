@@ -6,65 +6,90 @@
 
 :root,
 .theme-dark {
-  --color-primary: #00d992;
-  --color-primary-soft: #2fd6a1;
-  --color-primary-deep: #10b981;
-  --color-on-primary: #101010;
-  --color-primary-glow: rgba(0, 217, 146, 0.18);
-  --color-primary-glow-sm: rgba(0, 217, 146, 0.10);
-  --color-canvas: #101010;
-  --color-canvas-soft: #1a1a1a;
-  --color-canvas-raised: #1e1e1e;
-  --color-hairline: #3d3a39;
-  --color-hairline-soft: #b8b3b0;
-  --color-ink: #f2f2f2;
+  /* Evervault-inspired Color Palette */
+  --color-primary: #a78bfa;
+  --color-primary-soft: #c4b5fd;
+  --color-primary-deep: #8b5cf6;
+  --color-on-primary: #ffffff;
+  --color-primary-glow: rgba(167, 139, 250, 0.20);
+  --color-primary-glow-sm: rgba(167, 139, 250, 0.10);
+  
+  --color-canvas: #030315;
+  --color-canvas-soft: #0a0a1a;
+  --color-canvas-raised: #121225;
+  --color-hairline: #2a2a3f;
+  --color-hairline-soft: #3d3d5c;
+  
+  --color-ink: #f8fafc;
   --color-ink-strong: #ffffff;
-  --color-body: #bdbdbd;
-  --color-mute: #8b949e;
-  --color-canvas-text-soft: #f5f6f7;
+  --color-body: #94a3b8;
+  --color-mute: #64748b;
+  --color-canvas-text-soft: #e2e8f0;
+  
   --color-danger: #f87171;
   --color-danger-glow: rgba(248, 113, 113, 0.15);
   --color-warning: #fbbf24;
   --color-info: #60a5fa;
   --color-success: #34d399;
+  
+  --grid-line: rgba(255, 255, 255, 0.03);
 
-  /* Clean Dark Canvas Panels & Cards */
-  --bg-glass-panel: #1a1a1a;
-  --bg-glass-card: #101010;
-  --blur-md: none;
-  --blur-lg: none;
-  --shadow-clay: none;
-  --shadow-clay-sm: none;
+  /* Glassmorphism & Cards */
+  --bg-glass-panel: rgba(10, 10, 26, 0.85);
+  --bg-glass-card: rgba(18, 18, 37, 0.75);
+  --blur-md: blur(8px);
+  --blur-lg: blur(16px);
+  --shadow-clay: 0 8px 32px rgba(0, 0, 0, 0.35);
+  --shadow-clay-sm: 0 4px 16px rgba(0, 0, 0, 0.25);
   --shadow-clay-inset: none;
   --border-glass: var(--color-hairline);
 }
 
 .theme-light {
-  --color-primary: #00d992;
-  --color-primary-soft: #00c182;
-  --color-primary-deep: #00a972;
+  /* Evervault-inspired Light Palette */
+  --color-primary: #7c3aed;
+  --color-primary-soft: #8b5cf6;
+  --color-primary-deep: #6d28d9;
   --color-on-primary: #ffffff;
-  --color-primary-glow: rgba(0, 217, 146, 0.3);
-  --color-primary-glow-sm: rgba(0, 217, 146, 0.15);
-  --color-canvas: #f9fafb;
+  --color-primary-glow: rgba(124, 58, 237, 0.16);
+  --color-primary-glow-sm: rgba(124, 58, 237, 0.08);
+  
+  --color-canvas: #f8fafc;
   --color-canvas-soft: #ffffff;
-  --color-canvas-raised: #f3f4f6;
-  --color-hairline: #e5e7eb;
-  --color-hairline-soft: #d1d5db;
-  --color-ink: #111827;
-  --color-ink-strong: #000000;
-  --color-body: #374151;
-  --color-mute: #6b7280;
-  --color-canvas-text-soft: #111827;
+  --color-canvas-raised: #f1f5f9;
+  --color-hairline: #e2e8f0;
+  --color-hairline-soft: #cbd5e1;
+  
+  --color-ink: #0f172a;
+  --color-ink-strong: #020817;
+  --color-body: #334155;
+  --color-mute: #64748b;
+  --color-canvas-text-soft: #475569;
+  
+  --color-danger: #ef4444;
+  --color-danger-glow: rgba(239, 68, 68, 0.15);
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+  --color-success: #10b981;
+  
+  --grid-line: rgba(0, 0, 0, 0.05);
 
-  --bg-glass-panel: #ffffff;
+  /* Glassmorphism & Cards */
+  --bg-glass-panel: rgba(255, 255, 255, 0.90);
   --bg-glass-card: #ffffff;
-  --border-glass: var(--color-hairline);
+  --blur-md: blur(12px);
+  --blur-lg: blur(24px);
+  --shadow-clay: 0 4px 20px rgba(0, 0, 0, 0.05);
+  --shadow-clay-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-clay-inset: none;
+  --border-glass: rgba(0, 0, 0, 0.08);
 }
 
 :root {
-  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'JetBrains Mono', monospace;
+  --font-family-sans: var(--font-sans, "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif);
+  --font-family-display: var(--font-display, "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, sans-serif);
+  --font-family-mono: var(--font-mono, "JetBrains Mono", monospace);
+
   --sp-xxs: 2px;
   --sp-xs: 3px;
   --sp-sm: 5px;
@@ -130,16 +155,6 @@
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
-
-  /* Clean Dark Canvas Panels & Cards */
-  --bg-glass-panel: #1a1a1a;
-  --bg-glass-card: #101010;
-  --blur-md: none;
-  --blur-lg: none;
-  --shadow-clay: none;
-  --shadow-clay-sm: none;
-  --shadow-clay-inset: none;
-  --border-glass: var(--color-hairline);
 }
 
 *,
@@ -151,7 +166,8 @@
 }
 
 html {
-  height: 100%;
+  min-height: 100%;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -164,7 +180,8 @@ body {
   color: var(--color-ink);
   background: var(--color-canvas);
   -webkit-font-smoothing: antialiased;
-  overflow: hidden
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 a {
@@ -1154,3 +1171,205 @@ select.input {
 .agent-avatar-active .agent-avatar-inner {
   animation: avatarPulseScale 2s ease-in-out infinite;
 }
+
+/* EVERVAULT SCHEMATIC GRID */
+.schematic-bg {
+  background-color: var(--color-canvas);
+  background-image: 
+    radial-gradient(circle at center, transparent 0%, var(--color-canvas) 80%),
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 100% 100%, 40px 40px, 40px 40px;
+  background-position: center;
+  position: relative;
+}
+
+/* ==========================================================================
+   CAROLE.AI ADVANCED MULTI-AGENT ANIMATIONS & VISUAL TOKENS
+   ========================================================================== */
+
+/* Subagent & Live Activity Glow Keyframes */
+@keyframes livePulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.4), 0 0 12px rgba(167, 139, 250, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(167, 139, 250, 0), 0 0 20px rgba(167, 139, 250, 0.4);
+  }
+}
+
+@keyframes subagentPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45), 0 0 10px rgba(245, 158, 11, 0.25);
+    border-color: rgba(245, 158, 11, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(245, 158, 11, 0), 0 0 18px rgba(245, 158, 11, 0.4);
+    border-color: rgba(245, 158, 11, 0.9);
+  }
+}
+
+@keyframes borderShimmer {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes radarSweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes liveDotPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.6; }
+}
+
+@keyframes cardSlideUp {
+  0% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* Tool Category Pill Styling */
+.tool-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  font-family: var(--font-mono, monospace);
+  line-height: 1.4;
+}
+
+.tool-pill-file {
+  background: rgba(96, 165, 250, 0.12);
+  color: #60a5fa;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+}
+
+.tool-pill-bash {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+
+.tool-pill-subagent {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  animation: subagentPulse 2.5s infinite ease-in-out;
+}
+
+.tool-pill-browser {
+  background: rgba(167, 139, 250, 0.14);
+  color: #c4b5fd;
+  border: 1px solid rgba(167, 139, 250, 0.35);
+}
+
+.tool-pill-mcp {
+  background: rgba(244, 114, 182, 0.12);
+  color: #f472b6;
+  border: 1px solid rgba(244, 114, 182, 0.3);
+}
+
+.tool-pill-git {
+  background: rgba(251, 146, 60, 0.12);
+  color: #fb923c;
+  border: 1px solid rgba(251, 146, 60, 0.3);
+}
+
+.tool-pill-memory {
+  background: rgba(129, 140, 248, 0.12);
+  color: #818cf8;
+  border: 1px solid rgba(129, 140, 248, 0.3);
+}
+
+/* Subagent Visual Badges */
+.subagent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.14), rgba(245, 158, 11, 0.08));
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: var(--radius-sm);
+  color: #fef3c7;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.subagent-chip-live {
+  border-color: rgba(251, 191, 36, 0.7);
+  animation: subagentPulse 2s infinite ease-in-out;
+}
+
+/* Live Presence Bar in Chat Header */
+.live-team-presence {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--bg-glass-card);
+  backdrop-filter: var(--blur-md);
+  -webkit-backdrop-filter: var(--blur-md);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-clay-sm);
+  transition: all var(--t-fast);
+}
+
+.live-team-presence:hover {
+  border-color: var(--color-primary-soft);
+  box-shadow: 0 0 16px var(--color-primary-glow);
+}
+
+/* Live Status Rings */
+.status-ring-thinking {
+  position: relative;
+}
+.status-ring-thinking::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid var(--color-primary);
+  animation: livePulseGlow 1.8s infinite ease-in-out;
+  pointer-events: none;
+}
+
+.status-ring-subagent::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid #fbbf24;
+  animation: subagentPulse 2s infinite ease-in-out;
+  pointer-events: none;
+}
+
+/* Judge AI Evaluation Card */
+.judge-card-evaluating {
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.08), rgba(251, 191, 36, 0.05));
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  border-radius: var(--radius-md);
+  padding: var(--sp-md) var(--sp-lg);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  animation: cardSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Subagent Task Completion Report */
+.task-notif-card {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(6, 78, 59, 0.15));
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  border-radius: var(--radius-md);
+  padding: var(--sp-md) var(--sp-lg);
+  margin: var(--sp-sm) 0;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  animation: cardSlideUp 0.3s ease-out;
+}
+

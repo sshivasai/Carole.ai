@@ -1,5 +1,6 @@
 "use client";
 import React, { useEffect, useState } from "react";
+import CaroleLogo from "./CaroleLogo";
 
 interface Props { steps?: string[] }
 
@@ -19,33 +20,8 @@ export default function LoadingScreen({ steps = [] }: Props) {
       justifyContent: "center", gap: "var(--sp-3xl)", zIndex: 9000,
     }}>
       {/* Animated logo */}
-      <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{
-          position: "absolute", width: 96, height: 96, borderRadius: "50%",
-          background: "var(--color-primary-glow)", animation: "pulse 2s ease-in-out infinite",
-          filter: "blur(20px)",
-        }} />
-        <img
-          src="/branding/logo-mark-animated.webp"
-          alt="Carole.ai"
-          width={68}
-          height={68}
-          style={{
-            position: "relative",
-            zIndex: 1,
-            objectFit: "contain",
-            filter: "drop-shadow(0 0 20px var(--color-primary-glow))",
-          }}
-        />
-      </div>
-
-      <div style={{ textAlign: "center" }}>
-        <h1 className="display-md" style={{ marginBottom: "var(--sp-2xs)", letterSpacing: "-0.03em" }}>
-          Carole<span style={{ color: "var(--color-primary)" }}>.ai</span>
-        </h1>
-        <p className="caption" style={{ letterSpacing: "0.06em", color: "var(--color-mute)" }}>
-          AI AGENTS. REAL WORK.
-        </p>
+      <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <CaroleLogo variant="full" size={220} />
       </div>
 
       {steps.length > 0 && (

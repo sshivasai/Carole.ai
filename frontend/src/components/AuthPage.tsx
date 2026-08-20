@@ -2,8 +2,13 @@
 import React, { useState } from "react";
 import { Eye, EyeOff, Loader2, Zap } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import CaroleLogo from "./CaroleLogo";
 
-export default function AuthPage() {
+interface AuthPageProps {
+  onBackToLanding?: () => void;
+}
+
+export default function AuthPage({ onBackToLanding }: AuthPageProps) {
   const { login, signup } = useAuth();
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail]       = useState("");
@@ -43,45 +48,23 @@ export default function AuthPage() {
         width: 400, height: 400, borderRadius: "50%", background: "var(--color-primary-glow)",
         filter: "blur(80px)", opacity: 0.4, pointerEvents: "none" }} />
 
+      {onBackToLanding && (
+        <button
+          onClick={onBackToLanding}
+          style={{
+            position: "absolute", top: 20, left: 24, background: "none", border: "none",
+            color: "var(--color-mute)", cursor: "pointer", fontSize: 13, fontWeight: 500,
+            display: "flex", alignItems: "center", gap: 6, zIndex: 10,
+          }}
+        >
+          ← Back to Overview
+        </button>
+      )}
+
       <div style={{ width: "100%", maxWidth: 420, position: "relative", zIndex: 1 }}>
         {/* Logo */}
-        <div style={{ textAlign: "center", marginBottom: "var(--sp-3xl)" }}>
-          <div style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            marginBottom: "var(--sp-md)",
-            position: "relative",
-          }}>
-            <div style={{
-              position: "absolute",
-              width: 96,
-              height: 96,
-              borderRadius: "50%",
-              background: "var(--color-primary-glow)",
-              filter: "blur(24px)",
-              opacity: 0.6,
-              pointerEvents: "none",
-            }} />
-            <img
-              src="/branding/logo-mark-animated.webp"
-              alt="Carole.ai Logo"
-              width={76}
-              height={76}
-              style={{
-                position: "relative",
-                zIndex: 1,
-                objectFit: "contain",
-                filter: "drop-shadow(0 4px 20px rgba(0, 217, 146, 0.45))",
-              }}
-            />
-          </div>
-          <h1 className="display-md" style={{ marginBottom: "var(--sp-2xs)", letterSpacing: "-0.03em" }}>
-            Carole<span style={{ color: "var(--color-primary)" }}>.ai</span>
-          </h1>
-          <p className="caption" style={{ letterSpacing: "0.06em", color: "var(--color-mute)", fontSize: 13 }}>
-            AI AGENTS. REAL WORK.
-          </p>
+        <div style={{ textAlign: "center", marginBottom: "var(--sp-3xl)", cursor: onBackToLanding ? "pointer" : "default" }} onClick={onBackToLanding}>
+          <CaroleLogo variant="full" size={220} />
         </div>
 
         {/* Tab toggle */}

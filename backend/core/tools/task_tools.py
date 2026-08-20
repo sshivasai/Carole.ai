@@ -319,8 +319,10 @@ class TaskTools:
             })
 
             from core.chat.message_router import message_router
+            # Note: No @mention in this message — using author_name as plain text
+            # prevents the message router from re-waking the commenter agent.
             await message_router.route_message(
-                text=f"[TASK_COMMENT] @{author_name} commented on '{task.title}': {text[:200]}",
+                text=f"[TASK_COMMENT] {author_name} commented on '{task.title}': {text[:200]}",
                 sender_id="system",
                 team_id=team_id_str,
                 sender_name="System",

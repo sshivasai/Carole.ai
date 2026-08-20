@@ -213,10 +213,12 @@ export default function PluginStudio({ onToast }: { onToast: (msg: string, type:
                       style={{
                         display: "flex", alignItems: "center", gap: "var(--sp-sm)",
                         padding: "8px 12px", width: "100%", textAlign: "left",
-                        background: activeFile === p.filename ? "var(--color-primary-glow-sm)" : "transparent",
-                        color: activeFile === p.filename ? "var(--color-primary)" : "var(--color-ink)",
-                        border: "none", borderRadius: "var(--radius-sm)", cursor: "pointer",
-                        fontSize: 13, fontWeight: activeFile === p.filename ? 500 : 400
+                        background: activeFile === p.filename ? "var(--color-primary-glow)" : "transparent",
+                        color: activeFile === p.filename ? "var(--color-ink-strong)" : "var(--color-ink)",
+                        border: activeFile === p.filename ? "1px solid rgba(167, 139, 250, 0.35)" : "1px solid transparent",
+                        borderRadius: "var(--radius-sm, 7px)", cursor: "pointer",
+                        fontSize: 13, fontWeight: activeFile === p.filename ? 700 : 500,
+                        transition: "all var(--t-fast)",
                       }}
                     >
                       <FileCode2 size={14} />

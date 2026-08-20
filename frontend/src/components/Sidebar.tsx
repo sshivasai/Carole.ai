@@ -8,6 +8,7 @@ import AgentAvatar from "./AgentAvatar";
 
 import NotificationBell from "./NotificationBell";
 import ThemeToggle from "./ThemeToggle";
+import { useTheme } from "@/hooks/useTheme";
 
 interface Props {
   activeView: string;
@@ -77,6 +78,7 @@ export default function Sidebar({
   onWidthChange,
 }: Props) {
   const { user, logout } = useAuth();
+  const { theme } = useTheme();
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddTeam, setShowAddTeam] = useState(false);
   const [internalCollapsed, setInternalCollapsed] = useState(false);
@@ -100,11 +102,11 @@ export default function Sidebar({
     const onMouseMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX;
       const targetWidth = startWidth + delta;
-      if (targetWidth < 120) {
+      if (targetWidth < 180) {
         if (!isCollapsed) toggleCollapse(true);
       } else {
         if (isCollapsed) toggleCollapse(false);
-        const clamped = Math.max(180, Math.min(500, targetWidth));
+        const clamped = Math.max(250, Math.min(360, targetWidth));
         onWidthChange?.(clamped);
       }
     };
@@ -142,7 +144,7 @@ export default function Sidebar({
     setShowAddTeam(false);
   }, [projectId, onTeamCreated]);
 
-  const effectiveWidth = isCollapsed ? 64 : width;
+  const effectiveWidth = isCollapsed ? 64 : Math.max(250, Math.min(360, width || 260));
   const transitionStyle = isResizing ? "none" : "width 0.2s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.2s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.2s cubic-bezier(0.4, 0, 0.2, 1)";
 
   if (isCollapsed) {
@@ -154,9 +156,19 @@ export default function Sidebar({
           transition: transitionStyle
         }}
       >
-        <div className={styles.sidebarLogo} style={{ padding: "var(--sp-sm) 0", justifyContent: "center", minHeight: 56 }}>
-          <button className={styles.collapseBtn} onClick={() => toggleCollapse(false)} title="Expand Sidebar" style={{ padding: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <img src="/branding/logo-mark-animated.webp" alt="Carole.ai" width={28} height={28} style={{ objectFit: "contain", filter: "drop-shadow(0 0 6px rgba(0, 217, 146, 0.4))" }} />
+        <div className={styles.sidebarLogoCollapsed}>
+          <button
+            className={styles.collapsedLogoBtn}
+            onClick={() => toggleCollapse(false)}
+            title="Expand Sidebar"
+          >
+            <img
+              src="/branding/logo-mark-animated.webp"
+              alt="Carole.ai"
+              width={28}
+              height={28}
+              style={{ objectFit: "contain", filter: "drop-shadow(0 0 8px rgba(131, 118, 244, 0.45))" }}
+            />
           </button>
         </div>
         <div className={styles.sidebarNav} style={{ padding: "var(--sp-sm) 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
@@ -202,10 +214,11 @@ export default function Sidebar({
       <div className={styles.sidebarLogo}>
         <div className={styles.sidebarLogoBrand}>
           <img src="/branding/logo-mark-animated.webp" alt="Carole.ai Logo" className={styles.sidebarLogoImg} />
-          <div className={styles.sidebarLogoTextGroup}>
-            <span className={styles.sidebarLogoText}>Carole<span className={styles.sidebarLogoAi}>.ai</span></span>
-            <span className={styles.sidebarLogoSub}>AI Agent Platform</span>
-          </div>
+          <img
+            src={theme === "dark" ? "/branding/logo-wordmark-dark.png" : "/branding/logo-wordmark.png"}
+            alt="Carole.ai — AI Agents. Real Work."
+            className={styles.sidebarLogoWordmark}
+          />
         </div>
         <button className={styles.collapseBtn} onClick={() => toggleCollapse(true)} title="Collapse Sidebar">
           <ChevronLeft size={16} />
