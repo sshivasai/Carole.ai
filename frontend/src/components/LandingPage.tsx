@@ -35,6 +35,8 @@ import styles from "./LandingPage.module.css";
 import { useTheme } from "@/hooks/useTheme";
 import SwarmTeamShowcase from "./SwarmTeamShowcase";
 import GravityText from "./GravityText";
+import GravityParticles from "./GravityParticles";
+import MagneticCard from "./MagneticCard";
 
 function GithubIcon({ size = 16 }: { size?: number }) {
   return (
@@ -274,6 +276,9 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
 
       {/* Hero Section */}
       <section className={styles.heroSection}>
+        {/* Interactive Anti-Gravity Physics Canvas Background */}
+        <GravityParticles particleCount={55} connectionDistance={120} mouseRadius={160} />
+
         {/* HUD Status Pill */}
         <div className={styles.hudBadge}>
           <span className={styles.hudDot} />
@@ -824,95 +829,107 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
         </div>
 
         <div className={styles.featuresGrid}>
-          <div className={styles.featureCard}>
-            <div className={styles.featureIconWrap}>
-              <Brain size={24} />
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(167, 139, 250, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <div className={styles.featureIconWrap}>
+                <Brain size={24} />
+              </div>
+              <h3 className={styles.featureTitle}>ReAct Loop & AST Pruning</h3>
+              <p className={styles.featureText}>
+                Autonomous ReAct reasoning loops with typed AST-level dead-end pruning.
+                Failed tool actions are safely removed from context without corrupting
+                valid thought chains or blowing token budgets.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> AST Context Pruning
+              </span>
             </div>
-            <h3 className={styles.featureTitle}>ReAct Loop & AST Pruning</h3>
-            <p className={styles.featureText}>
-              Autonomous ReAct reasoning loops with typed AST-level dead-end pruning.
-              Failed tool actions are safely removed from context without corrupting
-              valid thought chains or blowing token budgets.
-            </p>
-            <span className={styles.featureBadge}>
-              <Sparkles size={13} /> AST Context Pruning
-            </span>
-          </div>
+          </MagneticCard>
 
-          <div className={styles.featureCard}>
-            <div className={styles.featureIconWrap}>
-              <Bot size={24} />
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(16, 185, 129, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <div className={styles.featureIconWrap}>
+                <Bot size={24} />
+              </div>
+              <h3 className={styles.featureTitle}>Guarded Subagent Delegation</h3>
+              <p className={styles.featureText}>
+                Primary coordinators hire specialist temporary subagents on-the-fly.
+                Strict depth-1 delegation guards and team concurrency limits prevent
+                infinite recursive loops and runaway token usage.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> Depth-1 Guarded Swarms
+              </span>
             </div>
-            <h3 className={styles.featureTitle}>Guarded Subagent Delegation</h3>
-            <p className={styles.featureText}>
-              Primary coordinators hire specialist temporary subagents on-the-fly.
-              Strict depth-1 delegation guards and team concurrency limits prevent
-              infinite recursive loops and runaway token usage.
-            </p>
-            <span className={styles.featureBadge}>
-              <Sparkles size={13} /> Depth-1 Guarded Swarms
-            </span>
-          </div>
+          </MagneticCard>
 
-          <div className={styles.featureCard}>
-            <div className={styles.featureIconWrap}>
-              <ShieldCheck size={24} />
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(251, 191, 36, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <div className={styles.featureIconWrap}>
+                <ShieldCheck size={24} />
+              </div>
+              <h3 className={styles.featureTitle}>Judge AI Security Firewall</h3>
+              <p className={styles.featureText}>
+                Multi-tiered tool authorization (Safe, Judge, Human, Block).
+                A dedicated Judge LLM evaluates shell and database mutations in real time,
+                requiring one-click human approvals for critical actions.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> Multi-Tier Permission Gate
+              </span>
             </div>
-            <h3 className={styles.featureTitle}>Judge AI Security Firewall</h3>
-            <p className={styles.featureText}>
-              Multi-tiered tool authorization (Safe, Judge, Human, Block).
-              A dedicated Judge LLM evaluates shell and database mutations in real time,
-              requiring one-click human approvals for critical actions.
-            </p>
-            <span className={styles.featureBadge}>
-              <Sparkles size={13} /> Multi-Tier Permission Gate
-            </span>
-          </div>
+          </MagneticCard>
 
-          <div className={styles.featureCard}>
-            <div className={styles.featureIconWrap}>
-              <Kanban size={24} />
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(56, 189, 248, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <div className={styles.featureIconWrap}>
+                <Kanban size={24} />
+              </div>
+              <h3 className={styles.featureTitle}>Native Autonomous Kanban</h3>
+              <p className={styles.featureText}>
+                Agents autonomously create, assign, prioritize, and complete engineering
+                tasks on real-time Kanban boards with bidirectional WebSocket sync,
+                keeping human leads and agents aligned.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> Live Board Sync
+              </span>
             </div>
-            <h3 className={styles.featureTitle}>Native Autonomous Kanban</h3>
-            <p className={styles.featureText}>
-              Agents autonomously create, assign, prioritize, and complete engineering
-              tasks on real-time Kanban boards with bidirectional WebSocket sync,
-              keeping human leads and agents aligned.
-            </p>
-            <span className={styles.featureBadge}>
-              <Sparkles size={13} /> Live Board Sync
-            </span>
-          </div>
+          </MagneticCard>
 
-          <div className={styles.featureCard}>
-            <div className={styles.featureIconWrap}>
-              <Terminal size={24} />
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(244, 114, 182, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <div className={styles.featureIconWrap}>
+                <Terminal size={24} />
+              </div>
+              <h3 className={styles.featureTitle}>90+ Engineering Tools</h3>
+              <p className={styles.featureText}>
+                Integrated bash execution, safe file I/O with rollback backups, Playwright
+                headless browser automation, git branch management, and universal Model
+                Context Protocol (MCP) server support.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> Unified Tool Registry
+              </span>
             </div>
-            <h3 className={styles.featureTitle}>90+ Engineering Tools</h3>
-            <p className={styles.featureText}>
-              Integrated bash execution, safe file I/O with rollback backups, Playwright
-              headless browser automation, git branch management, and universal Model
-              Context Protocol (MCP) server support.
-            </p>
-            <span className={styles.featureBadge}>
-              <Sparkles size={13} /> Unified Tool Registry
-            </span>
-          </div>
+          </MagneticCard>
 
-          <div className={styles.featureCard}>
-            <div className={styles.featureIconWrap}>
-              <Database size={24} />
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(129, 140, 248, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <div className={styles.featureIconWrap}>
+                <Database size={24} />
+              </div>
+              <h3 className={styles.featureTitle}>AutoDream & Semantic Memory</h3>
+              <p className={styles.featureText}>
+                Autonomous background memory consolidation (<code>auto_dream.py</code>).
+                Distills raw conversations into dense 1536-dim vector embeddings with
+                LanceDB HNSW search, confidence decay scoring, and persistent team scratchpads.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> AutoDream Memory Worker
+              </span>
             </div>
-            <h3 className={styles.featureTitle}>AutoDream & Semantic Memory</h3>
-            <p className={styles.featureText}>
-              Autonomous background memory consolidation (<code>auto_dream.py</code>).
-              Distills raw conversations into dense 1536-dim vector embeddings with
-              LanceDB HNSW search, confidence decay scoring, and persistent team scratchpads.
-            </p>
-            <span className={styles.featureBadge}>
-              <Sparkles size={13} /> AutoDream Memory Worker
-            </span>
-          </div>
+          </MagneticCard>
         </div>
       </section>
 
@@ -932,57 +949,65 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
         <div className={styles.openSourceContainer}>
           {/* 4 Pillars Grid */}
           <div className={styles.osGrid}>
-            <div className={styles.osPillarCard}>
-              <img
-                src="/icons/pillar-opensource.svg"
-                alt="Apache 2.0 Licensed"
-                className={styles.osIconImg}
-              />
-              <div className={styles.osPillarTitle}>Apache 2.0 Licensed</div>
-              <div className={styles.osPillarDesc}>
-                Completely free to use, modify, self-host, and embed in commercial
-                or research platforms.
+            <MagneticCard tiltMaxAngle={10} liftAmount={12} glowColor="rgba(56, 189, 248, 0.25)" style={{ borderRadius: 16 }}>
+              <div className={styles.osPillarCard} style={{ height: "100%" }}>
+                <img
+                  src="/icons/pillar-opensource.svg"
+                  alt="Apache 2.0 Licensed"
+                  className={styles.osIconImg}
+                />
+                <div className={styles.osPillarTitle}>Apache 2.0 Licensed</div>
+                <div className={styles.osPillarDesc}>
+                  Completely free to use, modify, self-host, and embed in commercial
+                  or research platforms.
+                </div>
               </div>
-            </div>
+            </MagneticCard>
 
-            <div className={styles.osPillarCard}>
-              <img
-                src="/icons/pillar-privacy.svg"
-                alt="Local-First & Private"
-                className={styles.osIconImg}
-              />
-              <div className={styles.osPillarTitle}>Local-First & Private</div>
-              <div className={styles.osPillarDesc}>
-                PostgreSQL, pgvector, and agent workspaces run directly in your
-                environment. Full privacy with zero telemetry.
+            <MagneticCard tiltMaxAngle={10} liftAmount={12} glowColor="rgba(16, 185, 129, 0.25)" style={{ borderRadius: 16 }}>
+              <div className={styles.osPillarCard} style={{ height: "100%" }}>
+                <img
+                  src="/icons/pillar-privacy.svg"
+                  alt="Local-First & Private"
+                  className={styles.osIconImg}
+                />
+                <div className={styles.osPillarTitle}>Local-First & Private</div>
+                <div className={styles.osPillarDesc}>
+                  PostgreSQL, pgvector, and agent workspaces run directly in your
+                  environment. Full privacy with zero telemetry.
+                </div>
               </div>
-            </div>
+            </MagneticCard>
 
-            <div className={styles.osPillarCard}>
-              <img
-                src="/icons/pillar-multimodal.svg"
-                alt="Multi-Modal Chat & Files"
-                className={styles.osIconImg}
-              />
-              <div className={styles.osPillarTitle}>Multi-Modal Chat & Files</div>
-              <div className={styles.osPillarDesc}>
-                Attach PDFs, Word docs, CSVs, and images directly in chat with
-                automatic extraction and sandboxed file references.
+            <MagneticCard tiltMaxAngle={10} liftAmount={12} glowColor="rgba(245, 158, 11, 0.25)" style={{ borderRadius: 16 }}>
+              <div className={styles.osPillarCard} style={{ height: "100%" }}>
+                <img
+                  src="/icons/pillar-multimodal.svg"
+                  alt="Multi-Modal Chat & Files"
+                  className={styles.osIconImg}
+                />
+                <div className={styles.osPillarTitle}>Multi-Modal Chat & Files</div>
+                <div className={styles.osPillarDesc}>
+                  Attach PDFs, Word docs, CSVs, and images directly in chat with
+                  automatic extraction and sandboxed file references.
+                </div>
               </div>
-            </div>
+            </MagneticCard>
 
-            <div className={styles.osPillarCard}>
-              <img
-                src="/icons/pillar-mcp.svg"
-                alt="Universal MCP Support"
-                className={styles.osIconImg}
-              />
-              <div className={styles.osPillarTitle}>Universal MCP Support</div>
-              <div className={styles.osPillarDesc}>
-                Plug in any open-source Model Context Protocol server for
-                PostgreSQL, GitHub, Docker, and beyond.
+            <MagneticCard tiltMaxAngle={10} liftAmount={12} glowColor="rgba(167, 139, 250, 0.25)" style={{ borderRadius: 16 }}>
+              <div className={styles.osPillarCard} style={{ height: "100%" }}>
+                <img
+                  src="/icons/pillar-mcp.svg"
+                  alt="Universal MCP Support"
+                  className={styles.osIconImg}
+                />
+                <div className={styles.osPillarTitle}>Universal MCP Support</div>
+                <div className={styles.osPillarDesc}>
+                  Plug in any open-source Model Context Protocol server for
+                  PostgreSQL, GitHub, Docker, and beyond.
+                </div>
               </div>
-            </div>
+            </MagneticCard>
           </div>
 
           {/* Quickstart Terminal Card */}

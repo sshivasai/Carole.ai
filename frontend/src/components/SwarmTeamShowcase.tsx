@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import PrettyAvatar, { PrettyAvatarPreset } from "./PrettyAvatar";
+import MagneticCard from "./MagneticCard";
 import {
   Sparkles,
   Bot,
@@ -264,84 +265,91 @@ export default function SwarmTeamShowcase() {
             const isHighlighted = (activeAgent.id === member.id);
 
             return (
-              <div
+              <MagneticCard
                 key={member.id}
-                onMouseEnter={() => {
-                  setSelectedAgent(member);
-                  setTickerIndex(idx);
-                }}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  padding: "18px 12px",
-                  borderRadius: 18,
-                  background: isHighlighted
-                    ? `linear-gradient(135deg, ${member.color}15, var(--color-canvas-raised, #18182f))`
-                    : "var(--color-canvas-raised, #18182f)",
-                  border: isHighlighted
-                    ? `1.5px solid ${member.color}`
-                    : "1px solid var(--border-glass, rgba(255,255,255,0.06))",
-                  boxShadow: isHighlighted
-                    ? `0 12px 28px ${member.color}25`
-                    : "0 4px 12px rgba(0,0,0,0.2)",
-                  transform: isHighlighted ? "translateY(-6px) scale(1.02)" : "translateY(0)",
-                  transition: "all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)",
-                  cursor: "pointer",
-                  textAlign: "center",
-                  position: "relative",
-                }}
+                tiltMaxAngle={11}
+                liftAmount={12}
+                glowColor={`${member.color}35`}
+                style={{ borderRadius: 18, height: "100%" }}
               >
-                {/* Pretty Illustrated Character Avatar */}
-                <div style={{ marginBottom: 12 }}>
-                  <PrettyAvatar
-                    preset={member.preset}
-                    name={member.name}
-                    size={64}
-                    isWorking={isHighlighted}
-                  />
-                </div>
-
-                {/* Agent Name */}
                 <div
+                  onMouseEnter={() => {
+                    setSelectedAgent(member);
+                    setTickerIndex(idx);
+                  }}
                   style={{
-                    fontSize: 14,
-                    fontWeight: 700,
-                    color: isHighlighted ? member.color : "var(--color-ink-strong, #ffffff)",
-                    marginBottom: 2,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    padding: "18px 12px",
+                    borderRadius: 18,
+                    height: "100%",
+                    background: isHighlighted
+                      ? `linear-gradient(135deg, ${member.color}15, var(--color-canvas-raised, #18182f))`
+                      : "var(--color-canvas-raised, #18182f)",
+                    border: isHighlighted
+                      ? `1.5px solid ${member.color}`
+                      : "1px solid var(--border-glass, rgba(255,255,255,0.06))",
+                    boxShadow: isHighlighted
+                      ? `0 12px 28px ${member.color}25`
+                      : "0 4px 12px rgba(0,0,0,0.2)",
+                    transition: "all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                    cursor: "pointer",
+                    textAlign: "center",
+                    position: "relative",
                   }}
                 >
-                  {member.name}
-                </div>
+                  {/* Pretty Illustrated Character Avatar */}
+                  <div style={{ marginBottom: 12 }}>
+                    <PrettyAvatar
+                      preset={member.preset}
+                      name={member.name}
+                      size={64}
+                      isWorking={isHighlighted}
+                    />
+                  </div>
 
-                {/* Agent Role */}
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: "var(--color-mute, #94a3b8)",
-                    lineHeight: 1.3,
-                    marginBottom: 10,
-                    minHeight: 28,
-                  }}
-                >
-                  {member.role}
-                </div>
+                  {/* Agent Name */}
+                  <div
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 700,
+                      color: isHighlighted ? member.color : "var(--color-ink-strong, #ffffff)",
+                      marginBottom: 2,
+                    }}
+                  >
+                    {member.name}
+                  </div>
 
-                {/* Model Pill */}
-                <span
-                  style={{
-                    fontSize: 9.5,
-                    fontFamily: "var(--font-family-mono, monospace)",
-                    padding: "2px 8px",
-                    borderRadius: 9999,
-                    background: "rgba(255,255,255,0.05)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    color: isHighlighted ? member.color : "var(--color-mute, #94a3b8)",
-                  }}
-                >
-                  {member.model}
-                </span>
-              </div>
+                  {/* Agent Role */}
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--color-mute, #94a3b8)",
+                      lineHeight: 1.3,
+                      marginBottom: 10,
+                      minHeight: 28,
+                    }}
+                  >
+                    {member.role}
+                  </div>
+
+                  {/* Model Pill */}
+                  <span
+                    style={{
+                      fontSize: 9.5,
+                      fontFamily: "var(--font-family-mono, monospace)",
+                      padding: "2px 8px",
+                      borderRadius: 9999,
+                      background: "rgba(255,255,255,0.05)",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                      color: isHighlighted ? member.color : "var(--color-mute, #94a3b8)",
+                    }}
+                  >
+                    {member.model}
+                  </span>
+                </div>
+              </MagneticCard>
             );
           })}
         </div>
