@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="frontend/public/branding/logo-full-animated.gif" alt="Carole.ai Logo" width="280" />
+  <img src="frontend/public/branding/logo-full-dark-animated.gif" alt="Carole.ai Logo" width="280" />
+ 
 </p>
 
 # Carole.ai
