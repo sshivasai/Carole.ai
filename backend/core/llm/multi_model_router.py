@@ -37,11 +37,84 @@ logger = logging.getLogger("carole.router")
 
 
 
-# MODEL_CATALOG and get_active_catalog are now loaded from JSON files.
-# Edit:  backend/core/defaults/supported_models.json  (repo defaults)
-# Or:    ~/.carole/supported_models.json         (user overrides)
-# Or:    Settings UI → Model Catalog tab
-from core.llm.model_catalog import load_model_catalog, get_active_catalog  # noqa: F401
+def get_model_context_window(model: str) -> int:
+    """Returns the approximate context window limit in tokens for a given model string."""
+    m = (model or "").lower()
+    if "gemini" in m:
+        return 1_000_000
+    if "claude" in m:
+        return 200_000
+    if "gpt-4" in m or "o4" in m or "o3" in m or "llama-3" in m or "deepseek" in m:
+        return 128_000
+    if "gpt-3.5" in m or "phi" in m or "16k" in m:
+        return 16_384
+    if "32k" in m or "mistral" in m or "qwen" in m:
+        return 32_768
+    if "8k" in m:
+        return 8_192
+    if "4k" in m:
+        return 4_096
+    if "free" in m or "auto" in m:
+        return 32_768
+    return 32_768
+
+
+def clamp_context_for_model(
+    model: str,
+    system_prompt: str,
+    messages: List[Dict[str, Any]],
+    requested_max_tokens: int = 4000,
+) -> tuple[str, List[Dict[str, Any]], int]:
+    """
+    Ensures (estimated_input_tokens + max_tokens) <= model_context_window.
+    If input tokens alone exceed or approach the limit, truncates/compacts
+    older messages and system prompt sections, and scales down max_tokens.
+    """
+    ctx_limit = get_model_context_window(model)
+
+    def _msg_chars(msg_list):
+        total = 0
+        for m in msg_list:
+            c = m.get("content", "")
+            if isinstance(c, str):
+                total += len(c)
+            elif isinstance(c, list):
+                total += sum(len(str(i.get("text", ""))) for i in c if isinstance(i, dict))
+        return total
+
+    # Reserve at least 256 tokens for output, up to requested_max_tokens
+    min_output_tokens = min(256, requested_max_tokens)
+    target_input_token_limit = max(1000, ctx_limit - min_output_tokens - 100)
+
+    current_input_chars = len(system_prompt) + _msg_chars(messages)
+    current_input_tokens = current_input_chars // 4
+
+    # 1. Truncate intermediate messages if input exceeds budget
+    trimmed_messages = list(messages)
+    if current_input_tokens > target_input_token_limit and len(trimmed_messages) > 1:
+        while len(trimmed_messages) > 1:
+            chars = len(system_prompt) + _msg_chars(trimmed_messages)
+            if chars // 4 <= target_input_token_limit:
+                break
+            trimmed_messages.pop(0)
+        current_input_chars = len(system_prompt) + _msg_chars(trimmed_messages)
+        current_input_tokens = current_input_chars // 4
+
+    # 2. If system_prompt alone is still too large for this model's budget
+    trimmed_system_prompt = system_prompt
+    if current_input_tokens > target_input_token_limit:
+        msg_chars = _msg_chars(trimmed_messages)
+        max_sys_chars = max(2000, (target_input_token_limit * 4) - msg_chars)
+        if len(trimmed_system_prompt) > max_sys_chars:
+            trimmed_system_prompt = trimmed_system_prompt[:max_sys_chars] + "\n\n[System prompt truncated to fit model context limit]"
+            current_input_chars = len(trimmed_system_prompt) + msg_chars
+            current_input_tokens = current_input_chars // 4
+
+    # 3. Calculate safe max_tokens
+    available_tokens = ctx_limit - current_input_tokens - 50
+    safe_max_tokens = max(128, min(requested_max_tokens, available_tokens))
+
+    return trimmed_system_prompt, trimmed_messages, safe_max_tokens
 
 
 class MultiModelRouter:
@@ -209,6 +282,11 @@ class MultiModelRouter:
         """
         response_text = ""
         provider = "unknown"
+
+        # ── Clamp context & max_tokens to prevent 400 Context Length Exceeded ──
+        system_prompt, messages, max_tokens = clamp_context_for_model(
+            model, system_prompt, messages, max_tokens
+        )
 
         # ── Build reasoning extra_body for OpenAI-compatible endpoints ──────────
         # Anthropic uses a different mechanism (_stream_anthropic handles it).

@@ -14,6 +14,10 @@ from httpx import AsyncClient, ASGITransport
 
 from main import app
 from core.memory.database import get_db, Base
+from core.auth.rate_limiter import limiter, SLOWAPI_AVAILABLE
+
+if SLOWAPI_AVAILABLE and limiter:
+    limiter.enabled = False
 
 # Test SQLite in-memory database URL
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
@@ -39,10 +43,10 @@ def event_loop():
 
 @pytest.fixture(scope="session", autouse=True)
 async def setup_db():
-    """Initializes the database schema before tests run."""
-    # We must mock or handle pgvector Vector type on SQLite.
-    # In SQLite, pgvector columns fallback to TEXT/binary or custom mock type.
-    # Let's run create_all:
+    """Initializes the database schema and tool registry before tests run."""
+    from core.tools.tool_executor import register_builtin_tools
+    register_builtin_tools()
+
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield

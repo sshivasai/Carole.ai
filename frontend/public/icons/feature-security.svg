@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="secGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24" />
+      <stop offset="50%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#ea580c" />
+    </linearGradient>
+    <linearGradient id="secBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#451a03" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.95" />
+    </linearGradient>
+    <filter id="secGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="3.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Glassmorphic Badge Frame -->
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#secBg)" stroke="url(#secGrad)" stroke-width="1.75" />
+
+  <!-- Ambient Inner Glow Orb -->
+  <circle cx="32" cy="32" r="18" fill="url(#secGrad)" opacity="0.12" filter="url(#secGlow)" />
+
+  <!-- Security Shield & Judge Gavel Gate -->
+  <g filter="url(#secGlow)">
+    <!-- Outer Shield Crest -->
+    <path d="M32 16 L45 21 C45 33 39 43 32 47 C25 43 19 33 19 21 Z" fill="#1c1917" stroke="url(#secGrad)" stroke-width="2" stroke-linejoin="round" />
+    
+    <!-- Inner Core Shield -->
+    <path d="M32 21 L40 25 C40 33 36 39 32 42 C28 39 24 33 24 25 Z" fill="url(#secGrad)" opacity="0.25" />
+
+    <!-- Center Checkmark / Judge Gavel Key -->
+    <path d="M27 31.5 L30.5 35 L37 27.5" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+    <!-- Shield Aura Pulsing Nodes -->
+    <circle cx="32" cy="16" r="2" fill="#fbbf24" />
+    <circle cx="45" cy="21" r="2" fill="#fbbf24" />
+    <circle cx="19" cy="21" r="2" fill="#fbbf24" />
+    <circle cx="32" cy="47" r="2" fill="#ea580c" />
+  </g>
+</svg>

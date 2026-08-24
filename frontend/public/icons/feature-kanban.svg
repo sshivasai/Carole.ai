@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="kanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#0ea5e9" />
+      <stop offset="100%" stop-color="#2563eb" />
+    </linearGradient>
+    <linearGradient id="kanBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#082f49" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.95" />
+    </linearGradient>
+    <filter id="kanGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="3.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Glassmorphic Badge Frame -->
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#kanBg)" stroke="url(#kanGrad)" stroke-width="1.75" />
+
+  <!-- Ambient Inner Glow Orb -->
+  <circle cx="32" cy="32" r="18" fill="url(#kanGrad)" opacity="0.12" filter="url(#kanGlow)" />
+
+  <!-- Kanban Columns & Interactive Task Cards -->
+  <g filter="url(#kanGlow)">
+    <!-- Column 1 (To Do) -->
+    <rect x="16" y="17" width="8" height="28" rx="2.5" fill="#0c4a6e" stroke="#38bdf8" stroke-width="1.5" />
+    <rect x="18" y="21" width="4" height="6" rx="1" fill="#38bdf8" />
+    <rect x="18" y="30" width="4" height="8" rx="1" fill="#0284c7" />
+
+    <!-- Column 2 (In Progress - Elevated & Highlighted) -->
+    <rect x="28" y="15" width="8" height="32" rx="2.5" fill="#0369a1" stroke="#bae6fd" stroke-width="2" />
+    <rect x="30" y="19" width="4" height="9" rx="1" fill="#ffffff" />
+    <rect x="30" y="31" width="4" height="6" rx="1" fill="#7dd3fc" />
+    <rect x="30" y="39" width="4" height="4" rx="1" fill="#38bdf8" />
+
+    <!-- Column 3 (Done) -->
+    <rect x="40" y="17" width="8" height="28" rx="2.5" fill="#0c4a6e" stroke="#38bdf8" stroke-width="1.5" />
+    <rect x="42" y="21" width="4" height="11" rx="1" fill="#10b981" />
+    <rect x="42" y="34" width="4" height="7" rx="1" fill="#10b981" />
+  </g>
+</svg>

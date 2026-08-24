@@ -117,9 +117,9 @@ class TaskTools:
             if assignee_agent and not is_self_assignment:
                 from core.chat.message_router import message_router
                 if blocked_by_task_id:
-                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} a new task '{title}' (ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
+                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} task '{title}' (Task ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet. DO NOT create a new task — this task already exists on the board."
                 else:
-                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} a new task '{title}' (ID: {task.id}) has been assigned to you. Please start working on it. Update the task status to 'in_progress' when starting and 'done' when finished."
+                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} task '{title}' (Task ID: {task.id}) has been assigned to you. IMPORTANT: DO NOT use create_task — this task already exists on the board. Use update_task(task_id='{task.id}', status='in_progress') to start, then update_task(task_id='{task.id}', status='done') when finished."
                 await message_router.route_message(
                     text=assign_text,
                     sender_id="system",
@@ -248,9 +248,9 @@ class TaskTools:
             )
             if new_assignee_agent and not is_self_update:
                 if task.blocked_by_task_id:
-                    assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
+                    assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet. DO NOT create a new task — this task already exists on the board."
                 else:
-                    assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (ID: {task.id}) has been assigned to you. Please start working on it. Update task status to 'in_progress' when starting and 'done' when finished."
+                    assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. Description: {task.description or 'No description provided.'}. IMPORTANT: DO NOT use create_task — this task already exists on the board. Use update_task(task_id='{task.id}', status='in_progress') to start, then update_task(task_id='{task.id}', status='done') when finished."
                 await message_router.route_message(
                     text=assign_text,
                     sender_id="system",
@@ -258,6 +258,8 @@ class TaskTools:
                     sender_name="System",
                     attachments=[]
                 )
+                if not task.blocked_by_task_id:
+                    await message_router._enqueue_agent(new_assignee_agent, assign_text, db)
 
             # UNBLOCK ENGINE: If this task is now 'done', unblock tasks waiting on it
             if task.status == "done":
@@ -272,13 +274,15 @@ class TaskTools:
                         agent_res = await db.execute(select(Agent).where(Agent.id == b_task.assigned_agent_id))
                         b_agent = agent_res.scalar_one_or_none()
                         if b_agent:
+                            unblock_text = f"[TASK_UNBLOCKED] @{b_agent.name} the task you were waiting on ('{task.title}') is done. You are now unblocked and can begin work on your task: '{b_task.title}'."
                             await message_router.route_message(
-                                text=f"[TASK_UNBLOCKED] @{b_agent.name} the task you were waiting on ('{task.title}') is done. You are now unblocked and can begin work on your task: '{b_task.title}'.",
+                                text=unblock_text,
                                 sender_id="system",
                                 team_id=team_id_str,
                                 sender_name="System",
                                 attachments=[]
                             )
+                            await message_router._enqueue_agent(b_agent, unblock_text, db)
                 if blocked_tasks:
                     await db.commit()
 
@@ -330,6 +334,187 @@ class TaskTools:
             )
             
             return f"✓ Comment added to task '{task.title}'"
+
+    # ── Implementation Plan Tools ────────────────────────────────────────────────
+
+    async def write_task_plan(
+        self, task_id: str, plan_markdown: str, agent_id: str, team_id: str
+    ) -> str:
+        """Writes an implementation plan for a task to disk and the database.
+
+        Creates (or overwrites) a Markdown plan file at:
+            ~/.carole/workspaces/{project_slug}/.carole/{team_slug}/plans/{task_id}_plan.md
+
+        Sets plan_status to 'awaiting_approval' if the agent does NOT have
+        auto_approve_plans enabled, or directly to 'approved' if it does.
+        """
+        async with async_session() as db:
+            task = await _resolve_task(db, task_id, team_id)
+            if not task:
+                return f"Error: Task '{task_id}' not found."
+
+            # Resolve the agent's auto_approve_plans setting
+            auto_approve = False
+            try:
+                agent_uuid = uuid.UUID(agent_id)
+                agent_rec = (await db.execute(
+                    select(Agent).where(Agent.id == agent_uuid)
+                )).scalar_one_or_none()
+                if agent_rec:
+                    auto_approve = bool(agent_rec.auto_approve_plans)
+            except Exception:
+                pass
+
+            # Resolve plan file path via FileTools (handles project/team slug resolution)
+            try:
+                from core.tools.file_tools import file_tools
+                carole_dir = await file_tools.get_team_carole_dir(team_id, db=db)
+                plans_dir = carole_dir / "plans"
+                plans_dir.mkdir(parents=True, exist_ok=True)
+                plan_path = plans_dir / f"{str(task.id)}_plan.md"
+                plan_path.write_text(plan_markdown, encoding="utf-8")
+                plan_file_path_str = str(plan_path)
+            except Exception as e:
+                logger.warning("Could not write plan file for task %s: %s", task_id, e)
+                plan_file_path_str = None
+
+            # Persist to DB
+            task.implementation_plan = plan_markdown
+            task.plan_file_path = plan_file_path_str
+            task.plan_status = "approved" if auto_approve else "awaiting_approval"
+            task.plan_feedback = None  # clear old feedback
+            await db.commit()
+
+            # Broadcast update
+            team_id_str = str(task.team_id)
+            await event_bus.publish(f"team:{team_id_str}", {
+                "type": "task_update",
+                "action": "plan_created",
+                "task": {
+                    "id": str(task.id),
+                    "title": task.title,
+                    "plan_status": task.plan_status,
+                }
+            })
+
+            if auto_approve:
+                return (
+                    f"✓ Implementation plan written for task '{task.title}' and auto-approved.\n"
+                    f"Plan saved to: {plan_file_path_str or '(DB only)'}\n"
+                    f"You may now create the todo list and begin execution."
+                )
+            else:
+                return (
+                    f"✓ Implementation plan written for task '{task.title}'.\n"
+                    f"Plan saved to: {plan_file_path_str or '(DB only)'}\n"
+                    f"Status: awaiting admin approval. Do NOT begin work until the plan is approved."
+                )
+
+    async def request_plan_approval(self, task_id: str, team_id: str) -> str:
+        """Re-submits a plan for approval after the agent has revised it.
+
+        Use this after addressing inline review comments or requested changes.
+        Transitions plan_status from 'revision_requested' back to 'awaiting_approval'.
+        """
+        async with async_session() as db:
+            task = await _resolve_task(db, task_id, team_id)
+            if not task:
+                return f"Error: Task '{task_id}' not found."
+
+            if not task.implementation_plan:
+                return f"Error: Task '{task.title}' has no implementation plan. Use write_task_plan first."
+
+            task.plan_status = "awaiting_approval"
+            await db.commit()
+
+            team_id_str = str(task.team_id)
+            await event_bus.publish(f"team:{team_id_str}", {
+                "type": "task_update",
+                "action": "plan_resubmitted",
+                "task": {
+                    "id": str(task.id),
+                    "title": task.title,
+                    "plan_status": task.plan_status,
+                }
+            })
+            return f"✓ Implementation plan for '{task.title}' re-submitted for approval."
+
+    async def update_task_todos(
+        self, task_id: str, team_id: str,
+        todos: list = None,
+        toggle_id: str = None
+    ) -> str:
+        """Creates or updates the todo checklist for a task.
+
+        Args:
+            task_id: Task ID (UUID, prefix, or title).
+            team_id: Team ID string.
+            todos: Full list of todo items to set. Each item is a dict with keys:
+                   'id' (str), 'text' (str), 'done' (bool).
+                   If provided, REPLACES the full todo_list.
+            toggle_id: If provided, toggles the 'done' status of the todo item
+                       with this id. Takes precedence over a full todos list.
+
+        Examples:
+            # Set a new todo list
+            update_task_todos(task_id, team_id, todos=[
+                {"id": "t1", "text": "Update database schema", "done": false},
+                {"id": "t2", "text": "Write API endpoint", "done": false},
+            ])
+            # Toggle a single item
+            update_task_todos(task_id, team_id, toggle_id="t1")
+        """
+        async with async_session() as db:
+            task = await _resolve_task(db, task_id, team_id)
+            if not task:
+                return f"Error: Task '{task_id}' not found."
+
+            current = list(task.todo_list or [])
+
+            if toggle_id:
+                # Toggle a single item's done state
+                found = False
+                for item in current:
+                    if item.get("id") == toggle_id:
+                        item["done"] = not item.get("done", False)
+                        found = True
+                        break
+                if not found:
+                    return f"Error: Todo item '{toggle_id}' not found in task '{task.title}'."
+                task.todo_list = current
+            elif todos is not None:
+                # Validate and set full list
+                validated = []
+                for item in todos:
+                    if not isinstance(item, dict) or "text" not in item:
+                        return "Error: Each todo item must be a dict with at least a 'text' key."
+                    validated.append({
+                        "id": item.get("id", str(uuid.uuid4())[:8]),
+                        "text": str(item["text"]),
+                        "done": bool(item.get("done", False)),
+                    })
+                task.todo_list = validated
+            else:
+                return "Error: Provide either 'todos' list or a 'toggle_id' to update."
+
+            await db.commit()
+
+            done_count = sum(1 for i in (task.todo_list or []) if i.get("done"))
+            total = len(task.todo_list or [])
+
+            # Broadcast so Kanban card live-updates
+            team_id_str = str(task.team_id)
+            await event_bus.publish(f"team:{team_id_str}", {
+                "type": "task_update",
+                "action": "todos_updated",
+                "task": {
+                    "id": str(task.id),
+                    "title": task.title,
+                    "todo_list": task.todo_list,
+                }
+            })
+            return f"✓ Todos updated for '{task.title}': {done_count}/{total} done."
+
 
 # Singleton
 task_tools = TaskTools()

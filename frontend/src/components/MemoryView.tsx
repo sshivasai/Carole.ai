@@ -134,22 +134,25 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
         ) : (
           <div style={{ display: "grid", gap: "var(--sp-lg)", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))" }}>
             {filtered.map(l => (
-              <div key={l.id} className="card" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)", position: "relative" }}>
-                <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 4 }}>
+              <div key={l.id} className="card" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+                {/* Header row: label | date | actions — no absolute positioning */}
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                  <span className="eyebrow" style={{ color: "var(--color-primary-soft)", flex: 1 }}>Lesson</span>
+                  <span className="caption" style={{ color: "var(--color-mute)", whiteSpace: "nowrap" }}>
+                    {new Date(l.created_at || "").toLocaleDateString()}
+                  </span>
                   {l.project_id && (
                     <button className="btn btn-icon-sm btn-ghost" title="Promote to Global" onClick={() => handlePromote(l.id)}>
                       <Globe size={11} />
                     </button>
                   )}
-                  <button className="btn btn-icon-sm btn-ghost" onClick={() => openEdit(l)}><Edit2 size={11} /></button>
-                  <button className="btn btn-icon-sm btn-ghost" style={{ color: "var(--color-danger)" }}
+                  <button className="btn btn-icon-sm btn-ghost" title="Edit" onClick={() => openEdit(l)}>
+                    <Edit2 size={11} />
+                  </button>
+                  <button className="btn btn-icon-sm btn-ghost" style={{ color: "var(--color-danger)" }} title="Delete"
                     onClick={() => handleDelete(l.id, false)} disabled={deletingId === l.id}>
                     {deletingId === l.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
                   </button>
-                </div>
-                <div className="flex-between">
-                  <span className="eyebrow" style={{ color: "var(--color-primary-soft)" }}>Lesson</span>
-                  <span className="caption">{new Date(l.created_at || "").toLocaleDateString()}</span>
                 </div>
                 <div>
                   <h4 className="body-sm-strong text-mute" style={{ marginBottom: "var(--sp-xs)" }}>Context:</h4>
@@ -176,16 +179,17 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
         ) : (
           <div style={{ display: "grid", gap: "var(--sp-lg)", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))" }}>
             {filteredEntities.map(e => (
-              <div key={e.id} className="card" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)", position: "relative" }}>
-                <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 4 }}>
-                  <button className="btn btn-icon-sm btn-ghost" style={{ color: "var(--color-danger)" }}
+              <div key={e.id} className="card" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+                {/* Header row: label | date | delete */}
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                  <span className="eyebrow" style={{ color: "var(--color-primary-soft)", flex: 1 }}>Fact</span>
+                  <span className="caption" style={{ color: "var(--color-mute)", whiteSpace: "nowrap" }}>
+                    {new Date(e.created_at || "").toLocaleDateString()}
+                  </span>
+                  <button className="btn btn-icon-sm btn-ghost" style={{ color: "var(--color-danger)" }} title="Delete"
                     onClick={() => handleDelete(e.id, true)} disabled={deletingId === e.id}>
                     {deletingId === e.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
                   </button>
-                </div>
-                <div className="flex-between">
-                  <span className="eyebrow" style={{ color: "var(--color-primary-soft)" }}>Fact</span>
-                  <span className="caption">{new Date(e.created_at || "").toLocaleDateString()}</span>
                 </div>
                 <div>
                   <h4 className="body-sm-strong text-primary-color" style={{ marginBottom: "var(--sp-xs)" }}>{e.key}</h4>

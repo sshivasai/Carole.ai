@@ -1,42 +1,72 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Sun,
   Moon,
-  ArrowRight,
   Sparkles,
   Bot,
-  Brain,
-  Video,
-  Globe,
-  Layers,
   Terminal,
+  Shield,
   ShieldCheck,
-  CheckCircle2,
-  Zap,
-  Kanban,
-  Code2,
-  Search,
-  Check,
-  Copy,
-  Download,
-  Lock,
+  Layers,
+  ArrowRight,
+  GitBranch,
   Cpu,
-  Boxes,
   Database,
+  Lock,
+  Zap,
+  Globe,
+  Code2,
+  CheckCircle2,
+  Copy,
+  ExternalLink,
+  Workflow,
   Network,
+  Download,
+  Flame,
+  ChevronRight,
   Activity,
   Server,
   Play,
   FileCode,
+  ChevronDown,
+  Monitor,
+  Laptop,
+  Search,
+  Check,
+  Brain,
+  Video,
+  Kanban,
+  Boxes,
 } from "lucide-react";
+
 import styles from "./LandingPage.module.css";
 import { useTheme } from "@/hooks/useTheme";
 import SwarmTeamShowcase from "./SwarmTeamShowcase";
 import GravityText from "./GravityText";
 import GravityParticles from "./GravityParticles";
 import MagneticCard from "./MagneticCard";
+import TeamChatAnimation from "./TeamChatAnimation";
+import SupportedModelsShowcase from "./SupportedModelsShowcase";
+
+function WindowsIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.551H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.951-1.801" />
+    </svg>
+  );
+}
+
+function AppleIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.9.04-2.02.6-2.66 1.34-.56.65-1.06 1.7-0.93 2.72 1.01.08 2.05-.46 2.67-1.21z" />
+    </svg>
+  );
+}
+
+
 
 function GithubIcon({ size = 16 }: { size?: number }) {
   return (
@@ -57,7 +87,6 @@ interface LandingPageProps {
 }
 
 type SandboxTab = "fullstack" | "graphrag" | "meeting" | "mcp";
-type QuickstartTab = "git" | "docker" | "python" | "k8s";
 
 export default function LandingPage({
   onLaunchApp,
@@ -66,9 +95,71 @@ export default function LandingPage({
 }: LandingPageProps) {
   const { theme, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<SandboxTab>("fullstack");
-  const [quickstartTab, setQuickstartTab] = useState<QuickstartTab>("git");
   const [copied, setCopied] = useState(false);
+  const [copiedCli, setCopiedCli] = useState(false);
   const [selectedGraphQuery, setSelectedGraphQuery] = useState(0);
+
+  // Strategic Platform & Context Detection
+  const [userOS, setUserOS] = useState<"windows" | "mac" | "linux">("windows");
+  const [isLocalHost, setIsLocalHost] = useState(false);
+  const [navDropdownOpen, setNavDropdownOpen] = useState(false);
+  const [heroDropdownOpen, setHeroDropdownOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsLocalHost(
+        window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1" ||
+        window.location.hostname.endsWith(".local")
+      );
+      const ua = navigator.userAgent.toLowerCase();
+      if (ua.includes("mac")) {
+        setUserOS("mac");
+      } else if (ua.includes("linux")) {
+        setUserOS("linux");
+      } else {
+        setUserOS("windows");
+      }
+    }
+  }, []);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(`.${styles.downloadSplitGroup}`)) {
+        setNavDropdownOpen(false);
+        setHeroDropdownOpen(false);
+      }
+    };
+    window.addEventListener("click", handleOutsideClick);
+    return () => window.removeEventListener("click", handleOutsideClick);
+  }, []);
+
+  const copyCliSnippet = () => {
+    navigator.clipboard.writeText("pip install carole-ai && carole run");
+    setCopiedCli(true);
+    setTimeout(() => setCopiedCli(false), 2000);
+  };
+
+  const getPrimaryDownloadInfo = () => {
+    if (userOS === "mac") {
+      return {
+        label: "Download for macOS",
+        sub: "Apple Silicon & Intel (.dmg)",
+        icon: <AppleIcon size={16} />,
+        href: "https://github.com/sshivasai/Carole.ai/releases",
+      };
+    }
+    return {
+      label: "Download for Windows",
+      sub: "Windows 10 / 11 (.exe)",
+      icon: <WindowsIcon size={16} />,
+      href: "https://github.com/sshivasai/Carole.ai/releases",
+    };
+  };
+
+  const primaryDownload = getPrimaryDownloadInfo();
 
   const scrollToSection = (id: string) => {
     const el = document.getElementById(id);
@@ -107,8 +198,7 @@ export default function LandingPage({
     },
   ];
 
-  const quickstartSnippets: Record<QuickstartTab, string> = {
-    git: `# 1. Clone the open-source repository
+  const quickstartManualSnippet = `# 1. Clone the open-source repository
 git clone https://github.com/sshivasai/Carole.ai.git
 cd Carole.ai
 
@@ -124,36 +214,10 @@ cd ../frontend
 npm install
 npm run dev
 
-# Open console at http://localhost:3000`,
-    docker: `# Run the full Carole.ai multi-agent cluster with Docker Compose
-git clone https://github.com/sshivasai/Carole.ai.git
-cd Carole.ai
-
-docker compose up -d --build
-
-# Open Web Console at http://localhost:3000
-# Backend API available at http://localhost:8001`,
-    python: `# Run agent cluster with ReAct reasoning loop directly
-cd backend
-source venv/bin/activate
-
-# Execute agent team workflow
-python -m core.agent.react_agent
-
-# Features pgvector semantic memory, AST dead-end pruning,
-# and real-time WebSocket live reasoning stream.`,
-    k8s: `# Deploy Carole.ai swarm cluster on Kubernetes
-git clone https://github.com/sshivasai/Carole.ai.git
-cd Carole.ai/deploy
-
-kubectl apply -f k8s-namespace.yaml
-kubectl apply -f k8s-postgres-pgvector.yaml
-kubectl apply -f k8s-backend-deployment.yaml
-kubectl apply -f k8s-frontend-deployment.yaml`,
-  };
+# Open console at http://localhost:3000`;
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(quickstartSnippets[quickstartTab]);
+    navigator.clipboard.writeText(quickstartManualSnippet);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -193,16 +257,10 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
 
           <nav className={styles.navLinks}>
             <span
-              onClick={() => scrollToSection("team")}
+              onClick={() => scrollToSection("models")}
               className={styles.navLink}
             >
-              Swarm Team
-            </span>
-            <span
-              onClick={() => scrollToSection("sandbox")}
-              className={styles.navLink}
-            >
-              Swarm Sandbox
+              Supported Models
             </span>
             <span
               onClick={() => scrollToSection("graphrag")}
@@ -259,17 +317,108 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
               <span>Star</span>
             </a>
 
+            {/* Single Streamlined Sign In */}
             <button onClick={onSignIn || onLaunchApp} className={styles.signInBtn}>
               Sign In
             </button>
 
-            <button
-              onClick={onLaunchApp || onSignIn}
-              className={styles.launchBtn}
-            >
-              Launch Console
-              <ArrowRight size={14} />
-            </button>
+            {/* Strategic Action: If running on localhost, show Launch Console. If on website, show Download with Dropdown */}
+            {isLocalHost ? (
+              <button
+                onClick={onLaunchApp || onSignIn}
+                className={styles.launchBtn}
+                title="Launch Local AI Engineering Console"
+              >
+                Launch Console
+                <ArrowRight size={14} />
+              </button>
+            ) : (
+              <div className={styles.downloadSplitGroup}>
+                <a
+                  href={primaryDownload.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.downloadSplitMain}
+                  title={`${primaryDownload.label} (${primaryDownload.sub})`}
+                >
+                  {primaryDownload.icon}
+                  <span>Download</span>
+                </a>
+                <button
+                  type="button"
+                  className={styles.downloadSplitChevron}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setNavDropdownOpen(!navDropdownOpen);
+                  }}
+                  title="Choose operating system"
+                  aria-label="Toggle download options"
+                >
+                  <ChevronDown size={14} />
+                </button>
+
+                {navDropdownOpen && (
+                  <div className={styles.downloadDropdownMenu}>
+                    <div className={styles.downloadDropdownHeader}>
+                      <span>DESKTOP APP</span>
+                      <span>v1.0.0</span>
+                    </div>
+                    <a
+                      href="https://github.com/sshivasai/Carole.ai/releases"
+                      target="_blank"
+                      rel="noreferrer"
+                      className={styles.downloadDropdownItem}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ color: "#38bdf8", display: "flex" }}>
+                          <WindowsIcon size={18} />
+                        </div>
+                        <div>
+                          <div className={styles.downloadItemTitle}>Windows (64-bit)</div>
+                          <div className={styles.downloadItemSub}>Setup .exe • Windows 10 / 11</div>
+                        </div>
+                      </div>
+                      <span className={styles.downloadItemBadge}>.exe</span>
+                    </a>
+                    <a
+                      href="https://github.com/sshivasai/Carole.ai/releases"
+                      target="_blank"
+                      rel="noreferrer"
+                      className={styles.downloadDropdownItem}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ color: "#f8fafc", display: "flex" }}>
+                          <AppleIcon size={18} />
+                        </div>
+                        <div>
+                          <div className={styles.downloadItemTitle}>macOS</div>
+                          <div className={styles.downloadItemSub}>Apple Silicon & Intel (.dmg)</div>
+                        </div>
+                      </div>
+                      <span className={styles.downloadItemBadge}>.dmg</span>
+                    </a>
+                    <div className={styles.downloadDropdownDivider} />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNavDropdownOpen(false);
+                        if (onLaunchApp || onSignIn) (onLaunchApp || onSignIn)!();
+                      }}
+                      className={styles.downloadDropdownItem}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <Sparkles size={17} style={{ color: "var(--color-primary)" }} />
+                        <div>
+                          <div className={styles.downloadItemTitle}>Launch Web Console</div>
+                          <div className={styles.downloadItemSub}>Instant browser access • Zero install</div>
+                        </div>
+                      </div>
+                      <ArrowRight size={14} style={{ opacity: 0.7 }} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -277,43 +426,144 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
       {/* Hero Section */}
       <section className={styles.heroSection}>
         {/* Interactive Anti-Gravity Physics Canvas Background */}
-        <GravityParticles particleCount={55} connectionDistance={120} mouseRadius={160} />
+        <GravityParticles particleCount={88} connectionDistance={125} mouseRadius={170} />
 
         {/* HUD Status Pill */}
         <div className={styles.hudBadge}>
           <span className={styles.hudDot} />
           <Zap size={13} style={{ color: "var(--color-primary, #a78bfa)", flexShrink: 0 }} />
-          <span>90+ BUILT-IN TOOLS • GUARDED REACT SWARMS • 100% LOCAL & OPEN SOURCE</span>
+          <span>90+ BUILT-IN TOOLS • GUARDED MULTI-AGENT TEAMS • 100% LOCAL & OPEN SOURCE</span>
         </div>
 
         <h1 className={styles.heroTitle}>
-          <GravityText text="Autonomous Agent Swarms." gravityStrength={32} radius={170} />{" "}
+          <GravityText text="Autonomous AI Engineering Teams." gravityStrength={32} radius={170} />{" "}
           <span className={styles.heroGradientText}>
             <GravityText text="Built for Hard Engineering." isGradient gravityStrength={38} radius={190} />
           </span>
         </h1>
 
         <p className={styles.heroSubtitle}>
-          Deploy self-coordinating teams of specialized AI agents with Actor-model FIFO message queues,
-          typed AST dead-end pruning, depth-1 guarded subagent delegation, Judge AI security firewalls,
-          and background AutoDream semantic memory consolidation.
+          Deploy autonomous teams of AI engineers that collaborate to build features, fix bugs, run tests, and manage workflows — with real-time reasoning loops, safety guardrails, and long-term memory.
         </p>
 
+        {/* Strategic Hero CTA Group */}
         <div className={styles.heroCtaGroup}>
+          {/* Primary Download for OS with Dropdown */}
+          <div className={styles.downloadSplitGroup}>
+            <a
+              href={primaryDownload.href}
+              target="_blank"
+              rel="noreferrer"
+              className={styles.heroDownloadBtn}
+            >
+              {primaryDownload.icon}
+              <div style={{ textAlign: "left" }}>
+                <div>{primaryDownload.label}</div>
+                <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 500 }}>
+                  {primaryDownload.sub} • Free v1.0.0
+                </div>
+              </div>
+            </a>
+            <button
+              type="button"
+              className={styles.heroDownloadChevron}
+              onClick={(e) => {
+                e.stopPropagation();
+                setHeroDropdownOpen(!heroDropdownOpen);
+              }}
+              title="Select Platform"
+              aria-label="Toggle download options"
+            >
+              <ChevronDown size={18} />
+            </button>
+
+            {heroDropdownOpen && (
+              <div className={styles.downloadDropdownMenu}>
+                <div className={styles.downloadDropdownHeader}>
+                  <span>OFFICIAL DESKTOP BUILDS</span>
+                  <span>v1.0.0</span>
+                </div>
+                <a
+                  href="https://github.com/sshivasai/Carole.ai/releases"
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.downloadDropdownItem}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ color: "#38bdf8", display: "flex" }}>
+                      <WindowsIcon size={20} />
+                    </div>
+                    <div>
+                      <div className={styles.downloadItemTitle}>Windows 10 / 11</div>
+                      <div className={styles.downloadItemSub}>Setup Installer (.exe) • 64-bit</div>
+                    </div>
+                  </div>
+                  <span className={styles.downloadItemBadge}>.exe</span>
+                </a>
+                <a
+                  href="https://github.com/sshivasai/Carole.ai/releases"
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.downloadDropdownItem}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ color: "#f8fafc", display: "flex" }}>
+                      <AppleIcon size={20} />
+                    </div>
+                    <div>
+                      <div className={styles.downloadItemTitle}>macOS</div>
+                      <div className={styles.downloadItemSub}>Apple Silicon (M1-M4) & Intel (.dmg)</div>
+                    </div>
+                  </div>
+                  <span className={styles.downloadItemBadge}>.dmg</span>
+                </a>
+                <div className={styles.downloadDropdownDivider} />
+                <div
+                  onClick={() => {
+                    setHeroDropdownOpen(false);
+                    copyCliSnippet();
+                  }}
+                  className={styles.downloadDropdownItem}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ color: "var(--color-primary)", display: "flex" }}>
+                      <Terminal size={18} />
+                    </div>
+                    <div>
+                      <div className={styles.downloadItemTitle}>Python Package (CLI)</div>
+                      <div className={styles.downloadItemSub}>pip install carole-ai && carole run</div>
+                    </div>
+                  </div>
+                  <span className={styles.downloadItemBadge}>pip</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Secondary Web Console Launch */}
           <button
             onClick={onLaunchApp || onSignIn}
-            className={styles.heroPrimaryBtn}
-          >
-            <Sparkles size={17} />
-            Launch Web Console
-          </button>
-          <button
-            onClick={() => scrollToSection("quickstart")}
             className={styles.heroSecondaryBtn}
           >
-            <Download size={16} />
-            Self-Host / Quickstart
+            <Sparkles size={17} style={{ color: "var(--color-primary)" }} />
+            <span>Launch Web Console</span>
+            <ArrowRight size={15} style={{ opacity: 0.7 }} />
           </button>
+        </div>
+
+        {/* Quick CLI Copyable Snippet */}
+        <div
+          className={styles.cliSnippetChip}
+          onClick={copyCliSnippet}
+          title="Click to copy quickstart command"
+        >
+          <Terminal size={14} style={{ color: "var(--color-primary)", flexShrink: 0 }} />
+          <span>$ pip install carole-ai && carole run</span>
+          {copiedCli ? (
+            <CheckCircle2 size={14} style={{ color: "#10b981", flexShrink: 0 }} />
+          ) : (
+            <Copy size={13} style={{ opacity: 0.6, flexShrink: 0 }} />
+          )}
         </div>
 
         {/* Interactive Swarm Team Showcase with Pretty Avatars */}
@@ -321,371 +571,54 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
           <SwarmTeamShowcase />
         </div>
 
-        {/* Interactive Swarm Sandbox Stage */}
-        <div id="sandbox" className={styles.sandboxStage}>
-          <div className={styles.stageHeader}>
-            <div className={styles.stageDots}>
-              <span className={`${styles.dot} ${styles.dotRed}`} />
-              <span className={`${styles.dot} ${styles.dotYellow}`} />
-              <span className={`${styles.dot} ${styles.dotGreen}`} />
+        {/* Live Interactive Team Chat Workflow Animation */}
+        <div id="sandbox" style={{ width: "100%", maxWidth: 1200, margin: "48px auto 64px" }}>
+          <div style={{ textAlign: "center", marginBottom: 28 }}>
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "4px 14px",
+                borderRadius: 9999,
+                background: "rgba(16, 185, 129, 0.1)",
+                border: "1px solid rgba(16, 185, 129, 0.25)",
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#10b981",
+                marginBottom: 12,
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+              }}
+            >
+              <Activity size={13} />
+              <span>Real-Time Autonomous Execution Simulator</span>
             </div>
-
-            <div className={styles.stageTabs}>
-              <button
-                className={`${styles.stageTabBtn} ${
-                  activeTab === "fullstack" ? styles.stageTabActive : ""
-                }`}
-                onClick={() => setActiveTab("fullstack")}
-              >
-                <Bot size={13} />
-                Full-Stack ReAct Swarm
-              </button>
-              <button
-                className={`${styles.stageTabBtn} ${
-                  activeTab === "graphrag" ? styles.stageTabActive : ""
-                }`}
-                onClick={() => setActiveTab("graphrag")}
-              >
-                <Brain size={13} />
-                AutoDream & LanceDB
-              </button>
-              <button
-                className={`${styles.stageTabBtn} ${
-                  activeTab === "meeting" ? styles.stageTabActive : ""
-                }`}
-                onClick={() => setActiveTab("meeting")}
-              >
-                <ShieldCheck size={13} />
-                Judge AI Security Gate
-              </button>
-              <button
-                className={`${styles.stageTabBtn} ${
-                  activeTab === "mcp" ? styles.stageTabActive : ""
-                }`}
-                onClick={() => setActiveTab("mcp")}
-              >
-                <Terminal size={13} />
-                Universal MCP & Tools
-              </button>
-            </div>
-
-            <div className={styles.stageStatusBadge}>
-              <Activity size={12} />
-              <span>LIVE TELEMETRY STREAM</span>
-            </div>
+            <h2
+              style={{
+                fontSize: "clamp(26px, 3.8vw, 38px)",
+                fontWeight: 800,
+                letterSpacing: "-0.03em",
+                color: "var(--color-ink-strong, #ffffff)",
+                marginBottom: 10,
+              }}
+            >
+              <GravityText text="Watch Your AI Team Execute Live Engineering." gravityStrength={20} radius={140} />
+            </h2>
+            <p
+              style={{
+                fontSize: 15,
+                color: "var(--color-mute, #94a3b8)",
+                maxWidth: 720,
+                margin: "0 auto",
+                lineHeight: 1.5,
+              }}
+            >
+              You give the team a goal. Watch Archer coordinate coder, research, and QA agents live across Team Chat, Kanban task boards, code diffs, terminal test runs, and security approval gates.
+            </p>
           </div>
 
-          <div className={styles.stageContent}>
-            {activeTab === "fullstack" && (
-              <div className={styles.chatSimulation}>
-                <div className={styles.simMessage}>
-                  <div
-                    className={styles.simAvatar}
-                    style={{
-                      background: "rgba(167, 139, 250, 0.15)",
-                      color: "#a78bfa",
-                    }}
-                  >
-                    <Bot size={18} />
-                  </div>
-                  <div className={styles.simBubble}>
-                    <div className={styles.simHeader}>
-                      <span className={styles.simName}>Archer (Lead Coordinator)</span>
-                      <span className={styles.simRole}>Planner</span>
-                    </div>
-                    <div>
-                      Task received:{" "}
-                      <em>"Refactor authentication to distributed Redis locks and verify Playwright integration tests."</em>{" "}
-                      Delegating backend logic to <strong>Coder Specialist</strong> and
-                      headless browser verification to <strong>QA Runner</strong>.
-                    </div>
-                    <div className={styles.simToolBox}>
-                      <Terminal size={14} />
-                      <span>
-                        {'tool_call: hire_subagent(target="Sub-PythonDev", task="Implement atomic token refresh", permissions={"subagents": "block"})'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className={styles.simMessage} style={{ marginLeft: 32 }}>
-                  <div
-                    className={styles.simAvatar}
-                    style={{
-                      background: "rgba(16, 185, 129, 0.15)",
-                      color: "#10b981",
-                    }}
-                  >
-                    <Code2 size={18} />
-                  </div>
-                  <div className={styles.simBubble}>
-                    <div className={styles.simHeader}>
-                      <span className={styles.simName}>Coder Specialist</span>
-                      <span className={styles.simRole}>Backend Worker</span>
-                    </div>
-                    <div>
-                      Created automatic snapshot backup in <code>file_backups</code> and patched <code>backend/core/api/auth.py</code>.
-                      AST dead-end pruner verified 0 cyclic errors.
-                    </div>
-                    <div
-                      className={styles.simToolBox}
-                      style={{ color: "#10b981", borderColor: "rgba(16, 185, 129, 0.3)" }}
-                    >
-                      <CheckCircle2 size={14} />
-                      <span>pytest tests/test_auth.py: 18 passed in 0.94s (100% coverage)</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === "graphrag" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "10px 16px",
-                    background: "var(--color-canvas-raised)",
-                    borderRadius: 10,
-                    border: "1px solid var(--color-hairline)",
-                  }}
-                >
-                  <Search size={15} style={{ color: "var(--color-primary)" }} />
-                  <span
-                    style={{
-                      fontSize: 13,
-                      fontFamily: "var(--font-family-mono, monospace)",
-                    }}
-                  >
-                    query: "Find token refresh lifecycle & dead-end pruning patterns"
-                  </span>
-                </div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: 14,
-                  }}
-                >
-                  <div
-                    style={{
-                      padding: 16,
-                      background: "var(--color-canvas-raised)",
-                      borderRadius: 12,
-                      border: "1px solid var(--color-hairline)",
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 700,
-                        color: "var(--color-primary)",
-                        marginBottom: 8,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                      }}
-                    >
-                      <Database size={13} />
-                      Dense Vector Retrieval (LanceDB)
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12.5,
-                        color: "var(--color-body)",
-                        lineHeight: 1.55,
-                      }}
-                    >
-                      Top similarity match (score: <strong>0.968</strong>) against{" "}
-                      <code>core/agent/context_ast.py</code>. 1536-dim vector cosine L2
-                      retrieval complete in <strong>11ms</strong>.
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      padding: 16,
-                      background: "var(--color-canvas-raised)",
-                      borderRadius: 12,
-                      border: "1px solid var(--color-hairline)",
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 700,
-                        color: "#38bdf8",
-                        marginBottom: 8,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                      }}
-                    >
-                      <Zap size={13} />
-                      AutoDream Background Consolidation
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12.5,
-                        color: "var(--color-body)",
-                        lineHeight: 1.55,
-                      }}
-                    >
-                      Background dream worker consolidated <strong>24 unprocessed messages</strong>,
-                      decayed low-confidence memories, and updated <code>learnings</code> table.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === "meeting" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "10px 16px",
-                    background: "rgba(251, 191, 36, 0.08)",
-                    borderRadius: 10,
-                    border: "1px solid rgba(251, 191, 36, 0.3)",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: "#fbbf24",
-                    }}
-                  >
-                    <ShieldCheck size={16} />
-                    <span>Judge AI Security Gate — Multi-Tier Authorization</span>
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      fontFamily: "var(--font-family-mono, monospace)",
-                      color: "#fbbf24",
-                    }}
-                  >
-                    STATUS: INTERCEPTED & GATED
-                  </span>
-                </div>
-
-                <div
-                  style={{
-                    padding: 16,
-                    background: "var(--color-canvas-raised)",
-                    borderRadius: 12,
-                    border: "1px solid var(--color-hairline)",
-                    fontSize: 13,
-                    lineHeight: 1.6,
-                  }}
-                >
-                  <p style={{ margin: "0 0 10px", fontFamily: "var(--font-family-mono, monospace)", color: "var(--color-ink-strong)" }}>
-                    <strong>Tool Intercepted:</strong> execute_command(command="git push origin main --force")
-                  </p>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "10px 14px",
-                      background: "rgba(239, 68, 68, 0.1)",
-                      borderRadius: 8,
-                      color: "#f87171",
-                      border: "1px solid rgba(239, 68, 68, 0.3)",
-                    }}
-                  >
-                    <Zap size={14} />
-                    <span>
-                      <strong>Judge AI Verdict:</strong> Destructive git force push detected. Escalated to <strong>Human Approval Card</strong> over WebSocket.
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === "mcp" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "10px 16px",
-                    background: "var(--color-canvas-raised)",
-                    borderRadius: 10,
-                    border: "1px solid var(--color-hairline)",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: "var(--color-primary)",
-                    }}
-                  >
-                    <Terminal size={16} />
-                    <span>90+ Unified Engineering Tools & MCP Client</span>
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      fontFamily: "var(--font-family-mono, monospace)",
-                      color: "#10b981",
-                    }}
-                  >
-                    STATUS: JSON-RPC 2.0 ACTIVE
-                  </span>
-                </div>
-
-                <div
-                  style={{
-                    padding: 16,
-                    background: "var(--color-canvas-raised)",
-                    borderRadius: 12,
-                    border: "1px solid var(--color-hairline)",
-                    fontFamily: "var(--font-family-mono, monospace)",
-                    fontSize: 12.5,
-                    lineHeight: 1.6,
-                  }}
-                >
-                  <div style={{ color: "var(--color-mute)", marginBottom: 6 }}>
-                    // Invoking external MCP server tool [mcp_postgres]
-                  </div>
-                  <div style={{ color: "var(--color-ink-strong)" }}>
-                    POST /mcp/postgres/execute_query →{" "}
-                    <span style={{ color: "#38bdf8" }}>
-                      "SELECT * FROM users WHERE status = 'active'"
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      marginTop: 10,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      color: "#10b981",
-                    }}
-                  >
-                    <CheckCircle2 size={14} />
-                    <span>Authorized by Policy Matrix: Read-Only Query Approved ✓</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          <TeamChatAnimation />
         </div>
       </section>
 
@@ -694,15 +627,15 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
         <div className={styles.statsGrid}>
           <div className={styles.statItem}>
             <span className={styles.statNumber}>&lt; 15ms</span>
-            <span className={styles.statLabel}>LanceDB HNSW Latency</span>
+            <span className={styles.statLabel}>Vector Search Latency</span>
           </div>
           <div className={styles.statItem}>
             <span className={styles.statNumber}>90+</span>
             <span className={styles.statLabel}>Built-in Tools & MCP</span>
           </div>
           <div className={styles.statItem}>
-            <span className={styles.statNumber}>Depth-1</span>
-            <span className={styles.statLabel}>Guarded Subagent Delegation</span>
+            <span className={styles.statNumber}>Guarded</span>
+            <span className={styles.statLabel}>Safe Subagent Delegation</span>
           </div>
           <div className={styles.statItem}>
             <span className={styles.statNumber}>100%</span>
@@ -711,17 +644,20 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
         </div>
       </section>
 
+      {/* Universal Supported Models Ecosystem */}
+      <section id="models" className={styles.section}>
+        <SupportedModelsShowcase />
+      </section>
+
       {/* GraphRAG Interactive Engine Deep Dive */}
       <section id="graphrag" className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionEyebrow}>Semantic Intelligence</div>
           <h2 className={styles.sectionTitle}>
-            <GravityText text="Hybrid GraphRAG. Dense Vectors Meet Sparse Knowledge Graphs." gravityStrength={22} radius={140} />
+            <GravityText text="Hybrid Code Search. Understand Every Corner of Your Project." gravityStrength={22} radius={140} />
           </h2>
           <p className={styles.sectionDesc}>
-            Standard vector databases lose contextual relationships across multi-hop
-            codebases. Carole.ai pairs LanceDB dense embeddings with NetworkX ontology
-            graphs for complete structural recall.
+            Traditional search misses how files connect. Carole.ai combines fast vector search with code relationship graphs to understand function calls, dependencies, and imports across your entire project.
           </p>
         </div>
 
@@ -818,115 +754,192 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
       {/* Core Features Architecture */}
       <section id="features" className={styles.section}>
         <div className={styles.sectionHeader}>
-          <div className={styles.sectionEyebrow}>Swarm Architecture</div>
+          <div className={styles.sectionEyebrow}>Multi-Agent Architecture</div>
           <h2 className={styles.sectionTitle}>
-            <GravityText text="Everything your agent team needs to execute real-world engineering." gravityStrength={22} radius={140} />
+            <GravityText text="Everything your AI team needs to build real software." gravityStrength={22} radius={140} />
           </h2>
           <p className={styles.sectionDesc}>
-            Built from first principles for developers and engineering teams who demand
-            genuine autonomy, safety guardrails, low latency, and zero vendor lock-in.
+            Built from first principles for developers who demand genuine autonomy, safety guardrails, low latency, and zero vendor lock-in.
           </p>
         </div>
 
         <div className={styles.featuresGrid}>
+          {/* 1. Smart Context Management */}
           <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(167, 139, 250, 0.25)" style={{ borderRadius: 16 }}>
             <div className={styles.featureCard} style={{ height: "100%" }}>
-              <div className={styles.featureIconWrap}>
-                <Brain size={24} />
-              </div>
-              <h3 className={styles.featureTitle}>ReAct Loop & AST Pruning</h3>
+              <img
+                src="/icons/feature-context.svg"
+                alt="Smart Context Management"
+                className={styles.featureIconImg}
+              />
+              <h3 className={styles.featureTitle}>Smart Context Management</h3>
               <p className={styles.featureText}>
-                Autonomous ReAct reasoning loops with typed AST-level dead-end pruning.
-                Failed tool actions are safely removed from context without corrupting
-                valid thought chains or blowing token budgets.
+                Agents reason through tasks step-by-step. Failed attempts and dead ends are automatically pruned from context, keeping reasoning sharp and preventing token waste.
               </p>
               <span className={styles.featureBadge}>
-                <Sparkles size={13} /> AST Context Pruning
+                <Sparkles size={13} /> Smart Context Pruning
               </span>
             </div>
           </MagneticCard>
 
+          {/* 2. Guarded Subagents */}
           <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(16, 185, 129, 0.25)" style={{ borderRadius: 16 }}>
             <div className={styles.featureCard} style={{ height: "100%" }}>
-              <div className={styles.featureIconWrap}>
-                <Bot size={24} />
-              </div>
+              <img
+                src="/icons/feature-subagents.svg"
+                alt="Guarded Subagent Delegation"
+                className={styles.featureIconImg}
+              />
               <h3 className={styles.featureTitle}>Guarded Subagent Delegation</h3>
               <p className={styles.featureText}>
-                Primary coordinators hire specialist temporary subagents on-the-fly.
-                Strict depth-1 delegation guards and team concurrency limits prevent
-                infinite recursive loops and runaway token usage.
+                Lead agents spawn temporary specialists for focused subtasks. Strict delegation boundaries prevent runaway loops and keep execution fast and predictable.
               </p>
               <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Depth-1 Guarded Swarms
+                <Sparkles size={13} /> Guarded Subagents
               </span>
             </div>
           </MagneticCard>
 
+          {/* 3. Judge AI Security Firewall */}
           <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(251, 191, 36, 0.25)" style={{ borderRadius: 16 }}>
             <div className={styles.featureCard} style={{ height: "100%" }}>
-              <div className={styles.featureIconWrap}>
-                <ShieldCheck size={24} />
-              </div>
+              <img
+                src="/icons/feature-security.svg"
+                alt="Judge AI Security Firewall"
+                className={styles.featureIconImg}
+              />
               <h3 className={styles.featureTitle}>Judge AI Security Firewall</h3>
               <p className={styles.featureText}>
-                Multi-tiered tool authorization (Safe, Judge, Human, Block).
-                A dedicated Judge LLM evaluates shell and database mutations in real time,
-                requiring one-click human approvals for critical actions.
+                A built-in security evaluator inspects terminal commands, database operations, and file changes before execution, prompting for your approval on critical actions.
               </p>
               <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Multi-Tier Permission Gate
+                <Sparkles size={13} /> Security Guardrails
               </span>
             </div>
           </MagneticCard>
 
+          {/* 4. Google Account & Workspace Sync */}
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(66, 133, 244, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <img
+                src="/icons/feature-google.svg"
+                alt="Google Account & Workspace Connection"
+                className={styles.featureIconImg}
+              />
+              <h3 className={styles.featureTitle}>Google Account & Workspace Sync</h3>
+              <p className={styles.featureText}>
+                Connect Google OAuth with one click. Agents schedule Calendar events, read/write Google Drive files, extract meeting tasks from Google Meet, and draft emails.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> OAuth2 & Workspace API
+              </span>
+            </div>
+          </MagneticCard>
+
+          {/* 5. Safe File History & Rollback Snapshots */}
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(6, 182, 212, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <img
+                src="/icons/feature-history.svg"
+                alt="File History & 1-Click Rollback"
+                className={styles.featureIconImg}
+              />
+              <h3 className={styles.featureTitle}>File History & 1-Click Rollback</h3>
+              <p className={styles.featureText}>
+                Every edit creates an atomic snapshot backup in <code>.carole_history</code>. Compare unified visual diffs and instantly rollback any accidental changes in one click.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> Version Snapshots & Diffs
+              </span>
+            </div>
+          </MagneticCard>
+
+          {/* 6. Playwright Headless Browser Automation */}
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(225, 29, 72, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <img
+                src="/icons/feature-browser.svg"
+                alt="Playwright Headless Browser Automation"
+                className={styles.featureIconImg}
+              />
+              <h3 className={styles.featureTitle}>Playwright Browser Automation</h3>
+              <p className={styles.featureText}>
+                Dedicated browser worker subagents navigate live web apps, inspect DOM elements, click, fill forms, execute tests, and capture verified screenshot artifacts.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> Headless DOM & Visual QA
+              </span>
+            </div>
+          </MagneticCard>
+
+          {/* 7. Autonomous Kanban Boards */}
           <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(56, 189, 248, 0.25)" style={{ borderRadius: 16 }}>
             <div className={styles.featureCard} style={{ height: "100%" }}>
-              <div className={styles.featureIconWrap}>
-                <Kanban size={24} />
-              </div>
-              <h3 className={styles.featureTitle}>Native Autonomous Kanban</h3>
+              <img
+                src="/icons/feature-kanban.svg"
+                alt="Autonomous Kanban Boards"
+                className={styles.featureIconImg}
+              />
+              <h3 className={styles.featureTitle}>Autonomous Kanban Boards</h3>
               <p className={styles.featureText}>
-                Agents autonomously create, assign, prioritize, and complete engineering
-                tasks on real-time Kanban boards with bidirectional WebSocket sync,
-                keeping human leads and agents aligned.
+                Agents autonomously create, estimate, assign, and track engineering tasks on visual Kanban boards with live updates, keeping you in full control of progress.
               </p>
               <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Live Board Sync
+                <Sparkles size={13} /> Live Task Boards
               </span>
             </div>
           </MagneticCard>
 
+          {/* 8. Universal MCP Support & 90+ Built-in Tools */}
           <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(244, 114, 182, 0.25)" style={{ borderRadius: 16 }}>
             <div className={styles.featureCard} style={{ height: "100%" }}>
-              <div className={styles.featureIconWrap}>
-                <Terminal size={24} />
-              </div>
-              <h3 className={styles.featureTitle}>90+ Engineering Tools</h3>
+              <img
+                src="/icons/feature-tools.svg"
+                alt="Universal MCP & 90+ Developer Tools"
+                className={styles.featureIconImg}
+              />
+              <h3 className={styles.featureTitle}>Universal MCP & 90+ Developer Tools</h3>
               <p className={styles.featureText}>
-                Integrated bash execution, safe file I/O with rollback backups, Playwright
-                headless browser automation, git branch management, and universal Model
-                Context Protocol (MCP) server support.
+                Native support for Model Context Protocol (MCP) over stdio and SSE. Connect PostgreSQL, GitHub, Docker, Slack, and cloud tools directly to your agent workflows.
               </p>
               <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Unified Tool Registry
+                <Sparkles size={13} /> Universal MCP Protocol
               </span>
             </div>
           </MagneticCard>
 
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(129, 140, 248, 0.25)" style={{ borderRadius: 16 }}>
+          {/* 9. Plugin & Skills Studio */}
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(139, 92, 246, 0.25)" style={{ borderRadius: 16 }}>
             <div className={styles.featureCard} style={{ height: "100%" }}>
-              <div className={styles.featureIconWrap}>
-                <Database size={24} />
-              </div>
-              <h3 className={styles.featureTitle}>AutoDream & Semantic Memory</h3>
+              <img
+                src="/icons/feature-plugin.svg"
+                alt="Plugin Studio & Custom Tools"
+                className={styles.featureIconImg}
+              />
+              <h3 className={styles.featureTitle}>Plugin Studio & Custom Extensibility</h3>
               <p className={styles.featureText}>
-                Autonomous background memory consolidation (<code>auto_dream.py</code>).
-                Distills raw conversations into dense 1536-dim vector embeddings with
-                LanceDB HNSW search, confidence decay scoring, and persistent team scratchpads.
+                Extend agent capabilities in seconds with Python <code>@carole_tool</code> decorators and hot-reloadable agent skill scripts with automated YAML frontmatter schemas.
               </p>
               <span className={styles.featureBadge}>
-                <Sparkles size={13} /> AutoDream Memory Worker
+                <Sparkles size={13} /> Python Plugins & Custom Skills
+              </span>
+            </div>
+          </MagneticCard>
+
+          {/* 10. Long-Term Memory & Learnings */}
+          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(129, 140, 248, 0.25)" style={{ borderRadius: 16 }}>
+            <div className={styles.featureCard} style={{ height: "100%" }}>
+              <img
+                src="/icons/feature-memory.svg"
+                alt="Long-Term Memory & Learnings"
+                className={styles.featureIconImg}
+              />
+              <h3 className={styles.featureTitle}>AutoDream Memory & Learnings</h3>
+              <p className={styles.featureText}>
+                Agents consolidate memory in the background, learning codebase design patterns, coding conventions, and bug fixes across sessions for personalized engineering.
+              </p>
+              <span className={styles.featureBadge}>
+                <Sparkles size={13} /> Persistent Vector Memory
               </span>
             </div>
           </MagneticCard>
@@ -938,7 +951,7 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
         <div className={styles.sectionHeader}>
           <div className={styles.sectionEyebrow}>Free & Open Source</div>
           <h2 className={styles.sectionTitle}>
-            <GravityText text="100% Open Source. Self-Host, Download, and Own Your Swarm." gravityStrength={22} radius={140} />
+            <GravityText text="100% Open Source. Self-Host, Download, and Own Your Platform." gravityStrength={22} radius={140} />
           </h2>
           <p className={styles.sectionDesc}>
             No subscriptions, no hidden limits, and no vendor lock-in. Run with
@@ -1013,42 +1026,18 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
           {/* Quickstart Terminal Card */}
           <div id="quickstart" className={styles.terminalCard}>
             <div className={styles.terminalTop}>
-              <div className={styles.terminalTabs}>
-                <button
-                  className={`${styles.terminalTab} ${
-                    quickstartTab === "git" ? styles.terminalTabActive : ""
-                  }`}
-                  onClick={() => setQuickstartTab("git")}
-                >
-                  Git / Manual
-                </button>
-                <button
-                  className={`${styles.terminalTab} ${
-                    quickstartTab === "docker" ? styles.terminalTabActive : ""
-                  }`}
-                  onClick={() => setQuickstartTab("docker")}
-                >
-                  Docker Compose
-                </button>
-                <button
-                  className={`${styles.terminalTab} ${
-                    quickstartTab === "python" ? styles.terminalTabActive : ""
-                  }`}
-                  onClick={() => setQuickstartTab("python")}
-                >
-                  Python Agent Loop
-                </button>
-                <button
-                  className={`${styles.terminalTab} ${
-                    quickstartTab === "k8s" ? styles.terminalTabActive : ""
-                  }`}
-                  onClick={() => setQuickstartTab("k8s")}
-                >
-                  Kubernetes
-                </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "var(--font-family-mono, monospace)", color: "var(--color-ink-strong)" }}>
+                  Manual Setup & Installation (FastAPI + Next.js)
+                </span>
               </div>
 
-              <button onClick={handleCopy} className={styles.copyBtn}>
+              <button onClick={handleCopy} className={styles.copyBtn} title="Copy setup commands">
                 {copied ? (
                   <>
                     <Check size={13} style={{ color: "#10b981" }} />
@@ -1064,7 +1053,7 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
             </div>
 
             <pre className={styles.terminalBody}>
-              <code>{quickstartSnippets[quickstartTab]}</code>
+              <code>{quickstartManualSnippet}</code>
             </pre>
           </div>
         </div>
@@ -1084,8 +1073,8 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
             lineHeight: 1.6,
           }}
         >
-          Carole.ai is 100% free and open-source. Download, run locally, or launch
-          the web console now.
+          Carole.ai is 100% free and open-source. Download the desktop app for
+          Windows & macOS, run locally via CLI, or launch the web console.
         </p>
         <div
           style={{
@@ -1093,14 +1082,25 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
             gap: 16,
             justifyContent: "center",
             flexWrap: "wrap",
+            alignItems: "center",
           }}
         >
+          <a
+            href={primaryDownload.href}
+            target="_blank"
+            rel="noreferrer"
+            className={styles.heroPrimaryBtn}
+            title={primaryDownload.label}
+          >
+            {primaryDownload.icon}
+            <span>{primaryDownload.label}</span>
+          </a>
           <button
             onClick={onLaunchApp || onSignIn}
-            className={styles.heroPrimaryBtn}
+            className={styles.heroSecondaryBtn}
           >
-            <Sparkles size={17} />
-            Launch Carole.ai Console
+            <Sparkles size={17} style={{ color: "var(--color-primary)" }} />
+            <span>Launch Web Console</span>
           </button>
           <a
             href="https://github.com/sshivasai/Carole.ai"
@@ -1109,7 +1109,7 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
             className={styles.heroSecondaryBtn}
           >
             <GithubIcon size={17} />
-            Star on GitHub
+            <span>Star on GitHub</span>
           </a>
         </div>
       </section>
@@ -1139,7 +1139,7 @@ kubectl apply -f k8s-frontend-deployment.yaml`,
 
           <div className={styles.footerStatusBadge}>
             <span className={styles.footerDot} />
-            <span>All Systems Operational • v2.4.0-edge</span>
+            <span>All Systems Operational • v1.0.0</span>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 20 }}>

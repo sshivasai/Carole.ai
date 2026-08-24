@@ -97,39 +97,31 @@ class ToolRegistry:
             if spec.agent_id is not None and spec.agent_id != agent_id:
                 continue
 
-            # Build parameter description with inline hints from descriptions
-            description = spec.description
-            if spec.name == "browser_navigate":
-                try:
-                    from core.llm.config_manager import load_config
-                    provider = load_config().get("browser_automation", {}).get("provider", "local")
-                    if provider != "local":
-                        description += f" (Note: Anti-bot and CAPTCHA bypassing is currently ENABLED via {provider.capitalize()})."
-                except Exception:
-                    pass
+            # Keep description concise (first sentence/line)
+            raw_desc = (spec.description or "").strip().split("\n")[0].strip()
+            if len(raw_desc) > 180:
+                raw_desc = raw_desc[:177] + "..."
 
             if spec.parameters:
                 param_parts = []
                 for k, v in spec.parameters.items():
                     param_type = v.get("type", "string")
-                    desc = v.get("description", "")
                     required = v.get("required", False)
-                    entry = f'"{k}": {param_type}'
-                    hints = []
-                    if required:
-                        hints.append("required")
+                    desc = v.get("description", "")
+                    entry = f'"{k}": {param_type}' + (" (required)" if required else "")
                     if desc:
-                        hints.append(desc)
-                    if hints:
-                        entry += f' /* {"; ".join(hints)} */'
+                        # Include concise description if under 60 chars, or trim
+                        clean_desc = desc.split("\n")[0].strip()
+                        if len(clean_desc) > 60:
+                            clean_desc = clean_desc[:57] + "..."
+                        entry += f' /* {clean_desc} */'
                     param_parts.append(entry)
                 params_desc = "{" + ", ".join(param_parts) + "}"
             else:
                 params_desc = "{}"
 
             lines.append(
-                f"- {spec.name}({params_desc}): {description} "
-                f"[category={spec.category}, permission={spec.permission_default}]"
+                f"- {spec.name}({params_desc}): {raw_desc} [category={spec.category}, permission={spec.permission_default}]"
             )
         lines.append("</available-tools>")
         return "\n".join(lines)

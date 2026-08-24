@@ -14,7 +14,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import get_db
-from core.memory.models import User, Project, Team, Agent, Message, Task, FileBackup
+from core.memory.models import User, Project, Team, Agent, Message, Task, FileBackup, TaskComment, PlanInlineComment
 from core.tools.tool_registry import ToolRegistry
 from core.config import DEFAULT_FAST_MODEL
 from core.auth.auth_middleware import require_auth
@@ -137,6 +137,8 @@ class AgentUpdate(BaseModel):
     tool_permissions: Optional[dict] = None
     custom_instructions: Optional[str] = None
     skills: Optional[List[str]] = None
+    # Implementation plan auto-approval for this agent
+    auto_approve_plans: Optional[bool] = None
 
 class TaskCreate(BaseModel):
     team_id: str
@@ -409,6 +411,20 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
     db.add(agent)
     await db.commit()
 
+    from core.chat.event_bus import event_bus
+    await event_bus.publish(f"team:{agent.team_id}", {
+        "type": "agent_created",
+        "agent": {
+            "id": str(agent.id), "name": agent.name, "role": agent.role,
+            "model": agent.model, "fallback_model": agent.fallback_model,
+            "reasoning_effort": agent.reasoning_effort or "none",
+            "team_id": str(agent.team_id),
+            "personality": agent.personality, "skills": agent.skills or [],
+            "custom_instructions": agent.custom_instructions,
+            "tool_permissions": agent.tool_permissions,
+        }
+    })
+
     from core.chat.message_router import message_router
     human_name = await _get_human_name(db, agent.team_id)
     await message_router.route_message(
@@ -472,6 +488,8 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
         agent.custom_instructions = body.custom_instructions
     if body.skills is not None:
         agent.skills = body.skills
+    if body.auto_approve_plans is not None:
+        agent.auto_approve_plans = body.auto_approve_plans
     # Rebuild system prompt if role/name/personality/skills/instructions changed
     rebuild = any(x is not None for x in [body.system_prompt, body.name, body.role, body.personality, body.skills, body.custom_instructions])
     if rebuild:
@@ -486,6 +504,21 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
                 prompt += f"\n\nSPECIALIZED SKILLS & TOOLKITS:\n{skills_text}"
             agent.system_prompt = prompt
     await db.commit()
+
+    from core.chat.event_bus import event_bus
+    agent_payload = {
+        "id": str(agent.id), "name": agent.name, "role": agent.role,
+        "model": agent.model, "fallback_model": agent.fallback_model,
+        "reasoning_effort": agent.reasoning_effort or "none",
+        "team_id": str(agent.team_id),
+        "personality": agent.personality, "skills": agent.skills or [],
+        "custom_instructions": agent.custom_instructions,
+        "tool_permissions": agent.tool_permissions,
+    }
+    await event_bus.publish(f"team:{agent.team_id}", {
+        "type": "agent_updated",
+        "agent": agent_payload,
+    })
 
     from core.chat.message_router import message_router
     human_name = await _get_human_name(db, agent.team_id)
@@ -505,6 +538,7 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
         "personality": agent.personality, "skills": agent.skills,
         "custom_instructions": agent.custom_instructions,
         "tool_permissions": agent.tool_permissions,
+        "auto_approve_plans": agent.auto_approve_plans,
     }
 
 @router.delete("/agents/{agent_id}")
@@ -512,14 +546,20 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db), user: 
     result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
     agent = result.scalar_one_or_none()
     if agent:
+        team_id_str = str(agent.team_id)
         await db.execute(delete(Agent).where(Agent.id == uuid.UUID(agent_id)))
         await db.commit()
+        from core.chat.event_bus import event_bus
+        await event_bus.publish(f"team:{team_id_str}", {
+            "type": "agent_deleted",
+            "agent_id": str(agent_id),
+        })
         from core.chat.message_router import message_router
         human_name = await _get_human_name(db, agent.team_id)
         await message_router.route_message(
             text=f"[AGENT_REMOVE] @{agent.name} was removed from the team by {human_name}",
             sender_id="system",
-            team_id=str(agent.team_id),
+            team_id=team_id_str,
             sender_name="System",
             attachments=[]
         )
@@ -593,17 +633,13 @@ async def delete_team(team_id: str, delete_content: bool = False, db: AsyncSessi
     # Finding #2 — authentication required
     if delete_content:
         import shutil
-        import re
         from core.tools.file_tools import file_tools
         try:
-            result = await db.execute(select(Team).where(Team.id == uuid.UUID(team_id)))
-            team = result.scalar_one_or_none()
-            if team:
-                workspace_dir = await file_tools.get_workspace_root(str(team.project_id))
-                team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-')
-                team_dir = workspace_dir / team_slug
-                if team_dir.exists():
-                    shutil.rmtree(str(team_dir))
+            # Use get_team_carole_dir to resolve the correct path:
+            # workspaces/<project_slug>/.carole/<team_slug>
+            team_carole_dir = await file_tools.get_team_carole_dir(team_id, db=db)
+            if team_carole_dir.exists():
+                shutil.rmtree(str(team_carole_dir))
         except Exception as e:
             import logging
             logging.getLogger("carole.crud").warning("Failed to delete team folder: %s", e)
@@ -613,7 +649,9 @@ async def delete_team(team_id: str, delete_content: bool = False, db: AsyncSessi
 
 @router.delete("/users/{user_id}")
 async def delete_user(user_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    # Finding #2 — authentication required
+    # Verify caller can only delete their own account (IDOR protection)
+    if user.get("sub") != user_id:
+        raise HTTPException(status_code=403, detail="You can only delete your own account.")
     await db.execute(delete(User).where(User.id == uuid.UUID(user_id)))
     return {"status": "deleted", "id": user_id}
 
@@ -637,6 +675,239 @@ async def get_team(team_id: str, db: AsyncSession = Depends(get_db), user: dict 
     if not t:
         raise HTTPException(status_code=404, detail="Team not found")
     return {"id": str(t.id), "name": t.name, "project_id": str(t.project_id)}
+
+
+# ============================================================
+# Implementation Plan & Todo Routes
+# ============================================================
+
+class PlanReviewBody(BaseModel):
+    feedback: Optional[str] = None  # rejection reason or revision notes
+
+class PlanInlineCommentCreate(BaseModel):
+    line_index: int
+    text: str
+
+class PlanEditBody(BaseModel):
+    plan_markdown: str
+
+class TodoUpdateBody(BaseModel):
+    todos: Optional[List[dict]] = None   # full replacement list
+    toggle_id: Optional[str] = None      # single item toggle
+
+
+@router.get("/tasks/{task_id}/plan")
+async def get_task_plan(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """Return the implementation plan, status, feedback, todos, and inline comments for a task."""
+    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    comments = (await db.execute(
+        select(PlanInlineComment)
+        .where(PlanInlineComment.task_id == task.id)
+        .order_by(PlanInlineComment.line_index.asc(), PlanInlineComment.created_at.asc())
+    )).scalars().all()
+
+    return {
+        "task_id": str(task.id),
+        "title": task.title,
+        "plan_file_path": task.plan_file_path,
+        "implementation_plan": task.implementation_plan,
+        "plan_status": task.plan_status,
+        "plan_feedback": task.plan_feedback,
+        "todo_list": task.todo_list or [],
+        "inline_comments": [
+            {
+                "id": str(c.id),
+                "line_index": c.line_index,
+                "author_id": c.author_id,
+                "author_name": c.author_name,
+                "text": c.text,
+                "resolved": c.resolved,
+                "created_at": c.created_at.isoformat() + "Z" if c.created_at else None,
+            }
+            for c in comments
+        ]
+    }
+
+
+@router.post("/tasks/{task_id}/plan/approve")
+async def approve_task_plan(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """Approve an implementation plan — allows the agent to begin execution."""
+    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task.plan_status = "approved"
+    task.plan_feedback = None
+    await db.commit()
+
+    # Notify the agent via event bus so its ReAct loop can resume
+    from core.chat.event_bus import event_bus
+    human_name = await _get_human_name(db, task.team_id)
+    team_id_str = str(task.team_id)
+    await event_bus.publish(f"team:{team_id_str}", {
+        "type": "plan_approved",
+        "task_id": str(task.id),
+        "task_title": task.title,
+        "approved_by": human_name,
+    })
+
+    # Route a chat message so the agent sees the approval
+    from core.chat.message_router import message_router
+    await message_router.route_message(
+        text=f"[PLAN_APPROVED] {human_name} approved the implementation plan for task '{task.title}'. You may now begin execution.",
+        sender_id="system",
+        team_id=team_id_str,
+        sender_name="System",
+        attachments=[]
+    )
+    return {"status": "approved", "task_id": task_id}
+
+
+@router.post("/tasks/{task_id}/plan/reject")
+async def reject_task_plan(
+    task_id: str,
+    body: PlanReviewBody,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """Reject a plan with optional feedback, asking the agent to revise."""
+    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task.plan_status = "revision_requested"
+    task.plan_feedback = body.feedback
+    await db.commit()
+
+    from core.chat.event_bus import event_bus
+    human_name = await _get_human_name(db, task.team_id)
+    team_id_str = str(task.team_id)
+    await event_bus.publish(f"team:{team_id_str}", {
+        "type": "plan_rejected",
+        "task_id": str(task.id),
+        "task_title": task.title,
+        "feedback": body.feedback,
+    })
+
+    from core.chat.message_router import message_router
+    feedback_text = f" Feedback: {body.feedback}" if body.feedback else ""
+    await message_router.route_message(
+        text=f"[PLAN_REJECTED] {human_name} requested revisions to the plan for task '{task.title}'.{feedback_text} Please update your implementation plan and re-submit with request_plan_approval.",
+        sender_id="system",
+        team_id=team_id_str,
+        sender_name="System",
+        attachments=[]
+    )
+    return {"status": "revision_requested", "task_id": task_id}
+
+
+@router.post("/tasks/{task_id}/plan/comment")
+async def add_plan_inline_comment(
+    task_id: str,
+    body: PlanInlineCommentCreate,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """Add an inline comment anchored to a specific line in the implementation plan."""
+    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    human_name = await _get_human_name(db, task.team_id)
+    comment = PlanInlineComment(
+        task_id=task.id,
+        line_index=body.line_index,
+        author_id=str(user["sub"]),
+        author_name=human_name,
+        text=body.text,
+    )
+    db.add(comment)
+    await db.commit()
+    await db.refresh(comment)
+
+    # Notify the team so the agent can see the comment
+    from core.chat.event_bus import event_bus
+    await event_bus.publish(f"team:{task.team_id}", {
+        "type": "plan_comment_added",
+        "task_id": str(task.id),
+        "comment": {
+            "id": str(comment.id),
+            "line_index": comment.line_index,
+            "author_name": comment.author_name,
+            "text": comment.text,
+        }
+    })
+    return {
+        "id": str(comment.id),
+        "line_index": comment.line_index,
+        "author_name": comment.author_name,
+        "text": comment.text,
+        "resolved": comment.resolved,
+    }
+
+
+@router.patch("/tasks/{task_id}/plan")
+async def edit_task_plan(
+    task_id: str,
+    body: PlanEditBody,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """Edit the plan markdown directly (admin inline edit). Resets status to awaiting_approval."""
+    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task.implementation_plan = body.plan_markdown
+    task.plan_status = "awaiting_approval"
+
+    # Also overwrite the disk file if path exists
+    if task.plan_file_path:
+        try:
+            from pathlib import Path
+            Path(task.plan_file_path).write_text(body.plan_markdown, encoding="utf-8")
+        except Exception:
+            pass
+
+    await db.commit()
+    from core.chat.event_bus import event_bus
+    await event_bus.publish(f"team:{task.team_id}", {
+        "type": "task_update",
+        "action": "plan_edited",
+        "task": {"id": str(task.id), "title": task.title, "plan_status": task.plan_status}
+    })
+    return {"status": "updated", "plan_status": task.plan_status}
+
+
+@router.patch("/tasks/{task_id}/todos")
+async def update_task_todos_api(
+    task_id: str,
+    body: TodoUpdateBody,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """Update the interactive todo checklist for a task (admin-triggered toggle or full reset)."""
+    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    from core.tools.task_tools import task_tools
+    result_msg = await task_tools.update_task_todos(
+        task_id=task_id,
+        team_id=str(task.team_id),
+        todos=body.todos,
+        toggle_id=body.toggle_id,
+    )
+    return {"status": "ok", "message": result_msg, "todo_list": task.todo_list}
 
 
 # ============================================================
@@ -678,6 +949,7 @@ async def list_messages(
 
     result = await db.execute(
         query
+        .where(Message.is_intermediate == False)  # noqa: E712 — never show internal correction logs to users
         .order_by(Message.created_at.desc(), nulls_last(Message.sequence.desc()))
         .limit(limit)
     )
@@ -689,6 +961,7 @@ async def list_messages(
             "id": str(m.id), "sender_id": m.sender_id,
             "sender_name": getattr(m, "sender_name", None),
             "recipient_id": m.recipient_id, "text": m.text,
+            "is_private": getattr(m, "is_private", False),
             "created_at": (m.created_at.isoformat() + "Z") if m.created_at and "+" not in m.created_at.isoformat() and not m.created_at.isoformat().endswith("Z") else (m.created_at.isoformat() if m.created_at else None),
             "reasoning": getattr(m, "reasoning_text", None),
             "attachments": getattr(m, "attachments", []) or [],
@@ -810,6 +1083,21 @@ async def upload_file(file: UploadFile = File(...), team_id: Optional[str] = Non
     
     file_id = str(uuid.uuid4())
     ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
+    
+    # Validate file extension against safe allowlist to prevent arbitrary code/XSS uploads
+    ALLOWED_UPLOAD_EXTS = {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
+        ".pdf", ".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
+        ".mp3", ".wav", ".ogg", ".webm", ".m4a", ".mp4",
+        ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".zip", ".tar", ".gz"
+    }
+    if ext and ext not in ALLOWED_UPLOAD_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File extension '{ext}' is not allowed for security reasons."
+        )
+
     filename = f"{file_id}{ext}"
     
     upload_dir = _UPLOAD_DIR  # fallback
@@ -1020,52 +1308,59 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
 
     later_ids = [m.id for m in later_msgs]
 
-    # 2. Collect file backups for those messages, oldest-first so we replay in
-    #    correct chronological order (but we restore in reverse = newest first)
+    # 2. Collect file backups for those messages/team within the rollback window.
+    # We query all backups linked to these messages OR created in this team >= pivot_time.
+    # We order by created_at.asc() (oldest first) so we restore the TRUE original state
+    # before any rolled-back changes took place.
+    from core.memory.models import FileBackup
+    from sqlalchemy import or_
+
+    backup_query = select(FileBackup).where(
+        or_(
+            FileBackup.message_id.in_(later_ids),
+            (FileBackup.team_id == team_id_uuid) & (FileBackup.created_at >= pivot_time)
+        ) if later_ids else ((FileBackup.team_id == team_id_uuid) & (FileBackup.created_at >= pivot_time))
+    ).order_by(FileBackup.created_at.asc())
+
+    backups = (await db.execute(backup_query)).scalars().all()
+
+    # 3. Restore files (oldest snapshot per path is the original state)
     restored: list = []
     deleted_files: list = []
-    if later_ids:
-        from core.memory.models import FileBackup
-        backups = (await db.execute(
-            select(FileBackup)
-            .where(FileBackup.message_id.in_(later_ids))
-            .order_by(FileBackup.created_at.desc())  # newest change first = undo order
-        )).scalars().all()
-
-        # 3. Restore files (newest change undone first)
-        restored, deleted_files = [], []
-        seen_paths = set()
-        for bk in backups:
-            if bk.file_path in seen_paths:
-                # Only restore the OLDEST backup per file path (original state)
-                continue
-            seen_paths.add(bk.file_path)
-            p = Path(bk.file_path)
-            try:
-                if bk.backup_file_name is None:
-                    # File was newly created — delete it
-                    if p.exists():
-                        p.unlink()
-                    deleted_files.append(bk.file_path)
+    seen_paths = set()
+    for bk in backups:
+        if bk.file_path in seen_paths:
+            # Only restore the OLDEST backup per file path (original state before rollback)
+            continue
+        seen_paths.add(bk.file_path)
+        p = Path(bk.file_path)
+        try:
+            if bk.backup_file_name is None:
+                # File was newly created — delete it
+                if p.exists():
+                    p.unlink()
+                deleted_files.append(bk.file_path)
+            else:
+                # File was modified — restore original from copy-on-write buffer
+                from core.tools.file_tools import file_tools
+                team_carole_dir = await file_tools.get_team_carole_dir(team_id_str, db=db)
+                history_dir = team_carole_dir / "file-history"
+                backup_path = history_dir / bk.backup_file_name
+                
+                if backup_path.exists():
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(backup_path, p)
+                    restored.append(bk.file_path)
                 else:
-                    # File was modified — restore original from copy-on-write buffer
-                    from core.tools.file_tools import file_tools
-                    team_carole_dir = await file_tools.get_team_carole_dir(team_id_str)
-                    history_dir = team_carole_dir / "file-history"
-                    backup_path = history_dir / bk.backup_file_name
-                    
-                    if backup_path.exists():
-                        p.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(backup_path, p)
-                        restored.append(bk.file_path)
-                    else:
-                        _rollback_log.error("Missing backup file for rollback: %s", backup_path)
-            except Exception as e:
-                _rollback_log.warning("Rollback failed for %s: %s", bk.file_path, e)
+                    _rollback_log.error("Missing backup file for rollback: %s", backup_path)
+        except Exception as e:
+            _rollback_log.warning("Rollback failed for %s: %s", bk.file_path, e)
 
-        # 4. Delete FileBackup records
+    # 4. Delete FileBackup records for rolled-back changes
+    backup_ids = [bk.id for bk in backups]
+    if backup_ids:
         await db.execute(
-            sa_delete(FileBackup).where(FileBackup.message_id.in_(later_ids))
+            sa_delete(FileBackup).where(FileBackup.id.in_(backup_ids))
         )
 
     # 5. Delete the messages themselves
@@ -1083,7 +1378,7 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
             "path": fp,
             "diff": None,
         })
-    for fp in deleted_files if later_ids else []:
+    for fp in deleted_files:
         await event_bus.publish(f"team:{team_id_str}", {
             "type": "file_change",
             "action": "rollback_delete",
@@ -1091,20 +1386,26 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
             "diff": None,
         })
 
+    pivot_time_iso = (
+        (pivot_time.isoformat() + "Z")
+        if pivot_time and "+" not in pivot_time.isoformat() and not pivot_time.isoformat().endswith("Z")
+        else (pivot_time.isoformat() if pivot_time else None)
+    )
+
     # 7. Broadcast rewind event
     await event_bus.publish(f"team:{team_id_str}", {
         "type": "message_rewind",
         "from_message_id": message_id,
-        "from_timestamp": pivot_time.isoformat() if pivot_time else None,
-        "restored_files": restored if later_ids else [],
-        "deleted_files": deleted_files if later_ids else [],
+        "from_timestamp": pivot_time_iso,
+        "restored_files": restored,
+        "deleted_files": deleted_files,
     })
 
     return {
         "ok": True,
         "deleted_count": len(later_msgs),
-        "restored_files": restored if later_ids else [],
-        "deleted_files": deleted_files if later_ids else [],
+        "restored_files": restored,
+        "deleted_files": deleted_files,
     }
 
 
@@ -1195,7 +1496,7 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user
                 attachments=[]
             )
         else:
-            # Task is unassigned — ping the Coordinator to triage it
+            # Task is unassigned — ping the Coordinator to triage and assign it
             from sqlalchemy import func
             coord_stmt = select(Agent).where(
                 Agent.team_id == task.team_id,
@@ -1211,6 +1512,13 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user
                     sender_name="System",
                     attachments=[]
                 )
+                coord_prompt = (
+                    f"A new unassigned task was created on the Kanban board: '{task.title}' (Task ID: {task.id}). "
+                    f"Description: {task.description or 'No description provided.'}. Priority: {task.priority}. "
+                    f"Please review your team roster and assign this task to the best-suited teammate using update_task(task_id='{task.id}', assignee_name='...'). "
+                    f"If no existing teammate fits the required expertise, you may create a teammate or hire a specialist."
+                )
+                await message_router._trigger_agent(coordinator, coord_prompt, db)
             else:
                 await message_router.route_message(
                     text=f"[TASK_CREATE] {creator} created task '{task.title}' (unassigned).",
@@ -1220,8 +1528,8 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user
                     attachments=[]
                 )
 
-    if agent:
-        prompt = f"The human just assigned a new task to you on the Kanban board: '{task.title}'. Please review it and start working."
+    if agent and not task.blocked_by_task_id:
+        prompt = f"The human just assigned a new task to you on the Kanban board: '{task.title}'. Description: {task.description or 'No description provided.'}. Please review it and start working."
         await message_router._trigger_agent(agent, prompt, db)
 
     return {"id": str(task.id), "title": task.title, "status": task.status}
@@ -1278,9 +1586,9 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
             # Wake agent if assignment changed or task moved to in_progress
             if body.assigned_agent_id:
                 if task.blocked_by_task_id:
-                    assign_text = f"[TASK_ASSIGN] @{agent.name} task '{task.title}' has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
+                    assign_text = f"[TASK_ASSIGN] @{agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet. DO NOT create a new task — this task already exists on the board."
                 else:
-                    assign_text = f"[TASK_ASSIGN] @{agent.name} task '{task.title}' has been assigned to you. Please start working on it."
+                    assign_text = f"[TASK_ASSIGN] @{agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. Description: {task.description or 'No description provided.'}. Please begin work now. IMPORTANT: DO NOT use create_task — this task already exists on the board with the ID above. Use update_task(task_id='{task.id}', status='in_progress') to start it, then update_task(task_id='{task.id}', status='done') when finished."
                 await message_router.route_message(
                     text=assign_text,
                     sender_id="system",
@@ -1288,11 +1596,13 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
                     sender_name="System",
                     attachments=[]
                 )
+                if not task.blocked_by_task_id:
+                    await message_router._enqueue_agent(agent, assign_text, db)
             elif body.status == "in_progress":
                 if task.blocked_by_task_id:
                     update_text = f"[TASK_UPDATE] @{agent.name} your task '{task.title}' has been moved to 'In Progress'. However, it is currently BLOCKED. You may investigate it, but wait for the blocking task to complete before making major changes."
                 else:
-                    update_text = f"[TASK_UPDATE] @{agent.name} your task '{task.title}' has been moved to 'In Progress'. Please begin work now."
+                    update_text = f"[TASK_UPDATE] @{agent.name} your task '{task.title}' has been moved to 'In Progress'. Description: {task.description or 'No description provided.'}. Please continue work."
                 await message_router.route_message(
                     text=update_text,
                     sender_id="system",
@@ -1300,6 +1610,8 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
                     sender_name="System",
                     attachments=[]
                 )
+                if not task.blocked_by_task_id:
+                    await message_router._enqueue_agent(agent, update_text, db)
 
     await message_router.route_message(
         text=sys_text,
@@ -1562,6 +1874,10 @@ async def transcribe_audio_upload(team_id: str, file: UploadFile = File(...), us
 @router.post("/seed")
 async def seed_demo(db: AsyncSession = Depends(get_db)):
     """Creates a demo user, project, team, and 3 agents for quick testing."""
+    env = os.getenv("ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    if env in ["production", "prod"]:
+        raise HTTPException(status_code=403, detail="Seeding demo data is disabled in production environments.")
+
     from core.auth.auth_service import _hash_password
     # Check if already seeded
     existing = await db.execute(select(User).limit(1))
@@ -1939,10 +2255,10 @@ class AppSettings(BaseModel):
 
 
 @router.get("/settings")
-async def get_settings():
+async def get_settings(user: dict = Depends(require_auth)):
     """
     Returns the current application settings from ~/.carole/config.json.
-    API key values are masked (last 4 chars visible) for security.
+    API key values are masked (last 4 chars visible) for security. Requires authentication.
     """
     from core.llm.config_manager import load_config
     cfg = load_config()

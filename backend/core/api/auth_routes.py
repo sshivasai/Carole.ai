@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import get_db
 from core.auth.auth_service import auth_service
+from core.auth.rate_limiter import rate_limit
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -36,8 +37,9 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/signup")
+@rate_limit("5/minute")
 async def signup(request: Request, body: SignupRequest, db: AsyncSession = Depends(get_db)):
-    # Rate limit: 5 signup attempts per minute per IP (enforced by slowapi in main.py)
+    # Rate limit: 5 signup attempts per minute per IP (enforced by slowapi)
     result = await auth_service.signup(
         db=db, email=body.email, password=body.password,
         first_name=body.first_name, last_name=body.last_name,
@@ -48,8 +50,9 @@ async def signup(request: Request, body: SignupRequest, db: AsyncSession = Depen
 
 
 @router.post("/login")
+@rate_limit("10/minute")
 async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
-    # Rate limit: 10 login attempts per minute per IP (enforced by slowapi in main.py)
+    # Rate limit: 10 login attempts per minute per IP (enforced by slowapi)
     result = await auth_service.login(db=db, email=body.email, password=body.password)
     if "error" in result:
         raise HTTPException(status_code=401, detail=result["error"])

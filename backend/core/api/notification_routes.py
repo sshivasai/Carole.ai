@@ -35,25 +35,6 @@ def _fmt(n: Notification) -> dict:
     }
 
 
-# ─── List ────────────────────────────────────────────────────────────
-@router.get("")
-async def list_notifications(
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db),
-    user: dict = Depends(require_auth),
-):
-    user_id = user["sub"]
-    result = await db.execute(
-        select(Notification)
-        .where(Notification.user_id == user_id)
-        .order_by(Notification.created_at.desc())
-        .limit(limit)
-    )
-    notifications = result.scalars().all()
-    unread_count = sum(1 for n in notifications if not n.is_read)
-    return {"notifications": [_fmt(n) for n in notifications], "unread_count": unread_count}
-
-
 # ─── Mark Read ───────────────────────────────────────────────────────
 class MarkReadBody(BaseModel):
     notification_id: Optional[str] = None  # None = mark all

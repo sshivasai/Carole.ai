@@ -129,7 +129,6 @@ export const api = {
   deleteTeam: (teamId: string, deleteContent?: boolean) => apiFetch<any>(`/api/teams/${teamId}${deleteContent ? '?delete_content=true' : ''}`, { method: "DELETE" }),
 
   // ── Notifications ──
-  listNotifications: (limit = 50) => apiFetch<{ notifications: import("../lib/types").Notification[]; unread_count: number }>(`/api/notifications?limit=${limit}`),
   markNotificationsRead: (notificationId?: string) =>
     apiFetch<any>("/api/notifications/read", { method: "POST", body: JSON.stringify({ notification_id: notificationId ?? null }) }),
   deleteNotification: (notificationId: string) => apiFetch<any>(`/api/notifications/${notificationId}`, { method: "DELETE" }),
@@ -213,6 +212,31 @@ export const api = {
     apiFetch<any>(`/api/tasks/${taskId}/comments`, {
       method: "POST",
       body: JSON.stringify({ author_id: authorId, author_name: authorName, text }),
+    }),
+
+  // ── Implementation Plans ──
+  getTaskPlan: (taskId: string) => apiFetch<any>(`/api/tasks/${taskId}/plan`),
+  approvePlan: (taskId: string) =>
+    apiFetch<any>(`/api/tasks/${taskId}/plan/approve`, { method: "POST" }),
+  rejectPlan: (taskId: string, feedback?: string) =>
+    apiFetch<any>(`/api/tasks/${taskId}/plan/reject`, {
+      method: "POST",
+      body: JSON.stringify({ feedback }),
+    }),
+  addPlanInlineComment: (taskId: string, lineIndex: number, text: string) =>
+    apiFetch<any>(`/api/tasks/${taskId}/plan/comment`, {
+      method: "POST",
+      body: JSON.stringify({ line_index: lineIndex, text }),
+    }),
+  editPlan: (taskId: string, planMarkdown: string) =>
+    apiFetch<any>(`/api/tasks/${taskId}/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ plan_markdown: planMarkdown }),
+    }),
+  updateTodos: (taskId: string, data: { todos?: any[]; toggle_id?: string }) =>
+    apiFetch<any>(`/api/tasks/${taskId}/todos`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
     }),
 
   // ── Memory / Learning ──
@@ -348,8 +372,49 @@ export const api = {
     apiFetch<any>("/api/files/create_folder", { method: "POST", body: JSON.stringify({ path, project_id: projectId }) }),
   renameFile: (source: string, destination: string, projectId?: string) =>
     apiFetch<any>("/api/files/rename", { method: "POST", body: JSON.stringify({ source, destination, project_id: projectId }) }),
+  copyFile: (source: string, destination: string, projectId?: string) =>
+    apiFetch<any>("/api/files/copy", { method: "POST", body: JSON.stringify({ source, destination, project_id: projectId }) }),
+  duplicateFile: (path: string, projectId?: string) =>
+    apiFetch<any>("/api/files/duplicate", { method: "POST", body: JSON.stringify({ path, project_id: projectId }) }),
+  batchCopyFiles: (sources: string[], destinationDir: string = ".", projectId?: string) =>
+    apiFetch<any>("/api/files/batch/copy", { method: "POST", body: JSON.stringify({ sources, destination_dir: destinationDir, project_id: projectId }) }),
+  batchMoveFiles: (sources: string[], destinationDir: string = ".", projectId?: string) =>
+    apiFetch<any>("/api/files/batch/move", { method: "POST", body: JSON.stringify({ sources, destination_dir: destinationDir, project_id: projectId }) }),
+  batchDeleteFiles: (paths: string[], projectId?: string) =>
+    apiFetch<any>("/api/files/batch/delete", { method: "POST", body: JSON.stringify({ paths, project_id: projectId }) }),
   deleteFile: (path: string, projectId?: string) =>
     apiFetch<any>(`/api/files/delete?path=${encodeURIComponent(path)}${projectId ? `&project_id=${projectId}` : ""}`, { method: "DELETE" }),
+  getDownloadZipUrl: (paths?: string[], projectId?: string) => {
+    const params = new URLSearchParams();
+    if (paths && paths.length > 0) params.append("paths", paths.join(","));
+    if (projectId) params.append("project_id", projectId);
+    return `${getApiBase()}/api/files/download_zip${params.toString() ? `?${params.toString()}` : ""}`;
+  },
+  downloadZip: async (paths?: string[], projectId?: string, filename?: string) => {
+    const params = new URLSearchParams();
+    if (paths && paths.length > 0) params.append("paths", paths.join(","));
+    if (projectId) params.append("project_id", projectId);
+    const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
+    const url = `${getApiBase()}/api/files/download_zip${params.toString() ? `?${params.toString()}` : ""}`;
+    const res = await fetch(url, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => "Download failed");
+      throw new Error(`Download failed: ${err}`);
+    }
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = filename || `workspace_${projectId || "export"}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(downloadUrl);
+    document.body.removeChild(a);
+  },
   getFileLogs: (teamId: string) => apiFetch<any[]>(`/api/files/logs/${teamId}`),
   deleteFileLog: (logId: string) => apiFetch<any>(`/api/files/logs/${logId}`, { method: "DELETE" }),
 

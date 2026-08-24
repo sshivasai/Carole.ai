@@ -1,10 +1,11 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import type { TaskItem, AgentConfig, TaskComment } from "@/lib/types";
-import { AlignLeft, MessageSquare, Trash2, Edit2, Check, Loader2 } from "lucide-react";
+import { AlignLeft, MessageSquare, Trash2, Edit2, Check, Loader2, FileText } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 import { useAuth } from "@/hooks/useAuth";
+import ImplementationPlanModal from "./ImplementationPlanModal";
 
 interface Props {
   task: TaskItem | null;
@@ -34,6 +35,7 @@ export default function TaskDetailModal({ task, agents, allTasks = [], onClose, 
   const [loadingComments, setLoadingComments] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showPlanModal, setShowPlanModal] = useState(false);
 
   useEffect(() => {
     if (task) {
@@ -104,6 +106,7 @@ export default function TaskDetailModal({ task, agents, allTasks = [], onClose, 
   const getAgentName = (id?: string) => agents.find(a => a.id === id)?.name || "Unassigned";
 
   return (
+    <>
     <Modal open={!!task} onClose={onClose} title={isEditing ? "Edit Task" : task.title} maxWidth={700}>
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-xl)", maxHeight: "75vh", overflowY: "auto", paddingRight: "var(--sp-sm)" }}>
         
@@ -182,6 +185,33 @@ export default function TaskDetailModal({ task, agents, allTasks = [], onClose, 
 
         <div className="divider" />
 
+        {/* Implementation Plan section */}
+        {task.plan_status && task.plan_status !== "draft" && (
+          <div>
+            <h4 className="eyebrow" style={{ display: "flex", alignItems: "center", gap: "var(--sp-xs)", marginBottom: "var(--sp-sm)" }}>
+              <FileText size={14} /> Implementation Plan
+            </h4>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px",
+                borderRadius: 999, fontSize: 11, fontWeight: 600,
+                background: task.plan_status === "approved" ? "#10b98122" :
+                  task.plan_status === "awaiting_approval" ? "#f59e0b22" : "#ef444422",
+                color: task.plan_status === "approved" ? "#10b981" :
+                  task.plan_status === "awaiting_approval" ? "#f59e0b" : "#ef4444",
+              }}>
+                {task.plan_status === "approved" ? "Approved" :
+                  task.plan_status === "awaiting_approval" ? "Awaiting Review" : "Revision Requested"}
+              </span>
+              <button className="btn btn-sm btn-ghost" onClick={() => setShowPlanModal(true)}>
+                <FileText size={13} /> View Plan
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="divider" />
+
         {/* Comments Section */}
         <div>
           <h4 className="eyebrow" style={{ display: "flex", alignItems: "center", gap: "var(--sp-xs)", marginBottom: "var(--sp-sm)" }}>
@@ -216,5 +246,13 @@ export default function TaskDetailModal({ task, agents, allTasks = [], onClose, 
 
       </div>
     </Modal>
+
+    {/* Plan modal — rendered outside main modal to avoid nesting */}
+    <ImplementationPlanModal
+      taskId={showPlanModal && task ? task.id : null}
+      taskTitle={task?.title}
+      onClose={() => setShowPlanModal(false)}
+    />
+    </>
   );
 }

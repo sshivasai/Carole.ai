@@ -18,8 +18,8 @@ class GenerateRequest(BaseModel):
     prompt: str
 
 @router.get("")
-async def list_plugins():
-    """List all python plugin files in the PLUGINS_DIR."""
+async def list_plugins(user: dict = Depends(require_auth)):
+    """List all python plugin files in the PLUGINS_DIR. Requires authentication."""
     plugins = []
     if not PLUGINS_DIR.exists():
         PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,8 +125,8 @@ async def delete_plugin(filename: str, user: dict = Depends(require_auth)):
     return {"ok": True}
 
 @router.post("/action/generate")
-async def generate_plugin(body: GenerateRequest):
-    """Generate a Carole.ai compatible Python @tool plugin."""
+async def generate_plugin(body: GenerateRequest, user: dict = Depends(require_auth)):
+    """Generate a Carole.ai compatible Python @tool plugin. Requires authentication."""
     from core.llm.multi_model_router import llm_router
     
     system_prompt = """

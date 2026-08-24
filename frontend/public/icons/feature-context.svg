@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="ctxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c084fc" />
+      <stop offset="50%" stop-color="#a855f7" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+    <linearGradient id="ctxBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2e1065" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.95" />
+    </linearGradient>
+    <linearGradient id="ctxOrb" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e9d5ff" />
+      <stop offset="100%" stop-color="#a855f7" />
+    </linearGradient>
+    <filter id="ctxGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="3.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Glassmorphic Badge Frame -->
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#ctxBg)" stroke="url(#ctxGrad)" stroke-width="1.75" />
+  
+  <!-- Ambient Inner Glow Orb -->
+  <circle cx="32" cy="32" r="18" fill="url(#ctxGrad)" opacity="0.12" filter="url(#ctxGlow)" />
+
+  <!-- Neural Brain / AST Synapse Hierarchy -->
+  <g filter="url(#ctxGlow)">
+    <!-- Connecting Synaptic Axons -->
+    <path d="M22 26 C26 20, 38 20, 42 26 C46 32, 42 40, 32 44 C22 40, 18 32, 22 26 Z" stroke="url(#ctxGrad)" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.6" />
+    
+    <!-- Central Brain Node Cluster -->
+    <path d="M26 32 C26 27 29 25 32 25 C35 25 38 27 38 32 C38 37 35 39 32 39 C29 39 26 37 26 32 Z" fill="#1e1b4b" stroke="url(#ctxOrb)" stroke-width="2" />
+    
+    <!-- Core Synapse Pulses -->
+    <circle cx="32" cy="32" r="3" fill="#ffffff" />
+    <circle cx="21" cy="26" r="2.5" fill="#c084fc" />
+    <circle cx="43" cy="26" r="2.5" fill="#c084fc" />
+    <circle cx="23" cy="38" r="2.5" fill="#818cf8" />
+    <circle cx="41" cy="38" r="2.5" fill="#818cf8" />
+    <circle cx="32" cy="44" r="2.5" fill="#a855f7" />
+
+    <!-- Pulse Branch Lines -->
+    <line x1="21" y1="26" x2="26" y2="30" stroke="url(#ctxGrad)" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="43" y1="26" x2="38" y2="30" stroke="url(#ctxGrad)" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="23" y1="38" x2="28" y2="34" stroke="url(#ctxGrad)" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="41" y1="38" x2="36" y2="34" stroke="url(#ctxGrad)" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="32" y1="39" x2="32" y2="44" stroke="url(#ctxGrad)" stroke-width="1.5" stroke-linecap="round" />
+  </g>
+</svg>

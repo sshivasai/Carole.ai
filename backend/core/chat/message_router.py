@@ -146,16 +146,20 @@ class MessageRouter:
                 return
 
             # OPTIMIZATION: Resolve all mentioned agents in a single query
-            if mentioned_names:
+            # System broadcasts (e.g. member joined, task done) are informational logs and NEVER wake agents.
+            if mentioned_names and sender_id != "system":
+                from sqlalchemy import func
                 stmt = select(Agent).where(
                     Agent.team_id == team_uuid,
-                    Agent.name.in_(mentioned_names)
+                    func.lower(Agent.name).in_([n.lower() for n in mentioned_names])
                 )
                 result = await db.execute(stmt)
                 agents = result.scalars().all()
-                target_agents.extend(agents)
-                if len(mentioned_names) == 1 and agents:
-                    recipient_id = str(agents[0].id)
+                # Exclude the sender themselves from being triggered by self-mentions
+                valid_targets = [a for a in agents if str(a.id) != sender_id]
+                target_agents.extend(valid_targets)
+                if len(mentioned_names) == 1 and valid_targets:
+                    recipient_id = str(valid_targets[0].id)
 
             resolved_sender_name = sender_name
             if sender_id == "human" and not resolved_sender_name:
@@ -261,8 +265,11 @@ class MessageRouter:
             })
 
             # Enqueue all mentioned agents (sequential per-agent, parallel across agents)
-            for agent in target_agents:
-                await self._enqueue_agent(agent, text, db, attachments)
+            # System broadcasts never enqueue agent tasks.
+            if sender_id != "system":
+                trigger_message_id = str(db_msg.id)
+                for agent in target_agents:
+                    await self._enqueue_agent(agent, text, db, attachments, trigger_message_id=trigger_message_id)
 
     # ------------------------------------------------------------------
     # Queue machinery  (internal)
@@ -274,6 +281,7 @@ class MessageRouter:
         prompt_text: str,
         db_session: AsyncSession,
         attachments: Optional[List[Dict]] = None,
+        trigger_message_id: Optional[str] = None,
     ):
         """
         Enqueue a prompt into the agent's personal FIFO queue.
@@ -324,7 +332,7 @@ class MessageRouter:
 
         # Enqueue the work item
         self._pending[agent_id].append(prompt_text)
-        await self._queues[agent_id].put((prompt_text, attachments or []))
+        await self._queues[agent_id].put((prompt_text, attachments or [], trigger_message_id))
 
         # Broadcast queue depth change to UI
         depth = self._queues[agent_id].qsize()
@@ -372,13 +380,13 @@ class MessageRouter:
                 logger.info("Worker for agent '%s' received shutdown sentinel.", snapshot.name)
                 break
 
-            prompt_text, attachments = item
+            prompt_text, attachments, trigger_msg_id = item if len(item) == 3 else (item[0], item[1], None)
 
             try:
                 # B5: Watchdog timeout — prevent a single stuck task from
                 # blocking the queue indefinitely.
                 await asyncio.wait_for(
-                    self._execute_agent_loop(agent_id, snapshot, prompt_text, attachments),
+                    self._execute_agent_loop(agent_id, snapshot, prompt_text, attachments, trigger_msg_id),
                     timeout=_MAX_TASK_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -417,6 +425,7 @@ class MessageRouter:
         snapshot: "_AgentSnapshot",
         prompt_text: str,
         attachments: List[Dict],
+        trigger_message_id: Optional[str] = None,
     ):
         """
         Builds the ReACT agent instance and runs its loop to completion.
@@ -458,11 +467,14 @@ class MessageRouter:
                 reasoning_effort=snapshot.reasoning_effort,
             )
 
+        if trigger_message_id:
+            react.active_message_id = trigger_message_id
+
         token = CancellationToken()
 
         async def _run():
             async with async_session() as agent_db:
-                await react.run_loop(agent_db, prompt_text, attachments, token)
+                await react.run_loop(agent_db, prompt_text, attachments, token, trigger_message_id=trigger_message_id)
 
         task = asyncio.create_task(_run(), name=f"loop:{snapshot.name}")
         self._running[agent_id] = (task, token)

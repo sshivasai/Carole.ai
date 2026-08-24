@@ -5,6 +5,7 @@ import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Cl
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 import AgentAvatar from "./AgentAvatar";
+import AgentHoverCard from "./AgentHoverCard";
 import CronTaskModal from "./CronTaskModal";
 import AccessControlMatrix, { DEFAULT_ACCESS_CONTROL } from "./AccessControlMatrix";
 
@@ -50,10 +51,14 @@ function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)" }}>
-        <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={40} isThinking={isThinking} isSubagent={isSubagent} />
+        <AgentHoverCard agent={agent} isThinking={isThinking}>
+          <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={40} isThinking={isThinking} isSubagent={isSubagent} />
+        </AgentHoverCard>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", flexWrap: "wrap" }}>
-            <span className="body-sm-strong" style={{ fontSize: 13 }}>{agent.name}</span>
+            <AgentHoverCard agent={agent} isThinking={isThinking}>
+              <span className="body-sm-strong" style={{ fontSize: 13, cursor: "pointer" }}>{agent.name}</span>
+            </AgentHoverCard>
             {isSubagent && (
               <span className="subagent-chip" style={{ fontSize: 9, padding: "1px 5px" }}>
                 SUBAGENT
@@ -88,9 +93,32 @@ function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
         </div>
       </div>
 
-      {agent.skills && agent.skills.length > 0 && (
+      {agent.skills && agent.skills.length > 0 ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
           {agent.skills.map(s => <span key={s} className="code-inline" style={{ fontSize: 10, padding: "2px 6px" }}>{s}</span>)}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          <span className="code-inline" style={{ fontSize: 10, padding: "2px 6px", opacity: 0.85 }}>
+            {agent.role}
+          </span>
+        </div>
+      )}
+
+      {isThinking && (
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "4px 8px",
+          background: "rgba(168, 85, 247, 0.08)",
+          border: "1px solid rgba(168, 85, 247, 0.25)",
+          borderRadius: "var(--radius-xs)",
+          fontSize: 10,
+          color: "#c084fc",
+        }}>
+          <span className="animate-pulse" style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#c084fc" }} />
+          <span style={{ fontWeight: 500 }}>Actively executing tasks...</span>
         </div>
       )}
 
@@ -208,8 +236,10 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   onSave: (a: AgentConfig) => void; onClose: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<"general" | "access">("general");
+  const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [name, setName] = useState(initial?.name || "");
-  const [role, setRole] = useState(initial?.role || "researcher");
+  const [role, setRole] = useState(initial?.role || (roleTemplates?.[0]?.role ?? "Coder"));
+  const [customRole, setCustomRole] = useState("");
   const [persona, setPersona] = useState(initial?.personality || "");
   const [skills, setSkills] = useState((initial?.skills || []).join(", "));
   const [loading, setLoading] = useState(false);
@@ -274,27 +304,43 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   };
 
   const applyTemplate = async (r: string) => {
+    if (!r) return;
     try {
       const tmpl = await api.getRoleTemplate(r);
+      if (!tmpl) return;
+
+      const templateRole = tmpl.role || r;
+      setRole(templateRole);
+      setSelectedTemplate(templateRole);
+
+      if (tmpl.suggested_names && tmpl.suggested_names.length > 0) {
+        setName(tmpl.suggested_names[0]);
+      } else if (tmpl.display_name) {
+        setName(tmpl.display_name);
+      }
+
       setPersona(tmpl.personality || "");
       setSkills((tmpl.skills || []).join(", "));
+
       if (tmpl.recommended_model && catalogLoaded) {
         const prov = detectProvider(tmpl.recommended_model, catalog);
         setPrimProvider(prov);
         setPrimModel(tmpl.recommended_model);
       }
-      if (!name) setName(tmpl.suggested_names?.[0] || "");
-    } catch { }
+    } catch (err) {
+      console.error("Failed to apply role template:", err);
+    }
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    const finalRole = (role === "custom" ? customRole.trim() : role) || "Coder";
     setLoading(true);
     try {
       const data = {
         name: name.trim(),
-        role,
+        role: finalRole,
         model: primModel,
         fallback_model: showFallback && fallModel.trim() ? fallModel.trim() : null,
         reasoning_effort: reasoning,
@@ -357,9 +403,21 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
       {activeTab === "general" && roleTemplates.length > 0 && (
         <div className="form-group">
           <label className="form-label">Quick Template</label>
-          <select className="input" onChange={e => e.target.value && applyTemplate(e.target.value)} defaultValue="">
+          <select
+            className="input"
+            value={selectedTemplate}
+            onChange={e => {
+              const val = e.target.value;
+              setSelectedTemplate(val);
+              if (val) applyTemplate(val);
+            }}
+          >
             <option value="">Choose a template…</option>
-            {roleTemplates.map(t => <option key={t.role} value={t.role}>{t.display_name}</option>)}
+            {roleTemplates.map(t => (
+              <option key={t.role} value={t.role}>
+                {t.display_name || t.role}
+              </option>
+            ))}
           </select>
         </div>
       )}
@@ -368,15 +426,52 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-md)" }}>
           <div className="form-group">
             <label className="form-label">Name *</label>
-            <input className="input" placeholder="Agent Alpha" value={name} onChange={e => setName(e.target.value)} required />
+            <input
+              className="input"
+              placeholder="Agent Name"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              required
+            />
           </div>
           <div className="form-group">
             <label className="form-label">Role</label>
-            <select className="input" value={role} onChange={e => { setRole(e.target.value); applyTemplate(e.target.value); }}>
-              {["orchestrator", "architect", "coder", "debugger", "researcher", "writer", "analyst", "custom"].map(r => <option key={r} value={r}>{r}</option>)}
+            <select
+              className="input"
+              value={role}
+              onChange={e => {
+                const val = e.target.value;
+                setRole(val);
+                if (val && val !== "custom") {
+                  applyTemplate(val);
+                }
+              }}
+            >
+              {roleTemplates.map(t => (
+                <option key={t.role} value={t.role}>
+                  {t.role}
+                </option>
+              ))}
+              {!roleTemplates.some(t => t.role.toLowerCase() === role.toLowerCase()) && role && (
+                <option value={role}>{role}</option>
+              )}
+              <option value="custom">Custom...</option>
             </select>
           </div>
         </div>
+
+        {role === "custom" && (
+          <div className="form-group">
+            <label className="form-label">Custom Role Title</label>
+            <input
+              className="input"
+              placeholder="e.g. Lead QA Specialist"
+              value={customRole}
+              onChange={e => setCustomRole(e.target.value)}
+              required
+            />
+          </div>
+        )}
 
         {/* Primary model */}
         <div>
@@ -540,7 +635,7 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
                 CORE AGENTS ({agents.filter(a => !a.name.startsWith("Sub-") && !a.name.startsWith("Subagent-")).length})
               </span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)", alignItems: "start" }}>
               {agents.filter(a => !a.name.startsWith("Sub-") && !a.name.startsWith("Subagent-")).map(a => (
                 <AgentCard
                   key={a.id}
@@ -561,7 +656,7 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
                 <span className="subagent-chip" style={{ fontSize: 10 }}>🤖 TEMPORARY SUBAGENTS</span>
                 <span className="caption" style={{ color: "var(--color-mute)" }}>Specialist workers spawned for specific subtasks (Depth 1 guarded)</span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)", alignItems: "start" }}>
                 {agents.filter(a => a.name.startsWith("Sub-") || a.name.startsWith("Subagent-")).map(a => (
                   <AgentCard
                     key={a.id}

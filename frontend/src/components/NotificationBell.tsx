@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Bell, Trash2, X } from "lucide-react";
 import { api } from "@/hooks/useApi";
+import { getWsBase } from "@/hooks/useWebSocket";
 import type { Notification } from "@/lib/types";
 
 const TYPE_COLORS: Record<string, string> = {
@@ -21,6 +22,10 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+const HEARTBEAT_MS = 25_000;
+const BACKOFF_BASE_MS = 1_000;
+const BACKOFF_MAX_MS = 30_000;
+
 interface Props {
   className?: string;
 }
@@ -30,24 +35,93 @@ export default function NotificationBell({ className }: Props = {}) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unread, setUnread] = useState(0);
   const [loading, setLoading] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
 
-  const fetchNotifications = useCallback(async () => {
+  const ref = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectRef = useRef<NodeJS.Timeout | null>(null);
+  const attemptRef = useRef(0);
+  const isMounted = useRef(true);
+
+  // ── WebSocket connection ───────────────────────────────────────────
+  const connect = useCallback(async () => {
+    if (!isMounted.current) return;
+
+    let ticket = "";
     try {
-      const res = await api.listNotifications();
-      setNotifications(res.notifications);
-      setUnread(res.unread_count);
+      const res = await api.getWsTicket();
+      ticket = res.ticket;
     } catch {
-      // silently ignore — user may not be logged in yet
+      // fallback: backend will reject if auth required
     }
-  }, []);
+    if (!isMounted.current) return;
+
+    const url = `${getWsBase()}/ws/notifications${ticket ? `?ticket=${encodeURIComponent(ticket)}` : ""}`;
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      if (!isMounted.current) return;
+      attemptRef.current = 0;
+      // Start heartbeat
+      heartbeatRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping" }));
+        }
+      }, HEARTBEAT_MS);
+    };
+
+    ws.onmessage = (e) => {
+      if (!isMounted.current) return;
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type !== "notification") return;
+
+        if (msg.action === "init") {
+          // Full snapshot on connect
+          setNotifications(msg.notifications ?? []);
+          setUnread(msg.unread_count ?? 0);
+        } else if (msg.action === "new" && msg.notification) {
+          // Prepend new notification
+          setNotifications(prev => [msg.notification, ...prev].slice(0, 50));
+          setUnread(prev => prev + 1);
+        }
+      } catch {
+        // ignore malformed frames
+      }
+    };
+
+    ws.onclose = () => {
+      if (!isMounted.current) return;
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
+      // Exponential backoff with ±25% jitter
+      const attempt = attemptRef.current;
+      attemptRef.current = attempt + 1;
+      const base = Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_MAX_MS);
+      const jitter = base * 0.25 * (Math.random() * 2 - 1);
+      reconnectRef.current = setTimeout(() => {
+        if (isMounted.current) connect();
+      }, Math.round(base + jitter));
+    };
+
+    ws.onerror = () => ws.close();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    fetchNotifications();
-    const interval = setInterval(fetchNotifications, 30_000);
-    return () => clearInterval(interval);
-  }, [fetchNotifications]);
+    isMounted.current = true;
+    connect();
+    return () => {
+      isMounted.current = false;
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      wsRef.current?.close();
+    };
+  }, [connect]);
 
+  // ── Click-outside to close ─────────────────────────────────────────
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -57,6 +131,7 @@ export default function NotificationBell({ className }: Props = {}) {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
+  // ── Actions ────────────────────────────────────────────────────────
   const handleOpen = async () => {
     const willOpen = !open;
     setOpen(willOpen);
@@ -73,7 +148,9 @@ export default function NotificationBell({ className }: Props = {}) {
     e.stopPropagation();
     try {
       await api.deleteNotification(id);
+      const deleted = notifications.find(n => n.id === id);
       setNotifications(n => n.filter(x => x.id !== id));
+      if (deleted && !deleted.is_read) setUnread(prev => Math.max(0, prev - 1));
     } catch { /* ignore */ }
   };
 

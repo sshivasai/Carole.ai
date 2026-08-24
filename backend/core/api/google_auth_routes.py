@@ -15,7 +15,8 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
+from core.auth.auth_middleware import require_auth
 
 logger = logging.getLogger("carole.google_auth")
 from fastapi.responses import RedirectResponse, JSONResponse
@@ -98,8 +99,8 @@ def get_google_credentials() -> Credentials | None:
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("/status")
-async def google_status():
-    """Returns whether a Google account is currently connected."""
+async def google_status(user: dict = Depends(require_auth)):
+    """Returns whether a Google account is currently connected. Requires authentication."""
     if not _credentials_file_exists():
         return {"connected": False, "reason": "credentials.json not found on server"}
 
@@ -129,10 +130,11 @@ async def google_status():
 
 
 @router.get("/authorize")
-async def google_authorize():
+async def google_authorize(user: dict = Depends(require_auth)):
     """
     Generates the Google OAuth consent URL and redirects the user to it.
     Works with both 'web' and 'installed' (desktop) credentials.json types.
+    Requires authentication.
     """
     if not _credentials_file_exists():
         return JSONResponse(
@@ -239,9 +241,9 @@ async def google_callback(request: Request):
 
 
 @router.post("/disconnect")
-async def google_disconnect():
+async def google_disconnect(user: dict = Depends(require_auth)):
     """
-    Revokes the Google token and deletes the local token file.
+    Revokes the Google token and deletes the local token file. Requires authentication.
     """
     creds = _load_token()
     if creds:

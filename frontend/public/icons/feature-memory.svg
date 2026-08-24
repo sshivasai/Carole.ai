@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="memGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8" />
+      <stop offset="50%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#4f46e5" />
+    </linearGradient>
+    <linearGradient id="memBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.95" />
+    </linearGradient>
+    <filter id="memGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="3.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Glassmorphic Badge Frame -->
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#memBg)" stroke="url(#memGrad)" stroke-width="1.75" />
+
+  <!-- Ambient Inner Glow Orb -->
+  <circle cx="32" cy="32" r="18" fill="url(#memGrad)" opacity="0.12" filter="url(#memGlow)" />
+
+  <!-- Vector Memory Database Disks with Synapse Pulses -->
+  <g filter="url(#memGlow)">
+    <!-- Top Cylinder -->
+    <ellipse cx="32" cy="20" rx="14" ry="5.5" fill="#312e81" stroke="#a5b4fc" stroke-width="1.75" />
+    <circle cx="32" cy="20" r="2" fill="#ffffff" />
+    
+    <!-- Middle Cylinder Layer -->
+    <path d="M18 20 V28 C18 31 24 33.5 32 33.5 C40 33.5 46 31 46 28 V20" stroke="url(#memGrad)" stroke-width="1.75" fill="none" />
+    <ellipse cx="32" cy="28" rx="14" ry="5.5" fill="#1e1b4b" opacity="0.4" />
+    
+    <!-- Bottom Cylinder Layer -->
+    <path d="M18 28 V36 C18 39 24 41.5 32 41.5 C40 41.5 46 39 46 36 V28" stroke="url(#memGrad)" stroke-width="1.75" fill="none" />
+    
+    <!-- Pulsing Memory Sparkles -->
+    <circle cx="21" cy="28" r="1.5" fill="#818cf8" />
+    <circle cx="43" cy="28" r="1.5" fill="#818cf8" />
+    <circle cx="32" cy="36" r="1.75" fill="#c7d2fe" />
+    <circle cx="23" cy="38" r="1" fill="#818cf8" />
+    <circle cx="41" cy="38" r="1" fill="#818cf8" />
+  </g>
+</svg>

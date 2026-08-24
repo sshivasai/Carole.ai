@@ -9,11 +9,12 @@ Tools for inter-agent delegation and coordination.
 - send_message: Publishes a message to the team EventBus, optionally targeting a specific agent.
 """
 
+import re
 import uuid
 import asyncio
 import logging
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import select, func, delete
 
 from core.memory.database import async_session
 from core.memory.models import Agent, Team
@@ -216,6 +217,271 @@ class AgentTools:
         )
 
         return "Message sent and team members notified."
+
+    async def create_team_agent(
+        self,
+        name: str,
+        role: str,
+        expertise: str = "",
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        personality: Optional[str] = None,
+        team_id: str = "",
+        _agent_id: str = "",
+    ) -> str:
+        """
+        Permanently adds a new AI agent / teammate to the team.
+        Unlike hire_subagent, this agent is NOT auto-deleted and remains a full,
+        permanent member of the team roster in the UI and database.
+        """
+        clean_name = re.sub(r'[^a-zA-Z0-9_-]+', '', name.strip().lstrip('@'))
+        if not clean_name:
+            clean_name = f"Agent_{uuid.uuid4().hex[:4]}"
+
+        from core.prompts import build_agent_system_prompt
+        base_prompt = system_prompt or build_agent_system_prompt(name=clean_name, role=role, personality=personality or "professional")
+
+        if expertise:
+            base_prompt += f"\n\nSPECIALIZATION & EXPERTISE:\n{expertise}\n"
+
+        team_uuid = uuid.UUID(team_id) if isinstance(team_id, str) else team_id
+
+        async with async_session() as db:
+            # Check for name collision in the same team
+            stmt = select(Agent).where(Agent.team_id == team_uuid, Agent.name == clean_name)
+            existing = (await db.execute(stmt)).scalar_one_or_none()
+            if existing:
+                return f"Teammate '@{clean_name}' already exists on the team roster ({existing.role}). If you wish to update their profile or skills, use update_team_agent."
+
+            # Extract skills list from expertise or role
+            extracted_skills = []
+            if expertise:
+                extracted_skills = [s.strip() for s in re.split(r'[,;]|\band\b', expertise) if s.strip() and len(s.strip()) > 1]
+            elif role:
+                extracted_skills = [role]
+
+            new_agent = Agent(
+                team_id=team_uuid,
+                name=clean_name,
+                role=role,
+                system_prompt=base_prompt,
+                model=model or DEFAULT_FAST_MODEL,
+                personality=personality or "professional",
+                skills=extracted_skills,
+                tool_permissions={
+                    "file_read": "allow",
+                    "file_write": "allow",
+                    "bash": "allow",
+                    "web": "allow",
+                    "code_analysis": "allow",
+                    "memory": "allow",
+                    "interaction": "allow",
+                    "subagents": "allow",
+                },
+            )
+            db.add(new_agent)
+            await db.commit()
+            await db.refresh(new_agent)
+
+            # Broadcast agent_created event for real-time UI synchronization
+            from core.chat.event_bus import event_bus
+            agent_payload = {
+                "id": str(new_agent.id),
+                "name": new_agent.name,
+                "role": new_agent.role,
+                "model": new_agent.model,
+                "fallback_model": new_agent.fallback_model,
+                "reasoning_effort": new_agent.reasoning_effort or "none",
+                "team_id": str(new_agent.team_id),
+                "personality": new_agent.personality,
+                "skills": new_agent.skills or [],
+                "custom_instructions": new_agent.custom_instructions,
+            }
+            await event_bus.publish(f"team:{team_id}", {
+                "type": "agent_created",
+                "agent": agent_payload,
+            })
+
+            # Broadcast team message announcing the new member
+            from core.chat.message_router import message_router
+            await message_router.route_message(
+                text=f"[AGENT_ADD] New agent @{new_agent.name} ({new_agent.role}) joined the team!",
+                sender_id="system",
+                team_id=str(team_id),
+                sender_name="System",
+                attachments=[],
+            )
+
+        return f"Successfully added permanent teammate '@{clean_name}' ({role}) to the team. They are now on the team roster and can be @mentioned directly."
+
+    async def update_team_agent(
+        self,
+        name_or_id: str,
+        new_name: Optional[str] = None,
+        role: Optional[str] = None,
+        expertise: Optional[str] = None,
+        model: Optional[str] = None,
+        personality: Optional[str] = None,
+        custom_instructions: Optional[str] = None,
+        team_id: str = "",
+        _agent_id: str = "",
+    ) -> str:
+        """
+        Updates an existing permanent teammate's profile, role, expertise, model, or instructions.
+        """
+        team_uuid = uuid.UUID(team_id) if isinstance(team_id, str) else team_id
+        target = name_or_id.strip().lstrip('@')
+
+        async with async_session() as db:
+            agent = None
+            try:
+                agent_uuid = uuid.UUID(target)
+                stmt = select(Agent).where(Agent.team_id == team_uuid, Agent.id == agent_uuid)
+                agent = (await db.execute(stmt)).scalar_one_or_none()
+            except ValueError:
+                pass
+
+            if not agent:
+                stmt = select(Agent).where(Agent.team_id == team_uuid, func.lower(Agent.name) == target.lower())
+                agent = (await db.execute(stmt)).scalar_one_or_none()
+
+            if not agent:
+                return f"Error: Could not find agent '{name_or_id}' in the current team roster."
+
+            changes = []
+            if new_name:
+                clean_new_name = re.sub(r'[^a-zA-Z0-9_-]+', '', new_name.strip().lstrip('@'))
+                if clean_new_name and clean_new_name != agent.name:
+                    changes.append(f"name changed from @{agent.name} to @{clean_new_name}")
+                    agent.name = clean_new_name
+
+            if role and role != agent.role:
+                changes.append(f"role updated to '{role}'")
+                agent.role = role
+
+            if model and model != agent.model:
+                changes.append(f"model changed to '{model}'")
+                agent.model = model
+
+            if personality and personality != agent.personality:
+                changes.append(f"personality set to '{personality}'")
+                agent.personality = personality
+
+            if custom_instructions is not None:
+                agent.custom_instructions = custom_instructions
+                changes.append("custom instructions updated")
+
+            if expertise:
+                changes.append(f"expertise updated: {expertise}")
+                agent.skills = [s.strip() for s in re.split(r'[,;]|\band\b', expertise) if s.strip() and len(s.strip()) > 1]
+            elif role and not agent.skills:
+                agent.skills = [role]
+
+            # Rebuild prompt if relevant fields changed
+            if role or new_name or personality or expertise or custom_instructions:
+                from core.prompts import build_agent_system_prompt
+                base_prompt = build_agent_system_prompt(name=agent.name, role=agent.role, personality=agent.personality or "professional")
+                if expertise:
+                    base_prompt += f"\n\nSPECIALIZATION & EXPERTISE:\n{expertise}\n"
+                elif agent.custom_instructions:
+                    base_prompt += f"\n\nSPECIAL CUSTOM INSTRUCTIONS:\n{agent.custom_instructions}\n"
+                agent.system_prompt = base_prompt
+
+            await db.commit()
+            await db.refresh(agent)
+
+            # Broadcast agent_updated event for real-time UI synchronization
+            from core.chat.event_bus import event_bus
+            agent_payload = {
+                "id": str(agent.id),
+                "name": agent.name,
+                "role": agent.role,
+                "model": agent.model,
+                "fallback_model": agent.fallback_model,
+                "reasoning_effort": agent.reasoning_effort or "none",
+                "team_id": str(agent.team_id),
+                "personality": agent.personality,
+                "skills": agent.skills or [],
+                "custom_instructions": agent.custom_instructions,
+            }
+            await event_bus.publish(f"team:{team_id}", {
+                "type": "agent_updated",
+                "agent": agent_payload,
+            })
+
+            # Broadcast team message
+            from core.chat.message_router import message_router
+            changes_desc = ", ".join(changes) if changes else "configuration refreshed"
+            await message_router.route_message(
+                text=f"[AGENT_UPDATE] @{agent.name}'s profile was updated: {changes_desc}",
+                sender_id="system",
+                team_id=str(team_id),
+                sender_name="System",
+                attachments=[],
+            )
+
+            return f"Successfully updated teammate '@{agent.name}': {changes_desc}."
+
+    async def delete_team_agent(
+        self,
+        name_or_id: str,
+        team_id: str = "",
+        _agent_id: str = "",
+    ) -> str:
+        """
+        Permanently removes an agent/teammate from the team.
+        """
+        team_uuid = uuid.UUID(team_id) if isinstance(team_id, str) else team_id
+        target = name_or_id.strip().lstrip('@')
+
+        # Safety check: Protect coordinator / Archer
+        if target.lower() in ("archer", "coordinator", "orchestrator"):
+            return "Error: Cannot delete the team Coordinator / Archer."
+
+        async with async_session() as db:
+            agent = None
+            try:
+                agent_uuid = uuid.UUID(target)
+                stmt = select(Agent).where(Agent.team_id == team_uuid, Agent.id == agent_uuid)
+                agent = (await db.execute(stmt)).scalar_one_or_none()
+            except ValueError:
+                pass
+
+            if not agent:
+                stmt = select(Agent).where(Agent.team_id == team_uuid, func.lower(Agent.name) == target.lower())
+                agent = (await db.execute(stmt)).scalar_one_or_none()
+
+            if not agent:
+                return f"Error: Could not find agent '{name_or_id}' in the current team roster."
+
+            if agent.name.lower() in ("archer", "coordinator") or "orchestrator" in agent.role.lower():
+                return "Error: Cannot delete the team Coordinator."
+
+            deleted_name = agent.name
+            deleted_role = agent.role
+            deleted_id = str(agent.id)
+
+            await db.delete(agent)
+            await db.commit()
+
+            # Broadcast agent_deleted event
+            from core.chat.event_bus import event_bus
+            await event_bus.publish(f"team:{team_id}", {
+                "type": "agent_deleted",
+                "agent_id": deleted_id,
+            })
+
+            # Broadcast team chat message
+            from core.chat.message_router import message_router
+            await message_router.route_message(
+                text=f"[AGENT_REMOVE] @{deleted_name} ({deleted_role}) has been removed from the team.",
+                sender_id="system",
+                team_id=str(team_id),
+                sender_name="System",
+                attachments=[],
+            )
+
+            return f"Successfully removed '@{deleted_name}' ({deleted_role}) from the team roster."
 
     async def hire_subagent(self, role: str, expertise: str, task: str, team_id: str, _agent_id: str, model: str = None) -> str:
         """

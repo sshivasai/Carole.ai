@@ -1,0 +1,27 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4285F4" />
+      <stop offset="35%" stop-color="#34A853" />
+      <stop offset="70%" stop-color="#FBBC05" />
+      <stop offset="100%" stop-color="#EA4335" />
+    </linearGradient>
+    <filter id="gGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Hexagonal background badge -->
+  <rect x="6" y="6" width="52" height="52" rx="16" fill="#0D1127" stroke="url(#gGrad)" stroke-width="2" filter="url(#gGlow)" />
+  <rect x="6" y="6" width="52" height="52" rx="16" fill="url(#gGrad)" fill-opacity="0.1" />
+
+  <!-- Google Workspace Multi-Integration Icons -->
+  <path d="M32 18C24.268 18 18 24.268 18 32C18 39.732 24.268 46 32 46C39.732 46 46 39.732 46 32C46 24.268 39.732 18 32 18Z" fill="#1A1E36" stroke="#4285F4" stroke-width="1.5" />
+  
+  <!-- Calendar & Drive Node Links -->
+  <path d="M25 28H39M25 34H35M25 40H31" stroke="#34A853" stroke-width="2" stroke-linecap="round" />
+  
+  <!-- Sparkle Stars -->
+  <path d="M38 23L39.5 27L43.5 28.5L39.5 30L38 34L36.5 30L32.5 28.5L36.5 27L38 23Z" fill="#FBBC05" />
+</svg>

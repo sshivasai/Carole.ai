@@ -18,7 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import async_session
-from core.memory.models import Message, Learning, Team
+from core.memory.models import Message, Learning, Team, EntityMemory
 from core.memory.lancedb_client import lancedb_client
 from core.llm.multi_model_router import llm_router
 import core.config
@@ -159,7 +159,7 @@ class AutoDreamWorker:
             )
 
         # Extract lessons via LLM
-        prompt = CONSOLIDATION_PROMPT.format(conversation=conversation_text)
+        prompt = CONSOLIDATION_PROMPT.replace("{conversation}", conversation_text)
         try:
             extraction = await llm_router.generate_completion(
                 model=getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free"),
@@ -186,9 +186,9 @@ class AutoDreamWorker:
             await db.commit()
             return
 
-        # Parse and store extracted lessons
-        lessons = self._parse_lessons(extraction)
-        if not lessons:
+        # Parse and store extracted lessons and facts
+        lessons, entity_facts = self._parse_lessons(extraction)
+        if not lessons and not entity_facts:
             await db.commit()
             return
 
@@ -235,6 +235,26 @@ class AutoDreamWorker:
             team.name, stored, len(lessons)
         )
 
+        stored_facts = 0
+        for key, value in entity_facts:
+            try:
+                # Upsert or ignore duplicate checking for entity memory can be handled simply here
+                fact = EntityMemory(
+                    project_id=team.project_id,
+                    team_id=team.id,
+                    key=key,
+                    value=value
+                )
+                db.add(fact)
+                stored_facts += 1
+            except Exception as e:
+                logger.error("💤 [Dream] Team '%s': Failed to store entity fact: %s", team.name, e)
+                continue
+                
+        if stored_facts > 0:
+            await db.commit()
+            logger.info("💤 [Dream] Team '%s': Consolidated %d entity facts.", team.name, stored_facts)
+
     def _parse_lessons(self, text: str):
         """Parses JSON extraction output containing category, task_summary, and content."""
         import json
@@ -258,26 +278,34 @@ class AutoDreamWorker:
             text = text.strip()
 
         lessons = []
+        entity_facts = []
         try:
             parsed = json.loads(text)
             if not isinstance(parsed, list):
-                return lessons
+                return lessons, entity_facts
                 
             for item in parsed:
                 if not isinstance(item, dict):
                     continue
                 category = item.get("category", "MEMORY")
-                task_summary = item.get("task_summary")
-                content = item.get("content")
                 
-                if task_summary and content:
-                    # We store the category explicitly in the lesson_rule text
-                    lesson_rule = f"[{category.upper()}] {content}"
-                    lessons.append((task_summary, lesson_rule))
+                if category == "ENTITY_FACT":
+                    key = item.get("key")
+                    value = item.get("value")
+                    if key and value:
+                        entity_facts.append((key, value))
+                else:
+                    task_summary = item.get("task_summary")
+                    content = item.get("content")
+                    
+                    if task_summary and content:
+                        # We store the category explicitly in the lesson_rule text
+                        lesson_rule = f"[{category.upper()}] {content}"
+                        lessons.append((task_summary, lesson_rule))
         except json.JSONDecodeError as e:
             logger.error("💤 [Dream] Failed to parse JSON extraction: %s\nText: %s", e, text)
 
-        return lessons
+        return lessons, entity_facts
 
 
 # Singleton

@@ -75,8 +75,19 @@ class JudgeEvaluator:
             reason = re.sub(r"<VERDICT>.*?</VERDICT>", "", response, flags=re.IGNORECASE).strip()
             reasoning = reason if reason else "No explanation provided by the Judge."
 
-        verdict_text = response.upper()
-        approved = "APPROVE" in verdict_text
+        # Strict verdict extraction to prevent negative sentences ("I do not approve") from bypassing gating
+        verdict_match = re.search(r"<VERDICT>\s*(APPROVED|DENIED)\s*</VERDICT>", response, re.IGNORECASE)
+        if verdict_match:
+            approved = (verdict_match.group(1).upper() == "APPROVED")
+        else:
+            # Fallback if no tags: default to DENIED unless explicit standalone APPROVED without negation
+            if re.search(r"\bDENIED\b", response, re.IGNORECASE):
+                approved = False
+            elif re.search(r"\bAPPROVED\b", response, re.IGNORECASE) and not re.search(r"\b(NOT|CANNOT|REFUSE TO|DO NOT)\s+APPROVE", response, re.IGNORECASE):
+                approved = True
+            else:
+                approved = False
+
         logger.info("Tool '%s' by '%s' -> %s", tool_name, agent_name, "APPROVED" if approved else "DENIED")
         if not reasoning:
             logger.warning("Empty reasoning. Raw response: %s", response)

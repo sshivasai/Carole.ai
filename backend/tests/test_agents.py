@@ -92,3 +92,100 @@ async def test_agent_creation_and_crud(client: AsyncClient):
     # Ensure list is now empty
     res = await client.get(f"/api/agents/{team_id}", headers=headers)
     assert len(res.json()) == 0
+
+
+@pytest.mark.asyncio
+async def test_create_team_agent_tool(client: AsyncClient):
+    signup_payload = {
+        "email": "tool.agent.owner@carole.ai",
+        "password": "supersecurepassword123"
+    }
+    signup_res = await client.post("/api/auth/signup", json=signup_payload)
+    user_id = signup_res.json()["user"]["id"]
+    token = signup_res.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Create project & team
+    proj_res = await client.post("/api/projects", json={"name": "Tool Proj", "owner_id": user_id}, headers=headers)
+    proj_id = proj_res.json()["id"]
+    team_res = await client.post("/api/teams", json={"name": "Tool Team", "project_id": proj_id}, headers=headers)
+    team_id = team_res.json()["id"]
+
+    from unittest.mock import patch
+    from tests.conftest import TestSession
+    from core.tools.tool_executor import ToolExecutor
+
+    with patch("core.tools.agent_tools.async_session", TestSession), \
+         patch("core.memory.database.async_session", TestSession), \
+         patch("core.chat.message_router.async_session", TestSession):
+        executor = ToolExecutor()
+        result = await executor.execute(
+            tool_name="create_team_agent",
+            arguments={
+                "name": "Jordan",
+                "role": "Software Engineer",
+                "expertise": "Full-stack Python, React, and system architecture"
+            },
+            agent_id="test-agent",
+            agent_name="Archer",
+            team_id=team_id,
+            permissions={"subagents": "allow"}
+        )
+
+        assert "Successfully added permanent teammate '@Jordan'" in result
+
+    # Verify agent is permanently listed in the team
+    agents_res = await client.get(f"/api/agents/{team_id}", headers=headers)
+    assert agents_res.status_code == 200
+    agents = agents_res.json()
+    assert len(agents) == 1
+    assert agents[0]["name"] == "Jordan"
+    assert agents[0]["role"] == "Software Engineer"
+
+    # Test update_team_agent tool
+    with patch("core.tools.agent_tools.async_session", TestSession), \
+         patch("core.memory.database.async_session", TestSession), \
+         patch("core.chat.message_router.async_session", TestSession):
+        update_result = await executor.execute(
+            tool_name="update_team_agent",
+            arguments={
+                "name_or_id": "Jordan",
+                "role": "Principal Software Engineer",
+                "model": "anthropic/claude-3.5-sonnet"
+            },
+            agent_id="test-agent",
+            agent_name="Archer",
+            team_id=team_id,
+            permissions={"subagents": "allow"}
+        )
+        assert "Successfully updated teammate '@Jordan'" in update_result
+        assert "Principal Software Engineer" in update_result
+
+    # Verify agent is updated in DB
+    agents_res = await client.get(f"/api/agents/{team_id}", headers=headers)
+    assert agents_res.status_code == 200
+    agents = agents_res.json()
+    assert agents[0]["role"] == "Principal Software Engineer"
+    assert agents[0]["model"] == "anthropic/claude-3.5-sonnet"
+
+    # Test delete_team_agent tool
+    with patch("core.tools.agent_tools.async_session", TestSession), \
+         patch("core.memory.database.async_session", TestSession), \
+         patch("core.chat.message_router.async_session", TestSession):
+        delete_result = await executor.execute(
+            tool_name="delete_team_agent",
+            arguments={"name_or_id": "Jordan"},
+            agent_id="test-agent",
+            agent_name="Archer",
+            team_id=team_id,
+            permissions={"subagents": "allow"}
+        )
+        assert "Successfully removed '@Jordan'" in delete_result
+
+    # Verify agent is gone from DB
+    agents_res = await client.get(f"/api/agents/{team_id}", headers=headers)
+    assert agents_res.status_code == 200
+    agents = agents_res.json()
+    assert len(agents) == 0
+
+

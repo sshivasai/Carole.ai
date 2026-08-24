@@ -12,6 +12,7 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict
+from sqlalchemy.ext.asyncio import AsyncSession
 from contextlib import asynccontextmanager
 
 
@@ -115,7 +116,7 @@ class FileTools:
         self._team_workspace_cache[team_id] = root
         return root
 
-    async def get_team_carole_dir(self, team_id: str) -> Path:
+    async def get_team_carole_dir(self, team_id: str, db: Optional[AsyncSession] = None) -> Path:
         """Resolve a team_id to its hidden .carole directory.
         
         Returns workspaces_dir / project_slug / .carole / team_slug
@@ -125,11 +126,10 @@ class FileTools:
 
         try:
             import uuid as _uuid
-            from core.memory.database import async_session
             from core.memory.models import Team, Project
             from sqlalchemy import select
             team_uuid = _uuid.UUID(team_id)
-            async with async_session() as db:
+            if db is not None:
                 team = (await db.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
                 if team:
                     team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-') or str(team.id)[:8]
@@ -138,6 +138,17 @@ class FileTools:
                         project_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-') or str(project.id)[:8]
                     else:
                         project_slug = str(team.project_id)
+            else:
+                from core.memory.database import async_session
+                async with async_session() as session:
+                    team = (await session.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
+                    if team:
+                        team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-') or str(team.id)[:8]
+                        project = (await session.execute(select(Project).where(Project.id == team.project_id))).scalar_one_or_none()
+                        if project:
+                            project_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-') or str(project.id)[:8]
+                        else:
+                            project_slug = str(team.project_id)
         except Exception:
             pass
 

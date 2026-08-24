@@ -91,6 +91,10 @@ class Agent(Base):
     working_memory = Column(JSON, nullable=True, default=dict)    # Scratchpad state / current task variables
     
     is_active = Column(Boolean, default=True, nullable=False)
+
+    # Implementation plan auto-approval: if True, plans created by this agent
+    # are approved automatically without requiring admin review.
+    auto_approve_plans = Column(Boolean, default=False, nullable=False)
     
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -175,7 +179,25 @@ class Task(Base):
     parent_task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
     blocked_by_task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
     created_by = Column(String(100), nullable=False, default="human")  # agent_id or "human"
-    
+
+    # ── Implementation Plan ───────────────────────────────────────────────────
+    # Path to the plan .md file on disk:
+    #   ~/.carole/workspaces/{project_slug}/.carole/{team_slug}/plans/{task_id}_plan.md
+    plan_file_path = Column(String(1000), nullable=True)
+
+    # Cached markdown content of the plan (mirrors disk file for fast reads)
+    implementation_plan = Column(Text, nullable=True)
+
+    # Lifecycle: draft → awaiting_approval → approved | rejected | revision_requested
+    plan_status = Column(String(30), nullable=True, default="draft")
+
+    # Admin review notes / rejection reason / revision requests
+    plan_feedback = Column(Text, nullable=True)
+
+    # ── Todo Checklist ────────────────────────────────────────────────────────
+    # JSON list: [{"id": "t1", "text": "...", "done": false}, ...]
+    todo_list = Column(JSON, nullable=True, default=list)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -190,6 +212,30 @@ class TaskComment(Base):
     author_name = Column(String(100), nullable=False)
     text = Column(Text, nullable=False)
     
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class PlanInlineComment(Base):
+    """A per-line inline comment anchored to a specific line in an implementation plan.
+
+    line_index: 0-based index into the plan's rendered line array.
+    Styled like GitHub PR review comments — attached to a specific section of the plan.
+    """
+    __tablename__ = "plan_inline_comments"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+
+    # 0-based line index in the plan markdown where this comment is anchored
+    line_index = Column(Integer, nullable=False)
+
+    author_id = Column(String(100), nullable=False)   # "human" or agent_id
+    author_name = Column(String(100), nullable=False)
+    text = Column(Text, nullable=False)
+
+    # Whether the agent has resolved/addressed this comment
+    resolved = Column(Boolean, default=False, nullable=False)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 

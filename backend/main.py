@@ -14,6 +14,8 @@ Responsibilities:
 
 import json
 import asyncio
+import sys
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -52,18 +54,11 @@ from typing import Optional, List
 from core.auth.auth_middleware import require_auth
 
 # Rate limiting (Finding #7)
+from core.auth.rate_limiter import limiter as _limiter, SLOWAPI_AVAILABLE as _SLOWAPI_AVAILABLE, RateLimitExceeded
 try:
-    from slowapi import Limiter, _rate_limit_exceeded_handler
-    from slowapi.util import get_remote_address
-    from slowapi.errors import RateLimitExceeded
-    _limiter = Limiter(key_func=get_remote_address)
-    _SLOWAPI_AVAILABLE = True
+    from slowapi import _rate_limit_exceeded_handler
 except ImportError:
-    _SLOWAPI_AVAILABLE = False
-    _limiter = None
-    logging.getLogger("carole").warning(
-        "slowapi not installed — rate limiting disabled. Run: pip install slowapi"
-    )
+    _rate_limit_exceeded_handler = None
 
 # Configure structured logging
 logging.basicConfig(
@@ -441,6 +436,109 @@ async def websocket_endpoint(
 
 
 # ============================================================
+# WebSocket Notifications Gateway
+# ============================================================
+
+@app.websocket("/ws/notifications")
+async def notifications_ws(
+    websocket: WebSocket,
+    ticket: str = Query(default=""),
+):
+    """
+    WebSocket endpoint for real-time notifications.
+    Authenticates via the same short-lived ?ticket= mechanism as /ws/chat.
+
+    On connect:
+      1. Sends an 'init' message with the last 50 persisted notifications.
+      2. Subscribes to the user-scoped topic ``user:<user_id>``.
+      3. Forwards any new ``notification`` events pushed by create_notification().
+    """
+    from core.auth.auth_service import auth_service
+    user_id = auth_service.verify_ws_ticket(ticket) if ticket else None
+    if not user_id:
+        await websocket.close(code=4001)
+        logger.warning("Notifications WS rejected — missing or invalid ticket")
+        return
+
+    await websocket.accept()
+
+    # Send initial snapshot so the client doesn't need a separate REST call
+    try:
+        from sqlalchemy import select
+        from core.memory.models import Notification as NotifModel
+        async with async_session() as db:
+            result = await db.execute(
+                select(NotifModel)
+                .where(NotifModel.user_id == user_id)
+                .order_by(NotifModel.created_at.desc())
+                .limit(50)
+            )
+            notifs = result.scalars().all()
+            snapshot = [
+                {
+                    "id": str(n.id),
+                    "title": n.title,
+                    "message": n.message,
+                    "type": n.type,
+                    "is_read": n.is_read,
+                    "created_at": n.created_at.isoformat() if n.created_at else None,
+                }
+                for n in notifs
+            ]
+        await websocket.send_text(json.dumps({
+            "type": "notification",
+            "action": "init",
+            "notifications": snapshot,
+            "unread_count": sum(1 for n in notifs if not n.is_read),
+        }, default=str))
+    except Exception as e:
+        logger.warning("Failed to send notification snapshot: %s", e)
+
+    # Subscribe to user-scoped topic
+    topic = f"user:{user_id}"
+    event_queue = await event_bus.subscribe(topic)
+
+    async def receive_pings():
+        """Keep the WS alive — handle client pings."""
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    msg = json.loads(data)
+                    if msg.get("type") == "ping":
+                        await websocket.send_text(json.dumps({"type": "pong"}))
+                except Exception:
+                    pass
+        except (asyncio.CancelledError, WebSocketDisconnect):
+            pass
+
+    async def push_events():
+        """Forward notification events from the event bus to the client."""
+        try:
+            while True:
+                event = await event_queue.get()
+                try:
+                    await websocket.send_text(json.dumps(event, default=str))
+                except (WebSocketDisconnect, RuntimeError):
+                    logger.info("Notifications WS send failed (client disconnected) for user %s", user_id)
+                    break
+                finally:
+                    event_queue.task_done()
+        except asyncio.CancelledError:
+            pass
+
+    task1 = asyncio.create_task(receive_pings())
+    task2 = asyncio.create_task(push_events())
+
+    try:
+        done, pending = await asyncio.wait([task1, task2], return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+    finally:
+        await event_bus.unsubscribe(topic, event_queue)
+
+
+# ============================================================
 # Human-In-The-Loop Approval API
 # ============================================================
 
@@ -562,4 +660,4 @@ async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(
 # ============================================================
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", 8000)), reload=True)
+    uvicorn.run("main:app", host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", 8000)), reload=False)

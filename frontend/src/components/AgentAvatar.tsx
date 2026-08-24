@@ -14,6 +14,8 @@ interface AgentAvatarProps {
   isThinking?: boolean;
   isSubagent?: boolean;
   role?: string;
+  showBadge?: boolean;
+  hideBadge?: boolean;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -42,16 +44,57 @@ function stringToHash(str: string): number {
   return Math.abs(hash);
 }
 
-function getPresetFromName(name: string, role?: string): PrettyAvatarPreset | null {
+const PRESET_LIST: PrettyAvatarPreset[] = [
+  "archer",
+  "coder",
+  "judge",
+  "researcher",
+  "qa",
+  "designer",
+  "analyst"
+];
+
+function getPresetFromName(name: string, role?: string, id?: string): PrettyAvatarPreset {
   const n = (name || "").toLowerCase();
-  const r = (role || "").toLowerCase();
-  if (n.includes("archer") || r.includes("orchestrator") || r.includes("coordinator")) return "archer";
-  if (n.includes("coder") || n.includes("dev") || r.includes("coder") || r.includes("engineer")) return "coder";
-  if (n.includes("judge") || r.includes("judge") || r.includes("security")) return "judge";
-  if (n.includes("research") || r.includes("researcher") || r.includes("analyst")) return "researcher";
-  if (n.includes("qa") || n.includes("test") || r.includes("qa")) return "qa";
+  const rawRole = (role || "").toLowerCase();
+  const r = (rawRole === "assistant" || rawRole === "user" || rawRole === "active agent") ? "" : rawRole;
+
   if (n.startsWith("sub-") || n.startsWith("subagent") || r.includes("subagent")) return "subagent";
-  return null;
+  if (n.includes("archer") || r.includes("orchestrator") || r.includes("coordinator") || r.includes("manager")) return "archer";
+  if (
+    n.includes("nova") || n.includes("coder") || n.includes("dev") || n.includes("engineer") || n.includes("alex") || n.includes("ada") ||
+    r.includes("coder") || r.includes("engineer") || r.includes("developer") || r.includes("software") ||
+    r.includes("fullstack") || r.includes("frontend") || r.includes("backend") || r.includes("architect")
+  ) {
+    return "coder";
+  }
+  if (n.includes("judge") || n.includes("judy") || n.includes("sentinel") || r.includes("judge") || r.includes("security") || r.includes("guard")) return "judge";
+  if (n.includes("sherlock") || n.includes("watson") || n.includes("research") || r.includes("researcher") || r.includes("science") || r.includes("ai")) return "researcher";
+  if (n.includes("qa") || n.includes("test") || r.includes("qa") || r.includes("tester") || r.includes("sre") || r.includes("devops")) return "qa";
+  if (n.includes("design") || r.includes("design") || r.includes("ui") || r.includes("ux")) return "designer";
+  if (n.includes("turing") || n.includes("analyst") || r.includes("analyst") || r.includes("data") || r.includes("writer") || r.includes("doc")) return "analyst";
+
+  // Deterministic fallback based on agent name or id
+  const seed = name || id || "agent";
+  const hash = stringToHash(seed);
+  return PRESET_LIST[hash % PRESET_LIST.length];
+}
+
+function getHumanInitials(name?: string): string {
+  if (!name || !name.trim()) return "A";
+  const clean = name.replace(/@/g, "").trim();
+  if (clean.toLowerCase() === "admin" || clean.toLowerCase() === "human" || clean.toLowerCase() === "user" || clean.toLowerCase() === "you") {
+    return "A";
+  }
+  if (clean.includes("@")) {
+    const userPart = clean.split("@")[0];
+    return userPart.slice(0, 2).toUpperCase();
+  }
+  const parts = clean.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 export default function AgentAvatar({
@@ -63,33 +106,73 @@ export default function AgentAvatar({
   isThinking = false,
   isSubagent: explicitSubagent,
   role,
+  showBadge,
+  hideBadge = false,
   className = "",
   style = {},
 }: AgentAvatarProps) {
   const isSubagent = explicitSubagent || name.startsWith("Sub-") || name.startsWith("Subagent-") || role?.toLowerCase() === "subagent";
-  const seed = avatarSeed || id || name || "agent";
-  const hash = stringToHash(seed);
-  const variant = VARIANTS[hash % VARIANTS.length];
-  const palette = isSubagent ? SUBAGENT_PALETTE : PALETTES[hash % PALETTES.length];
   const isActive = isStreaming || isThinking;
 
-  const isHuman = name.toLowerCase() === "human" || name.toLowerCase() === "user" || role === "human";
+  const isHuman = name.toLowerCase() === "human" || name.toLowerCase() === "user" || name.toLowerCase() === "admin" || name.toLowerCase() === "you" || role === "human";
   const isSystem = name.toLowerCase() === "system" || role === "system";
 
-  const preset = getPresetFromName(name, role);
+  if (isHuman) {
+    const initials = getHumanInitials(name);
+    const fontSize = Math.max(9, Math.round(size * 0.40));
+    return (
+      <div
+        className={`human-avatar-wrapper ${className}`}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: "50%",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          background: "linear-gradient(135deg, #3b82f6 0%, #1d4ed8 55%, #1e1b4b 100%)",
+          border: "1.5px solid rgba(147, 197, 253, 0.45)",
+          boxShadow: "0 2px 8px rgba(37, 99, 235, 0.35)",
+          color: "#ffffff",
+          fontFamily: "var(--font-sans, system-ui, -apple-system, sans-serif)",
+          fontWeight: 700,
+          fontSize,
+          letterSpacing: initials.length > 1 ? "-0.4px" : "0px",
+          userSelect: "none",
+          textShadow: "0 1px 2px rgba(0, 0, 0, 0.3)",
+          position: "relative",
+          ...style,
+        }}
+        title={name || "Admin"}
+      >
+        {initials}
+      </div>
+    );
+  }
 
-  if (!isHuman && !isSystem && preset && size >= 28) {
+  if (!isSystem) {
+    const preset = isSubagent ? "subagent" : getPresetFromName(name, role, id || avatarSeed);
     return (
       <PrettyAvatar
         preset={preset}
         name={name}
+        role={role}
+        seed={avatarSeed || id || name}
         size={size}
         isWorking={isActive}
+        showBadge={showBadge}
+        hideBadge={hideBadge}
         className={className}
         style={style}
       />
     );
   }
+
+  const seed = avatarSeed || id || name || "agent";
+  const hash = stringToHash(seed);
+  const variant = VARIANTS[hash % VARIANTS.length];
+  const palette = isSubagent ? SUBAGENT_PALETTE : PALETTES[hash % PALETTES.length];
 
   return (
     <div
@@ -154,12 +237,10 @@ export default function AgentAvatar({
           transition: "transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease",
         }}
       >
-        {isHuman ? (
-          <User size={size * 0.55} color="#ffffff" />
-        ) : isSystem ? (
+        {isSystem ? (
           <Shield size={size * 0.55} color="#38bdf8" />
         ) : (
-          <Avatar size={size} name={seed} variant={variant} colors={palette} />
+          <User size={size * 0.55} color="#ffffff" />
         )}
       </div>
 

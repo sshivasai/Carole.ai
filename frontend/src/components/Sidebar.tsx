@@ -183,7 +183,7 @@ export default function Sidebar({
           <div className={`${styles.connDot} ${connected ? styles.live : styles.offline}`} title={connected ? "Connected" : "Connecting..."} />
           {user && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-              <AgentAvatar name={user.first_name || user.email} id={user.id || user.email} role="human" size={28} />
+              <AgentAvatar name={user.first_name ? `${user.first_name} ${user.last_name || ""}`.trim() : user.email} id={user.id || user.email} role="human" size={28} />
               <button className={`btn btn-icon-sm btn-ghost ${styles.footerActionBtn}`} onClick={() => toggleCollapse(false)} title="Expand sidebar">
                 <ChevronRight size={14} />
               </button>
@@ -282,7 +282,7 @@ export default function Sidebar({
         </div>
         {user && (
           <div className={styles.userRow}>
-            <AgentAvatar name={user.first_name || user.email} id={user.id || user.email} role="human" size={26} />
+            <AgentAvatar name={user.first_name ? `${user.first_name} ${user.last_name || ""}`.trim() : user.email} id={user.id || user.email} role="human" size={26} />
             <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
               <div className={styles.userName} title={user.email}>
                 {user.first_name ? `${user.first_name} ${user.last_name || ""}`.trim() : user.email}

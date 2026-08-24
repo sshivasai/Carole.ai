@@ -18,7 +18,7 @@ Race-condition fix (v2):
 import asyncio
 import uuid
 import logging
-from typing import Dict
+from typing import Dict, List, Optional
 
 from core.chat.event_bus import event_bus
 from core.config import APPROVAL_TIMEOUT_SECS
@@ -32,9 +32,22 @@ question_answers: Dict[str, str] = {}
 
 
 class InteractionTools:
-    async def ask_user(self, question: str, agent_id: str, agent_name: str, team_id: str) -> str:
+    async def ask_user(
+        self, question: str, agent_id: str, agent_name: str, team_id: str,
+        options: Optional[List[str]] = None
+    ) -> str:
         """
         Sends a question to the human and blocks until they reply.
+
+        Args:
+            question: The question text to display.
+            agent_id: UUID of the agent asking.
+            agent_name: Display name of the agent.
+            team_id: Team context for event routing.
+            options: Optional list of choice strings for multiple-choice UI.
+                     If provided, the frontend renders a clickable option card.
+                     The human may still type a free-form answer.
+
         The reply comes in via the WebSocket as a message with the question_id.
         Times out after APPROVAL_TIMEOUT_SECS to prevent indefinite blocking.
         """
@@ -42,18 +55,22 @@ class InteractionTools:
         event = asyncio.Event()
         pending_questions[q_id] = event
 
-        await event_bus.publish(f"team:{team_id}", {
+        payload = {
             "type": "agent_question",
             "question_id": q_id,
             "agent_id": agent_id,
             "agent_name": agent_name,
             "question": question,
             "text": f"❓ {agent_name} asks: {question}",
-        })
+        }
+        if options:
+            payload["options"] = [str(o) for o in options]
+
+        await event_bus.publish(f"team:{team_id}", payload)
 
         logger.info(
-            "❓ [InteractionTools] Agent '%s' asked: %.80s (q_id=%s)",
-            agent_name, question, q_id[:8]
+            "❓ [InteractionTools] Agent '%s' asked: %.80s (q_id=%s, options=%s)",
+            agent_name, question, q_id[:8], options
         )
 
         try:

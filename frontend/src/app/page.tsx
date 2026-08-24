@@ -142,10 +142,17 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
         return m;
       });
     }
-    case "file_change":
+    case "file_change": {
+      // Dedup: if the last file_change in chat is for the same path by the same agent,
+      // update it in-place instead of appending a new pill (prevents flood during retries).
+      const last = prev[prev.length - 1];
+      if (last && last.type === "file_change" && last.path === evt.path && last.sender_id === (evt.sender_id || "agent")) {
+        return [...prev.slice(0, -1), { ...last, timestamp: ts, action: evt.action, diff: evt.diff }];
+      }
       return [...prev, { id: makeId(), sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, type: "file_change", path: evt.path, action: evt.action, diff: evt.diff, text: evt.text || "", timestamp: ts }];
+    }
     case "agent_question":
-      return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "agent_question", question_id: evt.question_id, question: evt.question, timestamp: ts }];
+      return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "agent_question", question_id: evt.question_id, question: evt.question, options: evt.options, timestamp: ts }];
     case "collapse_to_reasoning": {
       const sid = `streaming-${evt.sender_id}`;
       return prev.map(m => {
@@ -160,15 +167,32 @@ function applyWSEvent(prev: ChatMessage[], evt: any): ChatMessage[] {
       return [];
     case "message_deleted":
       return prev.filter(m => m.id !== evt.message_id);
-    case "message_rewind":
+    case "message_rewind": {
+      const fromId = evt.from_message_id;
+      if (fromId) {
+        const idx = prev.findIndex(m => m.id === fromId);
+        if (idx >= 0) {
+          return prev.slice(0, idx);
+        }
+      }
       if (evt.from_timestamp) {
-        const pivot = new Date(evt.from_timestamp).getTime();
-        return prev.filter(m => {
-          const mts = typeof m.timestamp === "number" ? m.timestamp : new Date(m.timestamp || 0).getTime();
-          return mts < pivot;
-        });
+        const pivotStr = typeof evt.from_timestamp === "string" && !evt.from_timestamp.endsWith("Z") && !evt.from_timestamp.includes("+")
+          ? evt.from_timestamp + "Z"
+          : evt.from_timestamp;
+        const pivot = new Date(pivotStr).getTime();
+        if (!isNaN(pivot)) {
+          return prev.filter(m => {
+            if (!m.timestamp) return false;
+            const mtsStr = typeof m.timestamp === "string" && !m.timestamp.endsWith("Z") && !m.timestamp.includes("+")
+              ? m.timestamp + "Z"
+              : m.timestamp;
+            const mts = typeof mtsStr === "number" ? mtsStr : new Date(mtsStr).getTime();
+            return !isNaN(mts) && mts < pivot;
+          });
+        }
       }
       return prev;
+    }
     default:
       return prev;
   }
@@ -259,7 +283,7 @@ function AppShell() {
       });
     }
 
-    if (evt.type === "file_change") {
+    if (evt.type === "file_change" || evt.type === "file_system_updated") {
       setLastFileChange({ ...evt, _seq: Date.now() });
     }
     if (evt.type === "browser_screenshot") {
@@ -300,6 +324,18 @@ function AppShell() {
         }
         return [...prev, entry];
       });
+    }
+    if (evt.type === "agent_created" && evt.agent) {
+      setAgents(prev => {
+        if (prev.some(a => a.id === evt.agent.id)) return prev;
+        return [...prev, evt.agent];
+      });
+    }
+    if (evt.type === "agent_updated" && evt.agent) {
+      setAgents(prev => prev.map(a => a.id === evt.agent.id ? { ...a, ...evt.agent } : a));
+    }
+    if (evt.type === "agent_deleted" && evt.agent_id) {
+      setAgents(prev => prev.filter(a => a.id !== evt.agent_id));
     }
   }, []);
 
@@ -416,19 +452,51 @@ function AppShell() {
                     messages={messages}
                     agents={agents}
                     onSendMessage={handleSendMessage}
-                    onDeleteMessage={(id) => {
-                      api.deleteMessage(id).catch(console.error);
+                    onDeleteMessage={async (id) => {
                       setMessages(prev => prev.filter(m => m.id !== id));
+                      try {
+                        await api.deleteMessage(id);
+                      } catch (err: any) {
+                        if (err?.status !== 404) {
+                          toast.error(err?.message || "Failed to delete message");
+                        }
+                      }
                     }}
-                    onRollbackMessage={(id) => {
-                      api.rollbackFromMessage(id).catch(console.error);
-                      const pivotMsg = messages.find(m => m.id === id);
-                      if (pivotMsg && pivotMsg.timestamp) {
-                        const pivot = new Date(pivotMsg.timestamp).getTime();
-                        setMessages(prev => prev.filter(m => {
-                          const mts = typeof m.timestamp === "number" ? m.timestamp : new Date(m.timestamp || 0).getTime();
-                          return mts < pivot;
-                        }));
+                    onRollbackMessage={async (id) => {
+                      // Optimistically slice away the target message and all newer messages
+                      setMessages(prev => {
+                        const idx = prev.findIndex(m => m.id === id);
+                        if (idx >= 0) return prev.slice(0, idx);
+                        const pivotMsg = prev.find(m => m.id === id);
+                        if (pivotMsg && pivotMsg.timestamp) {
+                          const pivotStr = typeof pivotMsg.timestamp === "string" && !pivotMsg.timestamp.endsWith("Z") && !pivotMsg.timestamp.includes("+")
+                            ? pivotMsg.timestamp + "Z"
+                            : pivotMsg.timestamp;
+                          const pivot = new Date(pivotStr).getTime();
+                          if (!isNaN(pivot)) {
+                            return prev.filter(m => {
+                              if (!m.timestamp) return false;
+                              const mtsStr = typeof m.timestamp === "string" && !m.timestamp.endsWith("Z") && !m.timestamp.includes("+")
+                                ? m.timestamp + "Z"
+                                : m.timestamp;
+                              const mts = typeof mtsStr === "number" ? mtsStr : new Date(mtsStr).getTime();
+                              return !isNaN(mts) && mts < pivot;
+                            });
+                          }
+                        }
+                        return prev;
+                      });
+
+                      try {
+                        const res = await api.rollbackFromMessage(id);
+                        const restoredCount = res?.restored_files?.length ?? 0;
+                        const deletedCount = res?.deleted_files?.length ?? 0;
+                        const msgCount = res?.deleted_count ?? 1;
+                        toast.success(`Rolled back ${msgCount} message(s)${restoredCount + deletedCount > 0 ? ` and restored ${restoredCount + deletedCount} file(s)` : ""}`);
+                      } catch (err: any) {
+                        if (err?.status !== 404) {
+                          toast.error(err?.message || "Failed to rollback");
+                        }
                       }
                     }}
                     onClearChat={() => {

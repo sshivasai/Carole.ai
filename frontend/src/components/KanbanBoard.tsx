@@ -1,9 +1,10 @@
 "use client";
 import React, { useState, useCallback } from "react";
 import type { TaskItem, AgentConfig } from "@/lib/types";
-import { CheckCircle2, Clock, PlayCircle, AlertCircle, Lock, Plus, X, Loader2 } from "lucide-react";
+import { CheckCircle2, Clock, PlayCircle, AlertCircle, Lock, Plus, X, Loader2, FileText, ListTodo } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import TaskDetailModal from "./TaskDetailModal";
+import ImplementationPlanModal from "./ImplementationPlanModal";
 
 interface Props { tasks: TaskItem[]; agents: AgentConfig[]; teamId: string | null; onTasksChange: (tasks: TaskItem[]) => void; }
 
@@ -65,6 +66,8 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
   const [addingCol, setAddingCol] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
+  const [planTaskId, setPlanTaskId] = useState<string | null>(null);
+  const [planTaskTitle, setPlanTaskTitle] = useState<string | undefined>(undefined);
 
   const getAgentName = (id?: string) => agents.find(a => a.id === id)?.name || "Unassigned";
 
@@ -176,6 +179,41 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
                           {task.description}
                         </p>
                       )}
+                      {/* Plan status mini-badge */}
+                      {task.plan_status && task.plan_status !== "draft" && (
+                        <button
+                          className="btn btn-ghost"
+                          title="View implementation plan"
+                          style={{
+                            display: "inline-flex", alignItems: "center", gap: 4,
+                            fontSize: 10, padding: "2px 7px", borderRadius: 999,
+                            background: task.plan_status === "approved" ? "#10b98122" :
+                              task.plan_status === "awaiting_approval" ? "#f59e0b22" : "#ef444422",
+                            color: task.plan_status === "approved" ? "#10b981" :
+                              task.plan_status === "awaiting_approval" ? "#f59e0b" : "#ef4444",
+                            border: "none",
+                            alignSelf: "flex-start",
+                          }}
+                          onClick={e => {
+                            e.stopPropagation();
+                            setPlanTaskId(task.id);
+                            setPlanTaskTitle(task.title);
+                          }}
+                        >
+                          <FileText size={9} />
+                          {task.plan_status === "approved" ? "Plan Approved" :
+                            task.plan_status === "awaiting_approval" ? "Plan — Review" :
+                            "Plan — Revision"}
+                        </button>
+                      )}
+                      
+                      {/* Todos status mini-badge */}
+                      {task.todo_list && task.todo_list.length > 0 && (
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 999, background: "rgba(255,255,255,0.05)", color: "var(--color-mute)", border: "1px solid var(--border-glass)", alignSelf: "flex-start", marginTop: 2 }}>
+                          <ListTodo size={9} />
+                          {task.todo_list.filter((t: any) => t.done).length}/{task.todo_list.length} Todos
+                        </div>
+                      )}
                       <div className="divider-dashed" style={{ margin: "2px 0" }} />
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 10, color: "var(--color-mute)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
@@ -217,6 +255,16 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
         onDelete={(taskId) => {
           onTasksChange(tasks.filter(t => t.id !== taskId));
           setSelectedTask(null);
+        }}
+      />
+
+      {/* Implementation Plan Modal */}
+      <ImplementationPlanModal
+        taskId={planTaskId}
+        taskTitle={planTaskTitle}
+        onClose={() => { setPlanTaskId(null); setPlanTaskTitle(undefined); }}
+        onPlanAction={() => {
+          // Optionally refresh tasks from parent — for now just close
         }}
       />
     </div>

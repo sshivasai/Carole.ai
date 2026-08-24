@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Crown, Code2, Shield, Brain, CheckCircle2, Bot, Palette, LineChart } from "lucide-react";
+import { Crown, Code2, Shield, Brain, CheckCircle2, Bot, Palette, LineChart, UserCheck } from "lucide-react";
 
 export type PrettyAvatarPreset = 
   | "archer"
@@ -11,126 +11,176 @@ export type PrettyAvatarPreset =
   | "qa"
   | "subagent"
   | "designer"
-  | "analyst";
+  | "analyst"
+  | "admin";
 
 interface PrettyAvatarProps {
-  preset?: PrettyAvatarPreset;
+  preset?: PrettyAvatarPreset | string;
   name?: string;
+  role?: string;
+  seed?: string;
   size?: number;
   isWorking?: boolean;
+  showBadge?: boolean;
+  hideBadge?: boolean;
   className?: string;
   style?: React.CSSProperties;
 }
 
+function stringToHash(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+// 12 curated vibrant dual-tone dark gradients
+const GRADIENTS: [string, string][] = [
+  ["#10b981", "#047857"], // Emerald
+  ["#8b5cf6", "#6d28d9"], // Violet
+  ["#3b82f6", "#1d4ed8"], // Cobalt
+  ["#ec4899", "#be185d"], // Rose Pink
+  ["#f59e0b", "#b45309"], // Amber
+  ["#06b6d4", "#0e7490"], // Cyan Ocean
+  ["#6366f1", "#4338ca"], // Indigo
+  ["#14b8a6", "#0f766e"], // Teal
+  ["#f43f5e", "#be123c"], // Crimson
+  ["#84cc16", "#4d7c0f"], // Lime
+  ["#a855f7", "#7e22ce"], // Electric Purple
+  ["#f97316", "#c2410c"], // Sunset Orange
+];
+
+const ACCENTS = [
+  "#34d399", "#a78bfa", "#38bdf8", "#f472b6", "#fbbf24", "#22d3ee",
+  "#818cf8", "#2dd4bf", "#fda4af", "#a3e635", "#c084fc", "#fb923c"
+];
+
+const SKINS = ["#fed7aa", "#ffedd5", "#fde68a", "#fecdd3", "#f5d0c5", "#e2b897"];
+const HAIR_COLORS = ["#0f172a", "#312e81", "#78350f", "#1e3a8a", "#881337", "#831843", "#1e1b4b", "#18181b", "#134e4a", "#431407"];
+const HAIR_TYPES = ["stylish", "curly", "sleek", "wavy", "bun", "pompadour", "spiky"];
+const EYE_TYPES = ["tech", "focused", "human", "laser", "robot", "curious", "sharp"];
+const ACCESSORIES = ["headphones", "glasses", "visor", "monocle", "antenna", "badge", "none"];
+
+export function getAvatarTheme(name?: string, role?: string, seed?: string, preset?: string) {
+  const n = (name || "agent").toLowerCase().trim();
+  const r = (role || "").toLowerCase().trim();
+
+  // Special Singleton Presets
+  if (preset === "admin" || n === "admin" || n === "human" || r === "human") {
+    return {
+      bgGrad: ["#2563eb", "#1e1b4b"] as [string, string],
+      skin: "#fed7aa",
+      hair: "#0f172a",
+      hairType: "pompadour",
+      eyes: "human",
+      accessory: "badge",
+      accentColor: "#38bdf8",
+    };
+  }
+
+  if (preset === "subagent" || n.startsWith("sub-") || r.includes("subagent")) {
+    return {
+      bgGrad: ["#fbbf24", "#d97706"] as [string, string],
+      skin: "#ffedd5",
+      hair: "#451a03",
+      hairType: "spiky",
+      eyes: "robot",
+      accessory: "antenna",
+      accentColor: "#f59e0b",
+    };
+  }
+
+  // Deterministic Seed Generation based on name + role
+  const seedKey = `${(seed || name || "agent").toLowerCase().trim()}:${r}`;
+  const hash = stringToHash(seedKey);
+
+  const gradIdx = hash % GRADIENTS.length;
+  const bgGrad = GRADIENTS[gradIdx];
+  const accentColor = ACCENTS[gradIdx % ACCENTS.length];
+
+  const skin = SKINS[(hash >> 2) % SKINS.length];
+  const hair = HAIR_COLORS[(hash >> 4) % HAIR_COLORS.length];
+  const hairType = HAIR_TYPES[(hash >> 6) % HAIR_TYPES.length];
+  const eyes = EYE_TYPES[(hash >> 8) % EYE_TYPES.length];
+  const accessory = ACCESSORIES[(hash >> 10) % ACCESSORIES.length];
+
+  return {
+    bgGrad,
+    skin,
+    hair,
+    hairType,
+    eyes,
+    accessory,
+    accentColor,
+    hash,
+  };
+}
+
 /**
- * Beautiful SVG Character Avatars inspired by PrettyAvatars.com
- * Vector-sharp, themed palettes, expressive facial features, accessories, and glowing aura.
+ * Beautiful SVG Character Avatars with Dynamic Seed Generation
+ * Generates 100% constant, deterministic, unique character traits per agent.
  */
 export default function PrettyAvatar({
-  preset = "archer",
+  preset,
   name = "Agent",
+  role,
+  seed,
   size = 64,
   isWorking = false,
+  showBadge,
+  hideBadge = false,
   className = "",
   style = {},
 }: PrettyAvatarProps) {
-  // Determine color theme & avatar elements based on preset or name
-  const getAvatarConfig = () => {
-    const iconSize = Math.max(10, Math.round(size * 0.18));
-    switch (preset) {
-      case "archer": // Swarm Coordinator (Purple / Violet)
-        return {
-          bgGrad: ["#8b5cf6", "#6d28d9"],
-          skin: "#fed7aa",
-          hair: "#312e81",
-          hairType: "stylish",
-          eyes: "focused",
-          accessory: "glasses",
-          accentColor: "#a78bfa",
-          badgeIcon: <Crown size={iconSize} color="#a78bfa" />,
-        };
-      case "coder": // Full-stack Engineer (Emerald / Teal)
-        return {
-          bgGrad: ["#10b981", "#047857"],
-          skin: "#ffedd5",
-          hair: "#0f172a",
-          hairType: "curly",
-          eyes: "tech",
-          accessory: "headphones",
-          accentColor: "#34d399",
-          badgeIcon: <Code2 size={iconSize} color="#34d399" />,
-        };
-      case "judge": // Security Gate / Judge AI (Gold / Amber)
-        return {
-          bgGrad: ["#f59e0b", "#b45309"],
-          skin: "#fde68a",
-          hair: "#78350f",
-          hairType: "sleek",
-          eyes: "laser",
-          accessory: "visor",
-          accentColor: "#fbbf24",
-          badgeIcon: <Shield size={iconSize} color="#fbbf24" />,
-        };
-      case "researcher": // Intelligence & GraphRAG (Sky Blue)
-        return {
-          bgGrad: ["#38bdf8", "#0284c7"],
-          skin: "#fed7aa",
-          hair: "#1e3a8a",
-          hairType: "wavy",
-          eyes: "curious",
-          accessory: "monocle",
-          accentColor: "#7dd3fc",
-          badgeIcon: <Brain size={iconSize} color="#7dd3fc" />,
-        };
-      case "qa": // Playwright / QA Runner (Rose / Pink)
-        return {
-          bgGrad: ["#f43f5e", "#be123c"],
-          skin: "#fecdd3",
-          hair: "#881337",
-          hairType: "bun",
-          eyes: "sharp",
-          accessory: "earpiece",
-          accentColor: "#fda4af",
-          badgeIcon: <CheckCircle2 size={iconSize} color="#fda4af" />,
-        };
-      case "subagent": // Temporary Guarded Subagent (Amber / Gold)
-        return {
-          bgGrad: ["#fbbf24", "#d97706"],
-          skin: "#ffedd5",
-          hair: "#451a03",
-          hairType: "spiky",
-          eyes: "robot",
-          accessory: "antenna",
-          accentColor: "#f59e0b",
-          badgeIcon: <Bot size={iconSize} color="#f59e0b" />,
-        };
-      case "designer":
-        return {
-          bgGrad: ["#ec4899", "#be185d"],
-          skin: "#fde68a",
-          hair: "#831843",
-          hairType: "stylish",
-          eyes: "curious",
-          accessory: "glasses",
-          accentColor: "#f472b6",
-          badgeIcon: <Palette size={iconSize} color="#f472b6" />,
-        };
-      case "analyst":
-      default:
-        return {
-          bgGrad: ["#6366f1", "#4338ca"],
-          skin: "#fed7aa",
-          hair: "#1e1b4b",
-          hairType: "sleek",
-          eyes: "focused",
-          accessory: "glasses",
-          accentColor: "#818cf8",
-          badgeIcon: <LineChart size={iconSize} color="#818cf8" />,
-        };
+  const iconSize = Math.max(10, Math.round(size * 0.18));
+  const cfg = getAvatarTheme(name, role, seed, preset);
+
+  const getBadge = () => {
+    const r = (role || "").toLowerCase();
+    const n = (name || "").toLowerCase();
+    if (preset === "admin" || n === "admin" || n === "human" || r === "human") {
+      return <UserCheck size={iconSize} color={cfg.accentColor} />;
     }
+    if (preset === "subagent" || n.startsWith("sub-") || r.includes("subagent")) {
+      return <Bot size={iconSize} color={cfg.accentColor} />;
+    }
+    if (n.includes("archer") || r.includes("orchestrator") || r.includes("coordinator") || r.includes("lead") || r.includes("manager")) {
+      return <Crown size={iconSize} color={cfg.accentColor} />;
+    }
+    if (r.includes("coder") || r.includes("developer") || r.includes("engineer") || r.includes("fullstack") || r.includes("backend") || r.includes("frontend")) {
+      return <Code2 size={iconSize} color={cfg.accentColor} />;
+    }
+    if (r.includes("judge") || r.includes("security") || r.includes("guard") || r.includes("audit")) {
+      return <Shield size={iconSize} color={cfg.accentColor} />;
+    }
+    if (r.includes("research") || r.includes("science") || r.includes("ai") || r.includes("data")) {
+      return <Brain size={iconSize} color={cfg.accentColor} />;
+    }
+    if (r.includes("qa") || r.includes("test") || r.includes("sre") || r.includes("devops")) {
+      return <CheckCircle2 size={iconSize} color={cfg.accentColor} />;
+    }
+    if (r.includes("design") || r.includes("ui") || r.includes("ux")) {
+      return <Palette size={iconSize} color={cfg.accentColor} />;
+    }
+    if (r.includes("analyst") || r.includes("writer") || r.includes("doc")) {
+      return <LineChart size={iconSize} color={cfg.accentColor} />;
+    }
+    const icons = [
+      <Code2 size={iconSize} color={cfg.accentColor} />,
+      <Crown size={iconSize} color={cfg.accentColor} />,
+      <Shield size={iconSize} color={cfg.accentColor} />,
+      <Brain size={iconSize} color={cfg.accentColor} />,
+      <CheckCircle2 size={iconSize} color={cfg.accentColor} />,
+      <Bot size={iconSize} color={cfg.accentColor} />,
+      <Palette size={iconSize} color={cfg.accentColor} />,
+      <LineChart size={iconSize} color={cfg.accentColor} />,
+    ];
+    return icons[(cfg.hash || 0) % icons.length];
   };
 
-  const cfg = getAvatarConfig();
+  const badgeIcon = getBadge();
 
   return (
     <div
@@ -144,7 +194,7 @@ export default function PrettyAvatar({
         alignItems: "center",
         justifyContent: "center",
         flexShrink: 0,
-        boxShadow: `0 8px 24px ${cfg.bgGrad[0]}40`,
+        boxShadow: `0 6px 20px ${cfg.bgGrad[0]}40`,
         ...style,
       }}
     >
@@ -254,6 +304,12 @@ export default function PrettyAvatar({
             <path d="M26 36 C26 20, 36 16, 50 16 C64 16, 74 20, 74 36 C70 26, 60 22, 50 22 C40 22, 30 26, 26 36 Z" />
           </g>
         )}
+        {cfg.hairType === "pompadour" && (
+          <path
+            d="M24 36 C24 16, 34 10, 52 10 C66 10, 76 16, 76 36 C76 38, 72 26, 62 20 C52 14, 38 18, 32 24 C28 28, 24 36, 24 36 Z"
+            fill={cfg.hair}
+          />
+        )}
         {cfg.hairType === "spiky" && (
           <path
             d="M24 34 L30 18 L38 24 L48 12 L56 22 L66 16 L72 32 C66 24, 58 22, 50 22 C42 22, 32 24, 24 34 Z"
@@ -273,6 +329,20 @@ export default function PrettyAvatar({
             <rect x="55" y="38" width="9" height="7" rx="2" fill="#0284c7" />
             <circle cx="40" cy="41" r="1.5" fill="#ffffff" />
             <circle cx="59" cy="41" r="1.5" fill="#ffffff" />
+          </g>
+        ) : cfg.eyes === "human" ? (
+          <g fill="#0f172a">
+            {/* Left Eye */}
+            <ellipse cx="39" cy="42" rx="3.5" ry="4.2" />
+            <circle cx="40.8" cy="40.2" r="1.4" fill="#ffffff" />
+            <circle cx="38" cy="43.2" r="0.8" fill="#ffffff" opacity="0.85" />
+            {/* Right Eye */}
+            <ellipse cx="61" cy="42" rx="3.5" ry="4.2" />
+            <circle cx="62.8" cy="40.2" r="1.4" fill="#ffffff" />
+            <circle cx="60" cy="43.2" r="0.8" fill="#ffffff" opacity="0.85" />
+            {/* Eyebrows */}
+            <path d="M34 33 Q40 29 45 32" stroke="#0f172a" strokeWidth="2.2" strokeLinecap="round" fill="none" />
+            <path d="M55 32 Q60 29 66 33" stroke="#0f172a" strokeWidth="2.2" strokeLinecap="round" fill="none" />
           </g>
         ) : (
           <g fill="#1e1b4b">
@@ -303,6 +373,13 @@ export default function PrettyAvatar({
         />
 
         {/* Accessories */}
+        {cfg.accessory === "badge" && (
+          <g>
+            <line x1="50" y1="72" x2="50" y2="86" stroke="#38bdf8" strokeWidth="1.8" strokeLinecap="round" />
+            <rect x="46" y="84" width="8" height="9" rx="1.5" fill="#38bdf8" />
+            <circle cx="50" cy="87" r="1.5" fill="#0f172a" />
+          </g>
+        )}
         {cfg.accessory === "glasses" && (
           <g stroke="#1e1b4b" strokeWidth="2" fill="none">
             <rect x="33" y="36" width="14" height="12" rx="3" stroke="#a78bfa" fill="rgba(167,139,250,0.15)" />
@@ -335,26 +412,28 @@ export default function PrettyAvatar({
       </svg>
 
       {/* Mini Role Badge */}
-      <span
-        style={{
-          position: "absolute",
-          bottom: -2,
-          right: -2,
-          width: Math.max(18, Math.round(size * 0.3)),
-          height: Math.max(18, Math.round(size * 0.3)),
-          borderRadius: "50%",
-          background: "var(--color-canvas-raised, #18182f)",
-          border: `1.5px solid ${cfg.accentColor}`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: Math.max(10, Math.round(size * 0.18)),
-          boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
-          userSelect: "none",
-        }}
-      >
-        {cfg.badgeIcon}
-      </span>
+      {(showBadge ?? (!hideBadge && size >= 26)) && (
+        <span
+          style={{
+            position: "absolute",
+            bottom: -2,
+            right: -2,
+            width: Math.max(14, Math.round(size * 0.3)),
+            height: Math.max(14, Math.round(size * 0.3)),
+            borderRadius: "50%",
+            background: "var(--color-canvas-raised, #18182f)",
+            border: `1.5px solid ${cfg.accentColor}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: Math.max(9, Math.round(size * 0.18)),
+            boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+            userSelect: "none",
+          }}
+        >
+          {badgeIcon}
+        </span>
+      )}
     </div>
   );
 }

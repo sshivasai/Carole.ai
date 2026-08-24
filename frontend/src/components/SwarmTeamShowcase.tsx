@@ -38,7 +38,7 @@ const TEAM_MEMBERS: TeamMember[] = [
   {
     id: "archer",
     name: "Archer",
-    role: "Swarm Coordinator & Lead Architect",
+    role: "Team Coordinator & Lead Architect",
     preset: "archer",
     model: "anthropic/claude-3-7-sonnet",
     skills: ["Workflow Planning", "Subagent Delegation", "Git Integration", "Task Breakdown"],
@@ -130,7 +130,7 @@ export default function SwarmTeamShowcase() {
   useEffect(() => {
     if (!isSimulating) return;
     const timer = setInterval(() => {
-      setTickerIndex(prev => (prev + 1) % TEAM_MEMBERS.length);
+      setTickerIndex((prev) => (prev + 1) % TEAM_MEMBERS.length);
     }, 4500);
     return () => clearInterval(timer);
   }, [isSimulating]);
@@ -142,8 +142,8 @@ export default function SwarmTeamShowcase() {
       style={{
         width: "100%",
         maxWidth: 1200,
-        margin: "0 auto 60px",
-        padding: "0 24px",
+        margin: "0 auto 40px",
+        padding: "0 16px",
       }}
     >
       {/* Container Card */}
@@ -153,28 +153,13 @@ export default function SwarmTeamShowcase() {
           backdropFilter: "blur(24px)",
           WebkitBackdropFilter: "blur(24px)",
           border: "1px solid var(--border-glass, rgba(255, 255, 255, 0.08))",
-          borderRadius: 24,
-          padding: "36px 32px",
-          boxShadow: "0 20px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(167, 139, 250, 0.08) inset",
+          borderRadius: 20,
+          padding: "20px 24px",
+          boxShadow: "0 16px 48px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(167, 139, 250, 0.08) inset",
           position: "relative",
           overflow: "hidden",
         }}
       >
-        {/* Ambient Top Glow */}
-        <div
-          style={{
-            position: "absolute",
-            top: -100,
-            left: "50%",
-            transform: "translateX(-50%)",
-            width: 600,
-            height: 200,
-            background: "radial-gradient(ellipse, rgba(167, 139, 250, 0.2) 0%, transparent 70%)",
-            filter: "blur(50px)",
-            pointerEvents: "none",
-          }}
-        />
-
         {/* Section Header */}
         <div
           style={{
@@ -182,8 +167,8 @@ export default function SwarmTeamShowcase() {
             alignItems: "center",
             justifyContent: "space-between",
             flexWrap: "wrap",
-            gap: 16,
-            marginBottom: 32,
+            gap: 12,
+            marginBottom: 16,
             position: "relative",
             zIndex: 1,
           }}
@@ -193,23 +178,23 @@ export default function SwarmTeamShowcase() {
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 6,
-                fontSize: 11,
-                fontWeight: 700,
-                color: "var(--color-primary, #a78bfa)",
+                gap: 5,
+                fontSize: 10.5,
+                fontWeight: 800,
+                color: "var(--color-primary, #7c3aed)",
                 textTransform: "uppercase",
                 letterSpacing: "0.08em",
-                marginBottom: 6,
+                marginBottom: 3,
               }}
             >
-              <Sparkles size={13} />
+              <Sparkles size={12} />
               <span>Multi-Agent Architecture</span>
             </div>
             <h3
               style={{
-                fontSize: "clamp(22px, 3.2vw, 32px)",
+                fontSize: "clamp(18px, 2.4vw, 24px)",
                 fontWeight: 800,
-                color: "var(--color-ink-strong, #ffffff)",
+                color: "var(--color-ink-strong, #0f172a)",
                 margin: 0,
                 letterSpacing: "-0.02em",
               }}
@@ -218,34 +203,34 @@ export default function SwarmTeamShowcase() {
             </h3>
             <p
               style={{
-                fontSize: 14.5,
-                color: "var(--color-mute, #94a3b8)",
-                margin: "8px 0 0",
-                maxWidth: 780,
-                lineHeight: 1.55,
+                fontSize: 12.5,
+                color: "var(--color-body, #475569)",
+                margin: "3px 0 0",
+                maxWidth: 820,
+                lineHeight: 1.4,
               }}
             >
-              Configure custom personas, system instructions, modular skills, and LLM backends (Claude 3.5, DeepSeek V3, GPT-4o, Ollama) with granular tool permission matrices.
+              Configure custom personas, system instructions, modular skills, and LLM backends (Claude 3.7, DeepSeek R1, GPT-4o, Gemini 2.5) with granular tool permissions.
             </p>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 6,
-                padding: "6px 14px",
+                gap: 5,
+                padding: "4px 11px",
                 borderRadius: 9999,
-                background: "var(--color-canvas-raised, #18182f)",
-                border: "1px solid var(--border-glass, rgba(255,255,255,0.1))",
-                fontSize: 12,
-                color: "var(--color-primary-soft, #c4b5fd)",
-                fontWeight: 600,
+                background: "var(--color-canvas-raised, #f1f5f9)",
+                border: "1px solid var(--color-hairline, #e2e8f0)",
+                fontSize: 11,
+                color: "var(--color-primary, #7c3aed)",
+                fontWeight: 700,
               }}
             >
-              <Layers size={13} />
-              <span>Modular Agent Swarm</span>
+              <Layers size={12} />
+              <span>Multi-Agent System</span>
             </div>
           </div>
         </div>
@@ -254,161 +239,123 @@ export default function SwarmTeamShowcase() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-            gap: 16,
-            marginBottom: 28,
+            gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+            gap: 10,
+            marginBottom: 16,
             position: "relative",
             zIndex: 1,
           }}
         >
-          {TEAM_MEMBERS.map((member, idx) => {
-            const isHighlighted = (activeAgent.id === member.id);
-
+          {TEAM_MEMBERS.map((member, index) => {
+            const isActive = activeAgent.id === member.id;
             return (
-              <MagneticCard
+              <div
                 key={member.id}
-                tiltMaxAngle={11}
-                liftAmount={12}
-                glowColor={`${member.color}35`}
-                style={{ borderRadius: 18, height: "100%" }}
+                onClick={() => {
+                  setTickerIndex(index);
+                  setSelectedAgent(member);
+                  setIsSimulating(false);
+                }}
+                style={{
+                  background: isActive
+                    ? "var(--bg-glass-card, #ffffff)"
+                    : "var(--color-canvas-raised, #f8fafc)",
+                  border: isActive
+                    ? `2px solid ${member.color}`
+                    : "1px solid var(--color-hairline, #e2e8f0)",
+                  borderRadius: 14,
+                  padding: "10px 8px",
+                  cursor: "pointer",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  textAlign: "center",
+                  transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+                  transform: isActive ? "translateY(-3px)" : "none",
+                  boxShadow: isActive
+                    ? `0 8px 20px ${member.color}25`
+                    : "0 2px 6px rgba(0, 0, 0, 0.03)",
+                }}
               >
+                <div style={{ marginBottom: 6, position: "relative" }}>
+                  <PrettyAvatar preset={member.preset} name={member.name} size={36} isWorking={isActive} />
+                </div>
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: "var(--color-ink-strong, #0f172a)", marginBottom: 1 }}>
+                  {member.name}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--color-body, #475569)", fontWeight: 500, lineHeight: 1.2, marginBottom: 5 }}>
+                  {member.role}
+                </div>
                 <div
-                  onMouseEnter={() => {
-                    setSelectedAgent(member);
-                    setTickerIndex(idx);
-                  }}
                   style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    padding: "18px 12px",
-                    borderRadius: 18,
-                    height: "100%",
-                    background: isHighlighted
-                      ? `linear-gradient(135deg, ${member.color}15, var(--color-canvas-raised, #18182f))`
-                      : "var(--color-canvas-raised, #18182f)",
-                    border: isHighlighted
-                      ? `1.5px solid ${member.color}`
-                      : "1px solid var(--border-glass, rgba(255,255,255,0.06))",
-                    boxShadow: isHighlighted
-                      ? `0 12px 28px ${member.color}25`
-                      : "0 4px 12px rgba(0,0,0,0.2)",
-                    transition: "all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)",
-                    cursor: "pointer",
-                    textAlign: "center",
-                    position: "relative",
+                    fontSize: 8.5,
+                    fontFamily: "var(--font-mono, monospace)",
+                    padding: "1px 5px",
+                    borderRadius: 4,
+                    background: `${member.color}15`,
+                    color: member.color,
+                    fontWeight: 700,
+                    maxWidth: "100%",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  {/* Pretty Illustrated Character Avatar */}
-                  <div style={{ marginBottom: 12 }}>
-                    <PrettyAvatar
-                      preset={member.preset}
-                      name={member.name}
-                      size={64}
-                      isWorking={isHighlighted}
-                    />
-                  </div>
-
-                  {/* Agent Name */}
-                  <div
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 700,
-                      color: isHighlighted ? member.color : "var(--color-ink-strong, #ffffff)",
-                      marginBottom: 2,
-                    }}
-                  >
-                    {member.name}
-                  </div>
-
-                  {/* Agent Role */}
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: "var(--color-mute, #94a3b8)",
-                      lineHeight: 1.3,
-                      marginBottom: 10,
-                      minHeight: 28,
-                    }}
-                  >
-                    {member.role}
-                  </div>
-
-                  {/* Model Pill */}
-                  <span
-                    style={{
-                      fontSize: 9.5,
-                      fontFamily: "var(--font-family-mono, monospace)",
-                      padding: "2px 8px",
-                      borderRadius: 9999,
-                      background: "rgba(255,255,255,0.05)",
-                      border: "1px solid rgba(255,255,255,0.08)",
-                      color: isHighlighted ? member.color : "var(--color-mute, #94a3b8)",
-                    }}
-                  >
-                    {member.model}
-                  </span>
+                  {member.model.split("/")[1] || member.model}
                 </div>
-              </MagneticCard>
+              </div>
             );
           })}
         </div>
 
-        {/* Dynamic Live Working Workbench Preview */}
+        {/* Selected Member Detail View (Compact 2-Column Grid) */}
         <div
           style={{
-            background: "var(--color-canvas-soft, #0d0d1e)",
-            borderRadius: 18,
-            border: `1px solid ${activeAgent.color}40`,
-            padding: "24px",
+            background: "var(--bg-glass-card, #ffffff)",
+            border: "1px solid var(--color-hairline, #e2e8f0)",
+            borderRadius: 14,
+            padding: "14px 18px",
+            boxShadow: "0 6px 18px rgba(0, 0, 0, 0.04)",
             position: "relative",
             zIndex: 1,
-            boxShadow: `0 12px 36px ${activeAgent.color}18`,
-            transition: "all 0.3s ease",
           }}
         >
-          {/* Top Bar: Identity, Model, Permissions */}
+          {/* Header row */}
           <div
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
               flexWrap: "wrap",
-              gap: 12,
-              marginBottom: 16,
-              paddingBottom: 14,
-              borderBottom: "1px solid var(--border-glass, rgba(255, 255, 255, 0.08))",
+              gap: 10,
+              paddingBottom: 10,
+              marginBottom: 10,
+              borderBottom: "1px solid var(--color-hairline, #e2e8f0)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <PrettyAvatar preset={activeAgent.preset} name={activeAgent.name} size={42} />
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <PrettyAvatar preset={activeAgent.preset} name={activeAgent.name} size={32} />
               <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 15, fontWeight: 800, color: "var(--color-ink-strong, #ffffff)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 14.5, fontWeight: 800, color: "var(--color-ink-strong, #0f172a)" }}>
                     {activeAgent.name}
                   </span>
                   <span
                     style={{
-                      fontSize: 10,
+                      fontSize: 9.5,
                       fontWeight: 700,
-                      padding: "2px 8px",
-                      borderRadius: 6,
-                      background: `${activeAgent.color}20`,
+                      padding: "1px 6px",
+                      borderRadius: 4,
+                      background: `${activeAgent.color}18`,
                       color: activeAgent.color,
-                      border: `1px solid ${activeAgent.color}40`,
+                      border: `1px solid ${activeAgent.color}35`,
                       textTransform: "uppercase",
                     }}
                   >
                     {activeAgent.role}
                   </span>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-                  <span style={{ fontSize: 11, fontFamily: "var(--font-family-mono, monospace)", color: "var(--color-primary-soft, #c4b5fd)" }}>
+                  <span style={{ fontSize: 10.5, fontFamily: "var(--font-mono, monospace)", color: "var(--color-primary, #7c3aed)", fontWeight: 600 }}>
                     {activeAgent.model}
-                  </span>
-                  <span style={{ fontSize: 11, color: "var(--color-mute, #94a3b8)" }}>•</span>
-                  <span style={{ fontSize: 11, color: "var(--color-mute, #94a3b8)" }}>
-                    {activeAgent.permissions}
                   </span>
                 </div>
               </div>
@@ -418,95 +365,101 @@ export default function SwarmTeamShowcase() {
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 6,
-                padding: "4px 12px",
+                gap: 5,
+                padding: "3px 9px",
                 borderRadius: 9999,
                 background: `${activeAgent.color}15`,
-                border: `1px solid ${activeAgent.color}40`,
-                fontSize: 11,
+                border: `1px solid ${activeAgent.color}35`,
+                fontSize: 9.5,
                 fontWeight: 700,
-                fontFamily: "var(--font-family-mono, monospace)",
+                fontFamily: "var(--font-mono, monospace)",
                 color: activeAgent.color,
               }}
             >
-              <Zap size={12} />
+              <Zap size={11} />
               <span>CUSTOM PERSONA & EXECUTION</span>
             </div>
           </div>
 
-          {/* Persona System Prompt */}
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-mute, #94a3b8)", marginBottom: 6 }}>
-              Configured Persona & Instructions
+          {/* 2-Column Content Layout */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+              gap: 12,
+              alignItems: "start",
+            }}
+          >
+            {/* Left: Persona Prompt */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-mute, #64748b)", marginBottom: 4 }}>
+                CONFIGURED PERSONA & INSTRUCTIONS
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--color-ink, #1e293b)",
+                  lineHeight: 1.45,
+                  padding: "8px 12px",
+                  background: "var(--color-canvas-raised, #f8fafc)",
+                  borderRadius: 8,
+                  border: "1px solid var(--color-hairline, #e2e8f0)",
+                  borderLeft: `3px solid ${activeAgent.color}`,
+                }}
+              >
+                &ldquo;{activeAgent.persona}&rdquo;
+              </div>
             </div>
-            <div
-              style={{
-                fontSize: 13,
-                color: "var(--color-body, #e2e8f0)",
-                lineHeight: 1.6,
-                padding: "10px 14px",
-                background: "rgba(255, 255, 255, 0.025)",
-                borderRadius: 10,
-                border: "1px solid rgba(255, 255, 255, 0.06)",
-                borderLeft: `3px solid ${activeAgent.color}`,
-              }}
-            >
-              "{activeAgent.persona}"
-            </div>
-          </div>
 
-          {/* Assigned Skills */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-mute, #94a3b8)", marginBottom: 6 }}>
-              Assigned Skills
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {activeAgent.skills.map(s => (
-                <span
-                  key={s}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 5,
-                    fontSize: 11,
-                    fontFamily: "var(--font-family-mono, monospace)",
-                    padding: "3px 8px",
-                    borderRadius: 6,
-                    background: "rgba(255, 255, 255, 0.05)",
-                    border: "1px solid rgba(255, 255, 255, 0.1)",
-                    color: "var(--color-ink, #f8fafc)",
-                  }}
-                >
-                  <Zap size={11} style={{ color: activeAgent.color, flexShrink: 0 }} />
-                  <span>{s}</span>
-                </span>
-              ))}
-            </div>
-          </div>
+            {/* Right: Assigned Skills + Tool Pipeline */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-mute, #64748b)", marginBottom: 4 }}>
+                ASSIGNED SKILLS
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>
+                {activeAgent.skills.map((s) => (
+                  <span
+                    key={s}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: 10.5,
+                      fontFamily: "var(--font-mono, monospace)",
+                      fontWeight: 600,
+                      padding: "2px 7px",
+                      borderRadius: 5,
+                      background: "var(--color-canvas-raised, #f1f5f9)",
+                      border: "1px solid var(--color-hairline, #e2e8f0)",
+                      color: "var(--color-ink-strong, #0f172a)",
+                    }}
+                  >
+                    <Zap size={10} style={{ color: activeAgent.color, flexShrink: 0 }} />
+                    <span>{s}</span>
+                  </span>
+                ))}
+              </div>
 
-          {/* Live Coordinated Tool Call */}
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-mute, #94a3b8)", marginBottom: 6 }}>
-              Active Tool Pipeline
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 14px",
-                background: "rgba(0, 0, 0, 0.5)",
-                borderRadius: 10,
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-                fontSize: 12,
-                fontFamily: "var(--font-family-mono, monospace)",
-                color: "var(--color-primary-soft, #c4b5fd)",
-                overflowX: "auto",
-              }}
-            >
-              <Terminal size={14} style={{ color: activeAgent.color, flexShrink: 0 }} />
-              <span style={{ color: "var(--color-mute, #94a3b8)" }}>tool_call:</span>
-              <span style={{ color: activeAgent.color }}>{activeAgent.toolCall}</span>
+              {/* Active Tool Pipeline Terminal */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 10px",
+                  background: "#080914",
+                  borderRadius: 8,
+                  border: "1px solid rgba(167, 139, 250, 0.3)",
+                  fontSize: 11,
+                  fontFamily: "var(--font-mono, monospace)",
+                  boxShadow: "0 2px 8px rgba(0, 0, 0, 0.2)",
+                  overflowX: "auto",
+                }}
+              >
+                <Terminal size={12} style={{ color: "#38bdf8", flexShrink: 0 }} />
+                <span style={{ color: "#38bdf8", fontWeight: 700 }}>&gt;_ tool:</span>
+                <span style={{ color: "#f1f5f9" }}>{activeAgent.toolCall}</span>
+              </div>
             </div>
           </div>
         </div>

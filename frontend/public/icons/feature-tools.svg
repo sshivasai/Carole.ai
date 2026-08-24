@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="toolGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f472b6" />
+      <stop offset="50%" stop-color="#ec4899" />
+      <stop offset="100%" stop-color="#db2777" />
+    </linearGradient>
+    <linearGradient id="toolBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#500724" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.95" />
+    </linearGradient>
+    <filter id="toolGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="3.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Glassmorphic Badge Frame -->
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#toolBg)" stroke="url(#toolGrad)" stroke-width="1.75" />
+
+  <!-- Ambient Inner Glow Orb -->
+  <circle cx="32" cy="32" r="18" fill="url(#toolGrad)" opacity="0.12" filter="url(#toolGlow)" />
+
+  <!-- Developer Terminal & Toolset Matrix -->
+  <g filter="url(#toolGlow)">
+    <!-- Terminal Window Frame -->
+    <rect x="16" y="18" width="32" height="26" rx="5" fill="#18181b" stroke="url(#toolGrad)" stroke-width="2" />
+    
+    <!-- Window Controls -->
+    <circle cx="21" cy="23" r="1.5" fill="#f472b6" />
+    <circle cx="26" cy="23" r="1.5" fill="#ec4899" />
+    <circle cx="31" cy="23" r="1.5" fill="#db2777" />
+
+    <!-- Terminal Prompt & Command Line -->
+    <path d="M22 31 L26 34 L22 37" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    <line x1="29" y1="37" x2="36" y2="37" stroke="#f472b6" stroke-width="2" stroke-linecap="round" />
+
+    <!-- Mini Sub-Tool Accent Chip (Wrench/Code tag) -->
+    <rect x="33" y="38" width="13" height="11" rx="3" fill="#831843" stroke="#f472b6" stroke-width="1.5" />
+    <text x="36" y="46" fill="#ffffff" font-family="monospace" font-size="8" font-weight="bold">&lt;/&gt;</text>
+  </g>
+</svg>

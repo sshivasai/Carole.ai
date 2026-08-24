@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.llm.multi_model_router import llm_router
 from core.chat.event_bus import event_bus
-from core.memory.models import Message, Agent, Project, User
+from core.memory.models import Message, Agent, Project, User, EntityMemory
 from core.tools.tool_registry import ToolRegistry
 from core.tools.context import CancellationToken, ToolExecutionContext, ToolPermissionContext
 from core.memory.lancedb_client import lancedb_client
@@ -118,15 +118,19 @@ class ReACTAgent:
         history = []
         for msg in messages:
             is_self = msg.sender_id == self.agent_id
-            
+
             content_list = []
-            
+
             if is_self:
                 content_list.append({"type": "text", "text": msg.text})
             else:
-                sender_label = msg.sender_name or msg.sender_id
-                content_list.append({"type": "text", "text": f"[{sender_label}]: {msg.text}"})
-                
+                if msg.sender_id == "human":
+                    sender_label = msg.sender_name or "Human User"
+                    content_list.append({"type": "text", "text": f"[{sender_label} (User)]: {msg.text}"})
+                else:
+                    sender_label = msg.sender_name or msg.sender_id
+                    content_list.append({"type": "text", "text": f"[{sender_label} (Teammate)]: {msg.text}"})
+
             if msg.attachments:
                 for att in msg.attachments:
                     if att.get("type", "").startswith("image/"):
@@ -135,9 +139,9 @@ class ReACTAgent:
                             "local_path": att.get("local_path"),
                             "mime_type": att.get("type")
                         })
-                        
+
             final_content = content_list[0]["text"] if len(content_list) == 1 else content_list
-                
+
             history.append({
                 "role": "assistant" if is_self else "user",
                 "content": final_content
@@ -179,18 +183,29 @@ class ReACTAgent:
         # Joined query: Project → User in two selects (still avoids a 3rd round-trip
         # by using project_id resolved from the agent's own team record)
         human_context = ""
-        project_result = await db_session.execute(
-            select(Project, User)
-            .join(User, User.id == Project.owner_id)
-            .where(Project.id == (uuid.UUID(self.project_id) if isinstance(self.project_id, str) else self.project_id))
-        )
-        row = project_result.first()
-        if row:
-            _project, user = row
-            first = user.first_name or ""
-            last = user.last_name or ""
-            full_name = f"{first} {last}".strip() or "Unknown User"
-            human_context = f"HUMAN CONTEXT:\nThe human user / project owner is {full_name}.\n\n"
+        if self.project_id:
+            try:
+                proj_uuid = uuid.UUID(str(self.project_id))
+                project_result = await db_session.execute(
+                    select(Project, User)
+                    .join(User, User.id == Project.owner_id)
+                    .where(Project.id == proj_uuid)
+                )
+                row = project_result.first()
+                if row:
+                    _project, user = row
+                    first = user.first_name or ""
+                    last = user.last_name or ""
+                    full_name = f"{first} {last}".strip() or "User"
+                    human_context = (
+                        f"HUMAN CONTEXT:\n"
+                        f"- The human user / project owner is {full_name}.\n"
+                        f"- In chat history, messages from the human user are labeled '[{full_name} (User)]'.\n"
+                        f"- Messages from other AI teammates are labeled '[AgentName (Teammate)]'.\n"
+                        f"- Always distinguish between what the human user asked vs what AI teammates said.\n\n"
+                    )
+            except Exception:
+                pass
         capabilities_block += human_context
 
         # 1. Generate search embeddings
@@ -212,6 +227,22 @@ class ReACTAgent:
                 # learning.get('lesson_rule') already contains [CATEGORY] prefix from auto_dream
                 learnings_block += f"- Context: {learning.get('task_summary')}\n  Directive: {learning.get('lesson_rule')}\n"
             learnings_block += "\n"
+            
+        # 3.5 Format Entity Facts
+        fact_stmt = select(EntityMemory).where(
+            or_(
+                EntityMemory.team_id == None,
+                EntityMemory.team_id == team_uuid
+            )
+        )
+        fact_result = await db_session.execute(fact_stmt)
+        entity_facts = fact_result.scalars().all()
+        if entity_facts:
+            learnings_block += "ENTITY FACTS (Explicit details you must know):\n"
+            for fact in entity_facts:
+                learnings_block += f"- {fact.key}: {fact.value}\n"
+            learnings_block += "\n"
+
         capabilities_block += learnings_block
 
         # 4. Dynamic Skills (Injected before tools so LLM reads skill context first)
@@ -278,23 +309,18 @@ class ReACTAgent:
 
         # Workspace temp-file path — compute the actual runtime path, then inject
         from core.config import CAROLE_HOME_DIR
-        _project_slug = self.project_id[:8] if self.project_id else "workspace"
-        _team_slug = self.team_id[:8] if self.team_id else "team"
+        _project_slug = str(self.project_id)[:8] if self.project_id else "workspace"
+        _team_slug = str(self.team_id)[:8] if self.team_id else "team"
         try:
+            import re as _re
             if row:
                 _proj_obj, _ = row
-                import re as _re
                 _project_slug = _re.sub(r'[^a-zA-Z0-9_-]+', '-', _proj_obj.name).strip('-') or _project_slug
-            _team_rec = next((t for t in teammates if str(t.team_id) == self.team_id), None)
-            if not _team_rec:
-                from core.memory.models import Team as _Team2
-                from core.memory.database import async_session as _asy
-                async with _asy() as _tdb:
-                    import uuid as _uu
-                    _tr = (await _tdb.execute(select(_Team2).where(_Team2.id == _uu.UUID(self.team_id)))).scalar_one_or_none()
-                    if _tr:
-                        import re as _re2
-                        _team_slug = _re2.sub(r'[^a-zA-Z0-9_-]+', '-', _tr.name).strip('-') or _team_slug
+            
+            from core.memory.models import Team as _TeamModel
+            _team_obj = (await db_session.execute(select(_TeamModel).where(_TeamModel.id == team_uuid))).scalar_one_or_none()
+            if _team_obj:
+                _team_slug = _re.sub(r'[^a-zA-Z0-9_-]+', '-', _team_obj.name).strip('-') or _team_slug
         except Exception:
             pass
         _carole_dir = str(CAROLE_HOME_DIR / "workspaces" / _project_slug / ".carole" / _team_slug)
@@ -328,14 +354,16 @@ class ReACTAgent:
         Call this when worker results arrive or team context changes."""
         self._cached_system_prompt = None
 
-    async def run_loop(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None):
+    async def run_loop(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None, trigger_message_id: Optional[str] = None):
         """Runs the core ReACT loop with conversation history and streaming."""
+        if trigger_message_id:
+            self.active_message_id = trigger_message_id
         
         self._listening = True
         listener_task = asyncio.create_task(self._listen_for_notifications())
         
         try:
-            await self._run_loop_inner(db_session, initial_prompt, attachments, token)
+            await self._run_loop_inner(db_session, initial_prompt, attachments, token, trigger_message_id=trigger_message_id)
         except asyncio.CancelledError:
             # User clicked "Stop Generating" — persist whatever was partially generated
             partial = getattr(self, "_current_thought_buffer", "").strip()
@@ -356,6 +384,8 @@ class ReACTAgent:
                             sender_name=self.name,
                             text=final_text,
                             reasoning_text=reasoning,
+                            is_private=self.is_private_response,
+                            recipient_id=self.reply_recipient_id,
                         )
                         cleanup_db.add(db_msg)
                         await cleanup_db.commit()
@@ -366,6 +396,8 @@ class ReACTAgent:
                             "sender_name": self.name,
                             "role": self.role,
                             "text": final_text,
+                            "is_private": self.is_private_response,
+                            "recipient_id": self.reply_recipient_id,
                             "has_reasoning": bool(reasoning),
                         })
                     except Exception as persist_err:
@@ -393,14 +425,16 @@ class ReACTAgent:
                 pass
 
     def _get_compaction_config(self) -> dict:
-        """Load compaction settings from the user's config.json with safe defaults."""
+        """Load compaction settings from the user's config.json with model-aware defaults."""
         from core.llm.config_manager import load_config
+        from core.llm.multi_model_router import get_model_context_window
         cfg = load_config()
+        model_ctx = get_model_context_window(self.model)
         defaults = {
-            "max_observation_chars": 4000,
-            "token_trigger_ratio": 0.80,
-            "context_window_size": 128000,
-            "recent_messages_to_keep": 8,
+            "max_observation_chars": 2000 if model_ctx <= 16384 else 4000,
+            "token_trigger_ratio": 0.65 if model_ctx <= 16384 else 0.80,
+            "context_window_size": model_ctx,
+            "recent_messages_to_keep": 4 if model_ctx <= 16384 else 8,
         }
         user_compaction = cfg.get("compaction", {})
         return {**defaults, **user_compaction}
@@ -543,13 +577,27 @@ class ReACTAgent:
             self._log.warning("Rolling compaction failed, continuing with full context: %s", e)
             return messages
 
-    async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None):
+    async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None, trigger_message_id: Optional[str] = None):
         # Reset all per-session caches at the start of each new run.
         # This ensures a fresh agent session doesn't carry stale state from a
         # previous invocation (e.g. if the agent object were somehow reused).
         self._cached_system_prompt = None
         self._last_observation = ""
         self._no_progress_count = 0
+        self.is_private_response = False
+        self.reply_recipient_id = None
+        if trigger_message_id:
+            self.active_message_id = trigger_message_id
+            try:
+                t_uuid = uuid.UUID(trigger_message_id) if isinstance(trigger_message_id, str) else trigger_message_id
+                t_stmt = select(Message).where(Message.id == t_uuid)
+                t_res = await db_session.execute(t_stmt)
+                trigger_msg = t_res.scalar_one_or_none()
+                if trigger_msg and trigger_msg.is_private:
+                    self.is_private_response = True
+                    self.reply_recipient_id = trigger_msg.sender_id
+            except Exception as e:
+                self._log.warning("Could not check trigger message privacy: %s", e)
 
         # Fetch agent config
         agent_uuid = uuid.UUID(self.agent_id) if isinstance(self.agent_id, str) else self.agent_id
@@ -575,12 +623,13 @@ class ReACTAgent:
             # Anthropic
             "claude-opus": 40, "claude-sonnet": 40, "claude-haiku": 30,
             # OpenAI
-            "gpt-4o": 35, "gpt-4": 25, "gpt-3.5": 20, "o4-": 40, "o3-": 40,
+            "gpt-4o": 35, "gpt-4": 25, "gpt-3.5": 6, "o4-": 40, "o3-": 40,
             # Google
             "gemini-2.5": 60, "gemini-2.0": 50, "gemini-1.5": 50, "gemini-flash": 50,
-            # OpenRouter / Ollama — conservative default
+            # Smaller open models
+            "phi": 4, "llama-3.1-8b": 15, "8k": 4, "4k": 2,
         }
-        history_limit = 20  # safe default
+        history_limit = 15  # safe default
         model_lower = (self.model or "").lower()
         for prefix, limit in _CONTEXT_WINDOW_LIMITS.items():
             if prefix in model_lower:
@@ -810,10 +859,12 @@ class ReACTAgent:
                             sender_name=self.name,
                             text=error_msg,
                             reasoning_text=self._current_reasoning_buffer or None,
+                            is_private=self.is_private_response,
+                            recipient_id=self.reply_recipient_id,
                         )
                         db_session.add(db_msg)
                         await db_session.commit()
-                        
+
                         await event_bus.publish(self.topic, {
                             "type": "message",
                             "id": str(db_msg.id),
@@ -821,6 +872,8 @@ class ReACTAgent:
                             "sender_name": self.name,
                             "role": self.role,
                             "text": error_msg,
+                            "is_private": self.is_private_response,
+                            "recipient_id": self.reply_recipient_id,
                             "has_reasoning": bool(self._current_reasoning_buffer)
                         })
 
@@ -850,16 +903,65 @@ class ReACTAgent:
                 action_call = self._parse_action(self._current_reasoning_buffer)
 
             if not action_call:
-                # Heuristic: does this look like a malformed tool call or reasoning-only turn
-                # rather than a genuine final answer?
-                _combined_text = (thought_buffer + "\n" + (self._current_reasoning_buffer or "")).strip()
-                _lower = _combined_text.lower()
+                # ── Early-exit: agent explicitly signalled completion ──────────────
+                # If the output ends with a "Status: COMPLETE" or "Status: BLOCKED"
+                # sentinel (coordinator pattern), treat it as a genuine final answer
+                # and break immediately — never inject a correction into a completed message.
+                _completion_sentinels = ["status: complete", "status: blocked"]
+                _lower_preview = thought_buffer.lower().strip()[-200:]
+                if any(s in _lower_preview for s in _completion_sentinels):
+                    self._log.info("Agent signalled completion (Status: COMPLETE/BLOCKED). Breaking loop cleanly.")
+                    db_msg = Message(
+                        team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                        sender_id=self.agent_id,
+                        sender_name=self.name, text=thought_buffer,
+                        reasoning_text=self._current_reasoning_buffer or None,
+                        is_private=self.is_private_response,
+                        recipient_id=self.reply_recipient_id,
+                    )
+                    db_session.add(db_msg)
+                    await db_session.commit()
+                    self.active_message_id = str(db_msg.id)
+                    await event_bus.publish(self.topic, {
+                        "type": "message",
+                        "id": str(db_msg.id),
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "text": thought_buffer,
+                        "is_private": self.is_private_response,
+                        "recipient_id": self.reply_recipient_id,
+                        "has_reasoning": bool(self._current_reasoning_buffer),
+                    })
+                    await event_bus.publish(self.topic, {
+                        "type": "agent_status",
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "status": "idle",
+                    })
+                    break
+
+                # Heuristic: does the CURRENT turn look like an unexecuted promise,
+                # malformed tool call, or reasoning-only turn rather than a genuine final answer?
+                _curr_text = (thought_buffer or "").strip()
+                _lower = _curr_text.lower()
                 action_promise_triggers = [
                     "[action", "[tool", "<tool", "tool_call", "function_call",
                     "writing the file", "writing to", "creating the file", "creating a file",
                     "i'll create", "i will create", "i'll write", "i will write",
                     "let me write", "let me create", "let me execute", "running the command",
-                    "saving to", "creating file", "write_file", "execute_command", "read_file",
+                    "saving to", "creating file",
+                    # Starting / Beginning / Task acceptance triggers
+                    "let's start", "let's begin", "let's create", "let's write",
+                    "let's execute", "let's run", "let's implement", "let's build",
+                    "start by", "starting by", "starting with",
+                    "i'll start by", "i will start by", "i'll begin by", "i will begin by",
+                    "i'm going to create", "i will go ahead and create", "going to create",
+                    "i'll go ahead and", "i will go ahead and",
+                    "let me start", "let me begin",
+                    "creating the", "creating a", "writing the", "writing a",
+                    "executing the", "executing it", "running the",
                     # Step narration triggers — agent describing what it WILL do without doing it
                     "i'll now", "i will now", "i'll move on", "i'll work on", "i will work on",
                     "i'll get that set up", "i'll finalize", "i'll build",
@@ -873,25 +975,32 @@ class ReACTAgent:
                     "hiring a", "spawning a", "delegating to",
                     "i'll kick off", "i will kick off",
                     "i'll send", "i will send a message",
+                    # Retrieval & lookup intent triggers — model promising to fetch/check info without doing it
+                    "let me retrieve", "i'll retrieve", "i will retrieve",
+                    "let me check", "i'll check", "i will check",
+                    "let me find", "i'll find", "i will find",
+                    "let me look", "i'll look", "i will look",
+                    "let me search", "i'll search", "i will search",
+                    "let me get that", "let me get the",
+                    # Conversational stalling phrases without tool action or answer
+                    "just a moment", "one moment", "give me a moment", "hold on a moment",
                 ]
-                # Only match actual snake_case tool call patterns (e.g. write_file(), execute_command()),
-                # NOT any word followed by a paren (which falsely fires on "README.md (see above)")
-                looks_like_tool_call = any(
-                    sig in _lower for sig in action_promise_triggers
-                ) or bool(re.search(r"\b[a-z]+(?:_[a-z]+)+\s*\(", _combined_text[-300:]))
+                # Match explicit pseudo tool calls (e.g. read_file({...}) or execute_command("..."))
+                # without [ACTION] tags
+                has_pseudo_call = bool(re.search(r"\b[a-z]+(?:_[a-z]+)+\s*\(\s*\{", _curr_text))
+                looks_like_tool_call = any(sig in _lower for sig in action_promise_triggers) or has_pseudo_call
 
                 # Detect reasoning without content: model generated thoughts into reasoning but left content empty
-                has_thought_without_action = not thought_buffer.strip() and bool(self._current_reasoning_buffer)
+                has_thought_without_action = not _curr_text and bool(self._current_reasoning_buffer)
 
                 # Detect plan-only responses: model outputs a numbered plan/steps
                 # list AND contains intent language but no ACTION tag was found.
-                # This is the classic "I'll create X... I'll create Y... [stops]" failure.
                 # Only trigger on the very first loop to avoid flagging long multi-step final answers.
-                has_numbered_plan = bool(re.search(r"^\s*\d+[\.\)]\s+\S", _combined_text, re.MULTILINE)) and loop_count <= 1
+                has_numbered_plan = bool(re.search(r"^\s*\d+[\.\)]\s+\S", _curr_text, re.MULTILINE)) and loop_count <= 1
                 has_plan_header = any(p in _lower for p in ["plan:", "here's my plan", "here is my plan", "my plan is", "the plan is"]) and loop_count <= 1
 
                 # Detect code-in-chat: model pastes ``` code blocks instead of using write_file.
-                has_code_block = bool(re.search(r"```[\w\-]*\n[\s\S]{50,}", thought_buffer))
+                has_code_block = bool(re.search(r"```[\w\-]*\n[\s\S]{50,}", _curr_text))
 
                 is_plan_without_action = (has_numbered_plan or has_plan_header)
                 is_code_in_chat = has_code_block and loop_count <= max_loops - 1
@@ -919,6 +1028,14 @@ class ReACTAgent:
                             "You MUST immediately execute your first step using a tool call. Exact format:\n"
                             "  [ACTION]write_file({\"path\": \"index.html\", \"content\": \"<!DOCTYPE html>...\"})[/ACTION]\n"
                             "Start executing your first planned step RIGHT NOW. Do not stop until ALL steps are done.[/OBSERVATION]"
+                        )
+                    elif any(sig in _lower for sig in ["let me retrieve", "let me check", "let me find", "let me look", "just a moment", "one moment"]):
+                        correction = (
+                            "[OBSERVATION] Incomplete Response / Unexecuted Promise.\n"
+                            "You stated you would retrieve/check information ('Let me retrieve / Just a moment') but did not call a tool or deliver the answer.\n"
+                            "If you need to inspect files or memory, call the tool now using:\n"
+                            "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                            "Otherwise, if you have the answer or the information is unavailable, deliver your complete final answer to the user immediately.[/OBSERVATION]"
                         )
                     else:
                         # Check if it was a delegation promise specifically
@@ -982,6 +1099,8 @@ class ReACTAgent:
                     sender_id=self.agent_id,
                     sender_name=self.name, text=thought_buffer,
                     reasoning_text=self._current_reasoning_buffer or None,
+                    is_private=self.is_private_response,
+                    recipient_id=self.reply_recipient_id,
                 )
                 db_session.add(db_msg)
                 await db_session.commit()
@@ -995,6 +1114,8 @@ class ReACTAgent:
                     "sender_name": self.name,
                     "role": self.role,
                     "text": thought_buffer,
+                    "is_private": self.is_private_response,
+                    "recipient_id": self.reply_recipient_id,
                     "has_reasoning": bool(self._current_reasoning_buffer),
                 })
 
@@ -1118,6 +1239,13 @@ class ReACTAgent:
                         hint = "\n\n💡 Hint: The target_content for edit_file didn't match. Use read_file to see the exact current content, then copy the exact text."
                     elif "timeout" in obs_lower and "browser" in tool_name.lower():
                         hint = "\n\n💡 Hint: Browser selector timed out. Call browser_get_interactive_elements to discover the correct selectors on the page."
+                    elif "missing required parameter" in obs_lower and tool_name == "write_file":
+                        hint = (
+                            "\n\n💡 Hint: write_file requires TWO separate parameters — not a nested JSON value. "
+                            "Exact format:\n"
+                            "  [ACTION]write_file({\"relative_path\": \"path/to/file.py\", \"content\": \"# your code here\"})[/ACTION]\n"
+                            "Do NOT wrap both inside a \"value\" key. Use relative_path and content as top-level keys."
+                        )
                     if hint:
                         observation += hint
 
@@ -1135,7 +1263,7 @@ class ReACTAgent:
                 obs_fingerprint = hashlib.md5(observation.strip().encode()).hexdigest()
                 if obs_fingerprint and obs_fingerprint == self._last_observation:
                     self._no_progress_count += 1
-                    if self._no_progress_count >= 3:
+                    if self._no_progress_count >= 2:  # bail out after 2 identical results, not 3
                         self._log.warning(
                             "No-progress guard triggered after %d identical observations. Breaking loop.",
                             self._no_progress_count,
@@ -1152,6 +1280,8 @@ class ReACTAgent:
                             sender_name=self.name,
                             text=thought_buffer,
                             reasoning_text=self._current_reasoning_buffer or None,
+                            is_private=self.is_private_response,
+                            recipient_id=self.reply_recipient_id,
                         )
                         db_session.add(db_msg)
                         await db_session.commit()
@@ -1162,6 +1292,8 @@ class ReACTAgent:
                             "sender_name": self.name,
                             "role": self.role,
                             "text": thought_buffer,
+                            "is_private": self.is_private_response,
+                            "recipient_id": self.reply_recipient_id,
                             "has_reasoning": bool(self._current_reasoning_buffer),
                         })
                         await event_bus.publish(self.topic, {
@@ -1199,6 +1331,8 @@ class ReACTAgent:
                 sender_name=self.name,
                 text=thought_buffer,
                 reasoning_text=self._current_reasoning_buffer or None,
+                is_private=self.is_private_response,
+                recipient_id=self.reply_recipient_id,
             )
             db_session.add(db_msg)
             await db_session.commit()
@@ -1210,6 +1344,8 @@ class ReACTAgent:
                 "sender_name": self.name,
                 "role": self.role,
                 "text": thought_buffer,
+                "is_private": self.is_private_response,
+                "recipient_id": self.reply_recipient_id,
                 "has_reasoning": bool(self._current_reasoning_buffer),
             })
             await event_bus.publish(self.topic, {
@@ -1356,57 +1492,87 @@ class ReACTAgent:
             self._log.warning("Auto-lesson extraction failed (non-fatal): %s", e)
 
     def _parse_action(self, text: str) -> Any:
-        """Parses [ACTION]tool_name(args)[/ACTION] or <tool_call>tool_name(args) even if truncated.
+        """Parses [ACTION]tool_name(args)[/ACTION] or untagged tool_name(args) even with nested docstrings.
 
-        Extraction strategy (in order):
-        1. Find the opening paren after the tool name.
-        2. Walk characters to find the matching closing paren (honours nested
-           parens, single-quoted strings, double-quoted strings, and basic
-           escape sequences). This avoids the classic non-greedy-regex trap
-           where `(.*?)` stops at the first `)` inside a quoted value.
-        3. Parse the captured args string as: JSON → Python AST kwargs →
-           regex-based key=value fallback.
+        Extraction strategy:
+        1. Find tool name (tagged with [ACTION] or untagged snake_case).
+        2. If explicit closing tag exists, slice directly.
+        3. Otherwise, use quote-aware (single, double, and triple quotes) balanced-paren walker.
+        4. Parse arguments: JSON → AST literal_eval → AST kwargs → Specialized multiline extractor → Regex fallback.
         """
         # Locate the tag + tool name
-        header_match = re.search(
+        # 1. Tagged match: [ACTION]tool_name(...) or [TOOL]... or <tool_call>...
+        tagged_match = re.search(
             r"(?:\[(?:ACTION|TOOL)\]|<tool_call>)\s*(\w+)\s*\(",
             text, re.DOTALL
         )
-        if not header_match:
-            return None
-
-        tool_name = header_match.group(1)
-        scan_start = header_match.end()  # position right after the opening '('
-
-        # Walk forward to find the balanced closing paren
-        depth = 1
-        i = scan_start
-        in_single = False
-        in_double = False
-        while i < len(text) and depth > 0:
-            ch = text[i]
-            if ch == '\\' and (in_single or in_double):
-                i += 2  # skip escaped char
-                continue
-            if ch == "'" and not in_double:
-                in_single = not in_single
-            elif ch == '"' and not in_single:
-                in_double = not in_double
-            elif not in_single and not in_double:
-                if ch == '(':
-                    depth += 1
-                elif ch == ')':
-                    depth -= 1
-            i += 1
-
-        if depth == 0:
-            # Balanced — content is everything up to (but not including) the final ')'
-            raw_args = text[scan_start:i - 1].strip()
+        if tagged_match:
+            tool_name = tagged_match.group(1)
+            scan_start = tagged_match.end()
         else:
-            # Unbalanced (truncated stream) — take everything we have
-            raw_args = text[scan_start:].strip()
-            # Strip any trailing closing tag that bled in
-            raw_args = re.sub(r"\)\s*(?:\[/(?:ACTION|TOOL)\]|</tool_call>)?\s*$", "", raw_args).strip()
+            # 2. Untagged match: Only match genuine registered tool names
+            from core.tools.tool_registry import ToolRegistry
+            registered_names = set(ToolRegistry.list_names())
+            untagged_match = None
+            for rname in registered_names:
+                m = re.search(rf"\b({re.escape(rname)})\s*\(", text)
+                if m:
+                    if untagged_match is None or m.start() < untagged_match.start():
+                        untagged_match = m
+            if not untagged_match:
+                return None
+            tool_name = untagged_match.group(1)
+            scan_start = untagged_match.end()
+
+        # If explicit closing tag exists, slice directly
+        closing_tag_match = re.search(r"\[/(?:ACTION|TOOL)\]|</tool_call>", text[scan_start:], re.DOTALL)
+        if closing_tag_match:
+            inside = text[scan_start:scan_start + closing_tag_match.start()].strip()
+            if inside.endswith(")"):
+                inside = inside[:-1].strip()
+            raw_args = inside
+        else:
+            # Walk forward to find the balanced closing paren with triple-quote awareness
+            depth = 1
+            i = scan_start
+            n = len(text)
+            in_triple_double = False
+            in_triple_single = False
+            in_single = False
+            in_double = False
+
+            while i < n and depth > 0:
+                if text[i:i+3] == '"""' and not in_single and not in_triple_single:
+                    in_triple_double = not in_triple_double
+                    i += 3
+                    continue
+                if text[i:i+3] == "'''" and not in_double and not in_triple_double:
+                    in_triple_single = not in_triple_single
+                    i += 3
+                    continue
+
+                ch = text[i]
+                if ch == '\\' and (in_single or in_double or in_triple_single or in_triple_double):
+                    i += 2
+                    continue
+
+                if not in_triple_double and not in_triple_single:
+                    if ch == "'" and not in_double:
+                        in_single = not in_single
+                    elif ch == '"' and not in_single:
+                        in_double = not in_double
+                    elif not in_single and not in_double:
+                        if ch in '([{':
+                            depth += 1
+                        elif ch in ')]}':
+                            depth -= 1
+                i += 1
+
+            if depth == 0:
+                raw_args = text[scan_start:i - 1].strip()
+            else:
+                raw_args = text[scan_start:].strip()
+                raw_args = re.sub(r"\)\s*(?:\[/(?:ACTION|TOOL)\]|</tool_call>)?\s*$", "", raw_args).strip()
 
         if not raw_args:
             return tool_name, {}
@@ -1421,7 +1587,16 @@ class ReACTAgent:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # 2. Try Python AST kwargs & positional args (e.g. key="value", or "arg1", "arg2")
+        # 2. Try Python AST literal_eval (handles dict with multiline strings, booleans, numbers)
+        try:
+            import ast as _ast
+            arguments = _ast.literal_eval(raw_args)
+            if isinstance(arguments, dict):
+                return tool_name, arguments
+        except Exception:
+            pass
+
+        # 3. Try Python AST kwargs & positional args (e.g. key="value", or "arg1", "arg2")
         try:
             import ast as _ast
             tree = _ast.parse(f"_dummy({raw_args})", mode="eval")
@@ -1442,11 +1617,23 @@ class ReACTAgent:
         except Exception:
             pass
 
-        # 3. Regex-based key=value extractor — handles multiline string values
-        #    Supports:  key="...",  key='...',  key=123,  key=True/False/None
+        # 4. Fallback: Specialized regex extractor for write_file / edit_file with docstrings
+        try:
+            path_m = re.search(r'["\'](?:relative_path|path|filename|file)["\']\s*[:=]\s*["\']([^"\']+)["\']', raw_args)
+            content_m = re.search(r'["\']content["\']\s*[:=]\s*(?:"""|\'\'\'|"|\')([\s\S]*?)(?:"""|\'\'\'|"|\')\s*\}?\s*$', raw_args)
+            if not content_m:
+                content_m = re.search(r'["\']content["\']\s*[:=]\s*(?:"""|\'\'\'|"|\')([\s\S]*)\s*\}?\s*$', raw_args)
+            if path_m:
+                rel_path = path_m.group(1)
+                content_val = content_m.group(1) if content_m else ""
+                content_val = re.sub(r'(?:"""|\'\'\'|"|\')\s*\}?\s*$', '', content_val)
+                return tool_name, {"relative_path": rel_path, "content": content_val}
+        except Exception:
+            pass
+
+        # 5. Regex-based key=value extractor — handles multiline string values
         try:
             arguments = {}
-            # Match key= followed by a quoted string (with escaped quotes), number, or bare word
             pattern = re.compile(
                 r"""(\w+)\s*=\s*(?:"""
                 r""""((?:[^"\\]|\\.)*)"|"""   # double-quoted string
@@ -1474,7 +1661,7 @@ class ReACTAgent:
         except Exception:
             pass
 
-        # 4. Last resort — hand the raw string to the wrapper as 'value'
+        # 6. Last resort — hand the raw string to the wrapper as 'value'
         return tool_name, {"value": raw_args}
 
     def _build_task_notification(self, result_text: str, status: str) -> str:

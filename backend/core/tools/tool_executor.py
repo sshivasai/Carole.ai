@@ -312,6 +312,25 @@ def register_builtin_tools():
                  {"agent_name": {"type": "string", "required": True},
                   "task": {"type": "string", "required": True}},
                  "safe", _wrap_spawn_agent),
+        ToolSpec("create_team_agent", "Create a permanent AI teammate / agent in this team. Use this when the user asks to add, recruit, or hire a permanent team member (e.g. 'add a software engineer to our team', 'create a teammate named Alex'). The agent will remain permanently in the team roster.", "coordination",
+                 {"name": {"type": "string", "required": True, "description": "The name of the new teammate (e.g. 'Alex', 'Dev', 'Coder')"},
+                  "role": {"type": "string", "required": True, "description": "The role title (e.g. 'Software Engineer', 'QA Specialist', 'Backend Developer')"},
+                  "expertise": {"type": "string", "required": False, "description": "Specialization, skills, and background instructions for this agent"},
+                  "system_prompt": {"type": "string", "required": False, "description": "Optional custom system prompt"},
+                  "model": {"type": "string", "required": False, "description": "Optional model override (e.g. 'openrouter/openai/gpt-4o')"}},
+                 "safe", _wrap_create_team_agent),
+        ToolSpec("update_team_agent", "Update an existing teammate / agent's profile, role, expertise, model, or personality. Use this when the user asks to modify, update, reassign, or change a team member's configuration (e.g. 'update Alex's role to Principal Engineer', 'change Alex's model to gpt-4o').", "coordination",
+                 {"name_or_id": {"type": "string", "required": True, "description": "The name or ID of the teammate to update (e.g. 'Alex' or '@Alex')"},
+                  "new_name": {"type": "string", "required": False, "description": "Optional new name for the agent"},
+                  "role": {"type": "string", "required": False, "description": "New role title"},
+                  "expertise": {"type": "string", "required": False, "description": "Updated specialization or skills"},
+                  "model": {"type": "string", "required": False, "description": "New model override"},
+                  "personality": {"type": "string", "required": False, "description": "New personality tone"},
+                  "custom_instructions": {"type": "string", "required": False, "description": "Custom instructions"}},
+                 "safe", _wrap_update_team_agent),
+        ToolSpec("delete_team_agent", "Permanently remove a teammate / agent from the team roster. Use this when the user asks to remove, fire, or delete an agent from the team (e.g. 'remove Alex from the team', 'delete agent Dev'). Cannot delete the team Coordinator.", "coordination",
+                 {"name_or_id": {"type": "string", "required": True, "description": "The name or ID of the teammate to remove (e.g. 'Alex' or '@Alex')"}},
+                 "safe", _wrap_delete_team_agent),
         ToolSpec("hire_subagent", "Dynamically hire a temporary subagent to offload a specific task. CRITICAL: The subagent has ZERO context from your conversation — you MUST include ALL necessary file paths, error messages, requirements, and constraints in the 'task' parameter. Vague tasks like 'fix the login page' WILL fail.", "coordination",
                  {"role": {"type": "string", "required": True, "description": "Role name (e.g. 'coder', 'debugger', 'researcher')"},
                   "expertise": {"type": "string", "required": True, "description": "Domain expertise needed (e.g. 'React frontend', 'Python backend')"},
@@ -346,6 +365,36 @@ def register_builtin_tools():
                   "text": {"type": "string", "required": True}},
                  "safe", _wrap_comment_on_task),
 
+        ToolSpec("write_task_plan",
+                 "Write an implementation plan for a task in Markdown format. "
+                 "This saves the plan to disk and the database, then requests admin approval "
+                 "(or auto-approves if auto_approve_plans is enabled for this agent). "
+                 "ONLY call this for complex tasks that warrant upfront planning. "
+                 "Do NOT begin execution until the plan status is 'approved'.",
+                 "task",
+                 {"task_id": {"type": "string", "required": True, "description": "Task ID, short prefix, or title"},
+                  "plan_markdown": {"type": "string", "required": True, "description": "Full implementation plan in Markdown format"}},
+                 "safe", _wrap_write_task_plan),
+
+        ToolSpec("request_plan_approval",
+                 "Re-submit a revised implementation plan for admin approval after addressing review comments. "
+                 "Use this after updating the plan markdown in response to feedback.",
+                 "task",
+                 {"task_id": {"type": "string", "required": True}},
+                 "safe", _wrap_request_plan_approval),
+
+        ToolSpec("update_task_todos",
+                 "Create or update the interactive todo checklist for a task. "
+                 "Use 'todos' to set the full list, or 'toggle_id' to flip a single item's done state. "
+                 "The checklist appears live on the Kanban card.",
+                 "task",
+                 {"task_id": {"type": "string", "required": True},
+                  "todos": {"type": "array", "required": False,
+                            "description": "List of {id, text, done} objects. Replaces existing list."},
+                  "toggle_id": {"type": "string", "required": False,
+                                "description": "ID of a single todo item to toggle done/undone."}},
+                 "safe", _wrap_update_task_todos),
+
         # ---- Scheduled Tasks (Cron) ----
         ToolSpec("create_scheduled_task",
                  "Create a recurring scheduled task that will automatically trigger an agent with a prompt on a cron schedule. "
@@ -376,8 +425,14 @@ def register_builtin_tools():
                  "judge", _wrap_delete_scheduled_task),
 
         # ---- Interaction ----
-        ToolSpec("ask_user", "Ask the human a clarifying question and wait for their answer", "interaction",
-                 {"question": {"type": "string", "required": True}},
+        ToolSpec("ask_user",
+                 "Ask the human a clarifying question and wait for their answer. "
+                 "Optionally provide 'options' (list of strings) to render a multiple-choice card — "
+                 "the human can click a choice or type a free-form answer.",
+                 "interaction",
+                 {"question": {"type": "string", "required": True},
+                  "options": {"type": "array", "required": False,
+                              "description": "Optional list of choice strings shown as clickable buttons"}},
                  "safe", _wrap_ask_user),
         ToolSpec("sleep", "Pause execution for a number of seconds", "interaction",
                  {"seconds": {"type": "number", "required": True}},
@@ -473,15 +528,15 @@ _TOOL_CATEGORY: Dict[str, str] = {
     "copy_file": "create", "move_file": "create",
     # delete
     "delete_file": "delete",
-    # execute / shell
-    "execute_command": "execute",
+    # execute / shell / raw http
+    "execute_command": "execute", "http_request": "execute",
     # git
     "git_status": "git", "git_diff": "git", "git_log": "git",
     "git_add": "git", "git_commit": "git", "git_push": "git",
     "git_pull": "git", "git_branch": "git", "git_checkout": "git",
     "git_stash": "git", "git_clone": "git",
     # web
-    "web_search": "web", "web_fetch": "web", "http_request": "web",
+    "web_search": "web", "web_fetch": "web",
     # browser
     "browser_navigate": "browser", "browser_click": "browser",
     "browser_click_text": "browser", "browser_type": "browser",
@@ -495,6 +550,9 @@ _TOOL_CATEGORY: Dict[str, str] = {
     "send_google_meet_chat": "browser",
     # subagents
     "spawn_agent": "subagents", "hire_subagent": "subagents",
+    "create_team_agent": "subagents",
+    "update_team_agent": "subagents",
+    "delete_team_agent": "subagents",
     "send_message": "subagents", "team_broadcast": "subagents",
     "delegate_subtask": "subagents",
     # scheduler
@@ -930,24 +988,73 @@ class ToolExecutor:
             logger.exception("[Executor] Tool '%s' raised: %s", spec.name, e)
             return f"Error: Tool '{spec.name}' raised an exception: {type(e).__name__}: {e}"
 
-        # If the tool returned a FileChangeResult, emit a file_change event
+        # If the tool returned a FileChangeResult, emit a file_change & file_system_updated event
         if isinstance(result, FileChangeResult):
-            if result.diff:
-                project_id = await _team_project_id(team_id)
-                event = {
-                    "type": "file_change",
-                    "action": result.action,
-                    "path": result.path,
-                    "diff": result.diff,
-                    "before_content": result.before_content,
-                    "after_content": result.after_content,
-                    "sender_id": agent_id,
-                    "sender_name": agent_name,
-                    "project_id": project_id,
-                }
-                await event_bus.publish(f"team:{team_id}", event)
-                await event_bus.publish("system:file_changes", event)
+            project_id = await _team_project_id(team_id)
+            event = {
+                "type": "file_change",
+                "action": result.action,
+                "path": result.path,
+                "diff": result.diff,
+                "before_content": result.before_content,
+                "after_content": result.after_content,
+                "sender_id": agent_id,
+                "sender_name": agent_name,
+                "project_id": project_id,
+                "_seq": int(asyncio.get_event_loop().time() * 1000),
+            }
+            await event_bus.publish(f"team:{team_id}", event)
+            if project_id:
+                await event_bus.publish(f"project:{project_id}", event)
+            await event_bus.publish("system:file_changes", event)
+
+            fs_event = {
+                "type": "file_system_updated",
+                "action": result.action,
+                "path": result.path,
+                "paths": [result.path] if result.path else [],
+                "project_id": project_id,
+                "_seq": int(asyncio.get_event_loop().time() * 1000),
+            }
+            await event_bus.publish(f"team:{team_id}", fs_event)
+            if project_id:
+                await event_bus.publish(f"project:{project_id}", fs_event)
+            await event_bus.publish("system:file_changes", fs_event)
+
             return result.message
+
+        # Emit file_system_updated for file structure modification tools
+        if spec.name in ("delete_file", "move_file", "copy_file", "create_directory") and isinstance(result, str) and not result.startswith("Error"):
+            project_id = await _team_project_id(team_id)
+            target_path = arguments.get("relative_path") or arguments.get("path") or arguments.get("destination") or arguments.get("source") or ""
+            fs_event = {
+                "type": "file_system_updated",
+                "action": spec.name,
+                "path": target_path,
+                "paths": [target_path] if target_path else [],
+                "project_id": project_id,
+                "_seq": int(asyncio.get_event_loop().time() * 1000),
+            }
+            await event_bus.publish(f"team:{team_id}", fs_event)
+            if project_id:
+                await event_bus.publish(f"project:{project_id}", fs_event)
+            await event_bus.publish("system:file_changes", fs_event)
+
+            fc_event = {
+                "type": "file_change",
+                "action": spec.name,
+                "path": target_path,
+                "paths": [target_path] if target_path else [],
+                "project_id": project_id,
+                "sender_id": agent_id,
+                "sender_name": agent_name,
+                "diff": "",
+                "_seq": int(asyncio.get_event_loop().time() * 1000),
+            }
+            await event_bus.publish(f"team:{team_id}", fc_event)
+            if project_id:
+                await event_bus.publish(f"project:{project_id}", fc_event)
+            await event_bus.publish("system:file_changes", fc_event)
 
         # Coerce non-string results to strings so execute() honors its -> str contract.
         if not isinstance(result, str):
@@ -1091,24 +1198,24 @@ async def _snapshot_file(relative_path: str, team_id: str, message_id: str | Non
         abs_path = str(resolved_path)
         p = Path(abs_path)
         
-        backup_file_name = None
-        if p.exists() and p.is_file():
-            path_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
-            team_carole_dir = await _ft.get_team_carole_dir(team_id)
-            history_dir = team_carole_dir / "file-history"
-            history_dir.mkdir(parents=True, exist_ok=True)
-            
-            version = 1
-            while True:
-                backup_file_name = f"{path_hash}@v{version}"
-                backup_path = history_dir / backup_file_name
-                if not backup_path.exists():
-                    break
-                version += 1
-                
-            shutil.copy2(abs_path, backup_path)
-
         async with async_session() as db:
+            backup_file_name = None
+            if p.exists() and p.is_file():
+                path_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
+                team_carole_dir = await _ft.get_team_carole_dir(team_id, db=db)
+                history_dir = team_carole_dir / "file-history"
+                history_dir.mkdir(parents=True, exist_ok=True)
+                
+                version = 1
+                while True:
+                    backup_file_name = f"{path_hash}@v{version}"
+                    backup_path = history_dir / backup_file_name
+                    if not backup_path.exists():
+                        break
+                    version += 1
+                    
+                shutil.copy2(abs_path, backup_path)
+
             msg_uuid = None
             if message_id:
                 try:
@@ -1600,6 +1707,77 @@ async def _wrap_hire_subagent(args: Dict[str, Any], team_id: str) -> str:
     agent_id = args.get("_agent_id", "")
     return await agent_tools.hire_subagent(role, expertise, task, team_id, agent_id, model=model)
 
+async def _wrap_create_team_agent(args: Dict[str, Any], team_id: str) -> str:
+    name = args.get("name") or args.get("agent_name") or ""
+    role = args.get("role") or ""
+    expertise = args.get("expertise") or args.get("custom_instructions") or ""
+    system_prompt = args.get("system_prompt")
+    model = args.get("model")
+    personality = args.get("personality")
+    agent_id = args.get("_agent_id", "")
+
+    # Positional args fallback
+    pos = args.get("_positional_args", [])
+    if pos:
+        if len(pos) >= 1 and not name:
+            name = str(pos[0])
+        if len(pos) >= 2 and not role:
+            role = str(pos[1])
+        if len(pos) >= 3 and not expertise:
+            expertise = str(pos[2])
+
+    if not name or not role:
+        return "Error: Missing required parameters 'name' or 'role'. Usage: create_team_agent(name='Alex', role='Software Engineer', expertise='Full-stack Python & React development')"
+
+    return await agent_tools.create_team_agent(
+        name=name,
+        role=role,
+        expertise=expertise,
+        system_prompt=system_prompt,
+        model=model,
+        personality=personality,
+        team_id=team_id,
+        _agent_id=agent_id
+    )
+
+async def _wrap_update_team_agent(args: Dict[str, Any], team_id: str) -> str:
+    name_or_id = args.get("name_or_id") or args.get("name") or args.get("agent_name") or args.get("id", "")
+    new_name = args.get("new_name")
+    role = args.get("role")
+    expertise = args.get("expertise") or args.get("specialization") or args.get("skills")
+    model = args.get("model")
+    personality = args.get("personality")
+    custom_instructions = args.get("custom_instructions") or args.get("instructions")
+    agent_id = args.get("_agent_id", "")
+
+    if not name_or_id:
+        return "Error: Missing required parameter 'name_or_id'. Usage: update_team_agent(name_or_id='Alex', role='Principal Software Engineer')"
+
+    return await agent_tools.update_team_agent(
+        name_or_id=name_or_id,
+        new_name=new_name,
+        role=role,
+        expertise=expertise,
+        model=model,
+        personality=personality,
+        custom_instructions=custom_instructions,
+        team_id=team_id,
+        _agent_id=agent_id
+    )
+
+async def _wrap_delete_team_agent(args: Dict[str, Any], team_id: str) -> str:
+    name_or_id = args.get("name_or_id") or args.get("name") or args.get("agent_name") or args.get("id", "")
+    agent_id = args.get("_agent_id", "")
+
+    if not name_or_id:
+        return "Error: Missing required parameter 'name_or_id'. Usage: delete_team_agent(name_or_id='Alex')"
+
+    return await agent_tools.delete_team_agent(
+        name_or_id=name_or_id,
+        team_id=team_id,
+        _agent_id=agent_id
+    )
+
 async def _wrap_send_message(args: Dict[str, Any], team_id: str) -> str:
     text = args.get("text") or args.get("message") or args.get("value", "")
     sender = args.get("_agent_id", "agent")
@@ -1655,6 +1833,33 @@ async def _wrap_comment_on_task(args: Dict[str, Any], team_id: str) -> str:
     agent_name = args.get("_agent_name", "Agent")
     return await task_tools.comment_on_task(task_id, text, agent_id, agent_name)
 
+
+async def _wrap_write_task_plan(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.task_tools import task_tools
+    task_id = args.get("task_id", "").strip()
+    plan_markdown = args.get("plan_markdown", "").strip()
+    if not task_id or not plan_markdown:
+        return "Error: Both 'task_id' and 'plan_markdown' are required."
+    agent_id = args.get("_agent_id", "unknown")
+    return await task_tools.write_task_plan(task_id, plan_markdown, agent_id, team_id)
+
+
+async def _wrap_request_plan_approval(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.task_tools import task_tools
+    task_id = args.get("task_id", "").strip()
+    if not task_id:
+        return "Error: 'task_id' is required."
+    return await task_tools.request_plan_approval(task_id, team_id)
+
+
+async def _wrap_update_task_todos(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.task_tools import task_tools
+    task_id = args.get("task_id", "").strip()
+    if not task_id:
+        return "Error: 'task_id' is required."
+    todos = args.get("todos")          # list or None
+    toggle_id = args.get("toggle_id")  # str or None
+    return await task_tools.update_task_todos(task_id, team_id, todos=todos, toggle_id=toggle_id)
 
 
 # ---- Cron / Scheduled Task Wrappers ----
@@ -1767,7 +1972,8 @@ async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'question'."
     agent_id = args.get("_agent_id", "unknown")
     agent_name = args.get("_agent_name", "Agent")
-    return await interaction_tools.ask_user(question, agent_id, agent_name, team_id)
+    options = args.get("options")  # optional list of choice strings
+    return await interaction_tools.ask_user(question, agent_id, agent_name, team_id, options=options)
 
 
 async def _wrap_sleep(args: Dict[str, Any], team_id: str) -> str:

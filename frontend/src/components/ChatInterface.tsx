@@ -6,16 +6,21 @@ import {
   Loader2, ChevronDown, ChevronUp, ChevronRight, Search, Edit2, Trash2, 
   History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode, 
   Terminal, Copy, Check, ThumbsUp, ThumbsDown, Cpu, Scale, Sparkles, 
-  FileText, Globe, GitBranch, CheckCircle2, AlertTriangle, ShieldCheck
+  FileText, Globe, GitBranch, CheckCircle2, AlertTriangle, ShieldCheck, ArrowDown
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/hooks/useApi";
+import { useAuth } from "@/hooks/useAuth";
 import Modal from "./Modal";
 import AgentAvatar from "./AgentAvatar";
+import AgentHoverCard from "./AgentHoverCard";
 import AppSpinner from "./AppSpinner";
 import { DiffViewer } from "./DiffViewer";
 import { McpStatusIndicator } from "./McpStatusIndicator";
+import FileChangeCard, { ChangedFileItem } from "./FileChangeCard";
+import AgentPermissionCard from "./AgentPermissionCard";
+import AgentActivityStream, { ActivityStep } from "./AgentActivityStream";
 
 interface Props {
   messages: ChatMessage[];
@@ -101,101 +106,38 @@ function TaskNotificationCard({ text }: { text: string }) {
 }
 
 function ApprovalCard({ msg }: { msg: ChatMessage }) {
-  const backendStatus = (msg as any).status;
-  const [localStatus, setLocalStatus] = useState<"pending" | "approved" | "denied">("pending");
-  const status = backendStatus && backendStatus !== "pending" ? backendStatus : localStatus;
-
   const [loading, setLoading] = useState(false);
+  const txId = msg.pending_approval?.tx_id || msg.tx_id;
+
   const decide = async (approved: boolean) => {
-    if (!msg.tx_id || status !== "pending") return;
+    if (!txId) return;
     setLoading(true);
-    setLocalStatus(approved ? "approved" : "denied");
     try {
-      await api.approveToolExecution(msg.tx_id, approved);
-    } catch (e: any) {
-      const errText = e?.message || e?.body || String(e);
-      if (e?.status === 404 || errText.includes("already resolved") || errText.includes("not found")) {
-        console.log(`[ApprovalCard] Transaction ${msg.tx_id} already resolved on server.`);
-      } else {
-        console.error("Failed to approve tool execution:", e);
-        setLocalStatus("pending");
-      }
+      await api.approveToolExecution(txId, approved);
+    } catch (e) {
+      console.error("Failed to submit approval decision:", e);
     } finally {
       setLoading(false);
     }
   };
 
-  const isJudgeEvaluating = msg.text?.includes("Judge AI is evaluating") || msg.text?.includes("Judge");
-  const toolMeta = getToolMeta(msg.tool_name || "");
-  const ToolIcon = toolMeta.icon;
-
-  const borderColor = status === "pending" ? (isJudgeEvaluating ? "var(--color-primary)" : "var(--color-warning)") : status === "approved" ? "var(--color-success)" : "var(--color-danger)";
-
-  return (
-    <div className="judge-card-evaluating" style={{ border: `1px solid ${borderColor}`, display: "flex", flexDirection: "column", gap: "var(--sp-md)", maxWidth: 500 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-          {isJudgeEvaluating ? <Scale size={16} color="var(--color-primary)" className="animate-pulse" /> : <AlertTriangle size={16} color="var(--color-warning)" />}
-          <span className="body-sm-strong">{isJudgeEvaluating ? "Judge AI Security Gate" : "Approval Required"}</span>
-        </div>
-        {status !== "pending" ? (
-          <span className={`pill ${status === "approved" ? "pill-live" : "pill-error"}`}>{status.toUpperCase()}</span>
-        ) : (
-          <span className="pill" style={{ background: "rgba(167, 139, 250, 0.15)", color: "var(--color-primary-soft)", border: "1px solid rgba(167, 139, 250, 0.3)" }}>
-            PENDING DECISION
-          </span>
-        )}
-      </div>
-
-      <div className="body-sm" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        <span className="text-mute">Agent</span>
-        <strong style={{ color: "var(--color-ink)" }}>{msg.sender_name}</strong>
-        <span className="text-mute">requests execution:</span>
-        <span className={toolMeta.className} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-          <ToolIcon size={11} /> {msg.tool_name}
-        </span>
-      </div>
-
-      {msg.text && (
-        <div className="body-sm" style={{ whiteSpace: "pre-wrap", background: "var(--color-canvas)", padding: "var(--sp-sm) var(--sp-md)", borderRadius: "var(--radius-sm)", borderLeft: "2px solid var(--color-primary)", color: "var(--color-body)", fontSize: 11 }}>
-          {msg.text}
-        </div>
-      )}
-
-      {msg.arguments && Object.keys(msg.arguments).length > 0 && (
-        <div style={{ background: "var(--color-canvas)", borderRadius: "var(--radius-xs)", padding: "var(--sp-sm) var(--sp-md)", border: "1px solid var(--color-hairline)" }}>
-          <div className="caption" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4, color: "var(--color-mute)" }}>Arguments:</div>
-          <pre style={{ fontSize: 10, overflowX: "auto", maxHeight: 140, margin: 0, color: "var(--color-ink)", fontFamily: "var(--font-mono, monospace)" }}>
-            {JSON.stringify(msg.arguments, null, 2)}
-          </pre>
-        </div>
-      )}
-
-      {status === "pending" && (
-        <div style={{ display: "flex", gap: "var(--sp-md)", marginTop: 2 }}>
-          <button className="btn btn-primary btn-sm" style={{ flex: 1 }} disabled={loading} onClick={() => decide(true)}>
-            {loading ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />} Approve Override
-          </button>
-          <button className="btn btn-danger btn-sm" style={{ flex: 1 }} disabled={loading} onClick={() => decide(false)}>
-            <XCircle size={12} /> Deny Execution
-          </button>
-        </div>
-      )}
-    </div>
-  );
+  return <AgentPermissionCard msg={msg} onDecide={decide} loading={loading} />;
 }
 
 function AskUserCard({ msg }: { msg: ChatMessage }) {
   const [answer, setAnswer] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
-  const submit = async () => {
-    if (!msg.question_id || !answer.trim() || submitted) return;
+  const options: string[] = (msg as any).options || [];
+
+  const submit = async (text: string) => {
+    if (!msg.question_id || !text.trim() || submitted) return;
     setLoading(true);
-    try { await api.answerAgentQuestion(msg.question_id, answer.trim()); setSubmitted(true); }
+    try { await api.answerAgentQuestion(msg.question_id, text.trim()); setSubmitted(true); setAnswer(text.trim()); }
     catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
+
   return (
     <div style={{ border: "1px solid var(--color-info)", borderRadius: "var(--radius-md)", padding: "var(--sp-lg)", background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", boxShadow: "var(--shadow-clay)", display: "flex", flexDirection: "column", gap: "var(--sp-md)", maxWidth: 460 }}>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
@@ -204,16 +146,52 @@ function AskUserCard({ msg }: { msg: ChatMessage }) {
       </div>
       <p className="body-sm" style={{ margin: 0 }}>{msg.question || msg.text}</p>
       {submitted ? (
-        <span className="pill pill-live" style={{ alignSelf: "flex-start" }}>Answered ✓</span>
+        <span className="pill pill-live" style={{ alignSelf: "flex-start" }}>Answered: {answer} ✓</span>
       ) : (
-        <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
-          <input className="input" style={{ flex: 1, minHeight: 36 }} placeholder="Your answer..."
-            value={answer} onChange={e => setAnswer(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) submit(); }} autoFocus />
-          <button className="btn btn-primary btn-sm" onClick={submit} disabled={loading || !answer.trim()}>
-            {loading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-          </button>
-        </div>
+        <>
+          {/* Multiple-choice option buttons */}
+          {options.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {options.map((opt, i) => (
+                <button
+                  key={i}
+                  onClick={() => submit(opt)}
+                  disabled={loading}
+                  style={{
+                    textAlign: "left", background: "var(--color-canvas-soft, #111827)",
+                    border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)",
+                    padding: "8px 12px", fontSize: 13, color: "var(--color-ink)",
+                    cursor: "pointer", transition: "all 0.15s",
+                    display: "flex", alignItems: "center", gap: 8,
+                  }}
+                  onMouseEnter={e => {
+                    (e.currentTarget as HTMLElement).style.background = "var(--color-info)";
+                    (e.currentTarget as HTMLElement).style.color = "#fff";
+                  }}
+                  onMouseLeave={e => {
+                    (e.currentTarget as HTMLElement).style.background = "var(--color-canvas-soft, #111827)";
+                    (e.currentTarget as HTMLElement).style.color = "var(--color-ink)";
+                  }}
+                >
+                  <span style={{ fontSize: 10, color: "var(--color-mute)", width: 18, flexShrink: 0, fontWeight: 700 }}>
+                    {String.fromCharCode(65 + i)}.
+                  </span>
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Free-form input */}
+          <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
+            <input className="input" style={{ flex: 1, minHeight: 36 }}
+              placeholder={options.length > 0 ? "Or type a custom answer…" : "Your answer…"}
+              value={answer} onChange={e => setAnswer(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) submit(answer); }} autoFocus />
+            <button className="btn btn-primary btn-sm" onClick={() => submit(answer)} disabled={loading || !answer.trim()}>
+              {loading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+            </button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -264,14 +242,452 @@ function TypingIndicator() {
   );
 }
 
+function getToolSummaryText(toolName: string, args: any): string {
+  if (!args) return "";
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return args.slice(0, 60);
+    }
+  }
+  if (typeof args !== "object") return String(args);
+
+  const lower = toolName.toLowerCase();
+  if (lower.includes("search")) {
+    return args.query ? `"${args.query}"` : "";
+  }
+  if (lower.includes("navigate") || lower.includes("open") || lower.includes("url")) {
+    return args.url || args.link || "";
+  }
+  if (lower.includes("file") || lower.includes("read") || lower.includes("write") || lower.includes("edit") || lower.includes("append")) {
+    return args.path || args.relative_path || args.file_path || args.TargetFile || "";
+  }
+  if (lower.includes("command") || lower.includes("bash") || lower.includes("terminal") || lower.includes("shell") || lower.includes("exec")) {
+    return args.command || args.cmd || args.CommandLine || "";
+  }
+  if (lower.includes("agent") || lower.includes("spawn") || lower.includes("subagent")) {
+    return args.name || args.role || args.task || "";
+  }
+  if (args.query) return `"${args.query}"`;
+  if (args.path) return String(args.path);
+  if (args.command) return String(args.command);
+
+  const entries = Object.entries(args);
+  if (entries.length > 0) {
+    const [k, v] = entries[0];
+    const valStr = typeof v === "object" ? JSON.stringify(v) : String(v);
+    return `${k}: ${valStr.length > 35 ? valStr.slice(0, 35) + "…" : valStr}`;
+  }
+  return "";
+}
+
+const VALID_TOOL_NAMES = new Set([
+  "write_file", "read_file", "edit_file", "list_dir", "view_file_outline",
+  "execute_command", "git_status", "git_diff", "git_commit", "git_log",
+  "web_search", "web_fetch", "browser_navigate", "browser_click",
+  "write_scratchpad", "read_scratchpad", "hire_subagent", "spawn_agent",
+  "inspect_code_definition", "find_references", "fetch_web_page", "get_tools"
+]);
+
+function parseReasoningIntoSections(raw: string): Array<{
+  type: "thought" | "tool";
+  text?: string;
+  toolName?: string;
+  argsJson?: string;
+  argsObj?: any;
+  result?: string;
+  isError?: boolean;
+}> {
+  if (!raw || !raw.trim()) return [];
+
+  const sections: Array<{
+    type: "thought" | "tool";
+    text?: string;
+    toolName?: string;
+    argsJson?: string;
+    argsObj?: any;
+    result?: string;
+    isError?: boolean;
+  }> = [];
+
+  // Match only genuine tool headers formatted by backend: 🛠️ **tool_name**
+  const toolSplitRegex = /(?:^|\n)🛠️\s*(?:\*\*)?([a-zA-Z0-9_]+)(?:\*\*)?/g;
+  const matches: { index: number; toolName: string; headerLength: number }[] = [];
+  let m: RegExpExecArray | null;
+
+  while ((m = toolSplitRegex.exec(raw)) !== null) {
+    const tName = m[1].toLowerCase();
+    // Only accept genuine tool names or snake_case identifiers with underscore
+    if (VALID_TOOL_NAMES.has(tName) || (tName.includes("_") && !["def", "class", "function", "return"].includes(tName))) {
+      matches.push({ index: m.index, toolName: m[1], headerLength: m[0].length });
+    }
+  }
+
+  if (matches.length === 0) {
+    return [{ type: "thought", text: raw.trim() }];
+  }
+
+  if (matches[0].index > 0) {
+    const pre = raw.slice(0, matches[0].index).trim();
+    if (pre) {
+      sections.push({ type: "thought", text: pre });
+    }
+  }
+
+  for (let i = 0; i < matches.length; i++) {
+    const current = matches[i];
+    const nextIndex = i + 1 < matches.length ? matches[i + 1].index : raw.length;
+    const chunk = raw.slice(current.index + current.headerLength, nextIndex).trim();
+
+    // Extract args from ```json ... ``` or ``` ... ```
+    const argsMatch = chunk.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const argsRaw = argsMatch ? argsMatch[1].trim() : "";
+    let argsObj = null;
+    if (argsRaw) {
+      try { argsObj = JSON.parse(argsRaw); } catch { /* ignore */ }
+    }
+
+    // Extract result from 📄 Result:
+    let result = "";
+    let afterResultText = "";
+    const resultHeaderMatch = chunk.match(/📄\s*(?:\*\*)?Result:(?:\*\*)?/);
+    if (resultHeaderMatch && resultHeaderMatch.index !== undefined) {
+      const restAfterResult = chunk.slice(resultHeaderMatch.index + resultHeaderMatch[0].length);
+      const codeResultMatch = restAfterResult.match(/```(?:[a-zA-Z0-9_\-]*)?\s*([\s\S]*?)\s*```/);
+      if (codeResultMatch) {
+        result = codeResultMatch[1].trim();
+        afterResultText = restAfterResult.slice(codeResultMatch.index! + codeResultMatch[0].length).trim();
+      } else {
+        result = restAfterResult.trim();
+      }
+    }
+
+    const isError = /error|failed|exception|not implemented/i.test(result);
+
+    sections.push({
+      type: "tool",
+      toolName: current.toolName,
+      argsJson: argsRaw,
+      argsObj,
+      result,
+      isError,
+    });
+
+    if (afterResultText) {
+      sections.push({ type: "thought", text: afterResultText });
+    }
+  }
+
+  return sections;
+}
+
+function extractFileChanges(reasoning: string, msg: ChatMessage): ChangedFileItem[] {
+  const map = new Map<string, ChangedFileItem>();
+
+  if (msg.path) {
+    const lines = (msg.arguments?.content || msg.text || "").split("\n");
+    map.set(msg.path, {
+      path: msg.path,
+      diff: msg.diff,
+      content: msg.arguments?.content || msg.text,
+      action: msg.action || "modified",
+      additions: msg.diff ? msg.diff.split("\n").filter(l => l.startsWith("+") && !l.startsWith("+++")).length : (lines.length || 1),
+      deletions: msg.diff ? msg.diff.split("\n").filter(l => l.startsWith("-") && !l.startsWith("---")).length : 0
+    });
+  }
+
+  if (reasoning) {
+    const sections = parseReasoningIntoSections(reasoning);
+    for (const sec of sections) {
+      if (sec.type === "tool" && sec.toolName && ["write_file", "edit_file", "create_file"].includes(sec.toolName.toLowerCase())) {
+        const args = sec.argsObj || {};
+        const p = args.relative_path || args.path || args.TargetFile;
+        if (p) {
+          const content = args.content || args.CodeContent || "";
+          const diff = args.diff;
+          const diffLines = diff ? diff.split("\n") : (content ? content.split("\n") : []);
+          const adds = diff ? diffLines.filter((l: string) => l.startsWith("+") && !l.startsWith("+++")).length : (diffLines.length || 1);
+          const dels = diff ? diffLines.filter((l: string) => l.startsWith("-") && !l.startsWith("---")).length : 0;
+
+          map.set(p, {
+            path: p,
+            diff,
+            content,
+            action: sec.toolName.toLowerCase().includes("write") ? "created" : "modified",
+            additions: adds,
+            deletions: dels
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+function TraceToolCard({ 
+  toolName, 
+  argsObj, 
+  argsRaw, 
+  result, 
+  isError, 
+  defaultOpen = false,
+  agentName,
+  timestamp
+}: { 
+  toolName: string; 
+  argsObj?: any; 
+  argsRaw?: string; 
+  result?: string; 
+  isError?: boolean; 
+  defaultOpen?: boolean;
+  agentName?: string;
+  timestamp?: string | number;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [copied, setCopied] = useState<"args" | "result" | null>(null);
+
+  const toolMeta = getToolMeta(toolName);
+  const ToolIcon = toolMeta.icon;
+  const summary = getToolSummaryText(toolName, argsObj || argsRaw);
+
+  const handleCopy = (type: "args" | "result", text: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(text);
+    setCopied(type);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  const statusColor = isError ? "var(--color-danger, #ef4444)" : result ? "var(--color-success, #10b981)" : "var(--color-warning, #f59e0b)";
+  const statusBg = isError ? "rgba(239, 68, 68, 0.12)" : result ? "rgba(16, 185, 129, 0.12)" : "rgba(245, 158, 11, 0.12)";
+
+  return (
+    <div 
+      style={{
+        margin: "4px 0",
+        borderRadius: "var(--radius-md, 8px)",
+        border: "1px solid rgba(255, 255, 255, 0.08)",
+        background: "rgba(15, 15, 22, 0.65)",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+        overflow: "hidden",
+        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.2)",
+        transition: "border-color 0.2s, box-shadow 0.2s"
+      }}
+    >
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "7px 12px",
+          cursor: "pointer",
+          background: open ? "rgba(255, 255, 255, 0.03)" : "transparent",
+          borderBottom: open ? "1px solid rgba(255, 255, 255, 0.06)" : "none",
+          userSelect: "none",
+          gap: 8
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: 6,
+            background: "rgba(167, 139, 250, 0.15)",
+            color: "var(--color-primary-soft, #a78bfa)",
+            flexShrink: 0
+          }}>
+            <ToolIcon size={12} />
+          </div>
+
+          <span style={{
+            fontFamily: "var(--font-mono, monospace)",
+            fontSize: 11.5,
+            fontWeight: 600,
+            color: "var(--text-primary, #f1f5f9)",
+            letterSpacing: "-0.2px"
+          }}>
+            {toolName}
+          </span>
+
+          {summary && (
+            <span 
+              title={summary}
+              style={{
+                fontFamily: "var(--font-mono, monospace)",
+                fontSize: 10.5,
+                color: "var(--text-muted, #94a3b8)",
+                background: "rgba(255, 255, 255, 0.05)",
+                padding: "1px 7px",
+                borderRadius: 4,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                maxWidth: 260,
+                border: "1px solid rgba(255, 255, 255, 0.06)"
+              }}
+            >
+              {summary}
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          {result !== undefined && result !== "" && (
+            <span style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 10,
+              fontWeight: 500,
+              padding: "2px 7px",
+              borderRadius: 10,
+              background: statusBg,
+              color: statusColor,
+              border: `1px solid ${statusColor}33`
+            }}>
+              {isError ? <AlertTriangle size={10} /> : <Check size={10} />}
+              {isError ? "Error" : "Done"}
+            </span>
+          )}
+
+          {agentName && (
+            <span style={{ fontSize: 10, color: "var(--color-mute)", opacity: 0.8 }}>
+              {agentName}
+            </span>
+          )}
+
+          <div style={{ color: "var(--color-mute)", display: "flex", alignItems: "center" }}>
+            {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </div>
+        </div>
+      </div>
+
+      {open && (
+        <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 10, fontSize: 11 }}>
+          {(argsRaw || argsObj) && (
+            <div>
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 4,
+                fontSize: 9.5,
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.6px",
+                color: "var(--color-mute, #64748b)"
+              }}>
+                <span>Parameters</span>
+                <button
+                  onClick={(e) => handleCopy("args", argsRaw || JSON.stringify(argsObj, null, 2), e)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: copied === "args" ? "var(--color-success, #4ade80)" : "var(--color-mute)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 3,
+                    fontSize: 10,
+                    padding: "1px 4px",
+                    borderRadius: 3
+                  }}
+                  title="Copy parameters"
+                >
+                  {copied === "args" ? <Check size={10} /> : <Copy size={10} />}
+                  {copied === "args" ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <pre style={{
+                margin: 0,
+                padding: "8px 10px",
+                background: "#0c0c12",
+                border: "1px solid rgba(255, 255, 255, 0.07)",
+                borderRadius: 6,
+                fontSize: 11,
+                lineHeight: 1.45,
+                fontFamily: "var(--font-mono, monospace)",
+                color: "#e2e8f0",
+                overflowX: "auto",
+                maxHeight: 140
+              }}>
+                {argsRaw || JSON.stringify(argsObj, null, 2)}
+              </pre>
+            </div>
+          )}
+
+          {result && (
+            <div>
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 4,
+                fontSize: 9.5,
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.6px",
+                color: isError ? "var(--color-danger, #f87171)" : "var(--color-mute, #64748b)"
+              }}>
+                <span>{isError ? "Error Output" : "Observation Output"}</span>
+                <button
+                  onClick={(e) => handleCopy("result", result, e)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: copied === "result" ? "var(--color-success, #4ade80)" : "var(--color-mute)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 3,
+                    fontSize: 10,
+                    padding: "1px 4px",
+                    borderRadius: 3
+                  }}
+                  title="Copy output"
+                >
+                  {copied === "result" ? <Check size={10} /> : <Copy size={10} />}
+                  {copied === "result" ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <pre style={{
+                margin: 0,
+                padding: "8px 10px",
+                background: isError ? "rgba(239, 68, 68, 0.05)" : "#0c0c12",
+                border: isError ? "1px solid rgba(239, 68, 68, 0.2)" : "1px solid rgba(255, 255, 255, 0.07)",
+                borderRadius: 6,
+                fontSize: 11,
+                lineHeight: 1.45,
+                fontFamily: "var(--font-mono, monospace)",
+                color: isError ? "#fca5a5" : "#cbd5e1",
+                overflowX: "auto",
+                maxHeight: 200,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word"
+              }}>
+                {result}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: string; isStreaming?: boolean; components?: any }) {
-  const [open, setOpen] = useState<boolean>(Boolean(isStreaming));
-  const scrollRef = useRef<HTMLDivElement>(null);
   const [elapsedSecs, setElapsedSecs] = useState(0);
+
+  const sections = useMemo(() => parseReasoningIntoSections(reasoning || ""), [reasoning]);
 
   useEffect(() => {
     if (isStreaming) {
-      setOpen(true);
       const interval = setInterval(() => setElapsedSecs(s => s + 1), 1000);
       return () => clearInterval(interval);
     } else {
@@ -279,55 +695,32 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
     }
   }, [isStreaming]);
 
-  useEffect(() => {
-    if (open && isStreaming && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [reasoning, open, isStreaming]);
+  if (!reasoning || !reasoning.trim()) return null;
 
-  if (!reasoning) return null;
+  const activitySteps: ActivityStep[] = sections.map((sec, idx) => ({
+    id: `step-${idx}`,
+    type: sec.type,
+    toolName: sec.toolName,
+    argsJson: sec.argsJson,
+    argsObj: sec.argsObj,
+    result: sec.result,
+    isError: sec.isError,
+    text: sec.text
+  }));
+
   return (
-    <div style={{ marginTop: "var(--sp-sm)", borderTop: "1px dashed var(--color-hairline)", paddingTop: "var(--sp-sm)" }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        style={{
-          display: "flex", alignItems: "center", gap: "var(--sp-xs)",
-          background: "none", border: "none", cursor: "pointer",
-          color: "var(--color-mute)", fontSize: 11, padding: 0
-        }}
-      >
-        {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        <span style={{ fontSize: 10, letterSpacing: "0.3px", fontWeight: 600, color: "var(--color-primary-soft)" }}>
-          🧠 Reasoning Trace & Tool Activity
-        </span>
-        {isStreaming && (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 6, color: "var(--color-primary)", fontSize: 10 }}>
-            <AppSpinner size={12} />
-            <span style={{ fontSize: 9, opacity: 0.9, fontWeight: 500 }}>Executing ({elapsedSecs}s)...</span>
-          </span>
-        )}
-      </button>
-      {open && (
-        <div
-          ref={scrollRef}
-          className="thoughts-scrollbar markdown-body"
-          style={{
-            marginTop: "var(--sp-sm)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)",
-            border: "1px solid var(--border-glass)", borderRadius: "var(--radius-sm)",
-            padding: "var(--sp-md)", fontSize: 11, color: "var(--color-body)",
-            lineHeight: 1.6, maxHeight: 320, overflowY: "auto"
-          }}
-        >
-          <ReactMarkdown skipHtml={true} remarkPlugins={[remarkGfm]} components={components}>
-            {reasoning}
-          </ReactMarkdown>
-        </div>
-      )}
+    <div style={{ marginTop: "6px" }}>
+      <AgentActivityStream 
+        steps={activitySteps} 
+        isStreaming={isStreaming} 
+        elapsedSecs={elapsedSecs} 
+      />
     </div>
   );
 }
 
 export default function ChatInterface({ messages, agents, onSendMessage, onDeleteMessage, onRollbackMessage, onClearChat, teamId, projectId, onToggleExplorer, onOpenFile }: Props) {
+  const { user } = useAuth();
   const [inputText, setInputText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState(false);
@@ -416,9 +809,72 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   // Intermediate trace expansion state
   const [expandedTraces, setExpandedTraces] = useState<Set<string>>(new Set());
 
+  // Smart manual scroll tracking (allows free scrolling during streaming)
+  const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  const isUserScrolledUpRef = useRef(false);
+
+  const handleScroll = useCallback(() => {
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    // If distance from bottom is greater than 100px, user has scrolled up
+    const isUp = scrollHeight - (scrollTop + clientHeight) > 100;
+    isUserScrolledUpRef.current = isUp;
+    setIsUserScrolledUp(isUp);
+  }, []);
+
+  const scrollToBottom = useCallback((smooth = true) => {
+    isUserScrolledUpRef.current = false;
+    setIsUserScrolledUp(false);
+    if (scrollRef.current) {
+      if (smooth) {
+        scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+      } else {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    }
+  }, []);
+
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages]);
+    // If there is an active pending approval request or question, prioritize scrolling to bottom immediately
+    const hasPendingApproval = messages.some(
+      m => Boolean(m.pending_approval?.status === "pending" || m.type === "approval_request" || m.type === "ask_user")
+    );
+    if (hasPendingApproval) {
+      scrollToBottom(true);
+      return;
+    }
+    // Only auto-scroll to bottom if the user is not reading scrolled-up history
+    if (!isUserScrolledUpRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, scrollToBottom]);
+
+  // Reset scroll on room/project change
+  useEffect(() => {
+    scrollToBottom(false);
+  }, [teamId, projectId, scrollToBottom]);
+
+  const handleDirectMention = useCallback((name: string) => {
+    setInputText(prev => {
+      const mention = `@${name} `;
+      if (prev.includes(mention)) return prev;
+      return prev ? `${prev} ${mention}` : mention;
+    });
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, []);
+
+  const getAgentInfo = useCallback((id?: string, name?: string, role?: string): AgentConfig => {
+    const found = agents.find(a => (id && a.id === id) || (name && a.name.toLowerCase() === name.toLowerCase()));
+    if (found) return found;
+    return {
+      id: id || "",
+      name: name || "Agent",
+      role: role || "Active Agent",
+      model: "openrouter/free",
+    };
+  }, [agents]);
 
   // Lazy-load the project file tree once (and when the project changes).
   const ensureFileTree = useCallback(async () => {
@@ -570,12 +1026,16 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
   };
 
   const doDelete = async (msgId: string) => {
-    if (onDeleteMessage) onDeleteMessage(msgId);
-    try { await api.deleteMessage(msgId); }
-    catch (e: any) {
-      // 404 is expected for ephemeral WS-only messages (typing, tool_start, streaming)
-      // that were never persisted to the DB. Swallow silently.
-      if (e?.status !== 404) console.error("deleteMessage failed:", e);
+    if (onDeleteMessage) {
+      onDeleteMessage(msgId);
+    } else {
+      try {
+        await api.deleteMessage(msgId);
+      } catch (e: any) {
+        // 404 is expected for ephemeral WS-only messages (typing, tool_start, streaming)
+        // that were never persisted to the DB. Swallow silently.
+        if (e?.status !== 404) console.error("deleteMessage failed:", e);
+      }
     }
   };
 
@@ -589,13 +1049,18 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
   const doRollbackConfirm = async () => {
     if (!rollbackMsgId) return;
+    const msgId = rollbackMsgId;
     setRollbackOpen(false);
-    if (onRollbackMessage) onRollbackMessage(rollbackMsgId);
-    try { await api.rollbackFromMessage(rollbackMsgId); }
-    catch (e: any) {
-      if (e?.status !== 404) console.error("rollbackFromMessage failed:", e);
+    setRollbackMsgId(null);
+    if (onRollbackMessage) {
+      onRollbackMessage(msgId);
+    } else {
+      try {
+        await api.rollbackFromMessage(msgId);
+      } catch (e: any) {
+        if (e?.status !== 404) console.error("rollbackFromMessage failed:", e);
+      }
     }
-    finally { setRollbackMsgId(null); }
   };
 
   const [clearChatOpen, setClearChatOpen] = useState(false);
@@ -653,9 +1118,11 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               <div>
                 <h2 className="display-sm" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   Team Chat
-                  <span className="pill pill-live" style={{ fontSize: 9, padding: "1px 6px" }}>
-                    <span className="live-dot" /> LIVE
-                  </span>
+                  {agents.length > 0 && (
+                    <span className="pill pill-live" style={{ fontSize: 9, padding: "1px 6px" }}>
+                      <span className="live-dot" /> LIVE
+                    </span>
+                  )}
                 </h2>
                 <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
               </div>
@@ -670,7 +1137,9 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                   <div style={{ display: "flex", marginRight: "4px" }}>
                     {agents.slice(0, 3).map((agent, i) => (
                       <div key={agent.id} style={{ marginLeft: i > 0 ? "-8px" : 0, borderRadius: "50%", border: "2px solid var(--bg-surface)", zIndex: 3 - i }}>
-                        <AgentAvatar name={agent.name} avatarSeed={agent.id} size={22} />
+                        <AgentHoverCard agent={agent} onMention={handleDirectMention}>
+                          <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={22} hideBadge />
+                        </AgentHoverCard>
                       </div>
                     ))}
                     {agents.length > 3 && (
@@ -695,18 +1164,20 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                       {agents.map(a => {
                         const isSub = a.name.startsWith("Sub-") || a.name.startsWith("Subagent-");
                         return (
-                          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "7px 10px", borderRadius: "var(--radius-sm)", transition: "background var(--t-fast)" }} className="hover:bg-[var(--color-canvas-raised)]">
-                            <AgentAvatar name={a.name} avatarSeed={a.id} size={28} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontWeight: 600, fontSize: "12px", color: "var(--color-ink)", display: "flex", alignItems: "center", gap: 5 }}>
-                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
-                                {isSub && <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>SUB</span>}
-                              </div>
-                              <div className="caption" style={{ fontSize: "10px", color: "var(--color-mute)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {a.role || a.model || "Active Agent"}
+                          <AgentHoverCard key={a.id} agent={a} onMention={handleDirectMention}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "7px 10px", borderRadius: "var(--radius-sm)", transition: "background var(--t-fast)", width: "100%", cursor: "pointer" }} className="hover:bg-[var(--color-canvas-raised)]">
+                              <AgentAvatar name={a.name} id={a.id} role={a.role} size={28} hideBadge />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 600, fontSize: "12px", color: "var(--color-ink)", display: "flex", alignItems: "center", gap: 5 }}>
+                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                                  {isSub && <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>SUB</span>}
+                                </div>
+                                <div className="caption" style={{ fontSize: "10px", color: "var(--color-mute)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {a.role || a.model || "Active Agent"}
+                                </div>
                               </div>
                             </div>
-                          </div>
+                          </AgentHoverCard>
                         );
                       })}
                     </div>
@@ -748,7 +1219,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
         )}
 
         {/* Messages */}
-        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-xl) var(--sp-2xl)" }}>
+        <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-xl) var(--sp-2xl)" }}>
           <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--sp-lg)", minHeight: "100%" }}>
             {/* Load older button */}
             {!searchMode && hasOlderMessages && messages.length >= 50 && (
@@ -777,8 +1248,32 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
               // Compact collapsible row for intermediate tool-trace records
               if (isIntermediate) {
+                const sections = parseReasoningIntoSections(msg.text || "");
+                const hasTools = sections.some(s => s.type === "tool");
+                
+                if (hasTools) {
+                  return (
+                    <div key={msg.id} style={{ marginLeft: 8, marginBottom: 4, maxWidth: "85%" }}>
+                      {sections.map((sec, idx) => (
+                        sec.type === "tool" ? (
+                          <TraceToolCard
+                            key={idx}
+                            toolName={sec.toolName!}
+                            argsObj={sec.argsObj}
+                            argsRaw={sec.argsJson}
+                            result={sec.result}
+                            isError={sec.isError}
+                            agentName={msg.sender_name}
+                            timestamp={msg.timestamp}
+                            defaultOpen={false}
+                          />
+                        ) : null
+                      ))}
+                    </div>
+                  );
+                }
+
                 const isExpanded = expandedTraces.has(msg.id);
-                // Extract tool name if formatted like 🛠️ **tool_name**
                 const toolNameMatch = (msg.text || "").match(/🛠️\s*\*\*([^\*]+)\*\*/);
                 const toolName = toolNameMatch ? toolNameMatch[1] : "Tool Action";
                 const toolMeta = getToolMeta(toolName);
@@ -786,7 +1281,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
 
                 return (
                   <div key={msg.id} style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-start", marginLeft: 8, marginBottom: 2 }}>
-                    <AgentAvatar name={msg.sender_name || "agent"} id={msg.sender_id} size={22} isStreaming={isStreaming} />
+                    <AgentAvatar name={msg.sender_name || "agent"} id={msg.sender_id} role={msg.role} size={22} isStreaming={isStreaming} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <button
                         onClick={() => setExpandedTraces(prev => {
@@ -861,43 +1356,38 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                   </div>
                 );
               }
-              if (isFileChange) return (
-                <div
-                  key={msg.id}
-                  onClick={() => msg.path && onOpenFile?.(msg.path)}
-                  style={{
-                    display: "flex", gap: "var(--sp-md)", alignItems: "center", background: "var(--bg-glass-panel)",
-                    padding: "10px 14px", borderRadius: 8, margin: "8px 0",
-                    cursor: msg.path && onOpenFile ? "pointer" : "default",
-                    border: "1px solid var(--color-hairline)",
-                    transition: "background 0.15s, border-color 0.15s",
-                  }}
-                  className="hover:bg-[var(--color-surface)]"
-                  title={msg.path && onOpenFile ? `Open ${msg.path} in editor` : undefined}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
-                    <div style={{ background: "var(--color-surface)", padding: 6, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <FileCode size={16} color="var(--color-brand)" />
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                      <span className="body-sm" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        <strong style={{ color: "var(--color-body)" }}>{msg.sender_name || "Agent"}</strong> modified <strong style={{ color: "var(--color-body)" }}>{msg.path?.split('/').pop() || msg.path}</strong>
-                      </span>
-                      <span className="caption" style={{ color: "var(--color-mute)" }}>{msg.path && onOpenFile ? "Click to open in editor" : "View details in the Activity Log tab"}</span>
-                    </div>
+              if (isFileChange && msg.path) {
+                const isHandledByAssistant = displayMessages.some(m => 
+                  m.id !== msg.id && 
+                  m.sender_id !== "human" && 
+                  m.sender_id !== "system" && 
+                  (m.reasoning?.includes(msg.path!) || m.path === msg.path)
+                );
+                if (isHandledByAssistant) return null;
+
+                return (
+                  <div key={msg.id} style={{ margin: "4px 0" }}>
+                    <FileChangeCard
+                      senderName={msg.sender_name}
+                      path={msg.path}
+                      diff={msg.diff}
+                      content={msg.arguments?.content || msg.text}
+                      action={msg.action || "modified"}
+                      timestamp={msg.timestamp}
+                      onOpenFile={onOpenFile}
+                    />
                   </div>
-                  {msg.timestamp && <span className="caption" style={{ opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
-                </div>
-              );
+                );
+              }
               if (isApproval) return (
                 <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} size={30} />
+                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} role={msg.role} size={30} />
                   <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><ApprovalCard msg={msg} /></div>
                 </div>
               );
               if (isQuestion) return (
                 <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} size={30} />
+                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} role={msg.role} size={30} />
                   <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
                 </div>
               );
@@ -907,7 +1397,7 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               if (isTaskNotification) {
                 return (
                   <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
-                    <AgentAvatar name={msg.sender_name || "Subagent"} id={msg.sender_id} size={32} />
+                    <AgentAvatar name={msg.sender_name || "Subagent"} id={msg.sender_id} role={msg.role || "subagent"} size={32} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
                         <span className="body-sm-strong">{msg.sender_name}</span>
@@ -915,6 +1405,46 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                         {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
                       </div>
                       <TaskNotificationCard text={msg.text || ""} />
+                    </div>
+                  </div>
+                );
+              }
+
+              // Check if message is a system task update/assign
+              const isTaskSys = msg.text?.startsWith("[TASK_ASSIGN]") || msg.text?.startsWith("[TASK_UPDATE]");
+              if (isTaskSys && msg.sender_id === "system") {
+                let cleanSysText = msg.text || "";
+                // Strip out the prompt instructions intended for the LLM
+                cleanSysText = cleanSysText.replace(/IMPORTANT: DO NOT use create_task[\s\S]*?(?=when finished\.|update_task|to start it).*?(?:when finished\.|to continue work\.)?/gi, "").trim();
+                // Optionally remove the prefix
+                cleanSysText = cleanSysText.replace(/\[TASK_ASSIGN\]|\[TASK_UPDATE\]/g, "").trim();
+
+                return (
+                  <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                    <div style={{
+                        width: 32, height: 32, borderRadius: "50%",
+                        background: "rgba(167, 139, 250, 0.15)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        color: "#a78bfa", flexShrink: 0
+                      }}>
+                        <CheckSquare size={16} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                        <span className="body-sm-strong">System</span>
+                        <span className="subagent-chip" style={{ fontSize: 9, padding: "1px 5px", background: "rgba(167, 139, 250, 0.15)", color: "#c4b5fd" }}>KANBAN</span>
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
+                      </div>
+                      <div style={{
+                        background: "rgba(255, 255, 255, 0.03)",
+                        border: "1px solid rgba(255, 255, 255, 0.08)",
+                        padding: "10px 14px",
+                        borderRadius: "8px",
+                        fontSize: "13px",
+                        color: "#e2e8f0"
+                      }}>
+                        {cleanSysText}
+                      </div>
                     </div>
                   </div>
                 );
@@ -987,22 +1517,57 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               return (
                 <div key={msg.id} className="animate-fade-in group" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", flexDirection: isHuman ? "row-reverse" : "row", width: "100%" }}>
 
-                  <AgentAvatar
-                    name={msg.sender_name || (isHuman ? "admin" : "Agent")}
-                    id={msg.sender_id}
-                    role={msg.role}
-                    size={32}
-                    isStreaming={isStreaming}
-                    isThinking={isThinking}
-                  />
+                  {!isHuman ? (() => {
+                    const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
+                    const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
+                    return (
+                      <AgentHoverCard
+                        agent={agentInfo}
+                        name={msg.sender_name}
+                        id={msg.sender_id}
+                        role={displayRole}
+                        isStreaming={isStreaming}
+                        isThinking={isThinking}
+                        onMention={handleDirectMention}
+                      >
+                        <AgentAvatar
+                          name={msg.sender_name || "Agent"}
+                          id={msg.sender_id}
+                          role={displayRole}
+                          size={32}
+                          isStreaming={isStreaming}
+                          isThinking={isThinking}
+                        />
+                      </AgentHoverCard>
+                    );
+                  })() : (
+                    <AgentAvatar
+                      name={msg.sender_name || (user?.first_name ? `${user.first_name} ${user.last_name || ""}`.trim() : user?.email) || "Admin"}
+                      id={msg.sender_id || user?.id}
+                      role="human"
+                      size={32}
+                    />
+                  )}
                   <div style={{ maxWidth: isHuman ? "78%" : "88%", minWidth: 0, position: "relative" }}>
-                    {!isHuman && (
-                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
-                        <span className="body-sm-strong">{msg.sender_name}</span>
-                        {msg.role && <span className="caption">{msg.role}</span>}
-                        {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
-                      </div>
-                    )}
+                    {!isHuman && (() => {
+                      const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
+                      const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
+                      return (
+                        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                          <AgentHoverCard
+                            agent={agentInfo}
+                            name={msg.sender_name}
+                            id={msg.sender_id}
+                            role={displayRole}
+                            onMention={handleDirectMention}
+                          >
+                            <span className="body-sm-strong" style={{ cursor: "pointer" }}>{msg.sender_name}</span>
+                          </AgentHoverCard>
+                          {displayRole && <span className="caption">{displayRole}</span>}
+                          {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
+                        </div>
+                      );
+                    })()}
                     {isHuman && msg.timestamp && <div style={{ textAlign: "right", marginBottom: 3 }}><span className="caption">{fmtTime(msg.timestamp)}</span></div>}
 
                     {/* Edit Mode vs Normal Mode */}
@@ -1083,6 +1648,22 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
                             </button>
                           </div>
                         )}
+                        {/* File Changes Card — associated directly with this assistant message! */}
+                        {!isHuman && !isThinking && (() => {
+                          const fileChanges = extractFileChanges(finalReasoning, msg);
+                          if (fileChanges.length === 0) return null;
+                          return (
+                            <div style={{ marginTop: "var(--sp-sm, 8px)" }}>
+                              <FileChangeCard
+                                files={fileChanges}
+                                senderName={msg.sender_name}
+                                timestamp={msg.timestamp}
+                                onOpenFile={onOpenFile}
+                              />
+                            </div>
+                          );
+                        })()}
+
                         {/* Thoughts Panel — renders reasoning trace + tool calls */}
                         {!isHuman && !isThinking && (
                           <ThoughtsPanel reasoning={finalReasoning} isStreaming={isStreaming} components={markdownComponents} />
@@ -1216,7 +1797,36 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
         )}
 
         {/* Input */}
-        <div style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10 }}>
+        <div style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10, position: "relative" }}>
+          {isUserScrolledUp && (
+            <button
+              onClick={() => scrollToBottom(true)}
+              className="btn btn-sm"
+              style={{
+                position: "absolute",
+                top: -38,
+                left: "50%",
+                transform: "translateX(-50%)",
+                background: "rgba(18, 18, 36, 0.95)",
+                border: "1px solid rgba(168, 85, 247, 0.4)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 20,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+                padding: "3px 14px",
+                fontSize: 11,
+                fontWeight: 600,
+                color: "#c084fc",
+                zIndex: 30,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                cursor: "pointer",
+                animation: "fadeIn 0.15s ease-out",
+              }}
+            >
+              <ArrowDown size={12} /> Jump to latest
+            </button>
+          )}
           <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto" }}>
             <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
 

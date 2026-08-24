@@ -100,3 +100,33 @@ async def test_subagent_and_spawn_arg_parsing():
         mock_spawn.assert_called_with("Nova", "Build UI", "team-1", parent_coordinator_id=None)
 
 
+
+
+@pytest.mark.asyncio
+async def test_judge_evaluator_verdict_parsing():
+    from core.judge.judge_evaluator import judge_evaluator
+    from unittest.mock import patch, AsyncMock
+
+    # 1. Negative reasoning containing "approve" with DENIED verdict must NOT be approved
+    negative_llm_response = (
+        "<REASONING>I cannot approve this dangerous command execution.</REASONING>\n"
+        "<VERDICT>DENIED</VERDICT>"
+    )
+    with patch("core.llm.multi_model_router.llm_router.generate_completion", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = negative_llm_response
+        approved, reasoning = await judge_evaluator.evaluate("execute_command", {"command": "rm -rf /"}, "Nova")
+        assert approved is False
+        assert "cannot approve" in reasoning
+
+    # 2. Positive APPROVED verdict
+    positive_llm_response = (
+        "<REASONING>Reading this public doc is completely safe.</REASONING>\n"
+        "<VERDICT>APPROVED</VERDICT>"
+    )
+    with patch("core.llm.multi_model_router.llm_router.generate_completion", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = positive_llm_response
+        approved, reasoning = await judge_evaluator.evaluate("read_file", {"relative_path": "README.md"}, "Nova")
+        assert approved is True
+
+
+
