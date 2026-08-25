@@ -78,44 +78,45 @@ def register_builtin_tools():
     _builtins_registered = True
 
     builtins = [
-        # ---- Filesystem ----
-        ToolSpec("read_file", "Read the full contents of a file. You MUST call this before edit_file to see the exact current content. For very large files, consider grep_search first to find the relevant section.", "filesystem",
-                 {"relative_path": {"type": "string", "required": True}},
+        # ---- Filesystem (Strict Verification Pattern) ----
+        ToolSpec("read_file", "Reads a file from the workspace. You MUST call this before edit_file. Returns full file content or an unchanged stub if already read in this conversation.", "filesystem",
+                 {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
+                  "force": {"type": "boolean", "required": False, "description": "Set to true to re-read full content even if unchanged"}},
                  "safe", _wrap_read_file),
-        ToolSpec("write_file", "Create a new file or completely overwrite an existing one. WARNING: This replaces the ENTIRE file contents. To change only specific lines, use edit_file instead. For Markdown/text docs (.md, .txt), writes are auto-approved (no Judge review needed).", "filesystem",
-                 {"relative_path": {"type": "string", "required": True},
-                  "content": {"type": "string", "required": True}},
+        ToolSpec("write_file", "Create a new file or completely overwrite an existing one. WARNING: Replaces ENTIRE file. To modify existing code, use edit_file instead. For Markdown/text docs (.md, .txt), writes are auto-approved without Judge review.", "filesystem",
+                 {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
+                  "content": {"type": "string", "required": True, "description": "Full file content to write"}},
                  "judge", _wrap_write_file),
-        ToolSpec("edit_file", "Replace a specific block of text in a file. IMPORTANT: You MUST read_file FIRST to see the exact current content, then provide the EXACT target_content that exists in the file. Partial or approximate matches will fail.", "filesystem",
-                 {"relative_path": {"type": "string", "required": True},
+        ToolSpec("edit_file", "Performs exact string replacements in files. STRICT RULES: (1) You MUST call read_file first before editing, (2) target_content must match EXACTLY character-for-character including indentation, (3) target_content must be uniquely identifying (usually 2-4 lines of context). Errors if multiple matches found.", "filesystem",
+                 {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
                   "target_content": {"type": "string", "required": True, "description": "The exact text block currently in the file that you want to replace. Must match character-for-character."},
                   "replacement_content": {"type": "string", "required": True, "description": "The new text to replace target_content with."}},
                  "judge", _wrap_edit_file),
-        ToolSpec("list_directory", "List files and directories at a path", "filesystem",
-                 {"relative_path": {"type": "string", "required": False}},
+        ToolSpec("list_directory", "List files and directories at a path. Prefer glob_search or grep_search for locating specific files.", "filesystem",
+                 {"relative_path": {"type": "string", "required": False, "description": "Subdirectory to list (default: root)"}},
                  "safe", _wrap_list_directory),
-        ToolSpec("append_file", "Append content to the end of a file", "filesystem",
-                 {"relative_path": {"type": "string", "required": True},
-                  "content": {"type": "string", "required": True}},
+        ToolSpec("append_file", "Append content to the end of an existing file.", "filesystem",
+                 {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
+                  "content": {"type": "string", "required": True, "description": "Text content to append"}},
                  "judge", _wrap_append_file),
-        ToolSpec("delete_file", "Delete a file from the workspace", "filesystem",
-                 {"relative_path": {"type": "string", "required": True}},
+        ToolSpec("delete_file", "Delete a file from the workspace. Requires human approval.", "filesystem",
+                 {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"}},
                  "human", _wrap_delete_file),
-        ToolSpec("grep_search", "Search file contents for a regex pattern", "search",
-                 {"pattern": {"type": "string", "required": True},
-                  "path": {"type": "string", "required": False},
-                  "case_sensitive": {"type": "boolean", "required": False}},
+        ToolSpec("grep_search", "Search file contents for a regex pattern. Preferred over shell grep/find.", "search",
+                 {"pattern": {"type": "string", "required": True, "description": "Regex or string pattern to search for"},
+                  "path": {"type": "string", "required": False, "description": "Subdirectory or file to search within"},
+                  "case_sensitive": {"type": "boolean", "required": False, "description": "Whether search is case-sensitive"}},
                  "safe", _wrap_grep_search),
-        ToolSpec("glob_search", "Find files matching a glob pattern (e.g. **/*.py)", "search",
-                 {"pattern": {"type": "string", "required": True},
-                  "path": {"type": "string", "required": False}},
+        ToolSpec("glob_search", "Find files matching a glob pattern (e.g. **/*.py, src/**/*.tsx). Preferred over shell ls/find.", "search",
+                 {"pattern": {"type": "string", "required": True, "description": "Glob pattern to match files against"},
+                  "path": {"type": "string", "required": False, "description": "Base directory for search"}},
                  "safe", _wrap_glob_search),
 
-        # ---- Shell ----
-        ToolSpec("execute_command", "Execute a shell command in the workspace directory. Returns stdout+stderr (max 60s timeout by default). Use 'cwd' param to run in a subdirectory (e.g. 'frontend') instead of chaining cd commands. IMPORTANT: Long-running commands (servers, watchers) will timeout after 60s — increase timeout if needed. For Git operations, prefer the git_* tools over raw git commands.", "shell",
-                 {"command": {"type": "string", "required": True},
+        # ---- Shell (Strict Exclusivity) ----
+        ToolSpec("execute_command", "Execute a shell command in the workspace. Reserved for test runners (pytest/npm test), build tools, and scripts. STRICT POLICY: Do NOT use to read files (use read_file), edit files (use edit_file), create files (use write_file), or search (use grep_search). Use 'cwd' to run in subdirectories.", "shell",
+                 {"command": {"type": "string", "required": True, "description": "Shell command to run (e.g., pytest, npm test, python main.py)"},
                   "timeout": {"type": "number", "required": False, "description": "Max seconds to wait (default 60)"},
-                  "cwd": {"type": "string", "required": False, "description": "Subdirectory to run the command in, relative to workspace root (e.g. 'frontend', 'backend/core')"}},
+                  "cwd": {"type": "string", "required": False, "description": "Subdirectory to run the command in, relative to workspace root (e.g. 'frontend', 'backend')"}},
                  "judge", _wrap_execute_command),
 
         # ---- Git ----
@@ -1070,8 +1071,9 @@ async def _wrap_read_file(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path") or args.get("path") or args.get("value")
     if not path:
         return "Error: Missing parameter 'relative_path'."
+    force = bool(args.get("force", False))
     project_id = await _team_project_id(team_id)
-    return await file_tools.read_file(path, project_id=project_id)
+    return await file_tools.read_file(path, project_id=project_id, team_id=team_id, force=force)
 
 async def _check_active_editor_conflicts(relative_path: str, agent_name: str) -> None:
     try:
@@ -1155,7 +1157,7 @@ async def _wrap_write_file(args: Dict[str, Any], team_id: str):
     # ── Snapshot before write ────────────────────────────────────────────────
     await _snapshot_file(path, team_id, message_id, operation="write_file")
     project_id = await _team_project_id(team_id)
-    return await file_tools.write_file(path, content, agent_name, project_id=project_id)
+    return await file_tools.write_file(path, content, agent_name, project_id=project_id, team_id=team_id)
 
 async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
     path = args.get("relative_path") or args.get("path")
@@ -1172,7 +1174,22 @@ async def _wrap_edit_file(args: Dict[str, Any], team_id: str):
     # ── Snapshot before edit ─────────────────────────────────────────────────
     await _snapshot_file(path, team_id, message_id, operation="edit_file")
     project_id = await _team_project_id(team_id)
-    return await file_tools.edit_file(path, target, replacement, agent_name, project_id=project_id)
+    return await file_tools.edit_file(path, target, replacement, agent_name, project_id=project_id, team_id=team_id)
+
+async def _wrap_append_file(args: Dict[str, Any], team_id: str):
+    path = args.get("relative_path") or args.get("path")
+    content = args.get("content")
+    agent_name = args.get("_agent_name", "Unknown")
+    message_id = args.get("_active_message_id")
+    if not path or content is None:
+        return "Error: Missing parameters 'relative_path' or 'content' for append."
+    try:
+        await _check_active_editor_conflicts(path, agent_name)
+    except Exception as e:
+        return f"Error: {str(e)}"
+    await _snapshot_file(path, team_id, message_id, operation="append_file")
+    project_id = await _team_project_id(team_id)
+    return await file_tools.append_file(path, content, agent_name, project_id=project_id, team_id=team_id)
 
 
 async def _snapshot_file(relative_path: str, team_id: str, message_id: str | None, operation: str = "write_file"):
@@ -1926,7 +1943,7 @@ async def _wrap_write_scratchpad(args: Dict[str, Any], team_id: str) -> str:
     if content is None:
         return (
             "Error: Missing required parameter 'content'. "
-            "Usage: write_scratchpad(content=\"your text here\", target='team')"
+            "Usage: write_scratchpad(content=\"<the text you want to save>\", target='team')"
         )
     result = await scratchpad_store.write(team_id, target, agent_name, content, mode=mode, agent_id=agent_id)
     if result.get("status") == "error":
@@ -1944,7 +1961,7 @@ async def _wrap_update_scratchpad(args: Dict[str, Any], team_id: str) -> str:
     if content is None:
         return (
             "Error: Missing required parameter 'content'. "
-            "Usage: update_scratchpad(content=\"your text here\", target='team')"
+            "Usage: update_scratchpad(content=\"<the text you want to save>\", target='team')"
         )
     result = await scratchpad_store.update(team_id, target, agent_name, content, agent_id=agent_id)
     if result.get("status") == "error":

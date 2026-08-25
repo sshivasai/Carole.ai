@@ -16,6 +16,27 @@ from core.config import CAROLE_HOME_DIR
 
 from core.chat.event_bus import event_bus
 
+CODE_EXTENSIONS = {
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp",
+    ".cs", ".rb", ".php", ".swift", ".kt", ".scala", ".vue", ".svelte"
+}
+
+IGNORE_DIR_SUBSTRINGS = {
+    ".carole", "scratchpads", ".git", "node_modules", "__pycache__",
+    ".next", "venv", ".venv", "dist", "build", ".cache"
+}
+
+def is_tracked_code_file(path_str: str) -> bool:
+    """Returns True only for real source code files, ignoring scratchpads and system dirs."""
+    norm = path_str.replace("\\", "/").strip("/")
+    parts = norm.split("/")
+    for p in parts:
+        if p in IGNORE_DIR_SUBSTRINGS or (p.startswith(".") and p != "."):
+            return False
+    ext = posixpath.splitext(norm)[1].lower()
+    return ext in CODE_EXTENSIONS
+
 class CodeGraph:
     def __init__(self, workspace_root: str = None):
         if not workspace_root:
@@ -50,7 +71,12 @@ class CodeGraph:
                 try:
                     with open(graph_file, "r") as f:
                         data = json.load(f)
-                        self.graphs[pid] = nx.node_link_graph(data)
+                        g = nx.node_link_graph(data)
+                        # Clean out any non-code or scratchpad nodes from legacy saves
+                        invalid_nodes = [n for n in g.nodes if not is_tracked_code_file(str(n))]
+                        if invalid_nodes:
+                            g.remove_nodes_from(invalid_nodes)
+                        self.graphs[pid] = g
                 except Exception:
                     self.graphs[pid] = nx.DiGraph()
             else:
@@ -61,12 +87,15 @@ class CodeGraph:
         try:
             graph_file = await self.get_graph_file(project_id)
             graph_file.parent.mkdir(parents=True, exist_ok=True)
+            g = await self.get_graph(project_id)
             with open(graph_file, "w") as f:
-                json.dump(nx.node_link_data(await self.get_graph(project_id)), f)
+                json.dump(nx.node_link_data(g), f)
         except Exception as e:
             print(f"Error saving code graph for project {project_id}: {e}")
 
     async def mark_file_active(self, path: str, agent_name: str, project_id: Optional[str] = None):
+        if not is_tracked_code_file(path):
+            return
         pid = project_id or "default"
         if pid not in self.active_editors:
             self.active_editors[pid] = {}
@@ -82,7 +111,15 @@ class CodeGraph:
             await self._save_graph(project_id)
 
     async def parse_file(self, relative_path: str, project_id: Optional[str] = None):
-        """Parses a file for dependencies and updates the graph."""
+        """Parses a code file for dependencies and updates the graph."""
+        if not is_tracked_code_file(relative_path):
+            # If an ignored/non-code file was previously added, remove it from graph
+            graph = await self.get_graph(project_id)
+            if graph.has_node(relative_path):
+                graph.remove_node(relative_path)
+                await self._save_graph(project_id)
+            return
+
         project_root = await self.get_project_root(project_id)
         safe_path = (project_root / relative_path).resolve()
         
@@ -91,6 +128,7 @@ class CodeGraph:
         if not safe_path.is_file():
             if graph.has_node(relative_path):
                 graph.remove_node(relative_path)
+                await self._save_graph(project_id)
             return
 
         try:
@@ -127,7 +165,7 @@ class CodeGraph:
                     dependencies.add(f"src/{mod_path}.py")
                     dependencies.add(f"src/{mod_path}/__init__.py")
                     
-        elif safe_path.suffix in (".js", ".ts", ".jsx", ".tsx"):
+        elif safe_path.suffix in (".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"):
             import_pattern = re.compile(r"(?:import|require)\s*\(?\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
             for match in import_pattern.findall(content):
                 if match.startswith("./") or match.startswith("../"):
@@ -152,13 +190,13 @@ class CodeGraph:
         await self._save_graph(project_id)
 
     async def build_graph(self, project_id: Optional[str] = None):
-        """Scans project root and maps all files."""
+        """Scans project root and maps all code files."""
         project_root = await self.get_project_root(project_id)
-        skip_dirs = {'.git', 'node_modules', '__pycache__', '.next', 'venv', '.venv', 'dist', 'build'}
         for root, dirs, files in os.walk(project_root):
-            dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
+            dirs[:] = [d for d in dirs if not any(ign in d for ign in IGNORE_DIR_SUBSTRINGS) and not d.startswith('.')]
             for file in files:
-                if file.endswith(('.py', '.js', '.ts', '.jsx', '.tsx')):
+                ext = Path(file).suffix.lower()
+                if ext in CODE_EXTENSIONS:
                     full_path = Path(root) / file
                     try:
                         rel = full_path.relative_to(project_root)

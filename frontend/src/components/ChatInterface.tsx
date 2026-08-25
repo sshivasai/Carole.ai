@@ -21,6 +21,7 @@ import { McpStatusIndicator } from "./McpStatusIndicator";
 import FileChangeCard, { ChangedFileItem } from "./FileChangeCard";
 import AgentPermissionCard from "./AgentPermissionCard";
 import AgentActivityStream, { ActivityStep } from "./AgentActivityStream";
+import ContextUsageGauge from "./ContextUsageGauge";
 
 interface Props {
   messages: ChatMessage[];
@@ -33,6 +34,8 @@ interface Props {
   projectId?: string | null;
   onToggleExplorer?: () => void;
   onOpenFile?: (path: string) => void;
+  lastTokenEvent?: any;
+  contextUsage?: any;
 }
 
 const AVATAR_COLORS = ["#3b82f6", "#8b5cf6", "#00d992", "#f97316", "#ef4444", "#eab308"];
@@ -74,6 +77,8 @@ export function getToolMeta(toolName: string) {
 }
 
 function TaskNotificationCard({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  
   const taskIdMatch = text.match(/<task_id>(.*?)<\/task_id>/);
   const agentMatch = text.match(/<agent>(.*?)<\/agent>/);
   const statusMatch = text.match(/<status>(.*?)<\/status>/);
@@ -85,6 +90,10 @@ function TaskNotificationCard({ text }: { text: string }) {
   const result = resultMatch ? resultMatch[1].trim() : text;
 
   const isSuccess = status.toLowerCase() === "completed" || status.toLowerCase() === "success";
+
+  const truncateLength = 200;
+  const isTruncated = result.length > truncateLength;
+  const displayResult = expanded || !isTruncated ? result : result.slice(0, truncateLength) + "...";
 
   return (
     <div className="task-notif-card" style={{ maxWidth: 640 }}>
@@ -99,8 +108,19 @@ function TaskNotificationCard({ text }: { text: string }) {
         {taskId && <span className="caption" style={{ fontFamily: "monospace", fontSize: 10, opacity: 0.7 }}>ID: {taskId.slice(0, 8)}</span>}
       </div>
       <div className="markdown-body" style={{ fontSize: 12, lineHeight: 1.5, color: "var(--color-ink)" }}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{result}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayResult}</ReactMarkdown>
       </div>
+      {isTruncated && (
+        <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
+          <button 
+            onClick={() => setExpanded(!expanded)} 
+            className="btn-ghost" 
+            style={{ fontSize: 11, padding: "2px 8px", minHeight: 24 }}
+          >
+            {expanded ? "Show Less" : "Expand Report"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -719,7 +739,20 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
   );
 }
 
-export default function ChatInterface({ messages, agents, onSendMessage, onDeleteMessage, onRollbackMessage, onClearChat, teamId, projectId, onToggleExplorer, onOpenFile }: Props) {
+export default function ChatInterface({
+  messages,
+  agents,
+  onSendMessage,
+  onDeleteMessage,
+  onRollbackMessage,
+  onClearChat,
+  teamId,
+  projectId,
+  onToggleExplorer,
+  onOpenFile,
+  lastTokenEvent,
+  contextUsage,
+}: Props) {
   const { user } = useAuth();
   const [inputText, setInputText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -1186,6 +1219,19 @@ export default function ChatInterface({ messages, agents, onSendMessage, onDelet
               </div>
             </div>
             <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "center" }}>
+              {/* Context Window & Token Usage Meter */}
+              <ContextUsageGauge
+                projectId={projectId || undefined}
+                teamId={teamId || undefined}
+                activeModel={contextUsage?.model || agents[0]?.model || "claude-3-7-sonnet"}
+                estimatedTokens={contextUsage?.estimated_tokens}
+                contextWindow={contextUsage?.context_window}
+                usagePercent={contextUsage?.usage_percent}
+                lastTokenEvent={lastTokenEvent}
+                messages={messages}
+                agents={agents}
+              />
+
               {onToggleExplorer && (
                 <button className="btn btn-icon btn-outline btn-sm" onClick={onToggleExplorer} title="Toggle File Explorer">
                   <Folder size={14} />

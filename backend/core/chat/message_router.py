@@ -46,6 +46,14 @@ class MessageRouter:
 
         # Snapshot of pending prompts for queue introspection (REST /queue endpoint).
         self._pending: Dict[str, List[str]] = {}
+        
+        # Locks to prevent race conditions when enqueuing to a new agent
+        self._enqueue_locks: Dict[str, asyncio.Lock] = {}
+
+    def _get_enqueue_lock(self, agent_id: str) -> asyncio.Lock:
+        if agent_id not in self._enqueue_locks:
+            self._enqueue_locks[agent_id] = asyncio.Lock()
+        return self._enqueue_locks[agent_id]
 
     # ------------------------------------------------------------------
     # Public API
@@ -157,9 +165,23 @@ class MessageRouter:
                 agents = result.scalars().all()
                 # Exclude the sender themselves from being triggered by self-mentions
                 valid_targets = [a for a in agents if str(a.id) != sender_id]
-                target_agents.extend(valid_targets)
-                if len(mentioned_names) == 1 and valid_targets:
-                    recipient_id = str(valid_targets[0].id)
+                
+                if valid_targets:
+                    # Multi-mention Routing: Coordinator Priority
+                    # If any mentioned agent is a coordinator, route ONLY to them.
+                    coordinator = next((a for a in valid_targets if a.role.lower() in ["coordinator", "orchestrator"]), None)
+                    
+                    if coordinator:
+                        target_agents.append(coordinator)
+                        recipient_id = str(coordinator.id)
+                    else:
+                        # Fallback: Route ONLY to the first valid mentioned agent
+                        for mention in mentioned_names:
+                            primary_agent = next((a for a in valid_targets if a.name.lower() == mention.lower()), None)
+                            if primary_agent:
+                                target_agents.append(primary_agent)
+                                recipient_id = str(primary_agent.id)
+                                break
 
             resolved_sender_name = sender_name
             if sender_id == "human" and not resolved_sender_name:
@@ -282,6 +304,8 @@ class MessageRouter:
         db_session: AsyncSession,
         attachments: Optional[List[Dict]] = None,
         trigger_message_id: Optional[str] = None,
+        parent_coordinator_id: Optional[str] = None,
+        task_id: Optional[str] = None,
     ):
         """
         Enqueue a prompt into the agent's personal FIFO queue.
@@ -305,34 +329,41 @@ class MessageRouter:
             logger.debug("Deduplicated duplicate wakeup for agent %s", agent.name)
             return
 
-        # Ensure queue + worker exist
-        if agent_id not in self._queues:
-            self._queues[agent_id] = asyncio.Queue()
-            self._pending[agent_id] = []
-            # Build context snapshot for the worker (avoids closing over db_session)
-            agent_snapshot = _AgentSnapshot(agent, db_session)
-            worker_task = asyncio.create_task(
-                self._agent_worker(agent_id, agent_snapshot),
-                name=f"worker:{agent.name}",
-            )
-            self._workers[agent_id] = worker_task
+        async with self._get_enqueue_lock(agent_id):
+            # Ensure queue + worker exist
+            if agent_id not in self._queues:
+                self._queues[agent_id] = asyncio.Queue()
+                self._pending[agent_id] = []
+                # Build context snapshot for the worker (avoids closing over db_session)
+                agent_snapshot = _AgentSnapshot(agent, db_session)
+                worker_task = asyncio.create_task(
+                    self._agent_worker(agent_id, agent_snapshot),
+                    name=f"worker:{agent.name}",
+                )
+                self._workers[agent_id] = worker_task
 
-            def _on_worker_done(t: asyncio.Task):
-                if not t.cancelled() and t.exception():
-                    logger.exception(
-                        "Worker for agent '%s' died unexpectedly: %s",
-                        agent.name, t.exception(), exc_info=t.exception()
-                    )
-                # Remove stale entries so the worker is recreated fresh on next trigger
-                self._queues.pop(agent_id, None)
-                self._workers.pop(agent_id, None)
-                self._pending.pop(agent_id, None)
+                def _on_worker_done(t: asyncio.Task):
+                    if not t.cancelled() and t.exception():
+                        logger.exception(
+                            "Worker for agent '%s' died unexpectedly: %s",
+                            agent.name, t.exception(), exc_info=t.exception()
+                        )
+                    # Remove stale entries so the worker is recreated fresh on next trigger
+                    self._queues.pop(agent_id, None)
+                    self._workers.pop(agent_id, None)
+                    self._pending.pop(agent_id, None)
 
-            worker_task.add_done_callback(_on_worker_done)
+                worker_task.add_done_callback(_on_worker_done)
 
-        # Enqueue the work item
-        self._pending[agent_id].append(prompt_text)
-        await self._queues[agent_id].put((prompt_text, attachments or [], trigger_message_id))
+            # Enqueue the work item
+            self._pending[agent_id].append(prompt_text)
+            await self._queues[agent_id].put({
+                "prompt_text": prompt_text,
+                "attachments": attachments or [],
+                "trigger_msg_id": trigger_message_id,
+                "parent_coordinator_id": parent_coordinator_id,
+                "task_id": task_id,
+            })
 
         # Broadcast queue depth change to UI
         depth = self._queues[agent_id].qsize()
@@ -380,13 +411,25 @@ class MessageRouter:
                 logger.info("Worker for agent '%s' received shutdown sentinel.", snapshot.name)
                 break
 
-            prompt_text, attachments, trigger_msg_id = item if len(item) == 3 else (item[0], item[1], None)
+            if isinstance(item, tuple):
+                prompt_text, attachments, trigger_msg_id = item if len(item) == 3 else (item[0], item[1], None)
+                parent_coordinator_id = None
+                task_id = None
+            else:
+                prompt_text = item.get("prompt_text", "")
+                attachments = item.get("attachments", [])
+                trigger_msg_id = item.get("trigger_msg_id")
+                parent_coordinator_id = item.get("parent_coordinator_id")
+                task_id = item.get("task_id")
 
             try:
                 # B5: Watchdog timeout — prevent a single stuck task from
                 # blocking the queue indefinitely.
                 await asyncio.wait_for(
-                    self._execute_agent_loop(agent_id, snapshot, prompt_text, attachments, trigger_msg_id),
+                    self._execute_agent_loop(
+                        agent_id, snapshot, prompt_text, attachments, trigger_msg_id,
+                        parent_coordinator_id, task_id
+                    ),
                     timeout=_MAX_TASK_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -426,6 +469,8 @@ class MessageRouter:
         prompt_text: str,
         attachments: List[Dict],
         trigger_message_id: Optional[str] = None,
+        parent_coordinator_id: Optional[str] = None,
+        task_id: Optional[str] = None,
     ):
         """
         Builds the ReACT agent instance and runs its loop to completion.
@@ -452,6 +497,8 @@ class MessageRouter:
                 system_prompt=snapshot.system_prompt,
                 fallback_model=snapshot.fallback_model,
                 reasoning_effort=snapshot.reasoning_effort,
+                parent_coordinator_id=parent_coordinator_id,
+                task_id=task_id,
             )
         else:
             from core.agent.react_agent import ReACTAgent
@@ -465,6 +512,8 @@ class MessageRouter:
                 system_prompt=snapshot.system_prompt,
                 fallback_model=snapshot.fallback_model,
                 reasoning_effort=snapshot.reasoning_effort,
+                parent_coordinator_id=parent_coordinator_id,
+                task_id=task_id,
             )
 
         if trigger_message_id:

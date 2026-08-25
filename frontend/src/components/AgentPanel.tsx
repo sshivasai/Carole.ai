@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import type { AgentConfig, ScheduledTask, AccessControlConfig } from "@/lib/types";
-import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock, Shield, Shuffle, Sparkles, RefreshCw } from "lucide-react";
+import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock, Shield, Shuffle, Sparkles, RefreshCw, FileText } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 import AgentAvatar from "./AgentAvatar";
@@ -265,6 +265,9 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   // Reasoning state
   const [reasoning, setReasoning] = useState(initial?.reasoning_effort || "none");
 
+  // Implementation plan auto-approval state
+  const [autoApprovePlans, setAutoApprovePlans] = useState(initial?.auto_approve_plans ?? false);
+
   // Load model catalog from backend on mount
   useEffect(() => {
     api.listModels().then(cat => {
@@ -348,6 +351,7 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
         skills: skills.split(",").map(s => s.trim()).filter(Boolean),
         team_id: teamId,
         tool_permissions: accessControl,
+        auto_approve_plans: autoApprovePlans,
       };
       const saved = initial
         ? await api.updateAgent(initial.id, data)
@@ -540,6 +544,27 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
           <div className="form-group">
             <label className="form-label">Skills (comma-separated)</label>
             <input className="input" placeholder="web_search, code_execution, browser" value={skills} onChange={e => setSkills(e.target.value)} />
+          </div>
+
+          {/* Implementation Plan Auto-Approval toggle */}
+          <div className="form-group" style={{ background: "var(--color-canvas-raised)", padding: "var(--sp-md)", borderRadius: "var(--radius-md)", border: "1px solid var(--color-hairline)" }}>
+            <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-ink)", display: "flex", alignItems: "center", gap: 6 }}>
+                  <FileText size={14} style={{ color: "var(--color-accent, #6366f1)" }} />
+                  Implementation Plan Auto-Approval
+                </div>
+                <div className="caption" style={{ color: "var(--color-mute)", marginTop: 2 }}>
+                  Automatically approve this agent&apos;s implementation plans without requiring manual review.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={autoApprovePlans}
+                onChange={e => setAutoApprovePlans(e.target.checked)}
+                style={{ width: 16, height: 16, accentColor: "var(--color-primary)" }}
+              />
+            </label>
           </div>
           <div style={{ display: "flex", gap: "var(--sp-md)", justifyContent: "flex-end" }}>
             <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>

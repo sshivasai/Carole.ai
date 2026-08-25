@@ -579,6 +579,24 @@ class MultiModelRouter:
                         project.total_spend_usd = f"{current_spend + cost:.6f}"
                 
                 await session.commit()
+
+            # Broadcast real-time token and cost stats to UI
+            if team_id:
+                try:
+                    from core.chat.event_bus import event_bus
+                    await event_bus.publish(f"team:{team_id}", {
+                        "type": "token_usage",
+                        "agent_id": str(agent_id) if agent_id else None,
+                        "agent_name": agent_name,
+                        "model": model,
+                        "provider": provider,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "estimated_cost_usd": f"{cost:.6f}",
+                    })
+                except Exception:
+                    pass
         except Exception as e:
             import logging as _logging
             _logging.getLogger("carole.router").warning("Token usage tracking failed: %s", e)

@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useCallback } from "react";
 import type { TaskItem, AgentConfig } from "@/lib/types";
-import { CheckCircle2, Clock, PlayCircle, AlertCircle, Lock, Plus, X, Loader2, FileText, ListTodo } from "lucide-react";
+import { CheckCircle2, Clock, PlayCircle, AlertCircle, Lock, Plus, X, Loader2, FileText, ListTodo, ChevronDown, Check } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import TaskDetailModal from "./TaskDetailModal";
 import ImplementationPlanModal from "./ImplementationPlanModal";
@@ -89,9 +89,13 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "var(--sp-2xl)", overflow: "hidden" }}>
-      <header style={{ marginBottom: "var(--sp-xl)" }}>
-        <h2 className="display-md">Task Board</h2>
-        <p className="body-sm text-mute">Drag cards to change status · click + to add tasks</p>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "var(--sp-xl)" }}>
+        <div>
+          <h2 className="display-md">Task Board</h2>
+          <p className="body-sm text-mute">Drag cards to change status · click + to add tasks</p>
+        </div>
+        
+        {teamId && <KanbanSyncSchedule teamId={teamId} agents={agents} />}
       </header>
 
       <div style={{ display: "flex", gap: "var(--sp-lg)", flex: 1, overflowX: "auto", paddingBottom: "var(--sp-sm)" }}>
@@ -267,6 +271,219 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
           // Optionally refresh tasks from parent — for now just close
         }}
       />
+    </div>
+  );
+}
+
+function KanbanSyncSchedule({ teamId, agents }: { teamId: string, agents: AgentConfig[] }) {
+  const [loading, setLoading] = useState(true);
+  const [schedule, setSchedule] = useState("off");
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    api.listScheduledTasks(teamId).then(tasks => {
+      const syncTask = tasks.find(t => t.name === "kanban_auto_sync");
+      if (syncTask) {
+        setTaskId(syncTask.id);
+        if (syncTask.cron_expression === "*/5 * * * *") setSchedule("5m");
+        else if (syncTask.cron_expression === "*/10 * * * *") setSchedule("10m");
+        else if (syncTask.cron_expression === "*/30 * * * *") setSchedule("30m");
+        else if (syncTask.cron_expression === "0 * * * *") setSchedule("1h");
+        else setSchedule("on");
+      } else {
+        setSchedule("off");
+        setTaskId(null);
+      }
+    }).catch(console.error).finally(() => setLoading(false));
+  }, [teamId]);
+
+  // Click outside to close dropdown
+  React.useEffect(() => {
+    const handleDocClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    if (menuOpen) {
+      document.addEventListener("mousedown", handleDocClick);
+    }
+    return () => document.removeEventListener("mousedown", handleDocClick);
+  }, [menuOpen]);
+
+  const selectOption = async (val: string) => {
+    setSchedule(val);
+    setMenuOpen(false);
+    setSaving(true);
+    try {
+      if (val === "off") {
+        if (taskId) {
+          await api.deleteScheduledTask(taskId).catch(console.error);
+          setTaskId(null);
+        }
+        return;
+      }
+
+      const orchestrator = agents.find(a => a.role?.toLowerCase().includes("orchestrator") || a.role?.toLowerCase().includes("coordinator")) || agents[0];
+      
+      if (!orchestrator) {
+        alert("No agents in the team to run the sync!");
+        setSchedule("off");
+        return;
+      }
+
+      let cron = "*/10 * * * *";
+      if (val === "5m") cron = "*/5 * * * *";
+      else if (val === "30m") cron = "*/30 * * * *";
+      else if (val === "1h") cron = "0 * * * *";
+
+      const prompt = "[SYSTEM CRON] Please review the Kanban board for pending unassigned tasks or stale tasks, and handle them by assigning or commenting.";
+
+      if (taskId) {
+        await api.updateScheduledTask(taskId, { cron_expression: cron });
+      } else {
+        const newTask = await api.createScheduledTask(teamId, {
+          name: "kanban_auto_sync",
+          agent_id: orchestrator.id,
+          cron_expression: cron,
+          prompt: prompt
+        });
+        setTaskId(newTask.id);
+      }
+    } catch (err) {
+      console.error(err);
+      setSchedule("off");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return null;
+
+  const OPTIONS = [
+    { value: "off", label: "Off", desc: "Manual sync only" },
+    { value: "5m", label: "Every 5 mins", desc: "Fast periodic review" },
+    { value: "10m", label: "Every 10 mins", desc: "Standard recommended" },
+    { value: "30m", label: "Every 30 mins", desc: "Balanced cadence" },
+    { value: "1h", label: "Every 1 hour", desc: "Low token usage" },
+  ];
+
+  const currentOption = OPTIONS.find(o => o.value === schedule) || OPTIONS[0];
+  const isEnabled = schedule !== "off";
+
+  return (
+    <div style={{ position: "relative", display: "inline-block" }} ref={menuRef}>
+      <style>{`
+        @keyframes syncPulse {
+          0%, 100% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.2); opacity: 0.7; }
+        }
+      `}</style>
+      <button
+        onClick={() => setMenuOpen(o => !o)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: menuOpen ? "rgba(99, 102, 241, 0.12)" : "var(--color-canvas-raised, #111827)",
+          border: `1px solid ${menuOpen ? "var(--color-primary, #6366f1)" : isEnabled ? "rgba(16, 185, 129, 0.35)" : "var(--color-hairline, #2a2a3f)"}`,
+          padding: "5px 10px",
+          borderRadius: "var(--radius-sm, 6px)",
+          cursor: "pointer",
+          color: "var(--color-ink, #f9fafb)",
+          fontSize: 11.5,
+          fontWeight: 500,
+          boxShadow: isEnabled ? "0 0 10px rgba(16, 185, 129, 0.12)" : "var(--shadow-clay-sm, 0 1px 3px rgba(0,0,0,0.1))",
+          transition: "all 0.15s ease",
+        }}
+        title="Configure automated background coordinator check on task board"
+      >
+        {saving ? (
+          <Loader2 size={13} className="animate-spin text-mute" />
+        ) : (
+          <Clock size={13} style={{ color: isEnabled ? "#10b981" : "var(--color-mute, #9ca3af)" }} />
+        )}
+        <span style={{ color: "var(--color-mute, #9ca3af)" }}>Auto-Sync:</span>
+        <span style={{ fontWeight: 600, color: isEnabled ? "#10b981" : "var(--color-ink, #f9fafb)", display: "flex", alignItems: "center", gap: 4 }}>
+          {isEnabled && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10b981", animation: "syncPulse 2s infinite" }} />}
+          {currentOption.label}
+        </span>
+        <ChevronDown size={12} style={{ color: "var(--color-mute, #9ca3af)", transform: menuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.15s ease" }} />
+      </button>
+
+      {menuOpen && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            right: 0,
+            width: 220,
+            background: "var(--bg-glass-card, #131326)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            border: "1px solid var(--border-glass, rgba(255,255,255,0.14))",
+            borderRadius: "var(--radius-md, 8px)",
+            boxShadow: "0 12px 32px rgba(0,0,0,0.45)",
+            padding: 5,
+            zIndex: 1000,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            animation: "popoverEnter 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
+          }}
+        >
+          <div style={{ padding: "4px 8px 6px 8px", borderBottom: "1px solid var(--color-hairline, #2a2a3f)", marginBottom: 2 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--color-mute, #9ca3af)", letterSpacing: "0.04em" }}>
+              Kanban Auto-Review
+            </div>
+            <div style={{ fontSize: 9.5, color: "var(--color-mute, #9ca3af)" }}>
+              Orchestrator reviews tasks on interval
+            </div>
+          </div>
+
+          {OPTIONS.map(opt => {
+            const isSelected = opt.value === schedule;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => selectOption(opt.value)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "6px 8px",
+                  borderRadius: 5,
+                  background: isSelected ? "rgba(99, 102, 241, 0.12)" : "transparent",
+                  border: isSelected ? "1px solid rgba(99, 102, 241, 0.25)" : "1px solid transparent",
+                  cursor: "pointer",
+                  color: isSelected ? "var(--color-primary, #6366f1)" : "var(--color-ink, #f9fafb)",
+                  textAlign: "left",
+                  fontSize: 11.5,
+                  transition: "background 0.12s ease",
+                }}
+                onMouseEnter={e => {
+                  if (!isSelected) (e.currentTarget as HTMLElement).style.background = "rgba(255, 255, 255, 0.05)";
+                }}
+                onMouseLeave={e => {
+                  if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent";
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: isSelected ? 700 : 500 }}>
+                    {opt.label}
+                  </div>
+                  <div style={{ fontSize: 9.5, color: "var(--color-mute, #9ca3af)" }}>
+                    {opt.desc}
+                  </div>
+                </div>
+                {isSelected && <Check size={13} style={{ color: "var(--color-primary, #6366f1)", flexShrink: 0 }} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

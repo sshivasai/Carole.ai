@@ -94,6 +94,7 @@ class ReACTAgent:
         # Last observation text for no-progress detection.
         self._last_observation: str = ""
         self._no_progress_count: int = 0
+        self._consecutive_tool_errors: int = 0
 
     async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20) -> List[Dict[str, str]]:
         """Loads recent team messages from the DB to give the agent conversation context."""
@@ -457,12 +458,13 @@ class ReACTAgent:
         return re.sub(r'\[OBSERVATION\](.*?)\[/OBSERVATION\]', _truncate_match, content, flags=re.DOTALL)
 
     def _micro_compact(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Stage 1: Strip media and truncate oversized tool outputs in-place."""
+        """Stage 1: Strip media, truncate oversized tool outputs, and micro-compact older historical tool results."""
         cc = self._get_compaction_config()
         max_chars = cc["max_observation_chars"]
+        num_msgs = len(messages)
 
         new_msgs = []
-        for msg in messages:
+        for idx, msg in enumerate(messages):
             content = msg.get("content", "")
             if msg.get("role") != "user" or not isinstance(content, str):
                 new_msgs.append(msg)
@@ -475,7 +477,23 @@ class ReACTAgent:
                 content = re.sub(r'data:image/[^;]+;base64,[a-zA-Z0-9+/=]+', '[IMAGE_STRIPPED]', content)
                 changed = True
 
-            # Truncate large [OBSERVATION] blocks
+            # Historical tool result micro-compaction: for turns older than the 2 most recent turns (> 4 messages ago),
+            # aggressively condense bulky tool outputs (> 300 chars) into concise summary tags to save tokens.
+            is_historical = (num_msgs - idx) > 4
+            if is_historical and "[OBSERVATION]" in content and len(content) > 300:
+                def _condense_historical(m):
+                    inner = m.group(1).strip()
+                    lines = inner.splitlines()
+                    first_line = lines[0][:100] if lines else "Result"
+                    line_count = len(lines)
+                    char_count = len(inner)
+                    return f"[OBSERVATION]{first_line} ...[{line_count} lines / {char_count} chars compacted][/OBSERVATION]"
+                condensed = re.sub(r'\[OBSERVATION\](.*?)\[/OBSERVATION\]', _condense_historical, content, flags=re.DOTALL)
+                if condensed != content:
+                    content = condensed
+                    changed = True
+
+            # Truncate large [OBSERVATION] blocks for recent messages
             if "[OBSERVATION]" in content and len(content) > max_chars:
                 new_content = self._truncate_observation(content, max_chars)
                 if new_content != content:
@@ -716,6 +734,7 @@ class ReACTAgent:
 
         self._current_thought_buffer = ""
         self._current_reasoning_buffer = ""
+        self._consecutive_tool_errors = 0
         action_call = None
 
         while loop_count < max_loops:
@@ -740,6 +759,19 @@ class ReACTAgent:
             trigger_tokens = window_size * trigger_ratio
 
             estimated_tokens = self._estimate_tokens(messages)
+            
+            # Broadcast real-time context token usage
+            await event_bus.publish(self.topic, {
+                "type": "context_usage",
+                "sender_id": self.agent_id,
+                "sender_name": self.name,
+                "model": self.model,
+                "estimated_tokens": estimated_tokens,
+                "context_window": window_size,
+                "usage_percent": round((estimated_tokens / window_size) * 100, 1) if window_size > 0 else 0,
+                "loop_count": loop_count,
+                "max_loops": max_loops,
+            })
             
             if estimated_tokens > trigger_tokens:
                 self._log.warning("Context window reached %.0f%% capacity (%d tokens). Triggering rolling compaction...", (estimated_tokens / window_size) * 100, estimated_tokens)
@@ -1029,13 +1061,13 @@ class ReACTAgent:
                             "  [ACTION]write_file({\"path\": \"index.html\", \"content\": \"<!DOCTYPE html>...\"})[/ACTION]\n"
                             "Start executing your first planned step RIGHT NOW. Do not stop until ALL steps are done.[/OBSERVATION]"
                         )
-                    elif any(sig in _lower for sig in ["let me retrieve", "let me check", "let me find", "let me look", "just a moment", "one moment"]):
+                    elif any(sig in _lower for sig in ["let me", "i'll", "i will", "let's", "working on it", "just a moment", "one moment"]):
                         correction = (
                             "[OBSERVATION] Incomplete Response / Unexecuted Promise.\n"
-                            "You stated you would retrieve/check information ('Let me retrieve / Just a moment') but did not call a tool or deliver the answer.\n"
-                            "If you need to inspect files or memory, call the tool now using:\n"
+                            "You stated you would take an action or check something, but did not actually call a tool.\n"
+                            "Saying you will do something is not doing it. You MUST immediately call the tool using:\n"
                             "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                            "Otherwise, if you have the answer or the information is unavailable, deliver your complete final answer to the user immediately.[/OBSERVATION]"
+                            "Otherwise, if you have finished all work, deliver your complete final answer to the user immediately.[/OBSERVATION]"
                         )
                     else:
                         # Check if it was a delegation promise specifically
@@ -1094,6 +1126,11 @@ class ReACTAgent:
 
                 # Agent is done — persist and broadcast
                 self._log.info("Task finished after %d loops.", loop_count)
+                
+                # If this agent was spawned by a coordinator, wrap its final output in a task notification
+                if self.parent_coordinator_id:
+                    thought_buffer = self._build_task_notification(thought_buffer, "completed")
+
                 db_msg = Message(
                     team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
                     sender_id=self.agent_id,
@@ -1117,18 +1154,8 @@ class ReACTAgent:
                     "is_private": self.is_private_response,
                     "recipient_id": self.reply_recipient_id,
                     "has_reasoning": bool(self._current_reasoning_buffer),
+                    "is_task_notification": bool(self.parent_coordinator_id),
                 })
-
-                if self.parent_coordinator_id:
-                    notification = self._build_task_notification(thought_buffer, "completed")
-                    await event_bus.publish(self.topic, {
-                        "type": "message",
-                        "sender_id": self.agent_id,
-                        "sender_name": self.name,
-                        "role": self.role,
-                        "text": notification,
-                        "is_task_notification": True,
-                    })
 
                 await event_bus.publish(self.topic, {
                     "type": "agent_status",
@@ -1221,10 +1248,15 @@ class ReACTAgent:
                     "text": intermediate_trace,
                     "is_intermediate": True
                 })
-                # --- Error recovery hints ---
-                # Inject lightweight hints for common error patterns so the agent
-                # doesn't waste loops retrying the same broken approach.
-                if observation.startswith("✗") or "Error:" in observation or "Error " in observation:
+                # --- Error recovery & consecutive failure breaker ---
+                is_error = observation.startswith("✗") or "Error:" in observation or "Error " in observation or "error:" in observation or "Exception:" in observation
+                if is_error:
+                    self._consecutive_tool_errors += 1
+                else:
+                    self._consecutive_tool_errors = 0
+
+                # Inject lightweight hints for common error patterns
+                if is_error:
                     hint = ""
                     obs_lower = observation.lower()
                     if "modulenotfounderror" in obs_lower or "importerror" in obs_lower:
@@ -1248,6 +1280,16 @@ class ReACTAgent:
                         )
                     if hint:
                         observation += hint
+
+                    # Step-Back Mechanism: Inject breaker warning on 3+ consecutive failures
+                    if self._consecutive_tool_errors >= 3:
+                        observation += (
+                            f"\n\n🛑 [SYSTEM WARNING: CONSECUTIVE FAILURE BREAKER]\n"
+                            f"You have encountered {self._consecutive_tool_errors} consecutive tool failures. "
+                            "STOP repeating the same action. "
+                            "Step back, diagnose why this approach is failing, verify your assumptions (using read_file or checking logs), "
+                            "and formulate a completely different strategy before executing another tool."
+                        )
 
                 observation_text = f"[OBSERVATION] Tool output:\n{observation}\n[/OBSERVATION]"
                 messages.append({

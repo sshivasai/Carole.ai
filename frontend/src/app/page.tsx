@@ -257,6 +257,8 @@ function AppShell() {
   const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null);
   const [agentQueues, setAgentQueues] = useState<Record<string, number>>({});
   const [scratchpads, setScratchpads] = useState<ScratchpadItem[]>([]);
+  const [lastTokenEvent, setLastTokenEvent] = useState<any | null>(null);
+  const [contextUsage, setContextUsage] = useState<any | null>(null);
 
   useEffect(() => {
     const handleGlobalKey = (e: KeyboardEvent) => {
@@ -300,6 +302,12 @@ function AppShell() {
     }
     if (evt.type === "agent_queue_update" && evt.agent_id != null) {
       setAgentQueues(prev => ({ ...prev, [evt.agent_id]: evt.queue_depth ?? 0 }));
+    }
+    if (evt.type === "token_usage") {
+      setLastTokenEvent(evt);
+    }
+    if (evt.type === "context_usage") {
+      setContextUsage(evt);
     }
     if (evt.type === "scratchpad_updated") {
       const target = (evt.target === "team" ? "team" : "personal") as "team" | "personal";
@@ -505,6 +513,8 @@ function AppShell() {
                     }}
                     teamId={teamId}
                     projectId={projectId}
+                    lastTokenEvent={lastTokenEvent}
+                    contextUsage={contextUsage}
                     onToggleExplorer={() => setExplorerOpen(o => !o)}
                     onOpenFile={(path: string) => {
                       setExplorerOpen(true);

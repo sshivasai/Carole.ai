@@ -104,7 +104,7 @@ class WebTools:
                         text = re.sub(r"<[^>]+>", " ", text)
                         text = re.sub(r"\s+", " ", text).strip()
 
-                # Truncate to prevent context window overflow (using Claude Code's generous 100k limit)
+                # Truncate to prevent context window overflow (100k char limit)
                 MAX_MARKDOWN_LENGTH = 100000
                 if len(text) > MAX_MARKDOWN_LENGTH:
                     text = text[:MAX_MARKDOWN_LENGTH] + "\n\n[Content truncated due to length...]"

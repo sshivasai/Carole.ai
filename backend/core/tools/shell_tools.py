@@ -17,6 +17,7 @@ import asyncio
 import subprocess
 import threading
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,41 @@ class ShellTools:
             workspace_root = os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[3]))
         self.workspace_root = Path(workspace_root).resolve()
 
+    @staticmethod
+    def _validate_strict_command_policy(command: str) -> Optional[str]:
+        """
+        Enforces Strict Tool Exclusivity:
+        Intercepts raw shell commands attempting to read, write, edit, or search files
+        when dedicated structured tools exist.
+        """
+        cmd_clean = command.strip()
+
+        # 1. Reading files via shell escapes (cat, head, tail, Get-Content, type)
+        m_read = re.match(r'^\s*(?:cat|head|tail|Get-Content|gc|type)\s+([^\s|>;&]+)\s*$', cmd_clean, re.IGNORECASE)
+        if m_read:
+            target_path = m_read.group(1).strip('\'"')
+            return (
+                f"Strict Tool Policy Violation: Do NOT use shell commands like 'cat/head/tail/Get-Content' to read files.\n"
+                f"Action Required: Use the dedicated 'read_file' tool: read_file(relative_path=\"{target_path}\")"
+            )
+
+        # 2. In-place file editing via sed / awk
+        if re.search(r'^\s*(?:sed\s+-i|awk\s+.*-i)\b', cmd_clean, re.IGNORECASE):
+            return (
+                "Strict Tool Policy Violation: Do NOT use 'sed -i' or 'awk' to edit files.\n"
+                "Action Required: Use the dedicated 'edit_file' tool with exact character matching."
+            )
+
+        # 3. File creation via heredocs or echo redirection
+        if re.search(r'^\s*cat\s*<<\s*[\'"]?EOF[\'"]?\s*>', cmd_clean, re.IGNORECASE) or \
+           re.search(r'^\s*(?:Set-Content|Out-File)\s+', cmd_clean, re.IGNORECASE):
+            return (
+                "Strict Tool Policy Violation: Do NOT use shell heredocs (cat << EOF) or Set-Content to write files.\n"
+                "Action Required: Use the dedicated 'write_file' tool: write_file(relative_path=\"...\", content=\"...\")"
+            )
+
+        return None
+
     async def execute_command(
         self,
         command: str,
@@ -45,6 +81,11 @@ class ShellTools:
         Streams standard output and standard error line-by-line to the EventBus.
         Respects CancellationToken for aborts. Works robustly across all platforms.
         """
+        # Strict tool exclusivity check
+        policy_violation = self._validate_strict_command_policy(command)
+        if policy_violation:
+            logger.warning("[Shell] Intercepted non-exclusive command: %s", command)
+            return policy_violation
         workdir = cwd or str(self.workspace_root)
         try:
             logger.info("[Shell] Executing in %s: '%s' (Timeout: %ss)", workdir, command, timeout)
@@ -160,12 +201,21 @@ class ShellTools:
         if timed_out:
             return f"✗ Subprocess Error: Command exceeded time constraint of {timeout} seconds and was killed."
 
-        # Truncate to prevent context window overflow from verbose commands
-        MAX_SHELL_OUTPUT = 8000
-        if len(full_stdout) > MAX_SHELL_OUTPUT:
-            full_stdout = full_stdout[:MAX_SHELL_OUTPUT] + f"\n... [Output truncated — {len(full_stdout)} total chars. Use read_file to see full output if saved to a file.]"
-        if len(full_stderr) > MAX_SHELL_OUTPUT:
-            full_stderr = full_stderr[:MAX_SHELL_OUTPUT] + f"\n... [Stderr truncated — {len(full_stderr)} total chars]"
+        # Truncate to prevent context window overflow from verbose commands while preserving stack traces at the tail
+        def _truncate_output(text: str, max_chars: int = 8000) -> str:
+            if not text or len(text) <= max_chars:
+                return text
+            head_size = 1500
+            tail_size = max_chars - head_size
+            omitted = len(text) - (head_size + tail_size)
+            return (
+                f"{text[:head_size]}\n\n"
+                f"... [Output truncated — {omitted} characters omitted. Use read_file to see full output if saved to a file] ...\n\n"
+                f"{text[-tail_size:]}"
+            )
+
+        full_stdout = _truncate_output(full_stdout)
+        full_stderr = _truncate_output(full_stderr)
 
         if returncode != 0:
             return (

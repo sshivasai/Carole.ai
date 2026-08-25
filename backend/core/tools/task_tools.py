@@ -12,7 +12,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from core.memory.database import async_session
-from core.memory.models import Task, Agent
+from core.memory.models import Task, Agent, TaskComment
 from core.chat.event_bus import event_bus
 
 logger = logging.getLogger("carole.task_tools")
@@ -323,10 +323,18 @@ class TaskTools:
             })
 
             from core.chat.message_router import message_router
-            # Note: No @mention in this message — using author_name as plain text
-            # prevents the message router from re-waking the commenter agent.
+            sys_text = f"[TASK_COMMENT] {author_name} on '{task.title}': {text}"
+            
+            import re
+            # Implicit mentions for assignee if no explicit mention is in the text
+            if task.assigned_agent_id and not re.search(r"@\w+", text):
+                agent_res = await db.execute(select(Agent).where(Agent.id == task.assigned_agent_id))
+                assignee_agent = agent_res.scalar_one_or_none()
+                if assignee_agent and str(assignee_agent.id) != author_id:
+                    sys_text += f"\n(Implicitly notifying assignee: @{assignee_agent.name})"
+
             await message_router.route_message(
-                text=f"[TASK_COMMENT] {author_name} commented on '{task.title}': {text[:200]}",
+                text=sys_text,
                 sender_id="system",
                 team_id=team_id_str,
                 sender_name="System",

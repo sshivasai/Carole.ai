@@ -14,6 +14,7 @@ Responsibilities:
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -238,15 +239,29 @@ class AutoDreamWorker:
         stored_facts = 0
         for key, value in entity_facts:
             try:
-                # Upsert or ignore duplicate checking for entity memory can be handled simply here
-                fact = EntityMemory(
-                    project_id=team.project_id,
-                    team_id=team.id,
-                    key=key,
-                    value=value
+                # Deduplicate: Check if a fact with this key already exists for this team/project
+                stmt = select(EntityMemory).where(
+                    EntityMemory.key == key,
+                    EntityMemory.team_id == team.id,
+                    EntityMemory.project_id == team.project_id
                 )
-                db.add(fact)
-                stored_facts += 1
+                result = await db.execute(stmt)
+                existing_fact = result.scalar_one_or_none()
+
+                if existing_fact:
+                    if existing_fact.value != value:
+                        existing_fact.value = value
+                        existing_fact.updated_at = datetime.now(timezone.utc)
+                        stored_facts += 1
+                else:
+                    fact = EntityMemory(
+                        project_id=team.project_id,
+                        team_id=team.id,
+                        key=key,
+                        value=value
+                    )
+                    db.add(fact)
+                    stored_facts += 1
             except Exception as e:
                 logger.error("💤 [Dream] Team '%s': Failed to store entity fact: %s", team.name, e)
                 continue

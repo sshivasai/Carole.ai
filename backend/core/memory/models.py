@@ -309,7 +309,7 @@ class McpServer(Base):
 class FileBackup(Base):
     """
     Stores a snapshot of a file's state BEFORE an agent modifies it.
-    Uses an append-only, copy-on-write file backup strategy similar to Claude Code.
+    Uses an append-only, copy-on-write file backup strategy.
     
     - `backup_file_name = None`  → file did not exist before; rollback should unlink/delete the file.
     - `backup_file_name = str`   → SHA-256 hash filename in `~/.carole/workspaces/{project_slug}/.carole/{team_slug}/file-history/`. Rollback should copy this over the live file.

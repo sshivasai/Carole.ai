@@ -46,7 +46,7 @@
 }
 
 .theme-light {
-  /* Evervault-inspired Light Palette */
+  /* Evervault-inspired Eye-Comfort Grayish Light Palette */
   --color-primary: #7c3aed;
   --color-primary-soft: #8b5cf6;
   --color-primary-deep: #6d28d9;
@@ -54,17 +54,17 @@
   --color-primary-glow: rgba(124, 58, 237, 0.16);
   --color-primary-glow-sm: rgba(124, 58, 237, 0.08);
   
-  --color-canvas: #f8fafc;
-  --color-canvas-soft: #ffffff;
-  --color-canvas-raised: #f1f5f9;
-  --color-hairline: #e2e8f0;
-  --color-hairline-soft: #cbd5e1;
+  --color-canvas: #e2e6eb;
+  --color-canvas-soft: #ebf0f5;
+  --color-canvas-raised: #f7f9fc;
+  --color-hairline: #cbd5e1;
+  --color-hairline-soft: #b0bec5;
   
-  --color-ink: #0f172a;
-  --color-ink-strong: #020817;
-  --color-body: #334155;
+  --color-ink: #1e293b;
+  --color-ink-strong: #0f172a;
+  --color-body: #475569;
   --color-mute: #64748b;
-  --color-canvas-text-soft: #475569;
+  --color-canvas-text-soft: #334155;
   
   --color-danger: #ef4444;
   --color-danger-glow: rgba(239, 68, 68, 0.15);
@@ -72,17 +72,17 @@
   --color-info: #3b82f6;
   --color-success: #10b981;
   
-  --grid-line: rgba(0, 0, 0, 0.05);
+  --grid-line: rgba(15, 23, 42, 0.05);
 
   /* Glassmorphism & Cards */
-  --bg-glass-panel: rgba(255, 255, 255, 0.90);
-  --bg-glass-card: #ffffff;
+  --bg-glass-panel: rgba(235, 240, 245, 0.95);
+  --bg-glass-card: rgba(255, 255, 255, 0.94);
   --blur-md: blur(12px);
   --blur-lg: blur(24px);
-  --shadow-clay: 0 4px 20px rgba(0, 0, 0, 0.05);
-  --shadow-clay-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-clay: 0 4px 20px rgba(15, 23, 42, 0.08);
+  --shadow-clay-sm: 0 2px 8px rgba(15, 23, 42, 0.05);
   --shadow-clay-inset: none;
-  --border-glass: rgba(0, 0, 0, 0.08);
+  --border-glass: #cbd5e1;
 }
 
 :root {

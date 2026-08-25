@@ -131,59 +131,23 @@ class AgentTools:
             if not agent:
                 return f"Error: No agent named '{agent_name}' found in this team."
 
-            # Resolve project_id
-            team_stmt = select(Team).where(Team.id == team_uuid)
-            team_result = await db.execute(team_stmt)
-            team = team_result.scalar_one_or_none()
-            project_id = str(team.project_id) if team else ""
+            # Enqueue the task prompt to the agent's message_router FIFO queue.
+            # This ensures they execute in a single managed loop, rather than
+            # invisible detached background tasks.
+            await message_router._enqueue_agent(
+                agent=agent,
+                prompt_text=task,
+                db_session=db,
+                attachments=[],
+                trigger_message_id=None,
+                parent_coordinator_id=parent_coordinator_id,
+                task_id=task_id
+            )
 
-        # Generate a unique task_id for tracking this delegation
-        task_id = str(uuid.uuid4())
-
-        # Lazy import to avoid circular dependency
-        from core.agent.react_agent import ReACTAgent
-
-        react = ReACTAgent(
-            agent_id=str(agent.id),
-            team_id=str(agent.team_id),
-            project_id=project_id,
-            name=agent.name,
-            role=agent.role,
-            model=agent.model,
-            system_prompt=agent.system_prompt,
-            parent_coordinator_id=parent_coordinator_id,
-            task_id=task_id,
-            fallback_model=agent.fallback_model,
-            reasoning_effort=getattr(agent, "reasoning_effort", "none") or "none",
+        return (
+            f"Successfully delegated task '{task[:50]}...' to subagent '{agent_name}'. "
+            f"(Task ID: {task_id})"
         )
-
-        async def _run():
-            try:
-                async with async_session() as agent_db:
-                    await react.run_loop(agent_db, task)
-            except Exception as e:
-                logger.exception(
-                    "[spawn_agent] Subagent %s crashed: %s", agent.name, e
-                )
-
-        # NOTE (Bug 3 race): There is an inherent TOCTOU race here — the
-        # subagent may emit its success <task-notification> before the parent
-        # coordinator has subscribed to the team topic. The EventBus keeps a
-        # per-topic history buffer (last 100 events) which is replayed to
-        # late-joining subscribers (see backend/core/chat/event_bus.py:47-54),
-        # so in practice the parent will still receive the notification on
-        # subscribe via replay. The done_callback below additionally covers the
-        # failure case so the parent never hangs on a crash.
-        _task = asyncio.create_task(_run())
-        _running_subagent_tasks.add(_task)
-        _task.add_done_callback(
-            _make_done_callback(task_id, parent_coordinator_id, str(agent.team_id), agent.name)
-        )
-
-        status_msg = f"Success: Spawned agent '{agent_name}' with task: {task[:100]}"
-        if parent_coordinator_id:
-            status_msg += f" (task_id={task_id}, will notify coordinator on completion)"
-        return status_msg
 
     async def send_message(self, text: str, sender_id: str, team_id: str, recipient_name: str = None) -> str:
         """

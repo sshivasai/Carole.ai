@@ -125,6 +125,7 @@ class AgentCreate(BaseModel):
     tool_permissions: dict = {}
     custom_instructions: Optional[str] = None
     skills: Optional[List[str]] = None
+    auto_approve_plans: bool = False
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -407,6 +408,7 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
         custom_instructions=body.custom_instructions,
         skills=body.skills or [],
         tool_permissions=body.tool_permissions,
+        auto_approve_plans=body.auto_approve_plans or False,
     )
     db.add(agent)
     await db.commit()
@@ -442,6 +444,7 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
         "team_id": str(agent.team_id),
         "personality": agent.personality, "skills": agent.skills,
         "custom_instructions": agent.custom_instructions,
+        "auto_approve_plans": agent.auto_approve_plans,
     }
 
 @router.get("/agents/{team_id}")
@@ -1549,6 +1552,8 @@ async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSessio
             "parent_task_id": str(t.parent_task_id) if t.parent_task_id else None,
             "created_by": t.created_by,
             "created_at": t.created_at.isoformat() if t.created_at else None,
+            "plan_status": t.plan_status,
+            "todo_list": t.todo_list or [],
         }
         for t in result.scalars().all()
     ]
@@ -1684,7 +1689,14 @@ async def create_task_comment(task_id: str, body: TaskCommentCreate, db: AsyncSe
     await db.flush()
     
     from core.chat.message_router import message_router
-    sys_text = f"[TASK_COMMENT] {body.author_name} commented on '{task.title}'"
+    sys_text = f"[TASK_COMMENT] {body.author_name} on '{task.title}': {body.text}"
+    
+    import re
+    if task.assigned_agent_id and not re.search(r"@\w+", body.text):
+        agent_res = await db.execute(select(Agent).where(Agent.id == task.assigned_agent_id))
+        agent = agent_res.scalar_one_or_none()
+        if agent and str(agent.id) != body.author_id:
+            sys_text += f"\n(Implicitly notifying assignee: @{agent.name})"
     await db.commit()
             
     await message_router.route_message(

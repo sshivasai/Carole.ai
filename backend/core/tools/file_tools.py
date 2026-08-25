@@ -27,12 +27,26 @@ class FileChangeResult:
     diff: str = ""
 
 
+def _normalize_quotes(text: str) -> str:
+    """Normalize unicode smart/curly quotes to standard ASCII quotes."""
+    if not text:
+        return text
+    # Double quotes: “ ” „ ” « »
+    text = re.sub(r'[\u201c\u201d\u201e\u00ab\u00bb]', '"', text)
+    # Single quotes: ‘ ’ ‚ ’ ` ´
+    text = re.sub(r'[\u2018\u2019\u201a\u0060\u00b4]', "'", text)
+    return text
+
+
 class FileTools:
     def __init__(self, workspace_root: str = None):
         if not workspace_root:
             workspace_root = os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[3]))
         self.workspace_root = Path(workspace_root).resolve()
         self._locks: Dict[str, asyncio.Lock] = {}
+        # Session / team read tracking: maps scope_id (team_id or 'global') -> {normalized_abs_path: mtime}
+        # Used for Pre-Read enforcement and FILE_UNCHANGED_STUB compression
+        self._read_state: Dict[str, Dict[str, float]] = {}
 
     async def get_workspace_root(self, project_id: Optional[str] = None) -> Path:
         workspaces_dir = CAROLE_HOME_DIR / "workspaces"
@@ -211,27 +225,48 @@ class FileTools:
         diff = difflib.unified_diff(before_lines, after_lines, fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="")
         return "\n".join(diff)
 
-    async def read_file(self, relative_path: str, project_id: Optional[str] = None) -> str:
+    FILE_UNCHANGED_STUB = (
+        "File unchanged since last read: '{path}'. "
+        "The content from the earlier read_file call in this conversation is still current — refer to that instead of re-reading."
+    )
+
+    async def read_file(
+        self,
+        relative_path: str,
+        project_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        force: bool = False
+    ) -> str:
         try:
             safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=True)
             lock = self._get_lock(safe_path)
+            scope = team_id or "global"
+            norm_path = str(safe_path.resolve())
+
             def _sync_read():
                 if not safe_path.is_file():
                     return f"Error: '{relative_path}' is not a file or does not exist."
                 
+                # Check for unchanged file stub to save context tokens
+                mtime = safe_path.stat().st_mtime
+                if not force and scope in self._read_state and norm_path in self._read_state[scope]:
+                    last_mtime = self._read_state[scope][norm_path]
+                    if mtime <= last_mtime:
+                        return self.FILE_UNCHANGED_STUB.format(path=relative_path)
+
                 ext = safe_path.suffix.lower()
+                content = None
                 if ext == ".docx":
                     try:
                         from markitdown import MarkItDown
                         md = MarkItDown()
                         result = md.convert(str(safe_path))
-                        return result.text_content
+                        content = result.text_content
                     except Exception as e:
                         try:
-                            # fallback
                             import docx
                             doc = docx.Document(safe_path)
-                            return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                            content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
                         except Exception as inner_e:
                             return f"Error reading docx file: {str(e)} - fallback also failed: {str(inner_e)}"
                 elif ext == ".pdf":
@@ -242,24 +277,40 @@ class FileTools:
                             text = ""
                             for page in reader.pages:
                                 text += page.extract_text() + "\n"
-                            return text
+                            content = text
                     except Exception as e:
                         return f"Error reading pdf file: {str(e)}"
                 
-                try:
-                    with open(safe_path, "r", encoding="utf-8") as f:
-                        return f.read()
-                except UnicodeDecodeError:
-                    return "[Binary file: cannot display as text]"
+                if content is None:
+                    try:
+                        with open(safe_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                    except UnicodeDecodeError:
+                        return "[Binary file: cannot display as text]"
+                
+                # Record successful read state
+                self._read_state.setdefault(scope, {})[norm_path] = mtime
+                return content
+
             async with lock:
                 return await asyncio.to_thread(_sync_read)
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
-    async def write_file(self, relative_path: str, content: str, agent_name: str = "Unknown", project_id: Optional[str] = None) -> FileChangeResult:
+    async def write_file(
+        self,
+        relative_path: str,
+        content: str,
+        agent_name: str = "Unknown",
+        project_id: Optional[str] = None,
+        team_id: Optional[str] = None
+    ) -> FileChangeResult:
         try:
             safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
+            scope = team_id or "global"
+            norm_path = str(safe_path.resolve())
+
             def _sync_write():
                 before = ""
                 action = "create"
@@ -271,6 +322,8 @@ class FileTools:
                 with open(safe_path, "w", encoding="utf-8") as f:
                     f.write(content)
                 diff = self._generate_diff(relative_path, before, content)
+                # Update read state to latest written state
+                self._read_state.setdefault(scope, {})[norm_path] = safe_path.stat().st_mtime
                 return FileChangeResult(
                     message=f"Success: File '{relative_path}' written ({len(content)} bytes).",
                     path=relative_path, action=action, before_content=before, after_content=content, diff=diff,
@@ -285,24 +338,68 @@ class FileTools:
         except Exception as e:
             return FileChangeResult(message=f"Error writing file: {str(e)}")
 
-    async def edit_file(self, relative_path: str, target_content: str, replacement_content: str, agent_name: str = "Unknown", project_id: Optional[str] = None) -> FileChangeResult:
+    async def edit_file(
+        self,
+        relative_path: str,
+        target_content: str,
+        replacement_content: str,
+        agent_name: str = "Unknown",
+        project_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        enforce_pre_read: bool = True
+    ) -> FileChangeResult:
         try:
             safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
+            scope = team_id or "global"
+            norm_path = str(safe_path.resolve())
+
             def _sync_edit():
                 if not safe_path.is_file():
                     return FileChangeResult(message=f"Error: '{relative_path}' does not exist.")
+                
+                # Strict Pre-Read Enforcement
+                if enforce_pre_read:
+                    team_reads = self._read_state.get(scope, {})
+                    if norm_path not in team_reads:
+                        return FileChangeResult(
+                            message=f"Error: File '{relative_path}' has not been read yet in this conversation session. "
+                                    f"You must use read_file at least once before attempting to edit it."
+                        )
+                    last_read_mtime = team_reads[norm_path]
+                    current_mtime = safe_path.stat().st_mtime
+                    if current_mtime > last_read_mtime:
+                        return FileChangeResult(
+                            message=f"Error: File '{relative_path}' has been modified on disk since it was last read. "
+                                    f"Please call read_file again to see the updated contents before editing."
+                        )
+
                 with open(safe_path, "r", encoding="utf-8") as f:
                     before = f.read()
-                if target_content not in before:
-                    return FileChangeResult(message="Error: Target block not found in file.")
-                occurrences = before.count(target_content)
+                target = target_content
+                if target not in before:
+                    # Fallback to quote-normalized matching (handles LLM unicode curly quotes)
+                    norm_before = _normalize_quotes(before)
+                    norm_target = _normalize_quotes(target_content)
+                    if norm_target in norm_before:
+                        idx = norm_before.find(norm_target)
+                        target = before[idx:idx + len(target_content)]
+                    else:
+                        return FileChangeResult(
+                            message="Error: Target block not found in file. Ensure exact character-for-character match including indentation."
+                        )
+                occurrences = before.count(target)
                 if occurrences > 1:
-                    return FileChangeResult(message=f"Error: Found {occurrences} occurrences. Provide a unique block.")
-                after = before.replace(target_content, replacement_content)
+                    return FileChangeResult(
+                        message=f"Error: Found {occurrences} occurrences of target block in '{relative_path}'. "
+                                f"Provide a larger block with 2-4 surrounding lines to uniquely identify the instance."
+                    )
+                after = before.replace(target, replacement_content, 1)
                 with open(safe_path, "w", encoding="utf-8") as f:
                     f.write(after)
                 diff = self._generate_diff(relative_path, before, after)
+                # Update read state to current mtime
+                self._read_state.setdefault(scope, {})[norm_path] = safe_path.stat().st_mtime
                 return FileChangeResult(
                     message=f"Success: Modified '{relative_path}'.",
                     path=relative_path, action="edit", before_content=before, after_content=after, diff=diff,
@@ -317,11 +414,21 @@ class FileTools:
         except Exception as e:
             return FileChangeResult(message=f"Error editing file: {str(e)}")
 
-    async def append_file(self, relative_path: str, content: str, agent_name: str = "Unknown", project_id: Optional[str] = None) -> FileChangeResult:
+    async def append_file(
+        self,
+        relative_path: str,
+        content: str,
+        agent_name: str = "Unknown",
+        project_id: Optional[str] = None,
+        team_id: Optional[str] = None
+    ) -> FileChangeResult:
         """Appends content to the end of an existing file."""
         try:
             safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
+            scope = team_id or "global"
+            norm_path = str(safe_path.resolve())
+
             def _sync_append():
                 before = ""
                 if safe_path.is_file():
@@ -332,6 +439,7 @@ class FileTools:
                     f.write(content)
                 after = before + content
                 diff = self._generate_diff(relative_path, before, after)
+                self._read_state.setdefault(scope, {})[norm_path] = safe_path.stat().st_mtime
                 return FileChangeResult(
                     message=f"Success: Appended {len(content)} bytes to '{relative_path}'.",
                     path=relative_path, action="append", before_content=before, after_content=after, diff=diff,
@@ -344,7 +452,7 @@ class FileTools:
                 finally:
                     await code_graph.clear_file_active(relative_path, project_id)
         except Exception as e:
-            return FileChangeResult(message=f"Error appending to file: {str(e)}")
+            return FileChangeResult(message=f"Error appending file: {str(e)}")
 
     async def delete_file(self, relative_path: str, agent_name: str = "Unknown", project_id: Optional[str] = None) -> str:
         """Deletes a file inside the sandbox."""
