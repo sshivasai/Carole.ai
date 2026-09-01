@@ -340,7 +340,7 @@ class BrowserTool:
                     build_tree(child_id, depth + 1 if idx is not None else depth)
                     
             build_tree(root_id, 0)
-            return "\\n".join(text_lines)
+            return "\n".join(text_lines)
             
         except Exception as e:
             return f"Error extracting page text: {str(e)}"
@@ -381,25 +381,29 @@ class BrowserTool:
         try:
             page = await _get_page(agent_id)
 
-            # Resolve the target element's CSS selector from a ref
+            # Resolve the target element's selector from a ref.
+            # Refs map to the XPath captured by the last snapshot (see
+            # _build_snapshot_text). We prefix with `xpath=` so Playwright
+            # treats it as an XPath selector rather than (invalid) CSS.
             css_selector = None
             if ref is not None:
-                try:
-                    result = await page.evaluate(_SNAPSHOT_JS)
-                    refs = result.get("refs", {})
-                    ref_data = refs.get(str(ref)) or refs.get(ref)
-                    if ref_data and ref_data.get("selector"):
-                        css_selector = ref_data["selector"]
-                    else:
-                        # Ref not found — take a fresh snapshot and report
-                        return (
-                            f"⚠️ Ref [{ref}] not found in current page snapshot "
-                            f"(page may have changed). "
-                            f"Call browser_snapshot again to get fresh refs."
-                        )
-                except Exception as e:
-                    logger.warning("Failed to resolve ref %s: %s", ref, e)
-                    return f"Error resolving ref [{ref}]: {e}"
+                refs = self._last_selector_maps.get(page.context, {})
+                xpath = (refs.get(str(ref)) or {}).get("selector")
+                if not xpath:
+                    # Ref may be stale — rebuild the snapshot to refresh the map.
+                    try:
+                        await self._build_snapshot_text(page)
+                        refs = self._last_selector_maps.get(page.context, {})
+                        xpath = (refs.get(str(ref)) or {}).get("selector")
+                    except Exception as e:
+                        logger.warning("Failed to refresh snapshot for ref %s: %s", ref, e)
+                if not xpath:
+                    return (
+                        f"⚠️ Ref [{ref}] not found in current page snapshot "
+                        f"(page may have changed). "
+                        f"Call browser_snapshot again to get fresh refs."
+                    )
+                css_selector = xpath if xpath.startswith("xpath=") else f"xpath={xpath}"
             elif selector:
                 css_selector = selector
             elif kind not in ("press", "scroll_down", "scroll_up", "coords"):

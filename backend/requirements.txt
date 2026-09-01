@@ -26,6 +26,9 @@ slowapi>=0.1.9
 # Browser Automation (Playwright)
 # After install, also run: playwright install chromium
 playwright>=1.40.0
+
+# Optional autonomous browser agent (browser_use_task tool / provider="browseruse")
+browser-use
 python-docx>=1.0.0
 markitdown>=0.1.7
 beautifulsoup4>=4.12.0

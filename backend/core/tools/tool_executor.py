@@ -353,8 +353,24 @@ def register_builtin_tools():
                  {"frame_index": {"type": "number", "required": True}},
                  "safe", _wrap_browser_switch_to_frame),
 
+        # ---- Autonomous Browser Agent ----
+        ToolSpec("browser_task",
+                 "FULLY AUTONOMOUS browsing. Give it a single natural-language command and it navigates, "
+                 "snapshots, fills forms, clicks, scrolls, and completes the task on its own. Use this for any multi-step web task: "
+                 "'search for flights to NYC next Tuesday', 'find the price of X on Amazon', 'fill out and "
+                 "submit the form at <url>', 'log in to <site> and download my report'. "
+                 "Uses the built-in browser agent by default, or the external browser-use library when "
+                 "browser_automation.provider is 'browseruse'. "
+                 "Pass the full command in 'task'; optionally pass 'start_url' to begin on a specific page.",
+                 "browser",
+                 {"task": {"type": "string", "required": True,
+                   "description": "The full natural-language command describing what to accomplish"},
+                  "start_url": {"type": "string", "required": False,
+                   "description": "Optional URL to start from before working toward the goal"}},
+                 "judge", _wrap_browser_task),
+
         # ---- Browser Use (Agent Provider) ----
-        ToolSpec("browser_use_task", "Delegates a complex browsing task to the autonomous Browser Use Agent. Use this when the provider is 'browseruse'. The agent will navigate, interact, and complete the task on its own. Provide a clear, detailed task description.", "browser",
+        ToolSpec("browser_use_task", "Delegates a complex browsing task to the external browser-use library, forcing that engine regardless of the configured provider. The agent navigates, interacts, and completes the task on its own. Provide a clear, detailed task description. NOTE: requires the 'browser-use' Python package.", "browser",
                  {"task": {"type": "string", "required": True}},
                  "judge", _wrap_browser_use_task),
 
@@ -640,7 +656,7 @@ _TOOL_CATEGORY: Dict[str, str] = {
     "join_meeting": "browser", "join_google_meet": "browser",
     "send_google_meet_chat": "browser",
     "browser_snapshot": "browser", "browser_act": "browser",
-    "browser_handle_dialog": "browser",
+    "browser_handle_dialog": "browser", "browser_task": "browser",
     # subagents
     "spawn_agent": "subagents", "hire_subagent": "subagents",
     "create_team_agent": "subagents",
@@ -793,8 +809,48 @@ def _apply_judge_disabled_fallback(permissions: Dict[str, Any]) -> str:
     return "human"
 
 
+async def _wrap_browser_task(args: Dict[str, Any], team_id: str) -> str:
+    task = args.get("task") or args.get("command") or args.get("value", "")
+    if not task:
+        return "Error: 'task' is required."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    start_url = args.get("start_url")
+
+    # Prefer the agent's own model so reasoning quality matches its config.
+    import core.config
+    model = getattr(core.config, "DEFAULT_SMART_MODEL", "openrouter/free")
+    try:
+        from core.memory.database import async_session
+        from core.memory.models import Agent as DbAgent
+        from sqlalchemy import select
+        async with async_session() as db:
+            record = (await db.execute(select(DbAgent).where(DbAgent.id == agent_id))).scalar_one_or_none()
+            if record and record.model:
+                model = record.model
+    except Exception:
+        pass
+
+    # Honor the configured provider. Selecting "Browser Use (Agent)" in Settings
+    # routes the autonomous task through the external browser-use library; every
+    # other provider uses the built-in BrowserAgent, which inherits the shared
+    # Playwright pool and its Browserbase / proxy / stealth settings.
+    from core.llm.config_manager import load_config
+    provider = load_config().get("browser_automation", {}).get("provider", "local")
+    if provider == "browseruse":
+        return await _wrap_browser_use_task({"task": task, "_agent_id": agent_id}, team_id)
+
+    from core.tools.browser_agent import BrowserAgent
+    agent = BrowserAgent(model=model)
+    return await agent.run(task, agent_id, agent_name, team_id, start_url=start_url)
+
+
 async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
-    from browser_use import Agent as BrowserUseAgent
+    try:
+        from browser_use import Agent as BrowserUseAgent
+    except ImportError:
+        return ("Error: the 'browser-use' package is not installed. "
+                "Run `pip install browser-use` (listed in requirements.txt).")
     from core.memory.database import async_session
     from core.memory.models import Agent as DbAgent
     from sqlalchemy import select
@@ -805,7 +861,8 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
         return "Error: task is required."
 
     agent_id = args.get("_agent_id")
-    model_name = "gpt-4o"
+    import core.config
+    model_name = getattr(core.config, "DEFAULT_SMART_MODEL", "gpt-4o")
     if agent_id:
         async with async_session() as db:
             agent_record = (await db.execute(select(DbAgent).where(DbAgent.id == agent_id))).scalar_one_or_none()

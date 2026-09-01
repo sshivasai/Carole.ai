@@ -28,6 +28,7 @@ _DEFAULT_CONFIG = {
         "openrouter": "",
         "nvidia": "",
         "tavily": "",
+        "browseruse": "",
     },
     "providers": {
         "ollama_base_url": "http://localhost:11434/v1",
@@ -43,8 +44,7 @@ _DEFAULT_CONFIG = {
         "api_keys": {
             "browserbase": "",
             "scraperapi": "",
-            "zenrows": "",
-            "twocaptcha": ""
+            "zenrows": ""
         }
     },
     "access_control": {
