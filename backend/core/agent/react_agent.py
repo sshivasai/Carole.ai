@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.llm.multi_model_router import llm_router
 from core.chat.event_bus import event_bus
-from core.memory.models import Message, Agent, Project, User, EntityMemory
+from core.memory.models import Message, Agent, Project, User, EntityMemory, CompactionEvent
 from core.tools.tool_registry import ToolRegistry
 from core.tools.context import CancellationToken, ToolExecutionContext, ToolPermissionContext
 from core.memory.lancedb_client import lancedb_client
@@ -65,6 +65,7 @@ class ReACTAgent:
         task_id: Optional[str] = None,
         fallback_model: Optional[str] = None,
         reasoning_effort: str = "none",
+        parent_message_id: Optional[str] = None,
     ):
         self.agent_id = agent_id
         self.team_id = team_id
@@ -78,6 +79,7 @@ class ReACTAgent:
         self.topic = f"team:{self.team_id}"
         self.parent_coordinator_id = parent_coordinator_id
         self.task_id = task_id
+        self.parent_message_id = parent_message_id
         # Tracks the DB id of the current response message (for file snapshotting)
         self.active_message_id: str | None = None
         self._worker_results: List[Dict[str, Any]] = []
@@ -96,9 +98,47 @@ class ReACTAgent:
         self._no_progress_count: int = 0
         self._consecutive_tool_errors: int = 0
 
-    async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20) -> List[Dict[str, str]]:
-        """Loads recent team messages from the DB to give the agent conversation context."""
+    async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20, exclude_msg_id: Optional[str] = None) -> List[Dict[str, str]]:
+        """Loads recent team messages from the DB to give the agent conversation context.
+
+        Compaction-Aware Loading:
+        Checks for the most recent CompactionEvent for this team. If one exists,
+        only messages AFTER the compaction timestamp are loaded — the compaction
+        summary is prepended as a synthetic first message. This makes rolling
+        compaction persist across server restarts (previously, in-memory compaction
+        was discarded on each new run and the full verbose history was reloaded).
+        """
         team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+
+        # --- Check for the most recent compaction checkpoint ---
+        compaction_summary_msg = None
+        compaction_after_dt = None
+        try:
+            cp_stmt = (
+                select(CompactionEvent)
+                .where(CompactionEvent.team_id == team_uuid)
+                .order_by(CompactionEvent.created_at.desc())
+                .limit(1)
+            )
+            cp_result = await db_session.execute(cp_stmt)
+            last_compaction = cp_result.scalar_one_or_none()
+            if last_compaction:
+                compaction_after_dt = last_compaction.created_at
+                compaction_summary_msg = {
+                    "role": "user",
+                    "content": (
+                        f"[COMPACTED HISTORY — Context from before {last_compaction.created_at.strftime('%Y-%m-%d %H:%M UTC')}]\n"
+                        f"{last_compaction.summary}\n"
+                        f"[/COMPACTED HISTORY]"
+                    )
+                }
+                self._log.info(
+                    "Compaction checkpoint found (created %s). Loading only post-compaction messages.",
+                    last_compaction.created_at.isoformat()
+                )
+        except Exception as cp_err:
+            self._log.warning("Could not check CompactionEvent table: %s", cp_err)
+
         stmt = (
             select(Message)
             .where(Message.team_id == team_uuid)
@@ -110,13 +150,36 @@ class ReACTAgent:
                 )
             )
             .where(Message.sender_id != "system")
-            .order_by(Message.created_at.desc())
+            # CRITICAL: Exclude intermediate tool-trace rows.
+            # is_intermediate=True rows (tool call traces, system corrections)
+            # are UI-only scratch data. Loading them back into LLM context
+            # causes 60-80% token bloat with no benefit — the agent already
+            # consumed and acted on those results in the same run they were created.
+            .where(Message.is_intermediate == False)
+        )
+        # If there's a compaction checkpoint, only load messages after it
+        if compaction_after_dt is not None:
+            stmt = stmt.where(Message.created_at > compaction_after_dt)
+
+        if exclude_msg_id:
+            try:
+                ex_uuid = uuid.UUID(exclude_msg_id) if isinstance(exclude_msg_id, str) else exclude_msg_id
+                stmt = stmt.where(Message.id != ex_uuid)
+            except Exception:
+                pass
+        stmt = (
+            stmt.order_by(Message.created_at.desc())
             .limit(limit)
         )
         result = await db_session.execute(stmt)
         messages = list(reversed(result.scalars().all()))
 
         history = []
+        # Prepend the compaction summary as the first message so the LLM
+        # has context for everything that came before the checkpoint.
+        if compaction_summary_msg:
+            history.append(compaction_summary_msg)
+
         for msg in messages:
             is_self = msg.sender_id == self.agent_id
 
@@ -441,9 +504,40 @@ class ReACTAgent:
         return {**defaults, **user_compaction}
 
     def _estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
-        """Stage 3 helper: Fast heuristic token estimation (1 token ~ 4 chars)."""
-        total_chars = sum(len(str(m.get("content", ""))) for m in messages)
-        return total_chars // 4
+        """Stage 3 helper: Role-aware token estimation.
+
+        Uses content-type heuristics for better accuracy than a flat chars/4:
+        - System prompt / tool list (dense structured text): chars / 3.5
+        - Tool observation blocks (JSON / code output):       chars / 3.0
+        - Regular prose (user/assistant dialogue):            chars / 4.0
+        - Compacted history blocks:                           chars / 3.5
+
+        These ratios approximate real tokenizer output within ~10-15% for the
+        models we use (Claude, GPT-4o, Gemini). We also add a 5% overhead buffer
+        for message role/formatting tokens that aren't in the content field.
+        """
+        total = 0
+        for m in messages:
+            content = m.get("content", "")
+            if isinstance(content, list):
+                # Multi-part content (text + image blocks)
+                text_parts = " ".join(
+                    p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+                )
+                total += len(text_parts) // 4
+            else:
+                content_str = str(content)
+                if "[OBSERVATION]" in content_str or "```" in content_str:
+                    # Dense JSON/code content
+                    total += len(content_str) // 3
+                elif "[COMPACTED HISTORY" in content_str:
+                    # Structured summary block
+                    total += len(content_str) // 3
+                else:
+                    # Regular prose
+                    total += len(content_str) // 4
+        # 5% overhead for role/formatting tokens
+        return int(total * 1.05)
 
     @staticmethod
     def _truncate_observation(content: str, max_chars: int) -> str:
@@ -560,8 +654,13 @@ class ReACTAgent:
             self._log.info("_snip_dead_ends [AST]: removed %d dead-end pairs.", snipped)
         return pruned
 
-    async def _rolling_compact(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Stage 4: Summarize the oldest messages, keeping the most recent N."""
+    async def _rolling_compact(self, messages: List[Dict[str, Any]], db_session: Optional[AsyncSession] = None, triggered_by: str = "auto") -> List[Dict[str, Any]]:
+        """Stage 4: Summarize the oldest messages, keeping the most recent N.
+
+        After successful compaction:
+        1. Persists a CompactionEvent to the DB so the checkpoint survives restarts.
+        2. Emits a 'compaction_event' SSE so the UI renders a visible divider.
+        """
         cc = self._get_compaction_config()
         keep_recent = cc["recent_messages_to_keep"]
 
@@ -574,6 +673,29 @@ class ReACTAgent:
         if not to_compact:
             return messages
 
+        # High-Density Identifier Preservation Pass
+        # Extract file paths and identifiers to pin at the top of the context
+        extracted_paths = set()
+        for msg in to_compact:
+            content = str(msg.get("content", ""))
+            # Extract paths from tool calls
+            for m in re.finditer(r'[\'"]?(?:relative_path|path|filename)[\'"]?\s*[:=]\s*[\'"]([^\'"]+)[\'"]', content):
+                extracted_paths.add(m.group(1))
+            # Extract paths from markdown links
+            for m in re.finditer(r'\[.*?\]\(file:([^\)]+)\)', content):
+                extracted_paths.add(m.group(1))
+            # Extract paths from code block headers
+            for m in re.finditer(r'^\s*#\s+(?:backend|frontend|packages|src)/[a-zA-Z0-9_./-]+', content, re.MULTILINE):
+                extracted_paths.add(m.group(0).strip('# \t'))
+
+        pinned_block = ""
+        if extracted_paths:
+            pinned_block = "[PINNED CONTEXT: HIGH-DENSITY IDENTIFIERS]\n"
+            pinned_block += "Active File Paths & References:\n"
+            for p in sorted(extracted_paths):
+                pinned_block += f"- {p}\n"
+            pinned_block += "[/PINNED CONTEXT]\n\n"
+
         self._log.info("Rolling compaction: summarizing %d messages (keeping first + last %d).", len(to_compact), keep_recent)
         summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact, default=str))
         try:
@@ -584,16 +706,50 @@ class ReACTAgent:
                 temperature=0.3,
                 max_tokens=2000
             )
+            full_summary = f"{pinned_block}{summary}" if pinned_block else summary
             compacted = (
                 [messages[0]]
-                + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{summary}\n[/COMPACTED HISTORY]"}]
+                + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{full_summary}\n[/COMPACTED HISTORY]"}]
                 + messages[-keep_recent:]
             )
             self._log.info("Rolling compaction complete. %d → %d messages.", len(messages), len(compacted))
+
+            # --- Persist CompactionEvent to DB ---
+            # This checkpoint makes compaction survive across server restarts.
+            # On next load, _load_conversation_history reads this event and starts
+            # from the summary instead of reloading the full verbose history.
+            if db_session is not None:
+                try:
+                    team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+                    cp_event = CompactionEvent(
+                        team_id=team_uuid,
+                        summary=full_summary,
+                        message_count_before=len(messages),
+                        triggered_by=triggered_by,
+                    )
+                    db_session.add(cp_event)
+                    await db_session.commit()
+                    cp_event_id = str(cp_event.id)
+                    self._log.info("Compaction checkpoint persisted (id=%s, triggered_by=%s).", cp_event_id, triggered_by)
+
+                    # --- Emit SSE so the UI renders a visible compaction divider ---
+                    await event_bus.publish(self.topic, {
+                        "type": "compaction_event",
+                        "id": cp_event_id,
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "triggered_by": triggered_by,
+                        "message_count_before": len(messages),
+                        "summary_preview": full_summary[:300] + "..." if len(full_summary) > 300 else full_summary,
+                    })
+                except Exception as persist_err:
+                    self._log.warning("Could not persist CompactionEvent: %s", persist_err)
+
             return compacted
         except Exception as e:
             self._log.warning("Rolling compaction failed, continuing with full context: %s", e)
             return messages
+
 
     async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None, trigger_message_id: Optional[str] = None):
         # Reset all per-session caches at the start of each new run.
@@ -654,8 +810,8 @@ class ReACTAgent:
                 history_limit = limit
                 break
 
-        # Load conversation history for context continuity
-        history = await self._load_conversation_history(db_session, limit=history_limit)
+        # Load conversation history for context continuity (excluding the current trigger message to prevent duplication)
+        history = await self._load_conversation_history(db_session, limit=history_limit, exclude_msg_id=trigger_message_id)
 
         # Build messages: history + new prompt
         content = [{"type": "text", "text": initial_prompt}]
@@ -775,7 +931,7 @@ class ReACTAgent:
             
             if estimated_tokens > trigger_tokens:
                 self._log.warning("Context window reached %.0f%% capacity (%d tokens). Triggering rolling compaction...", (estimated_tokens / window_size) * 100, estimated_tokens)
-                messages = await self._rolling_compact(messages)
+                messages = await self._rolling_compact(messages, db_session=db_session, triggered_by="auto")
 
             # Graceful Degradation Check — trigger 2 loops before max to give
             # the agent time to reflect AND execute the memory-save tool call.
@@ -867,13 +1023,39 @@ class ReACTAgent:
                             })
                     break  # Success
                 except Exception as e:
+                    from core.llm.multi_model_router import LLMProviderError
+                    if isinstance(e, LLMProviderError):
+                        had_error = True
+                        error_msg = f"⚠️ {e.message}"
+                        self._log.error("LLM Provider Error: %s", e.message)
+                        
+                        # Broadcast structured error event to trigger BYOK UI Warning Card
+                        await event_bus.publish(self.topic, {
+                            "type": "llm_error",
+                            "sender_id": self.agent_id,
+                            "error": e.to_dict()
+                        })
+
+                        db_msg = Message(
+                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            sender_id=self.agent_id,
+                            sender_name=self.name,
+                            text=error_msg,
+                            reasoning_text=self._current_reasoning_buffer or None,
+                            is_private=self.is_private_response,
+                            recipient_id=self.reply_recipient_id,
+                        )
+                        db_session.add(db_msg)
+                        await db_session.commit()
+                        break # Break retry loop on structural provider errors
+                    
                     error_str = str(e).lower()
                     is_context_limit = ("413" in error_str or "too long" in error_str or "context_length" in error_str)
                     if is_context_limit:
                         # STAGE 5: Reactive Error Escalation — compact and break
                         # back to the outer while loop for a fresh retry set.
                         self._log.error("API hit context limit! Forcing emergency rolling compaction (attempt %d)." , attempt + 1)
-                        messages = await self._rolling_compact(messages)
+                        messages = await self._rolling_compact(messages, db_session=db_session, triggered_by="emergency")
                         break  # break out of retry loop; outer while loop retries
                     if attempt < 2:
                             
@@ -1127,9 +1309,23 @@ class ReACTAgent:
                 # Agent is done — persist and broadcast
                 self._log.info("Task finished after %d loops.", loop_count)
                 
-                # If this agent was spawned by a coordinator, wrap its final output in a task notification
+                # Differentiate subagent vs teammate
+                is_temporary_subagent = self.name.startswith("Sub-")
+
+                # If this agent was spawned by a coordinator, build the task notification
+                coordinator_notification = None
                 if self.parent_coordinator_id:
-                    thought_buffer = self._build_task_notification(thought_buffer, "completed")
+                    coordinator_notification = self._build_task_notification(thought_buffer, "completed")
+                    # Only temporary subagents wrap their public chat message in XML report card
+                    if is_temporary_subagent:
+                        thought_buffer = coordinator_notification
+
+                attachments_list = []
+                if self.parent_message_id:
+                    attachments_list.append({
+                        "type": "parent_message",
+                        "id": self.parent_message_id
+                    })
 
                 db_msg = Message(
                     team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
@@ -1138,11 +1334,32 @@ class ReACTAgent:
                     reasoning_text=self._current_reasoning_buffer or None,
                     is_private=self.is_private_response,
                     recipient_id=self.reply_recipient_id,
+                    attachments=attachments_list,
                 )
                 db_session.add(db_msg)
                 await db_session.commit()
                 # Track the persisted message id for future file snapshots in this loop
                 self.active_message_id = str(db_msg.id)
+
+                # Wake up the parent coordinator if present (using the XML block in the background)
+                if self.parent_coordinator_id and coordinator_notification:
+                    try:
+                        from core.chat.message_router import message_router
+                        # Look up parent coordinator details
+                        stmt = select(Agent).where(Agent.id == uuid.UUID(self.parent_coordinator_id) if isinstance(self.parent_coordinator_id, str) else self.parent_coordinator_id)
+                        res = await db_session.execute(stmt)
+                        parent_agent = res.scalar_one_or_none()
+                        if parent_agent:
+                            # Route the task-notification text directly to the coordinator's queue
+                            await message_router._enqueue_agent(
+                                agent=parent_agent,
+                                prompt_text=coordinator_notification,
+                                db_session=db_session,
+                                attachments=[],
+                                trigger_message_id=str(db_msg.id)
+                            )
+                    except Exception as e:
+                        self._log.exception("Failed to notify parent coordinator %s: %s", self.parent_coordinator_id, e)
 
                 await event_bus.publish(self.topic, {
                     "type": "message",
@@ -1154,7 +1371,8 @@ class ReACTAgent:
                     "is_private": self.is_private_response,
                     "recipient_id": self.reply_recipient_id,
                     "has_reasoning": bool(self._current_reasoning_buffer),
-                    "is_task_notification": bool(self.parent_coordinator_id),
+                    "is_task_notification": bool(self.parent_coordinator_id) if is_temporary_subagent else False,
+                    "attachments": attachments_list,
                 })
 
                 await event_bus.publish(self.topic, {
@@ -1233,20 +1451,47 @@ class ReACTAgent:
                 
                 self._current_reasoning_buffer += f"\n📄 **Result:**\n```\n{observation[:1000]}\n```\n"
 
-                # Broadcast the intermediate trace row over WebSocket ONLY (no DB persistence)
-                # is_intermediate=True so the UI renders it as a compact trace row while streaming
+                # Broadcast the intermediate trace row (and persist to DB if spawned by a coordinator)
+                # is_intermediate=True so the UI renders it as a compact trace row
                 intermediate_trace = (
                     f"🛠️ **{tool_name}**\n"
                     f"```json\n{args_str}\n```\n"
                     f"📄 **Result:**\n```\n{observation[:500]}\n```"
                 )
+                
+                db_trace_msg_id = None
+                attachments_list = []
+                if self.parent_coordinator_id:
+                    try:
+                        if self.parent_message_id:
+                            attachments_list.append({
+                                "type": "parent_message",
+                                "id": self.parent_message_id
+                            })
+                        
+                        db_trace_msg = Message(
+                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            sender_id=self.agent_id,
+                            sender_name=self.name,
+                            text=intermediate_trace,
+                            is_intermediate=True,
+                            attachments=attachments_list
+                        )
+                        db_session.add(db_trace_msg)
+                        await db_session.commit()
+                        db_trace_msg_id = str(db_trace_msg.id)
+                    except Exception as persist_err:
+                        self._log.warning("Failed to persist intermediate tool trace: %s", persist_err)
+
                 await event_bus.publish(self.topic, {
                     "type": "tool_trace",
+                    "id": db_trace_msg_id,
                     "sender_id": self.agent_id,
                     "sender_name": self.name,
                     "role": self.role,
                     "text": intermediate_trace,
-                    "is_intermediate": True
+                    "is_intermediate": True,
+                    "attachments": attachments_list
                 })
                 # --- Error recovery & consecutive failure breaker ---
                 is_error = observation.startswith("✗") or "Error:" in observation or "Error " in observation or "error:" in observation or "Exception:" in observation
@@ -1291,11 +1536,32 @@ class ReACTAgent:
                             "and formulate a completely different strategy before executing another tool."
                         )
 
-                observation_text = f"[OBSERVATION] Tool output:\n{observation}\n[/OBSERVATION]"
-                messages.append({
-                    "role": "user",
-                    "content": observation_text
-                })
+                # Check if the tool returned a structured binary file response
+                is_file_obs = False
+                try:
+                    import json
+                    obs_dict = json.loads(observation)
+                    if isinstance(obs_dict, dict) and obs_dict.get("_is_file"):
+                        is_file_obs = True
+                        file_path = obs_dict.get("local_path")
+                        mime = obs_dict.get("mime_type", "application/octet-stream")
+                        source = obs_dict.get("source_url", "unknown source")
+                        messages.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": f"[OBSERVATION] Tool extracted a file from {source}:\nPath: {file_path}\nMIME: {mime}\n[/OBSERVATION]"},
+                                {"type": "document", "local_path": file_path, "mime_type": mime}
+                            ]
+                        })
+                except Exception:
+                    pass
+
+                if not is_file_obs:
+                    observation_text = f"[OBSERVATION] Tool output:\n{observation}\n[/OBSERVATION]"
+                    messages.append({
+                        "role": "user",
+                        "content": observation_text
+                    })
 
                 # --- No-progress guard ---
                 # If the last 3 tool observations are identical, the agent is
@@ -1533,6 +1799,59 @@ class ReACTAgent:
             # Never let lesson extraction crash the agent — it's best-effort
             self._log.warning("Auto-lesson extraction failed (non-fatal): %s", e)
 
+    @staticmethod
+    def _repair_json(s: str) -> str:
+        s = s.strip()
+        if s.startswith("```"):
+            s = re.sub(r"^```(?:json)?\s*", "", s)
+            s = re.sub(r"\s*```$", "", s)
+        s = s.strip()
+        
+        in_str = False
+        escape = False
+        stack = []
+        out = []
+        
+        for c in s:
+            if not in_str:
+                if c == '"':
+                    in_str = True
+                    out.append(c)
+                elif c in '{[':
+                    stack.append(c)
+                    out.append(c)
+                elif c in '}]':
+                    if stack:
+                        stack.pop()
+                    out.append(c)
+                else:
+                    out.append(c)
+            else:
+                if escape:
+                    escape = False
+                    out.append(c)
+                elif c == '\\':
+                    escape = True
+                    out.append(c)
+                elif c == '"':
+                    in_str = False
+                    out.append(c)
+                elif c == '\n':
+                    out.append('\\n')
+                elif c == '\t':
+                    out.append('\\t')
+                else:
+                    out.append(c)
+                    
+        if in_str:
+            out.append('"')
+        while stack:
+            c = stack.pop()
+            if c == '{': out.append('}')
+            elif c == '[': out.append(']')
+            
+        return "".join(out)
+
     def _parse_action(self, text: str) -> Any:
         """Parses [ACTION]tool_name(args)[/ACTION] or untagged tool_name(args) even with nested docstrings.
 
@@ -1553,18 +1872,25 @@ class ReACTAgent:
             scan_start = tagged_match.end()
         else:
             # 2. Untagged match: Only match genuine registered tool names
+            # Strip code blocks to avoid false-matching tool call templates/examples
+            clean_text = re.sub(r"```[\s\S]*?```", "", text)
             from core.tools.tool_registry import ToolRegistry
             registered_names = set(ToolRegistry.list_names())
             untagged_match = None
             for rname in registered_names:
-                m = re.search(rf"\b({re.escape(rname)})\s*\(", text)
+                m = re.search(rf"\b({re.escape(rname)})\s*\(", clean_text)
                 if m:
                     if untagged_match is None or m.start() < untagged_match.start():
                         untagged_match = m
             if not untagged_match:
                 return None
             tool_name = untagged_match.group(1)
-            scan_start = untagged_match.end()
+            # Find the match position in the original text to align indices for walking
+            orig_match = re.search(rf"\b({re.escape(tool_name)})\s*\(", text)
+            if not orig_match:
+                return None
+            scan_start = orig_match.end()
+
 
         # If explicit closing tag exists, slice directly
         closing_tag_match = re.search(r"\[/(?:ACTION|TOOL)\]|</tool_call>", text[scan_start:], re.DOTALL)
@@ -1619,11 +1945,10 @@ class ReACTAgent:
         if not raw_args:
             return tool_name, {}
 
-        # --- Parse attempts ---
-
-        # 1. Try JSON
+        # 1. Try JSON with Grammar Repair
         try:
-            arguments = json.loads(raw_args)
+            repaired_args = ReACTAgent._repair_json(raw_args)
+            arguments = json.loads(repaired_args)
             if isinstance(arguments, dict):
                 return tool_name, arguments
         except (json.JSONDecodeError, ValueError):

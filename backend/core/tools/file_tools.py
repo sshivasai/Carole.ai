@@ -226,8 +226,7 @@ class FileTools:
         return "\n".join(diff)
 
     FILE_UNCHANGED_STUB = (
-        "File unchanged since last read: '{path}'. "
-        "The content from the earlier read_file call in this conversation is still current — refer to that instead of re-reading."
+        "File unchanged since last read. The content from the earlier read_file tool_result in this conversation is still current — refer to that instead of re-reading."
     )
 
     async def read_file(
@@ -247,12 +246,11 @@ class FileTools:
                 if not safe_path.is_file():
                     return f"Error: '{relative_path}' is not a file or does not exist."
                 
-                # Check for unchanged file stub to save context tokens
                 mtime = safe_path.stat().st_mtime
                 if not force and scope in self._read_state and norm_path in self._read_state[scope]:
                     last_mtime = self._read_state[scope][norm_path]
                     if mtime <= last_mtime:
-                        return self.FILE_UNCHANGED_STUB.format(path=relative_path)
+                        return self.FILE_UNCHANGED_STUB
 
                 ext = safe_path.suffix.lower()
                 content = None
@@ -311,6 +309,12 @@ class FileTools:
             scope = team_id or "global"
             norm_path = str(safe_path.resolve())
 
+            if self.FILE_UNCHANGED_STUB in content or "status=\"unchanged\"" in content:
+                return FileChangeResult(
+                    message="Error: You are attempting to write the 'unchanged' tool stub or metadata back to the file. "
+                            "If you want to modify this file, you must write the actual code content, not the unchanged reference message."
+                )
+
             def _sync_write():
                 before = ""
                 action = "create"
@@ -353,6 +357,12 @@ class FileTools:
             lock = self._get_lock(safe_path)
             scope = team_id or "global"
             norm_path = str(safe_path.resolve())
+
+            if self.FILE_UNCHANGED_STUB in replacement_content or "status=\"unchanged\"" in replacement_content:
+                return FileChangeResult(
+                    message="Error: You are attempting to write the 'unchanged' tool stub or metadata back to the file. "
+                            "If you want to modify this file, you must write the actual code content, not the unchanged reference message."
+                )
 
             def _sync_edit():
                 if not safe_path.is_file():
@@ -428,6 +438,12 @@ class FileTools:
             lock = self._get_lock(safe_path)
             scope = team_id or "global"
             norm_path = str(safe_path.resolve())
+
+            if self.FILE_UNCHANGED_STUB in content or "status=\"unchanged\"" in content:
+                return FileChangeResult(
+                    message="Error: You are attempting to write the 'unchanged' tool stub or metadata back to the file. "
+                            "If you want to modify this file, you must write the actual code content, not the unchanged reference message."
+                )
 
             def _sync_append():
                 before = ""

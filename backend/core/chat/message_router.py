@@ -306,6 +306,7 @@ class MessageRouter:
         trigger_message_id: Optional[str] = None,
         parent_coordinator_id: Optional[str] = None,
         task_id: Optional[str] = None,
+        parent_message_id: Optional[str] = None,
     ):
         """
         Enqueue a prompt into the agent's personal FIFO queue.
@@ -363,6 +364,7 @@ class MessageRouter:
                 "trigger_msg_id": trigger_message_id,
                 "parent_coordinator_id": parent_coordinator_id,
                 "task_id": task_id,
+                "parent_message_id": parent_message_id,
             })
 
         # Broadcast queue depth change to UI
@@ -415,12 +417,14 @@ class MessageRouter:
                 prompt_text, attachments, trigger_msg_id = item if len(item) == 3 else (item[0], item[1], None)
                 parent_coordinator_id = None
                 task_id = None
+                parent_message_id = None
             else:
                 prompt_text = item.get("prompt_text", "")
                 attachments = item.get("attachments", [])
                 trigger_msg_id = item.get("trigger_msg_id")
                 parent_coordinator_id = item.get("parent_coordinator_id")
                 task_id = item.get("task_id")
+                parent_message_id = item.get("parent_message_id")
 
             try:
                 # B5: Watchdog timeout — prevent a single stuck task from
@@ -428,7 +432,7 @@ class MessageRouter:
                 await asyncio.wait_for(
                     self._execute_agent_loop(
                         agent_id, snapshot, prompt_text, attachments, trigger_msg_id,
-                        parent_coordinator_id, task_id
+                        parent_coordinator_id, task_id, parent_message_id
                     ),
                     timeout=_MAX_TASK_TIMEOUT,
                 )
@@ -471,6 +475,7 @@ class MessageRouter:
         trigger_message_id: Optional[str] = None,
         parent_coordinator_id: Optional[str] = None,
         task_id: Optional[str] = None,
+        parent_message_id: Optional[str] = None,
     ):
         """
         Builds the ReACT agent instance and runs its loop to completion.
@@ -514,6 +519,7 @@ class MessageRouter:
                 reasoning_effort=snapshot.reasoning_effort,
                 parent_coordinator_id=parent_coordinator_id,
                 task_id=task_id,
+                parent_message_id=parent_message_id,
             )
 
         if trigger_message_id:

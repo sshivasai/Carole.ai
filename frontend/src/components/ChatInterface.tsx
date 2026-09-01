@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import type { ChatMessage, AgentConfig } from "@/lib/types";
+import type { ChatMessage, AgentConfig, CompactionEvent } from "@/lib/types";
 import { 
   Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion, 
   Loader2, ChevronDown, ChevronUp, ChevronRight, Search, Edit2, Trash2, 
@@ -36,6 +36,12 @@ interface Props {
   onOpenFile?: (path: string) => void;
   lastTokenEvent?: any;
   contextUsage?: any;
+  pendingChatInputAppend?: string | null;
+  onAppendConsumed?: () => void;
+  /** List of compaction checkpoints to render as dividers in the timeline. */
+  compactionEvents?: CompactionEvent[];
+  /** Called when the user types /compact — triggers manual compaction via API. */
+  onCompact?: () => Promise<void>;
 }
 
 const AVATAR_COLORS = ["#3b82f6", "#8b5cf6", "#00d992", "#f97316", "#ef4444", "#eab308"];
@@ -101,9 +107,13 @@ function TaskNotificationCard({ text }: { text: string }) {
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 13 }}>{isSuccess ? "✅" : "⚠️"}</span>
           <span className="body-sm-strong" style={{ color: isSuccess ? "#34d399" : "#f87171" }}>
-            Subagent Task {isSuccess ? "Completed" : "Report"}
+            {agentName.startsWith("Sub-") ? "Subagent" : "Teammate"} Task {isSuccess ? "Completed" : "Report"}
           </span>
-          {agentName && <span className="subagent-chip" style={{ fontSize: 10 }}>🤖 {agentName}</span>}
+          {agentName && (
+            <span className="subagent-chip" style={{ fontSize: 10 }}>
+              {agentName.startsWith("Sub-") ? "🤖" : "👤"} {agentName}
+            </span>
+          )}
         </div>
         {taskId && <span className="caption" style={{ fontFamily: "monospace", fontSize: 10, opacity: 0.7 }}>ID: {taskId.slice(0, 8)}</span>}
       </div>
@@ -148,7 +158,45 @@ function AskUserCard({ msg }: { msg: ChatMessage }) {
   const [answer, setAnswer] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
-  const options: string[] = (msg as any).options || [];
+
+  // Parse question and options from raw message fields
+  const { parsedQuestion, parsedOptions } = useMemo(() => {
+    let questionText = msg.question || msg.text || "";
+    let optionsList: string[] = (msg as any).options || [];
+    
+    const trimmed = questionText.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          const jsonified = trimmed
+            .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":')
+            .replace(/'/g, '"');
+          parsed = JSON.parse(jsonified);
+        }
+        if (parsed) {
+          if (parsed.question) questionText = parsed.question;
+          else if (parsed.value) questionText = parsed.value;
+          if (parsed.options && Array.isArray(parsed.options)) {
+            optionsList = parsed.options.map(String);
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to parse stringified question object:", e);
+      }
+    }
+    
+    if (questionText.startsWith("❓")) {
+      const match = questionText.match(/❓\s*[^\n]+asks:\s*([\s\S]+)/i);
+      if (match && match[1]) questionText = match[1].trim();
+    }
+    
+    return { parsedQuestion: questionText, parsedOptions: optionsList };
+  }, [msg.question, msg.text, (msg as any).options]);
+
+  const options = parsedOptions;
 
   const submit = async (text: string) => {
     if (!msg.question_id || !text.trim() || submitted) return;
@@ -164,7 +212,7 @@ function AskUserCard({ msg }: { msg: ChatMessage }) {
         <MessageCircleQuestion size={15} color="var(--color-info)" />
         <span className="body-sm-strong">{msg.sender_name} asks:</span>
       </div>
-      <p className="body-sm" style={{ margin: 0 }}>{msg.question || msg.text}</p>
+      <p className="body-sm" style={{ margin: 0 }}>{parsedQuestion}</p>
       {submitted ? (
         <span className="pill pill-live" style={{ alignSelf: "flex-start" }}>Answered: {answer} ✓</span>
       ) : (
@@ -739,6 +787,87 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
   );
 }
 
+// ── Compaction Divider ───────────────────────────────────────────────────────
+// Rendered in the message list timeline at every compaction checkpoint.
+// Shows how many messages were compressed and the trigger type (auto/manual/emergency).
+function CompactionDivider({ event }: { event: CompactionEvent }) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  const labelMap: Record<string, string> = {
+    auto: "Auto-Compacted",
+    manual: "Manually Compacted",
+    emergency: "Emergency Compacted",
+  };
+  const colorMap: Record<string, string> = {
+    auto: "var(--color-primary)",
+    manual: "#00d992",
+    emergency: "#f97316",
+  };
+  const label = labelMap[event.triggered_by] ?? "Compacted";
+  const color = colorMap[event.triggered_by] ?? "var(--color-primary)";
+  const ts = event.created_at ? new Date(event.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, margin: "8px 0" }}>
+      {/* Divider line with badge */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ flex: 1, height: 1, background: `linear-gradient(to right, transparent, ${color}40, transparent)` }} />
+        <button
+          onClick={() => setExpanded(e => !e)}
+          title={expanded ? "Hide summary" : "Show compaction summary"}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "3px 12px",
+            borderRadius: 20,
+            border: `1px solid ${color}55`,
+            background: `${color}12`,
+            color,
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: "0.03em",
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            transition: "background 0.15s",
+          }}
+        >
+          <Sparkles size={11} />
+          {label}
+          {event.message_count_before != null && (
+            <span style={{ opacity: 0.7, fontWeight: 400 }}>· {event.message_count_before} msgs</span>
+          )}
+          {ts && <span style={{ opacity: 0.5, fontWeight: 400 }}>· {ts}</span>}
+          {event.summary_preview && (
+            expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />
+          )}
+        </button>
+        <div style={{ flex: 1, height: 1, background: `linear-gradient(to left, transparent, ${color}40, transparent)` }} />
+      </div>
+
+      {/* Collapsible summary preview */}
+      {expanded && event.summary_preview && (
+        <div style={{
+          margin: "2px 12px",
+          padding: "10px 14px",
+          borderRadius: 8,
+          border: `1px solid ${color}30`,
+          background: `${color}08`,
+          fontSize: 12,
+          color: "var(--color-mute)",
+          lineHeight: 1.6,
+          whiteSpace: "pre-wrap",
+          maxHeight: 220,
+          overflowY: "auto",
+        }}>
+          <span style={{ display: "block", fontWeight: 600, color, marginBottom: 4, fontSize: 11 }}>
+            Compaction Summary
+          </span>
+          {event.summary_preview}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ChatInterface({
   messages,
   agents,
@@ -752,6 +881,10 @@ export default function ChatInterface({
   onOpenFile,
   lastTokenEvent,
   contextUsage,
+  pendingChatInputAppend,
+  onAppendConsumed,
+  compactionEvents = [],
+  onCompact,
 }: Props) {
   const { user } = useAuth();
   const [inputText, setInputText] = useState("");
@@ -761,11 +894,49 @@ export default function ChatInterface({
   const [showTeamAgents, setShowTeamAgents] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    if (pendingChatInputAppend) {
+      setInputText(prev => {
+        const textToAppend = pendingChatInputAppend;
+        const separator = prev.endsWith("\n") || prev === "" ? "" : "\n";
+        return prev + separator + textToAppend;
+      });
+      setTimeout(() => {
+        if (inputRef.current) {
+          inputRef.current.focus();
+        }
+      }, 50);
+      onAppendConsumed?.();
+    }
+  }, [pendingChatInputAppend, onAppendConsumed]);
+
+  // Auto-grow textarea height up to 4 inches (384px)
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (textarea) {
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 40), 384)}px`;
+    }
+  }, [inputText]);
+
   // Wave 4.1 — Load older messages
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasOlderMessages, setHasOlderMessages] = useState(true);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
+
+  const childMessagesByParent = useMemo(() => {
+    const groups: Record<string, ChatMessage[]> = {};
+    for (const msg of messages) {
+      const parentAttachment = msg.attachments?.find((a: any) => a.type === "parent_message");
+      if (parentAttachment?.id) {
+        const pid = parentAttachment.id;
+        if (!groups[pid]) groups[pid] = [];
+        groups[pid].push(msg);
+      }
+    }
+    return groups;
+  }, [messages]);
 
   const markdownComponents = useMemo(() => ({
     a: ({ href, children, ...props }: any) => {
@@ -971,8 +1142,75 @@ export default function ChatInterface({
     }, 10);
   };
 
+  // ── Slash Commands ──
+  interface SlashCommandItem {
+    command: string;
+    description: string;
+  }
+  const AVAILABLE_COMMANDS: SlashCommandItem[] = useMemo(() => [
+    { command: "/compact", description: "Manually compact the conversation history" },
+  ], []);
+
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
+  const [commandIndex, setCommandIndex] = useState(0);
+
+  const commandItems = useMemo(() => {
+    const q = commandQuery.toLowerCase();
+    const staticCommands = AVAILABLE_COMMANDS.filter(c => 
+      c.command.toLowerCase().includes(q) || 
+      c.command.toLowerCase().replace("/", "").includes(q)
+    );
+
+    // Dynamic private mentions: /@agentName
+    const privateMentionCommands: SlashCommandItem[] = agents
+      .filter(a => {
+        // If they typed something like "@" or "@co", match agents
+        const mentionMatch = q.startsWith("@") ? q.slice(1) : q;
+        return a.name.toLowerCase().includes(mentionMatch);
+      })
+      .map(a => ({
+        command: `/@${a.name}`,
+        description: `Send a private message to ${a.name}`
+      }));
+
+    return [...staticCommands, ...privateMentionCommands];
+  }, [commandQuery, AVAILABLE_COMMANDS, agents]);
+
+  const insertCommand = (item: SlashCommandItem) => {
+    const sel = inputRef.current?.selectionStart ?? inputText.length;
+    const textBefore = inputText.slice(0, sel);
+    const slashIndex = textBefore.lastIndexOf("/");
+    if (slashIndex === -1) { setCommandOpen(false); return; }
+    
+    // Ensure the slash was at the start of line or input
+    const isStartOfLine = slashIndex === 0 || textBefore[slashIndex - 1] === "\n";
+    if (!isStartOfLine) { setCommandOpen(false); return; }
+
+    const newText = inputText.slice(0, slashIndex) + item.command + " " + inputText.slice(sel);
+    setInputText(newText);
+    setCommandOpen(false);
+    setTimeout(() => {
+      inputRef.current?.focus();
+      const pos = slashIndex + item.command.length + 1;
+      inputRef.current?.setSelectionRange(pos, pos);
+    }, 10);
+  };
+
   const handleSend = useCallback(() => {
     if (!inputText.trim() && attachments.length === 0) return;
+
+    // ── /compact slash command ──
+    // Intercept before sending to backend. Triggers manual compaction via API.
+    if (inputText.trim() === "/compact") {
+      setInputText("");
+      setAttachments([]);
+      if (onCompact) {
+        onCompact().catch(() => {/* error handled in parent */});
+      }
+      return;
+    }
+
     // Extract @file:path references and pass them as structured file_ref
     // attachments so the backend injects their contents into agent context
     // (sandboxed to the agent's project). The visible @file:path text is kept
@@ -989,7 +1227,7 @@ export default function ChatInterface({
     setInputText("");
     setAttachments([]);
     setMentionOpen(false);
-  }, [inputText, attachments, onSendMessage]);
+  }, [inputText, attachments, onSendMessage, onCompact]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionOpen && mentionItems.length > 0) {
@@ -1014,8 +1252,30 @@ export default function ChatInterface({
       }
     }
 
+    if (commandOpen && commandItems.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setCommandIndex(i => (i + 1) % commandItems.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setCommandIndex(i => (i - 1 + commandItems.length) % commandItems.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        insertCommand(commandItems[commandIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
+        setCommandOpen(false);
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
-  }, [handleSend, mentionOpen, mentionItems, mentionIndex]);
+  }, [handleSend, mentionOpen, mentionItems, mentionIndex, commandOpen, commandItems, commandIndex]);
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
@@ -1025,6 +1285,8 @@ export default function ChatInterface({
 
     const sel = e.target.selectionStart;
     const textBefore = val.slice(0, sel);
+    
+    // Mention Check
     const atMatch = textBefore.match(/@([^\s]*)$/);
     if (atMatch) {
       setMentionOpen(true);
@@ -1033,6 +1295,16 @@ export default function ChatInterface({
       void ensureFileTree();
     } else {
       setMentionOpen(false);
+    }
+
+    // Command Check
+    const slashMatch = textBefore.match(/(^|\n)\/([^\s]*)$/);
+    if (slashMatch) {
+      setCommandOpen(true);
+      setCommandQuery(slashMatch[2]);
+      setCommandIndex(0);
+    } else {
+      setCommandOpen(false);
     }
   };
 
@@ -1141,6 +1413,48 @@ export default function ChatInterface({
 
   const displayMessages = searchMode ? searchResults.map((m: any) => ({ ...m, id: m.id, type: "message", timestamp: m.created_at })) : messages;
 
+  // Build merged timeline: messages + compaction dividers interleaved by timestamp.
+  // Each item is either { kind: "message", msg } or { kind: "compaction", event }.
+  // Compaction dividers are only shown outside search mode.
+  type MergedItem =
+    | { kind: "message"; msg: ChatMessage }
+    | { kind: "compaction"; event: CompactionEvent };
+
+  const mergedItems = useMemo((): MergedItem[] => {
+    if (searchMode || compactionEvents.length === 0) {
+      return displayMessages.map(msg => ({ kind: "message" as const, msg }));
+    }
+    // Sort compaction events by created_at ascending
+    const sortedEvents = [...compactionEvents].sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return ta - tb;
+    });
+    const result: MergedItem[] = [];
+    let evtIdx = 0;
+    for (const msg of displayMessages) {
+      const msgTs = msg.timestamp ? (typeof msg.timestamp === "number" ? msg.timestamp : new Date(msg.timestamp as string).getTime()) : 0;
+      // Insert any compaction events that happened before this message
+      while (evtIdx < sortedEvents.length) {
+        const evtTs = sortedEvents[evtIdx].created_at ? new Date(sortedEvents[evtIdx].created_at!).getTime() : 0;
+        if (evtTs <= msgTs) {
+          result.push({ kind: "compaction", event: sortedEvents[evtIdx] });
+          evtIdx++;
+        } else {
+          break;
+        }
+      }
+      result.push({ kind: "message", msg });
+    }
+    // Append any remaining compaction events after all messages
+    while (evtIdx < sortedEvents.length) {
+      result.push({ kind: "compaction", event: sortedEvents[evtIdx] });
+      evtIdx++;
+    }
+    return result;
+  }, [displayMessages, compactionEvents, searchMode]);
+
+
   return (
     <div style={{ flex: 1, minHeight: 0, height: "100%", width: "100%", position: "relative" }}>
       <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -1157,7 +1471,7 @@ export default function ChatInterface({
                     </span>
                   )}
                 </h2>
-                <p className="caption">Collaborate with your AI agents · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
+                <p className="caption">Collaborate with your <del style={{ opacity: 0.6 }}>AI agents</del> <span style={{ color: "var(--color-primary)", fontWeight: 500 }}>AI teammates</span> · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
               </div>
               
               <div style={{ position: "relative" }}>
@@ -1280,7 +1594,19 @@ export default function ChatInterface({
                 </button>
               </div>
             )}
-            {displayMessages.map(msg => {
+            {mergedItems.map((item) => {
+              // ── Compaction divider ──
+              if (item.kind === "compaction") {
+                return <CompactionDivider key={`cp-${item.event.id}`} event={item.event} />;
+              }
+
+              const msg = item.msg;
+              // Hide child subagent/teammate messages from top-level chat flow
+              const isChild = msg.attachments?.some((a: any) => a.type === "parent_message");
+              if (isChild && !searchMode) {
+                return null;
+              }
+
               const isHuman = msg.sender_id === "human";
               const isTool = msg.type === "tool_start" || msg.type === "tool_end";
               const isApproval = msg.type === "approval_request";
@@ -1403,10 +1729,10 @@ export default function ChatInterface({
                 );
               }
               if (isFileChange && msg.path) {
-                const isHandledByAssistant = displayMessages.some(m => 
-                  m.id !== msg.id && 
-                  m.sender_id !== "human" && 
-                  m.sender_id !== "system" && 
+                const isHandledByAssistant = displayMessages.some(m =>
+                  m.id !== msg.id &&
+                  m.sender_id !== "human" &&
+                  m.sender_id !== "system" &&
                   (m.reasoning?.includes(msg.path!) || m.path === msg.path)
                 );
                 if (isHandledByAssistant) return null;
@@ -1437,6 +1763,63 @@ export default function ChatInterface({
                   <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
                 </div>
               );
+              
+              if (msg.type === "llm_error" && msg.llm_error) {
+                const err = msg.llm_error;
+                return (
+                  <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                    <div style={{
+                        width: 32, height: 32, borderRadius: "50%",
+                        background: "rgba(239, 68, 68, 0.15)", // red-500 with opacity
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        color: "#ef4444", flexShrink: 0
+                      }}>
+                        <AlertTriangle size={16} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                        <span className="body-sm-strong" style={{ color: "#ef4444" }}>LLM Provider Error</span>
+                        <span className="subagent-chip" style={{ fontSize: 9, padding: "1px 5px", background: "rgba(239, 68, 68, 0.15)", color: "#fca5a5" }}>{err.provider.toUpperCase()}</span>
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
+                      </div>
+                      <div style={{
+                        background: "rgba(255, 255, 255, 0.03)",
+                        border: "1px solid rgba(239, 68, 68, 0.3)",
+                        padding: "12px 16px",
+                        borderRadius: "8px",
+                        color: "#e2e8f0"
+                      }}>
+                        <div style={{ fontWeight: 600, fontSize: "13px", marginBottom: "8px" }}>
+                          {err.message}
+                        </div>
+                        <div style={{ fontSize: "12px", color: "var(--color-mute)", marginBottom: "12px" }}>
+                          Model: <span style={{ fontFamily: "monospace", color: "#fca5a5" }}>{err.model}</span>
+                        </div>
+                        <div style={{ 
+                          background: "rgba(0,0,0,0.2)", 
+                          padding: "8px 12px", 
+                          borderRadius: "4px",
+                          borderLeft: "2px solid #ef4444",
+                          fontSize: "12px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px"
+                        }}>
+                          <Info size={14} color="#ef4444" />
+                          <span><strong>Action Required:</strong> {err.action_hint}</span>
+                        </div>
+                        {err.env_key_name && (
+                          <div style={{ marginTop: "12px" }}>
+                            <button className="btn btn-primary btn-sm" onClick={() => window.open('/settings', '_blank')}>
+                              Configure API Keys in Settings
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
 
               // Check if message is a subagent task notification report
               const isTaskNotification = Boolean(msg.text?.includes("<task-notification>"));
@@ -1714,6 +2097,104 @@ export default function ChatInterface({
                         {!isHuman && !isThinking && (
                           <ThoughtsPanel reasoning={finalReasoning} isStreaming={isStreaming} components={markdownComponents} />
                         )}
+
+                        {/* Subagent Activities / Worker reports enqueued for this message */}
+                        {!isHuman && !isThinking && childMessagesByParent[msg.id]?.length > 0 && (
+                          <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px", borderTop: "1px solid var(--border-glass)", paddingTop: "12px", width: "100%" }}>
+                            {childMessagesByParent[msg.id].map(child => {
+                              const isChildTaskNotification = Boolean(child.text?.includes("<task-notification>"));
+                              const isChildIntermediate = child.is_intermediate === true || child.type === "tool_trace";
+                              
+                              if (isChildTaskNotification) {
+                                const childReasoning = child.reasoning || "";
+                                return (
+                                  <div key={child.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                                    <AgentAvatar name={child.sender_name || "Agent"} id={child.sender_id} role={child.role || "subagent"} size={26} />
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                                        <span className="body-sm-strong" style={{ fontSize: 12 }}>{child.sender_name}</span>
+                                        <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>WORKER REPORT</span>
+                                        {child.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(child.timestamp)}</span>}
+                                      </div>
+                                      <TaskNotificationCard text={child.text || ""} />
+                                      {childReasoning && (
+                                        <div style={{ marginTop: "8px", borderTop: "1px solid var(--border-glass)", paddingTop: "8px" }}>
+                                          <ThoughtsPanel reasoning={childReasoning} isStreaming={false} components={markdownComponents} />
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              }
+                              
+                              if (isChildIntermediate) {
+                                const sections = parseReasoningIntoSections(child.text || "");
+                                const hasTools = sections.some(s => s.type === "tool");
+                                if (hasTools || sections.some(s => s.type === "thought")) {
+                                  return (
+                                    <div key={child.id} style={{ maxWidth: "100%", display: "flex", flexDirection: "column", gap: 4 }}>
+                                      {sections.map((sec, idx) => (
+                                        sec.type === "tool" ? (
+                                          <TraceToolCard
+                                            key={idx}
+                                            toolName={sec.toolName!}
+                                            argsObj={sec.argsObj}
+                                            argsRaw={sec.argsJson}
+                                            result={sec.result}
+                                            isError={sec.isError}
+                                            agentName={child.sender_name}
+                                            timestamp={child.timestamp}
+                                            defaultOpen={false}
+                                          />
+                                        ) : (
+                                          <div key={idx} style={{ 
+                                            display: "flex", 
+                                            alignItems: "center", 
+                                            gap: "8px", 
+                                            padding: "6px 12px", 
+                                            color: "var(--text-secondary)", 
+                                            fontSize: "12px",
+                                            fontStyle: "italic",
+                                            opacity: 0.85
+                                          }}>
+                                            <Sparkles size={12} style={{ color: "var(--color-primary)", flexShrink: 0 }} />
+                                            <span>{sec.text}</span>
+                                          </div>
+                                        )
+                                      ))}
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              }
+
+                              // Fallback for standard child text messages (e.g. permanent teammate outputs)
+                              return (
+                                <div key={child.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                                  <AgentAvatar name={child.sender_name || "Agent"} id={child.sender_id} role={child.role} size={26} />
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                                      <span className="body-sm-strong" style={{ fontSize: 12 }}>{child.sender_name}</span>
+                                      {child.role && <span className="caption" style={{ fontSize: 10 }}>{child.role}</span>}
+                                      {child.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(child.timestamp)}</span>}
+                                    </div>
+                                    <div style={{
+                                      padding: "8px 12px",
+                                      background: "var(--bg-glass-card)",
+                                      border: "1px solid var(--border-subtle)",
+                                      borderRadius: "0 8px 8px 8px",
+                                      fontSize: "12px",
+                                    }} className="markdown-body">
+                                      <ReactMarkdown skipHtml={true} remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                                        {child.text || ""}
+                                      </ReactMarkdown>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                         {msg.pending_approval && msg.pending_approval.status !== "approved" && (
                           <div style={{ marginTop: "var(--sp-md)" }}>
                             <ApprovalCard msg={{ ...msg, ...msg.pending_approval, type: "approval_request" } as ChatMessage} />
@@ -1887,6 +2368,37 @@ export default function ChatInterface({
                 {uploading ? <Loader2 size={16} className="animate-spin" /> : <Folder size={16} />}
               </button>
 
+              {/* Command Dropdown */}
+              {commandOpen && commandItems.length > 0 && (
+                <div style={{
+                  position: "absolute", bottom: "100%", left: 0, marginBottom: "var(--sp-sm)",
+                  background: "var(--bg-glass-card)", backdropFilter: "var(--blur-lg)", WebkitBackdropFilter: "var(--blur-lg)", border: "1px solid var(--border-glass)",
+                  borderRadius: "var(--radius-md)", boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+                  maxHeight: 240, overflowY: "auto", minWidth: 300, maxWidth: 450, zIndex: 10
+                }}>
+                  {commandItems.map((item, i) => {
+                    const isActive = i === commandIndex;
+                    return (
+                      <div
+                        key={item.command}
+                        className="mention-item"
+                        style={{
+                          padding: "var(--sp-sm) var(--sp-md)",
+                          display: "flex", flexDirection: "column", gap: 2, cursor: "pointer",
+                          background: isActive ? "var(--bg-hover)" : "transparent",
+                          borderBottom: "1px solid var(--border-glass)",
+                        }}
+                        onMouseEnter={() => setCommandIndex(i)}
+                        onClick={(e) => { e.preventDefault(); insertCommand(item); }}
+                      >
+                        <span className="body-md" style={{ fontWeight: 600, color: "var(--color-primary)" }}>{item.command}</span>
+                        <span className="caption" style={{ color: "var(--color-mute)" }}>{item.description}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               {/* Mention Dropdown — agents + project files */}
               {mentionOpen && mentionItems.length > 0 && (
                 <div style={{
@@ -1940,7 +2452,7 @@ export default function ChatInterface({
 
               <textarea
                 ref={inputRef}
-                className="input" style={{ flex: 1, resize: "none", minHeight: 40, maxHeight: 160, lineHeight: 1.5, padding: "9px var(--sp-md)" }}
+                className="input" style={{ flex: 1, resize: "none", minHeight: 40, maxHeight: 384, lineHeight: 1.5, padding: "9px var(--sp-md)", overflowY: "auto" }}
                 placeholder="Message your team... (@ to mention an agent or a file · Enter to send, Shift+Enter for newline)"
                 value={inputText} rows={1}
                 onChange={handleChange}

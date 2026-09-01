@@ -15,6 +15,7 @@ import re
 import uuid
 import asyncio
 import logging
+import os
 from typing import Dict, Any
 
 from core.chat.event_bus import event_bus
@@ -294,19 +295,68 @@ def register_builtin_tools():
                  "judge", _wrap_browser_close_tab),
         ToolSpec("browser_close_session", "Close and release the agent's entire browser session", "browser",
                  {}, "judge", _wrap_browser_close_session),
+        ToolSpec("browser_snapshot",
+                 "PRIMARY TOOL for understanding a web page. Renders the live DOM as a compact Accessibility Tree "
+                 "where every interactive element (button, input, link, select) is assigned a numbered Ref like [12]. "
+                 "Call this AFTER browser_navigate and AFTER any browser_act that changes the page. "
+                 "Then use browser_act(kind='click', ref=12) to interact. NEVER guess CSS selectors.",
+                 "browser",
+                 {"include_screenshot": {"type": "boolean", "required": False,
+                  "description": "Whether to stream a screenshot alongside the snapshot (default: true)."}},
+                 "safe", _wrap_browser_snapshot),
+        ToolSpec("browser_act",
+                 "Unified browser action dispatcher. Interact with elements by Ref number from browser_snapshot. "
+                 "kind options: click (ref or selector), type (ref or selector + text), clear, hover, select (+ value), "
+                 "check, uncheck, press (key), scroll_down, scroll_up, coords (x+y). "
+                 "After any act that navigates the page, call browser_snapshot to get fresh refs.",
+                 "browser",
+                 {"kind": {"type": "string", "required": True,
+                   "description": "Action kind: click|type|clear|hover|select|check|uncheck|press|scroll_down|scroll_up|coords"},
+                  "ref": {"type": "number", "required": False,
+                   "description": "Ref number from browser_snapshot (preferred over selector)"},
+                  "selector": {"type": "string", "required": False,
+                   "description": "CSS selector fallback if no ref available"},
+                  "text": {"type": "string", "required": False,
+                   "description": "Text to type (for kind=type)"},
+                  "key": {"type": "string", "required": False,
+                   "description": "Key to press, e.g. Enter, Tab, Escape (for kind=press)"},
+                  "value": {"type": "string", "required": False,
+                   "description": "Value or label to select (for kind=select)"},
+                  "x": {"type": "number", "required": False,
+                   "description": "X coordinate (for kind=coords)"},
+                  "y": {"type": "number", "required": False,
+                   "description": "Y coordinate (for kind=coords)"},
+                  "frame_index": {"type": "number", "required": False,
+                   "description": "Target iframe index (0-based) if element is inside an iframe"},
+                  "slow_type": {"type": "boolean", "required": False,
+                   "description": "Type character-by-character with delays (for sites that reject instant fill)"}},
+                 "judge", _wrap_browser_act),
+        ToolSpec("browser_handle_dialog",
+                 "Accept or dismiss a browser dialog (alert, confirm, prompt). "
+                 "Check browser_snapshot for pending dialog notifications before using.",
+                 "browser",
+                 {"accept": {"type": "boolean", "required": False,
+                  "description": "True to click OK/Accept (default), False to click Cancel/Dismiss"},
+                  "prompt_text": {"type": "string", "required": False,
+                  "description": "Text to enter for prompt-type dialogs before accepting"}},
+                 "judge", _wrap_browser_handle_dialog),
         ToolSpec("browser_get_interactive_elements",
-                 "IMPORTANT: Call this FIRST after navigating to any page with forms. "
-                 "Discovers all interactive elements (inputs, selects, buttons, textareas) on the page AND inside iframes. "
-                 "Returns the exact CSS selectors to use with browser_type, browser_click, etc. NEVER guess selectors.",
+                 "DEPRECATED: prefer browser_snapshot which returns richer Accessibility Tree with Ref IDs. "
+                 "Discovers all interactive elements on the page. Returns selectors for browser_type, browser_click.",
                  "browser",
                  {"selector_scope": {"type": "string", "required": False,
-                  "description": "Optional CSS selector to scope the search (e.g. 'form#apply'). Defaults to the whole page."}},
+                  "description": "Optional CSS selector to scope the search. Defaults to the whole page."}},
                  "safe", _wrap_browser_get_interactive_elements),
         ToolSpec("browser_switch_to_frame",
-                 "Get info about a specific iframe by its index (from browser_get_interactive_elements output)",
+                 "Get info about a specific iframe by its index",
                  "browser",
                  {"frame_index": {"type": "number", "required": True}},
                  "safe", _wrap_browser_switch_to_frame),
+
+        # ---- Browser Use (Agent Provider) ----
+        ToolSpec("browser_use_task", "Delegates a complex browsing task to the autonomous Browser Use Agent. Use this when the provider is 'browseruse'. The agent will navigate, interact, and complete the task on its own. Provide a clear, detailed task description.", "browser",
+                 {"task": {"type": "string", "required": True}},
+                 "judge", _wrap_browser_use_task),
 
         # ---- Coordination ----
         ToolSpec("spawn_agent", "Spawn a teammate's ReACT loop with a task", "coordination",
@@ -458,6 +508,46 @@ def register_builtin_tools():
         ToolSpec("forget_memory", "Delete a specific long-term memory from the database", "memory",
                  {"memory_id": {"type": "string", "required": True}},
                  "safe", _wrap_forget_memory),
+        ToolSpec("add_memory",
+                 "Save an important fact or lesson directly to long-term archival memory. "
+                 "Use this proactively during tasks to preserve critical information that "
+                 "might otherwise be lost to context compaction.",
+                 "memory",
+                 {"topic": {"type": "string", "required": True,
+                            "description": "Short title / context for the memory (e.g. 'User database setup')"},
+                  "content": {"type": "string", "required": True,
+                              "description": "The actual lesson, fact, or information to remember"}},
+                 "safe", _wrap_add_memory),
+        ToolSpec("search_memory",
+                 "Search long-term archival memory for relevant past learnings. "
+                 "Use this when you need to recall context that has been compacted out of the conversation.",
+                 "memory",
+                 {"query": {"type": "string", "required": True,
+                            "description": "Natural language description of what to search for"},
+                  "limit": {"type": "integer", "required": False,
+                            "description": "Max number of results to return (default 5)"}},
+                 "safe", _wrap_search_memory),
+        ToolSpec("add_fact",
+                 "Save a named fact (key=value) to the entity memory store. "
+                 "Facts are always injected into the system prompt, so they are never compacted away. "
+                 "Use for critical persistent information like user preferences, project settings, etc.",
+                 "memory",
+                 {"key": {"type": "string", "required": True,
+                          "description": "Short snake_case name for the fact (e.g. 'user_preferred_language')"},
+                  "value": {"type": "string", "required": True,
+                            "description": "The value to store (e.g. 'TypeScript')"}},
+                 "safe", _wrap_add_fact),
+        ToolSpec("edit_fact",
+                 "Update the value of an existing named fact in entity memory.",
+                 "memory",
+                 {"key": {"type": "string", "required": True},
+                  "new_value": {"type": "string", "required": True}},
+                 "safe", _wrap_edit_fact),
+        ToolSpec("delete_fact",
+                 "Remove a named fact from the entity memory store.",
+                 "memory",
+                 {"key": {"type": "string", "required": True}},
+                 "safe", _wrap_delete_fact),
                  
         # ---- Google Workspace ----
         ToolSpec("create_meeting", "Create a Google Calendar event with a Meet link", "workspace",
@@ -549,6 +639,8 @@ _TOOL_CATEGORY: Dict[str, str] = {
     "browser_hover": "browser", "browser_clear_cookies": "browser",
     "join_meeting": "browser", "join_google_meet": "browser",
     "send_google_meet_chat": "browser",
+    "browser_snapshot": "browser", "browser_act": "browser",
+    "browser_handle_dialog": "browser",
     # subagents
     "spawn_agent": "subagents", "hire_subagent": "subagents",
     "create_team_agent": "subagents",
@@ -701,6 +793,94 @@ def _apply_judge_disabled_fallback(permissions: Dict[str, Any]) -> str:
     return "human"
 
 
+async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
+    from browser_use import Agent as BrowserUseAgent
+    from core.memory.database import async_session
+    from core.memory.models import Agent as DbAgent
+    from sqlalchemy import select
+    import asyncio
+    
+    task = args.get("task", "")
+    if not task:
+        return "Error: task is required."
+
+    agent_id = args.get("_agent_id")
+    model_name = "gpt-4o"
+    if agent_id:
+        async with async_session() as db:
+            agent_record = (await db.execute(select(DbAgent).where(DbAgent.id == agent_id))).scalar_one_or_none()
+            if agent_record and agent_record.model:
+                model_name = agent_record.model
+
+    try:
+        from browser_use import Browser, BrowserConfig
+        from core.llm.config_manager import load_config
+        cfg = load_config()
+        
+        ba_cfg = cfg.get("browser_automation", {})
+        provider = ba_cfg.get("provider", "local")
+        keys = ba_cfg.get("api_keys", {})
+        
+        browser_config = None
+        if provider == "browserbase" and keys.get("browserbase"):
+            browser_config = BrowserConfig(cdp_url=f"wss://connect.browserbase.com?apiKey={keys['browserbase']}")
+        else:
+            browser_config = BrowserConfig(headless=True)
+            
+        browser_instance = Browser(config=browser_config)
+        
+        keys = cfg.get("api_keys", {})
+        
+        llm = None
+        model_lower = model_name.lower()
+        if "openrouter" in model_lower:
+            from langchain_openai import ChatOpenAI
+            api_key = keys.get("openrouter") or keys.get("browseruse")
+            if not api_key: return "Error: OpenRouter API key is missing. Required for this agent."
+            # Remove openrouter/ prefix if present
+            actual_model = model_name[11:] if model_lower.startswith("openrouter/") else model_name
+            llm = ChatOpenAI(
+                model=actual_model,
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1"
+            )
+        elif "claude" in model_lower:
+            from langchain_anthropic import ChatAnthropic
+            api_key = keys.get("anthropic") or keys.get("browseruse")
+            if not api_key: return "Error: Anthropic API key is missing. Required for this agent."
+            llm = ChatAnthropic(model=model_name, api_key=api_key)
+        elif "gemini" in model_lower:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            api_key = keys.get("google") or keys.get("browseruse")
+            if not api_key: return "Error: Google API key is missing. Required for this agent."
+            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
+        else:
+            from langchain_openai import ChatOpenAI
+            api_key = keys.get("openai") or keys.get("browseruse")
+            if not api_key: return "Error: OpenAI API key is missing. Required for browser-use."
+            
+            # ensure model string is valid for openai
+            if "/" in model_name: 
+                model_name = model_name.split("/")[-1]
+                
+            llm = ChatOpenAI(model=model_name, api_key=api_key)
+            
+        agent = BrowserUseAgent(task=task, llm=llm, browser=browser_instance)
+        result = await agent.run()
+        
+        try:
+            await browser_instance.close()
+        except Exception:
+            pass
+            
+        return f"Browser Use Agent finished. Result:\n{result}"
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Browser Use task failed: {e}")
+        return f"Error running browser use task: {e}"
+
+
 class ToolExecutor:
     async def execute(
         self,
@@ -721,6 +901,31 @@ class ToolExecutor:
         spec = ToolRegistry.get(tool_name)
         if not spec:
             return f"Error: Tool '{tool_name}' is not registered in the system."
+
+        # ── Pre-validation of arguments ──
+        # Check for placeholder Ellipsis or empty/placeholder values
+        if arguments:
+            has_ellipsis = False
+            if "_positional_args" in arguments:
+                pos = arguments["_positional_args"]
+                if any(x is Ellipsis or x == "Ellipsis" or str(x) == "Ellipsis" or x == "..." for x in pos):
+                    has_ellipsis = True
+            for k, v in arguments.items():
+                if v is Ellipsis or v == "Ellipsis" or str(v) == "Ellipsis" or v == "...":
+                    has_ellipsis = True
+            if has_ellipsis:
+                return (f"Error: Tool '{tool_name}' arguments contains placeholder 'Ellipsis' (...). "
+                        "Do not use placeholders. Provide actual parameter values.")
+
+        # Check required parameters
+        if spec.parameters:
+            for param_name, param_info in spec.parameters.items():
+                if param_info.get("required", False):
+                    if param_name not in arguments or arguments[param_name] is None or str(arguments[param_name]).strip() == "":
+                        usage_parts = [f'{k}="..."' if v.get("required", False) else f'[{k}="..."]' for k, v in spec.parameters.items()]
+                        usage_str = f"{tool_name}({', '.join(usage_parts)})"
+                        return f"Error: Missing required parameter '{param_name}'. Usage: {usage_str}"
+
 
         # ── Granular runtime context (always_deny / always_allow) takes top priority ──
         if permission_context:
@@ -1015,6 +1220,8 @@ class ToolExecutor:
                 "path": result.path,
                 "paths": [result.path] if result.path else [],
                 "project_id": project_id,
+                "sender_id": agent_id,
+                "sender_name": agent_name,
                 "_seq": int(asyncio.get_event_loop().time() * 1000),
             }
             await event_bus.publish(f"team:{team_id}", fs_event)
@@ -1034,6 +1241,8 @@ class ToolExecutor:
                 "path": target_path,
                 "paths": [target_path] if target_path else [],
                 "project_id": project_id,
+                "sender_id": agent_id,
+                "sender_name": agent_name,
                 "_seq": int(asyncio.get_event_loop().time() * 1000),
             }
             await event_bus.publish(f"team:{team_id}", fs_event)
@@ -1623,6 +1832,56 @@ async def _wrap_browser_switch_to_frame(args: Dict[str, Any], team_id: str) -> s
     return await browser_tool.switch_to_frame(frame_index, agent_id)
 
 
+# ── New: Snapshot / Act / Dialog wrappers ────────────────────────────────────
+
+async def _wrap_browser_snapshot(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    include_screenshot = bool(args.get("include_screenshot", True))
+    return await browser_tool.snapshot(agent_id, agent_name, team_id,
+                                       include_screenshot=include_screenshot)
+
+
+async def _wrap_browser_act(args: Dict[str, Any], team_id: str) -> str:
+    kind = args.get("kind", "")
+    if not kind:
+        return "Error: Missing parameter 'kind'."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+    ref = args.get("ref")
+    if ref is not None:
+        try:
+            ref = int(ref)
+        except (ValueError, TypeError):
+            ref = None
+    selector = args.get("selector") or None
+    text = args.get("text") or None
+    key = args.get("key") or None
+    value = args.get("value") or None
+    x = args.get("x")
+    y = args.get("y")
+    frame_index = args.get("frame_index")
+    if frame_index is not None:
+        try:
+            frame_index = int(frame_index)
+        except (ValueError, TypeError):
+            frame_index = None
+    slow_type = bool(args.get("slow_type", False))
+    return await browser_tool.act(
+        kind, agent_id, agent_name, team_id,
+        ref=ref, selector=selector, text=text, key=key,
+        value=value, x=x, y=y, frame_index=frame_index,
+        slow_type=slow_type,
+    )
+
+
+async def _wrap_browser_handle_dialog(args: Dict[str, Any], team_id: str) -> str:
+    agent_id = args.get("_agent_id", "unknown")
+    accept = bool(args.get("accept", True))
+    prompt_text = args.get("prompt_text", "")
+    return await browser_tool.handle_dialog(agent_id, accept=accept, prompt_text=prompt_text)
+
+
 async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
     pos = args.get("_positional_args", [])
     name = args.get("agent_name") or args.get("name") or ""
@@ -1647,7 +1906,8 @@ async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
     if not name or not task:
         return "Error: Missing 'agent_name' or 'task'."
     parent_id = args.get("_agent_id")
-    return await agent_tools.spawn_agent(name, task, team_id, parent_coordinator_id=parent_id)
+    parent_msg_id = args.get("_active_message_id")
+    return await agent_tools.spawn_agent(name, task, team_id, parent_coordinator_id=parent_id, parent_message_id=parent_msg_id)
 
 async def _wrap_hire_subagent(args: Dict[str, Any], team_id: str) -> str:
     agent_name = args.get("_agent_name", "")
@@ -1722,7 +1982,8 @@ async def _wrap_hire_subagent(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'role' or 'task' for hire_subagent. Example: hire_subagent(role='Python Developer', expertise='Scripting', task='...')"
         
     agent_id = args.get("_agent_id", "")
-    return await agent_tools.hire_subagent(role, expertise, task, team_id, agent_id, model=model)
+    parent_msg_id = args.get("_active_message_id")
+    return await agent_tools.hire_subagent(role, expertise, task, team_id, agent_id, model=model, parent_message_id=parent_msg_id)
 
 async def _wrap_create_team_agent(args: Dict[str, Any], team_id: str) -> str:
     name = args.get("name") or args.get("agent_name") or ""
@@ -1987,9 +2248,40 @@ async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
     question = args.get("question") or args.get("value", "")
     if not question:
         return "Error: Missing 'question'."
+    
     agent_id = args.get("_agent_id", "unknown")
     agent_name = args.get("_agent_name", "Agent")
     options = args.get("options")  # optional list of choice strings
+
+    # Handle stringified JSON or JS objects passed in question/value
+    if isinstance(question, str) and question.strip().startswith("{") and question.strip().endswith("}"):
+        import json
+        parsed = None
+        try:
+            parsed = json.loads(question.strip())
+        except Exception:
+            import ast
+            try:
+                parsed = ast.literal_eval(question.strip())
+            except Exception:
+                pass
+        if isinstance(parsed, dict):
+            question = parsed.get("question") or parsed.get("value") or question
+            if "options" in parsed and isinstance(parsed["options"], list):
+                options = parsed["options"]
+
+    # Handle stringified list of options
+    if isinstance(options, str) and options.strip().startswith("[") and options.strip().endswith("]"):
+        import json
+        try:
+            options = json.loads(options.strip())
+        except Exception:
+            import ast
+            try:
+                options = ast.literal_eval(options.strip())
+            except Exception:
+                pass
+
     return await interaction_tools.ask_user(question, agent_id, agent_name, team_id, options=options)
 
 
@@ -2166,6 +2458,81 @@ async def _wrap_forget_memory(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'memory_id'."
     return await memory_tools.forget_memory(memory_id)
 
+async def _wrap_add_memory(args: Dict[str, Any], team_id: str) -> str:
+    topic = args.get("topic", "")
+    content = args.get("content", "")
+    if not topic or not content:
+        return "Error: Missing 'topic' or 'content'."
+    # Resolve project_id from team_id for proper scoping
+    from core.memory.database import async_session as _async_session
+    from core.memory.models import Team as _Team
+    from sqlalchemy import select as _select
+    project_id = None
+    try:
+        async with _async_session() as db:
+            t = (await db.execute(_select(_Team).where(_Team.id == _uuid_or_none(team_id)))).scalar_one_or_none()
+            if t:
+                project_id = str(t.project_id)
+    except Exception:
+        pass
+    return await memory_tools.add_memory(
+        topic=topic,
+        content=content,
+        team_id=team_id,
+        project_id=project_id,
+    )
+
+async def _wrap_search_memory(args: Dict[str, Any], team_id: str) -> str:
+    query = args.get("query", "")
+    if not query:
+        return "Error: Missing 'query'."
+    limit = int(args.get("limit", 5))
+    from core.memory.database import async_session as _async_session
+    from core.memory.models import Team as _Team
+    from sqlalchemy import select as _select
+    project_id = None
+    try:
+        async with _async_session() as db:
+            t = (await db.execute(_select(_Team).where(_Team.id == _uuid_or_none(team_id)))).scalar_one_or_none()
+            if t:
+                project_id = str(t.project_id)
+    except Exception:
+        pass
+    return await memory_tools.search_memory(
+        query=query,
+        project_id=project_id,
+        team_id=team_id,
+        limit=limit,
+    )
+
+async def _wrap_add_fact(args: Dict[str, Any], team_id: str) -> str:
+    key = args.get("key", "")
+    value = args.get("value", "")
+    if not key or not value:
+        return "Error: Missing 'key' or 'value'."
+    return await memory_tools.add_fact(key=key, value=value, team_id=team_id)
+
+async def _wrap_edit_fact(args: Dict[str, Any], team_id: str) -> str:
+    key = args.get("key", "")
+    new_value = args.get("new_value", "")
+    if not key or not new_value:
+        return "Error: Missing 'key' or 'new_value'."
+    return await memory_tools.edit_fact(key=key, new_value=new_value, team_id=team_id)
+
+async def _wrap_delete_fact(args: Dict[str, Any], team_id: str) -> str:
+    key = args.get("key", "")
+    if not key:
+        return "Error: Missing 'key'."
+    return await memory_tools.delete_fact(key=key, team_id=team_id)
+
+def _uuid_or_none(val):
+    """Helper to safely parse a UUID string, returning None on failure."""
+    try:
+        import uuid as _uuid_mod
+        return _uuid_mod.UUID(str(val))
+    except Exception:
+        return None
+
 # ---- Google Workspace Wrappers ----
 
 async def _wrap_create_meeting(args: Dict[str, Any], team_id: str) -> str:
@@ -2193,3 +2560,89 @@ async def _wrap_generate_mom(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'transcription'."
     return await meeting_tool.generate_mom(transcription)
 
+
+
+import urllib.request
+import tempfile
+import mimetypes
+
+async def _wrap_extract_document(args: Dict[str, Any], team_id: str) -> str:
+    path_or_url = args.get("path_or_url", "")
+    if not path_or_url:
+        return "Error: Missing path_or_url parameter."
+    
+    try:
+        if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+            import urllib.request
+            req = urllib.request.Request(path_or_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                content = response.read()
+            
+            # Detect extension from URL or content-type
+            ext = ".txt"
+            ctype = response.headers.get("Content-Type", "")
+            if "pdf" in ctype: ext = ".pdf"
+            elif "wordprocessingml.document" in ctype: ext = ".docx"
+            elif "spreadsheetml.sheet" in ctype: ext = ".xlsx"
+            elif "image" in ctype: ext = ".png"
+            elif path_or_url.lower().endswith(".pdf"): ext = ".pdf"
+            elif path_or_url.lower().endswith(".docx"): ext = ".docx"
+            elif path_or_url.lower().endswith(".xlsx"): ext = ".xlsx"
+            elif path_or_url.lower().endswith(".jpg") or path_or_url.lower().endswith(".png"): ext = ".png"
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+        else:
+            tmp_path = path_or_url
+            
+        ext = os.path.splitext(tmp_path)[1].lower()
+        text = ""
+        
+        if ext == ".pdf":
+            try:
+                import PyPDF2
+                with open(tmp_path, "rb") as f:
+                    reader = PyPDF2.PdfReader(f)
+                    for page in reader.pages:
+                        text += page.extract_text() + "\n"
+            except ImportError:
+                return "Error: PyPDF2 is not installed."
+        elif ext == ".docx":
+            try:
+                import docx
+                doc = docx.Document(tmp_path)
+                for para in doc.paragraphs:
+                    text += para.text + "\n"
+            except ImportError:
+                return "Error: python-docx is not installed."
+        elif ext == ".xlsx":
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(tmp_path, data_only=True)
+                for sheet in wb.worksheets:
+                    text += f"--- Sheet: {sheet.title} ---\n"
+                    for row in sheet.iter_rows(values_only=True):
+                        text += "\t".join([str(v) if v is not None else "" for v in row]) + "\n"
+            except ImportError:
+                return "Error: openpyxl is not installed."
+        elif ext in [".png", ".jpg", ".jpeg"]:
+            try:
+                import pytesseract
+                from PIL import Image
+                text = pytesseract.image_to_string(Image.open(tmp_path))
+            except Exception as e:
+                return f"Error extracting image text: {e}"
+        else:
+            try:
+                with open(tmp_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+            except:
+                return f"Error: Unsupported or unreadable document type: {ext}"
+        
+        if path_or_url.startswith("http"):
+            os.remove(tmp_path)
+            
+        return f"Successfully extracted document ({ext}):\n\n{text[:100000]}"
+    except Exception as e:
+        return f"Error processing document: {str(e)}"

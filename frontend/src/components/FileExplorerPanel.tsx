@@ -32,9 +32,10 @@ import {
   CheckSquare,
   Plus,
 } from "lucide-react";
-import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
-import { api } from "@/hooks/useApi";
-import Editor from "@monaco-editor/react";
+import { PanelGroup, Panel, PanelResizeHandle, ImperativePanelHandle } from "react-resizable-panels";
+import { api, getApiBase } from "@/hooks/useApi";
+import { useAuth } from "@/hooks/useAuth";
+import Editor, { DiffEditor } from "@monaco-editor/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import TerminalPanel from "./TerminalPanel";
@@ -155,10 +156,12 @@ interface FileExplorerPanelProps {
     after_content?: string;
     action?: string;
     sender_name?: string;
+    sender_id?: string;
     _seq?: number;
   } | null;
   pendingOpenFile?: string | null;
   onPendingOpenConsumed?: () => void;
+  onAppendToChat?: (text: string) => void;
 }
 
 interface ContextMenuState {
@@ -174,11 +177,14 @@ interface OpenFile {
   content: string;
   isDirty: boolean;
   staleRemote?: { content: string; sender: string } | null;
+  isDiff?: boolean;
+  originalContent?: string;
 }
 
 interface TerminalTab {
   id: string;
   label: string;
+  shell: "bash" | "powershell" | "cmd" | "default";
   cmd: { cmd: string; ts: number } | null;
 }
 
@@ -348,22 +354,71 @@ export default function FileExplorerPanel({
   lastFileChange,
   pendingOpenFile,
   onPendingOpenConsumed,
+  onAppendToChat,
 }: FileExplorerPanelProps) {
   const { addToast } = useToast();
+  const { user } = useAuth();
+  
+  const getRawFileUrl = useCallback((filePath: string) => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : "";
+    const base = getApiBase();
+    const qs = new URLSearchParams();
+    qs.set("path", filePath.replace(/^diff:/, ""));
+    if (projectId) qs.set("project_id", projectId);
+    if (token) qs.set("token", token);
+    return `${base}/api/files/raw?${qs.toString()}`;
+  }, [projectId]);
+
+  const getFileType = useCallback((filePath: string) => {
+    const cleanPath = filePath.replace(/^diff:/, "");
+    const ext = cleanPath.split('.').pop()?.toLowerCase() || "";
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg', 'bmp'].includes(ext)) {
+      return "image";
+    }
+    if (['mp4', 'webm', 'ogg', 'mov', 'm4v', '3gp'].includes(ext)) {
+      return "video";
+    }
+    if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'].includes(ext)) {
+      return "audio";
+    }
+    if (ext === 'pdf') {
+      return "pdf";
+    }
+    return "text";
+  }, []);
+
   const [activeLeftTab, setActiveLeftTab] = useState<"explorer" | "search" | "git" | "activity" | "history">("explorer");
+  const [isLeftSidebarCollapsed, setIsLeftSidebarCollapsed] = useState(false);
+  const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
   const [saving, setSaving] = useState(false);
+  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
+  
+  const editorRef = useRef<any>(null);
+  const onAppendToChatRef = useRef<(text: string) => void>(() => {});
+  const activeFilePathRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    onAppendToChatRef.current = (text: string) => {
+      if (onAppendToChat) onAppendToChat(text);
+    };
+  }, [onAppendToChat]);
+
+  useEffect(() => {
+    activeFilePathRef.current = activeFilePath;
+  }, [activeFilePath]);
   const [viewMode, setViewMode] = useState<"preview" | "edit">("preview");
   const [refreshKey, setRefreshKey] = useState(0);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [filterText, setFilterText] = useState("");
   const [collapseSignal, setCollapseSignal] = useState(0);
-  const [showTerminal, setShowTerminal] = useState(false);
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([{ id: "t1", label: "Terminal 1", cmd: null }]);
+  const [showTerminal, setShowTerminal] = useState(true);
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([{ id: "t1", label: "Terminal 1", shell: "default", cmd: null }]);
   const [activeTerminalTabId, setActiveTerminalTabId] = useState("t1");
+  const [showShellDropdown, setShowShellDropdown] = useState(false);
   const [projectName, setProjectName] = useState<string | null>(null);
 
   // Multi-Selection & Clipboard State
@@ -436,6 +491,17 @@ export default function FileExplorerPanel({
     setRefreshKey((k) => k + 1);
 
     if (lastFileChange.path) {
+      // If the change was made by the human User, do not update openFiles buffer or show banners
+      if (
+        lastFileChange.sender_name === "User" ||
+        lastFileChange.sender_id === "human" ||
+        (user && lastFileChange.sender_id === user.id) ||
+        (user && lastFileChange.sender_name === `${user.first_name || ""} ${user.last_name || ""}`.trim()) ||
+        (user && lastFileChange.sender_name === user.email.split("@")[0])
+      ) {
+        return;
+      }
+
       const rp = lastFileChange.path.replace(/\\/g, "/");
       const nc = lastFileChange.after_content ?? "";
       const sender = lastFileChange.sender_name || "Agent";
@@ -448,7 +514,7 @@ export default function FileExplorerPanel({
         })
       );
     }
-  }, [lastFileChange]);
+  }, [lastFileChange, user]);
 
   // Open file requested externally
   useEffect(() => {
@@ -491,6 +557,40 @@ export default function FileExplorerPanel({
     }
   };
 
+  const openDiffFile = async (path: string, originalContent: string) => {
+    const tabPath = `diff:${path}`;
+    const ex = openFiles.find((f) => f.path === tabPath);
+    if (ex) {
+      setActiveFilePath(tabPath);
+      return;
+    }
+    setLoadingContent(true);
+    try {
+      let currentContent = "";
+      try {
+        const res = await api.readFile(path, projectId);
+        currentContent = res.content || "";
+      } catch (e) {
+        currentContent = "";
+      }
+      setOpenFiles((prev) => [
+        ...prev.filter(f => f.path !== tabPath),
+        {
+          path: tabPath,
+          content: currentContent,
+          isDirty: false,
+          isDiff: true,
+          originalContent: originalContent
+        }
+      ]);
+      setActiveFilePath(tabPath);
+    } catch (e) {
+      addToast({ type: "error", message: `Error loading diff: ${(e as Error).message}` });
+    } finally {
+      setLoadingContent(false);
+    }
+  };
+
   const applyStaleRemote = (path: string) => {
     setOpenFiles((prev) =>
       prev.map((f) => (f.path !== path || !f.staleRemote ? f : { ...f, content: f.staleRemote.content, isDirty: false, staleRemote: null }))
@@ -526,6 +626,10 @@ export default function FileExplorerPanel({
       setSaving(false);
     }
   }, [activeFilePath, openFiles, projectId, addToast]);
+
+  useEffect(() => {
+    handleSaveRef.current = handleSave;
+  }, [handleSave]);
 
   // Selection Handler
   const handleItemSelect = (path: string, isDir: boolean, event: React.MouseEvent) => {
@@ -724,20 +828,21 @@ export default function FileExplorerPanel({
     );
   };
 
-  const addTerminalTab = () => {
+  const addTerminalTab = (shell: "bash" | "powershell" | "cmd" | "default" = "default") => {
     const id = `t${Date.now()}`;
-    setTerminalTabs((prev) => [...prev, { id, label: `Terminal ${prev.length + 1}`, cmd: null }]);
+    const labelMap = { bash: "Git Bash", powershell: "PowerShell", cmd: "CMD", default: "Terminal" };
+    setTerminalTabs((prev) => [...prev, { id, label: `${labelMap[shell]} ${prev.length + 1}`, shell, cmd: null }]);
     setActiveTerminalTabId(id);
     setShowTerminal(true);
   };
 
-  const closeTerminalTab = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const closeTerminalTab = (id: string, e?: React.MouseEvent | KeyboardEvent) => {
+    if (e) e.stopPropagation();
     setTerminalTabs((prev) => {
       const f = prev.filter((t) => t.id !== id);
       if (!f.length) {
         setShowTerminal(false);
-        return [{ id: "t1", label: "Terminal 1", cmd: null }];
+        return [{ id: "t1", label: "Terminal 1", shell: "default", cmd: null }];
       }
       if (activeTerminalTabId === id) setActiveTerminalTabId(f[f.length - 1].id);
       return f;
@@ -792,7 +897,16 @@ export default function FileExplorerPanel({
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
         handleSave();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "c" && selectedPaths.size > 0) {
+        return;
+      }
+
+      // Restrict all other explorer operations (copy, paste, rename, delete)
+      // to only trigger when browser focus is actually inside the explorer panel (#fe-left)
+      if (!target.closest("#fe-left")) {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === "c" && selectedPaths.size > 0) {
         e.preventDefault();
         handleCopy();
       } else if ((e.ctrlKey || e.metaKey) && e.key === "x" && selectedPaths.size > 0) {
@@ -827,7 +941,7 @@ export default function FileExplorerPanel({
   const activeTermTab = terminalTabs.find((t) => t.id === activeTerminalTabId);
   const containerStyle: React.CSSProperties = isFullScreen
     ? { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999, display: "flex", background: "var(--color-canvas)", width: "100%", maxWidth: "none" }
-    : { display: "flex", height: "100%", borderLeft: "1px solid var(--border-subtle)", background: "var(--bg-app)", width: "100%", maxWidth: 840 };
+    : { display: "flex", height: "100%", borderLeft: "1px solid var(--border-subtle)", background: "var(--bg-app)", width: "100%", maxWidth: "none" };
 
   const TAB_BTNS = [
     { key: "explorer", icon: <LayoutList size={18} />, title: "Explorer" },
@@ -856,32 +970,54 @@ export default function FileExplorerPanel({
           flexShrink: 0,
         }}
       >
-        {TAB_BTNS.map(({ key, icon, title }) => (
-          <button
-            key={key}
-            onClick={() => setActiveLeftTab(key as any)}
-            title={title}
-            style={{
-              padding: 8,
-              borderRadius: "var(--radius-sm)",
-              color: activeLeftTab === key ? "var(--color-primary)" : "var(--color-body)",
-              background: activeLeftTab === key ? "var(--color-primary-glow-sm)" : "transparent",
-            }}
-            className="hover:text-white transition-colors"
-          >
-            {icon}
-          </button>
-        ))}
+        {TAB_BTNS.map(({ key, icon, title }) => {
+          const isActive = !isLeftSidebarCollapsed && activeLeftTab === key;
+          return (
+            <button
+              key={key}
+              onClick={() => {
+                const panel = leftPanelRef.current;
+                if (!panel) return;
+                if (activeLeftTab === key) {
+                  if (panel.isCollapsed()) {
+                    panel.expand();
+                  } else {
+                    panel.collapse();
+                  }
+                } else {
+                  setActiveLeftTab(key as any);
+                  if (panel.isCollapsed()) {
+                    panel.expand();
+                  }
+                }
+              }}
+              title={title}
+              style={{
+                padding: 8,
+                borderRadius: "var(--radius-sm)",
+                color: isActive ? "var(--color-primary)" : "var(--color-body)",
+                background: isActive ? "var(--color-primary-glow-sm)" : "transparent",
+              }}
+              className="hover:text-white transition-colors"
+            >
+              {icon}
+            </button>
+          );
+        })}
       </div>
 
-      <PanelGroup direction="horizontal" autoSaveId="fe-h">
+      <PanelGroup direction="horizontal" autoSaveId="fe-h-v2">
         {/* Left Side Explorer View */}
         <Panel
+          ref={leftPanelRef}
           id="fe-left"
           order={1}
-          defaultSize={32}
-          minSize={20}
+          collapsible={true}
+          defaultSize={40}
+          minSize={15}
           maxSize={50}
+          onCollapse={() => setIsLeftSidebarCollapsed(true)}
+          onExpand={() => setIsLeftSidebarCollapsed(false)}
           style={{
             display: "flex",
             flexDirection: "column",
@@ -1204,7 +1340,14 @@ export default function FileExplorerPanel({
           )}
 
           {activeLeftTab === "search" && <SearchPanel projectId={projectId} onFileSelect={openFile} />}
-          {activeLeftTab === "git" && <GitPanel projectId={projectId} />}
+          {activeLeftTab === "git" && (
+            <GitPanel 
+              projectId={projectId} 
+              onOpenFile={openFile} 
+              onOpenDiffFile={openDiffFile}
+              lastFileChange={lastFileChange} 
+            />
+          )}
           {activeLeftTab === "activity" && (
             teamId ? (
               <ActivityLogPanel teamId={teamId} />
@@ -1238,325 +1381,538 @@ export default function FileExplorerPanel({
 
         {/* Right Side Editor / Terminal View */}
         <Panel id="fe-right" order={2} style={{ display: "flex", flexDirection: "column", minWidth: 0, background: "transparent" }}>
-          {openFiles.length > 0 ? (
-            <>
-              {/* File Tabs */}
-              <div
-                style={{
-                  display: "flex",
-                  background: "var(--bg-glass-card)",
-                  overflowX: "auto",
-                  overflowY: "hidden",
-                  height: 35,
-                  flexShrink: 0,
-                }}
-                className="scrollbar-hide"
-              >
-                {openFiles.map((file) => {
-                  const isActive = file.path === activeFilePath;
-                  const fname = file.path.split("/").pop() || file.path;
-                  return (
+          <PanelGroup direction="vertical" autoSaveId="fe-right-v5">
+            <Panel id="fe-right-pane-upper" order={1} defaultSize={showTerminal ? 60 : 100} minSize={25} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+              {openFiles.length > 0 ? (
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+                  {/* File Tabs */}
+                  <div
+                    style={{
+                      display: "flex",
+                      background: "var(--bg-glass-card)",
+                      overflowX: "auto",
+                      overflowY: "hidden",
+                      height: 35,
+                      flexShrink: 0,
+                    }}
+                    className="scrollbar-hide"
+                  >
+                    {openFiles.map((file) => {
+                      const isActive = file.path === activeFilePath;
+                      let fname = file.path.split("/").pop() || file.path;
+                      let fileIcon = getFileIcon(fname);
+                      if (file.isDiff) {
+                        const realPath = file.path.replace(/^diff:/, "");
+                        fname = `Diff: ${realPath.split("/").pop() || realPath}`;
+                        fileIcon = "⚖️";
+                      }
+                      return (
+                        <div
+                          key={file.path}
+                          onClick={() => setActiveFilePath(file.path)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            padding: "0 8px 0 12px",
+                            gap: 4,
+                            background: isActive ? "var(--bg-glass-panel)" : "transparent",
+                            color: isActive ? "var(--color-primary)" : "var(--color-mute)",
+                            borderRight: "1px solid var(--color-hairline)",
+                            borderTop: isActive ? "1px solid var(--color-primary)" : "1px solid transparent",
+                            cursor: "pointer",
+                            minWidth: 100,
+                            maxWidth: 200,
+                            height: "100%",
+                            userSelect: "none",
+                          }}
+                          className="hover:bg-[#2a2d2e] transition-colors"
+                        >
+                          <span style={{ fontSize: 12, flexShrink: 0 }}>{fileIcon}</span>
+                          <span className="truncate body-sm font-mono" style={{ fontSize: "12px", flex: 1 }}>
+                            {fname}
+                          </span>
+                          {file.isDirty && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#fff", flexShrink: 0 }} />}
+                          <button
+                            onClick={(e) => closeFile(file.path, e)}
+                            style={{
+                              padding: 2,
+                              borderRadius: 3,
+                              flexShrink: 0,
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              color: "var(--color-mute)",
+                            }}
+                            className="hover:text-white transition-colors"
+                            title="Close"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Breadcrumb & Action Toolbar */}
+                  {activeFile && (
                     <div
-                      key={file.path}
-                      onClick={() => setActiveFilePath(file.path)}
                       style={{
+                        padding: "3px 12px",
+                        borderBottom: "1px solid var(--color-hairline)",
+                        background: "var(--bg-glass-panel)",
                         display: "flex",
                         alignItems: "center",
-                        padding: "0 8px 0 12px",
-                        gap: 4,
-                        background: isActive ? "var(--bg-glass-panel)" : "transparent",
-                        color: isActive ? "var(--color-primary)" : "var(--color-mute)",
-                        borderRight: "1px solid var(--color-hairline)",
-                        borderTop: isActive ? "1px solid var(--color-primary)" : "1px solid transparent",
-                        cursor: "pointer",
-                        minWidth: 100,
-                        maxWidth: 180,
-                        height: "100%",
-                        userSelect: "none",
+                        justifyContent: "space-between",
+                        flexShrink: 0,
+                        gap: 8,
                       }}
-                      className="hover:bg-[#2a2d2e] transition-colors"
                     >
-                      <span style={{ fontSize: 12, flexShrink: 0 }}>{getFileIcon(fname)}</span>
-                      <span className="truncate body-sm font-mono" style={{ fontSize: "12px", flex: 1 }}>
-                        {fname}
-                      </span>
-                      {file.isDirty && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#fff", flexShrink: 0 }} />}
-                      <button
-                        onClick={(e) => closeFile(file.path, e)}
-                        style={{
-                          padding: 2,
-                          borderRadius: 3,
-                          flexShrink: 0,
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "var(--color-mute)",
-                        }}
-                        className="hover:text-white transition-colors"
-                        title="Close"
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Breadcrumb & Action Toolbar */}
-              {activeFile && (
-                <div
-                  style={{
-                    padding: "3px 12px",
-                    borderBottom: "1px solid var(--color-hairline)",
-                    background: "var(--bg-glass-panel)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    flexShrink: 0,
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}>
-                    <Breadcrumb path={activeFile.path} />
-                    {isMarkdownPath(activeFile.path) && (
-                      <div style={{ display: "flex", gap: 2, background: "var(--color-surface)", borderRadius: 4, padding: 2, flexShrink: 0 }}>
-                        <button
-                          className="btn btn-sm"
-                          onClick={() => setViewMode("preview")}
-                          style={{
-                            padding: "1px 7px",
-                            fontSize: 11,
-                            background: viewMode === "preview" ? "var(--color-primary)" : "transparent",
-                            color: viewMode === "preview" ? "#fff" : "var(--color-body)",
-                            border: "none",
-                          }}
-                        >
-                          <Eye size={11} className="mr-1" />
-                          Preview
-                        </button>
-                        <button
-                          className="btn btn-sm"
-                          onClick={() => setViewMode("edit")}
-                          style={{
-                            padding: "1px 7px",
-                            fontSize: 11,
-                            background: viewMode === "edit" ? "var(--color-primary)" : "transparent",
-                            color: viewMode === "edit" ? "#fff" : "var(--color-body)",
-                            border: "none",
-                          }}
-                        >
-                          <Pencil size={11} className="mr-1" />
-                          Edit
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                    {isExecutable(activeFile.path) && (
-                      <button
-                        onClick={() => handleExecuteFile(activeFile.path)}
-                        style={{
-                          padding: "2px 8px",
-                          fontSize: 11,
-                          background: "rgba(34,197,94,0.15)",
-                          color: "#4ade80",
-                          border: "1px solid rgba(74,222,128,0.3)",
-                          borderRadius: 4,
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 4,
-                        }}
-                        title="Run"
-                      >
-                        <Play size={11} />
-                        Run
-                      </button>
-                    )}
-                    <button
-                      className={`btn btn-sm ${showTerminal ? "btn-secondary" : "btn-ghost"}`}
-                      onClick={() => setShowTerminal((s) => !s)}
-                      style={{ padding: "2px 8px", fontSize: 11 }}
-                    >
-                      <TerminalIcon size={11} className="mr-1" />
-                      Terminal
-                    </button>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={handleSave}
-                      disabled={saving || !activeFile.isDirty}
-                      style={{ padding: "2px 8px", fontSize: 11 }}
-                    >
-                      {saving ? "Saving…" : "Save"}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Remote change alert banner */}
-              {activeFile?.staleRemote && (
-                <div
-                  style={{
-                    padding: "5px 16px",
-                    borderBottom: "1px solid var(--color-hairline)",
-                    background: "rgba(234,179,8,0.12)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 8,
-                    flexShrink: 0,
-                  }}
-                >
-                  <span className="caption" style={{ color: "#eab308" }}>
-                    ⚠ {activeFile.staleRemote.sender} updated this file remotely.
-                  </span>
-                  <button
-                    className="btn btn-sm btn-secondary"
-                    onClick={() => applyStaleRemote(activeFile.path)}
-                    style={{ padding: "2px 8px", fontSize: 11 }}
-                  >
-                    <RefreshCcwDot size={11} className="mr-1" />
-                    Reload
-                  </button>
-                </div>
-              )}
-
-              {/* Editor Workspace */}
-              <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-                {loadingContent ? (
-                  <div className="text-mute body-sm p-4">Loading…</div>
-                ) : (
-                  <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-                    <PanelGroup direction="vertical" autoSaveId="fe-v">
-                      <Panel defaultSize={showTerminal ? 60 : 100} minSize={20} style={{ display: "flex", flexDirection: "column", overflow: "hidden", paddingTop: 4 }}>
-                        {activeFile ? (
-                          isMarkdownPath(activeFile.path) && viewMode === "preview" ? (
-                            <div style={{ height: "100%", overflowY: "auto", padding: "8px 24px 32px" }} className="markdown-body">
-                              {activeFile.content.trim() ? (
-                                <ReactMarkdown
-                                  remarkPlugins={[remarkGfm]}
-                                  components={{
-                                    a: ({ node, ...p }) => <a {...p} target="_blank" rel="noopener noreferrer" />,
-                                  }}
-                                >
-                                  {activeFile.content}
-                                </ReactMarkdown>
-                              ) : (
-                                <div className="body-sm" style={{ color: "var(--color-mute)", fontStyle: "italic" }}>
-                                  Empty — switch to Edit.
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <Editor
-                              height="100%"
-                              language={getLanguageFromPath(activeFile.path)}
-                              theme="vs-dark"
-                              value={activeFile.content}
-                              onChange={(v) => updateFileContent(activeFile.path, v || "")}
-                              options={
-                                {
-                                  minimap: { enabled: true, maxColumn: 80, renderCharacters: false },
-                                  fontSize: 13,
-                                  fontFamily: "'JetBrains Mono','Fira Code',Consolas,monospace",
-                                  wordWrap: "on",
-                                  padding: { top: 8, bottom: 16 },
-                                  scrollBeyondLastLine: false,
-                                  quickSuggestions: true,
-                                  suggestOnTriggerCharacters: true,
-                                  hover: { enabled: true, delay: 500 },
-                                  renderWhitespace: "boundary",
-                                  smoothScrolling: true,
-                                } as any
-                              }
-                            />
-                          )
-                        ) : (
-                          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-mute)" }} className="body-sm">
-                            Select a file to view
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}>
+                        <Breadcrumb path={activeFile.path} />
+                        {isMarkdownPath(activeFile.path) && (
+                          <div style={{ display: "flex", gap: 2, background: "var(--color-surface)", borderRadius: 4, padding: 2, flexShrink: 0 }}>
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => setViewMode("preview")}
+                              style={{
+                                padding: "1px 7px",
+                                fontSize: 11,
+                                background: viewMode === "preview" ? "var(--color-primary)" : "transparent",
+                                color: viewMode === "preview" ? "#fff" : "var(--color-body)",
+                                border: "none",
+                              }}
+                            >
+                              <Eye size={11} className="mr-1" />
+                              Preview
+                            </button>
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => setViewMode("edit")}
+                              style={{
+                                padding: "1px 7px",
+                                fontSize: 11,
+                                background: viewMode === "edit" ? "var(--color-primary)" : "transparent",
+                                color: viewMode === "edit" ? "#fff" : "var(--color-body)",
+                                border: "none",
+                              }}
+                            >
+                              <Pencil size={11} className="mr-1" />
+                              Edit
+                            </button>
                           </div>
                         )}
-                      </Panel>
-                      {showTerminal && (
-                        <>
-                          <PanelResizeHandle className="resize-handle" />
-                          <Panel defaultSize={40} minSize={20} style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--color-hairline)", overflow: "hidden" }}>
-                            <div style={{ display: "flex", alignItems: "center", background: "var(--bg-glass-card)", borderBottom: "1px solid var(--color-hairline)", height: 30, flexShrink: 0 }}>
-                              {terminalTabs.map((tab) => (
-                                <div
-                                  key={tab.id}
-                                  onClick={() => setActiveTerminalTabId(tab.id)}
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 4,
-                                    padding: "0 10px",
-                                    height: "100%",
-                                    cursor: "pointer",
-                                    borderRight: "1px solid var(--color-hairline)",
-                                    background: activeTerminalTabId === tab.id ? "var(--bg-glass-panel)" : "transparent",
-                                    color: activeTerminalTabId === tab.id ? "var(--color-body)" : "var(--color-mute)",
-                                    fontSize: 12,
-                                    userSelect: "none",
-                                  }}
-                                  className="hover:bg-gray-800 transition-colors"
-                                >
-                                  <TerminalIcon size={11} />
-                                  <span>{tab.label}</span>
-                                  {terminalTabs.length > 1 && (
-                                    <button
-                                      onClick={(e) => closeTerminalTab(tab.id, e)}
-                                      style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: "var(--color-mute)" }}
-                                      className="hover:text-white"
-                                    >
-                                      <X size={10} />
-                                    </button>
-                                  )}
-                                </div>
-                              ))}
-                              <button onClick={addTerminalTab} title="New Terminal" style={{ padding: "0 10px", height: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)" }} className="hover:text-white">
-                                <Plus size={12} />
-                              </button>
-                              <div style={{ flex: 1 }} />
-                              <button onClick={() => setShowTerminal(false)} style={{ padding: "0 8px", height: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)" }} className="hover:text-white">
-                                <X size={12} />
-                              </button>
-                            </div>
-                            {terminalTabs.map((tab) => (
-                              <div key={tab.id} style={{ flex: 1, display: activeTerminalTabId === tab.id ? "flex" : "none", flexDirection: "column", overflow: "hidden" }}>
-                                <TerminalPanel projectId={projectId} onClose={() => setShowTerminal(false)} triggerCommand={tab.cmd} />
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                        {isExecutable(activeFile.path) && (
+                          <button
+                            onClick={() => handleExecuteFile(activeFile.path)}
+                            style={{
+                              padding: "2px 8px",
+                              fontSize: 11,
+                              background: "rgba(34,197,94,0.15)",
+                              color: "#4ade80",
+                              border: "1px solid rgba(74,222,128,0.3)",
+                              borderRadius: 4,
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 4,
+                            }}
+                            title="Run"
+                          >
+                            <Play size={11} />
+                            Run
+                          </button>
+                        )}
+                        <button
+                          className={`btn btn-sm ${showTerminal ? "btn-secondary" : "btn-ghost"}`}
+                          onClick={() => setShowTerminal((s) => !s)}
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                        >
+                          <TerminalIcon size={11} className="mr-1" />
+                          Terminal
+                        </button>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={handleSave}
+                          disabled={saving || !activeFile.isDirty}
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                        >
+                          {saving ? "Saving…" : "Save"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Remote change alert banner */}
+                  {activeFile?.staleRemote && (
+                    <div
+                      style={{
+                        padding: "5px 16px",
+                        borderBottom: "1px solid var(--color-hairline)",
+                        background: "rgba(234,179,8,0.12)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <span className="caption" style={{ color: "#eab308" }}>
+                        ⚠ {activeFile.staleRemote.sender} updated this file remotely.
+                      </span>
+                      <button
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => applyStaleRemote(activeFile.path)}
+                        style={{ padding: "2px 8px", fontSize: 11 }}
+                      >
+                        <RefreshCcwDot size={11} className="mr-1" />
+                        Reload
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Editor Workspace */}
+                  <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", minHeight: 0, paddingTop: 4 }}>
+                    {loadingContent ? (
+                      <div className="text-mute body-sm p-4">Loading…</div>
+                    ) : (
+                      activeFile ? (
+                        activeFile.isDiff ? (
+                          <DiffEditor
+                            height="100%"
+                            original={activeFile.originalContent || ""}
+                            modified={activeFile.content}
+                            language={getLanguageFromPath(activeFile.path.replace(/^diff:/, ""))}
+                            theme="vs-dark"
+                            options={{
+                              renderSideBySide: true,
+                              readOnly: true,
+                              minimap: { enabled: false },
+                              fontSize: 13,
+                              fontFamily: "'JetBrains Mono','Fira Code',Consolas,monospace",
+                              scrollBeyondLastLine: false,
+                              smoothScrolling: true,
+                            }}
+                          />
+                        ) : isMarkdownPath(activeFile.path) && viewMode === "preview" ? (
+                          <div style={{ height: "100%", overflowY: "auto", padding: "8px 24px 32px" }} className="markdown-body">
+                            {activeFile.content.trim() ? (
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                components={{
+                                  a: ({ node, ...p }) => <a {...p} target="_blank" rel="noopener noreferrer" />,
+                                }}
+                              >
+                                {activeFile.content}
+                              </ReactMarkdown>
+                            ) : (
+                              <div className="body-sm" style={{ color: "var(--color-mute)", fontStyle: "italic" }}>
+                                Empty — switch to Edit.
                               </div>
-                            ))}
-                          </Panel>
-                        </>
-                      )}
-                    </PanelGroup>
+                            )}
+                          </div>
+                        ) : getFileType(activeFile.path) === "image" ? (
+                          <div style={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center", background: "#11111b", overflow: "auto", padding: 24, height: "100%" }}>
+                            <img
+                              src={getRawFileUrl(activeFile.path)}
+                              alt={activeFile.path}
+                              style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 6, boxShadow: "0 8px 30px rgba(0,0,0,0.6)" }}
+                            />
+                          </div>
+                        ) : getFileType(activeFile.path) === "video" ? (
+                          <div style={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center", background: "#11111b", overflow: "hidden", padding: 24, height: "100%" }}>
+                            <video
+                              controls
+                              src={getRawFileUrl(activeFile.path)}
+                              style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 6, boxShadow: "0 8px 30px rgba(0,0,0,0.6)" }}
+                            />
+                          </div>
+                        ) : getFileType(activeFile.path) === "audio" ? (
+                          <div style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#11111b", padding: 24, gap: 16, height: "100%" }}>
+                            <span style={{ color: "#aaa", fontSize: 13, fontFamily: "monospace" }}>{activeFile.path}</span>
+                            <audio
+                              controls
+                              src={getRawFileUrl(activeFile.path)}
+                              style={{ width: "100%", maxWidth: 400 }}
+                            />
+                          </div>
+                        ) : getFileType(activeFile.path) === "pdf" ? (
+                          <div style={{ display: "flex", flex: 1, background: "#11111b", overflow: "hidden", height: "100%" }}>
+                            <iframe
+                              src={`${getRawFileUrl(activeFile.path)}#toolbar=0`}
+                              style={{ width: "100%", height: "100%", border: "none" }}
+                            />
+                          </div>
+                        ) : activeFile.content === "[Binary file: cannot display as text]" ? (
+                          <div style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#11111b", padding: 24, gap: 16, height: "100%", color: "#9ca3af" }}>
+                            <History size={48} style={{ color: "#4b5563" }} />
+                            <span style={{ fontSize: 14, fontWeight: 500 }}>{activeFile.path.split('/').pop()}</span>
+                            <span style={{ fontSize: 12, color: "#6b7280" }}>Binary file (cannot display as text)</span>
+                            <a
+                              href={getRawFileUrl(activeFile.path)}
+                              download={activeFile.path.split('/').pop()}
+                              className="btn btn-secondary"
+                              style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 8 }}
+                            >
+                              <Download size={14} />
+                              Download File
+                            </a>
+                          </div>
+                        ) : (
+                          <Editor
+                            height="100%"
+                            language={getLanguageFromPath(activeFile.path)}
+                            theme="vs-dark"
+                            value={activeFile.content}
+                            onChange={(v) => updateFileContent(activeFile.path, v || "")}
+                            onMount={(editor, monaco) => {
+                               editorRef.current = editor;
+
+                               if (monaco?.languages?.typescript) {
+                                 try {
+                                   monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
+                                     target: monaco.languages.typescript.ScriptTarget.ES2020,
+                                     allowNonTsExtensions: true,
+                                     checkJs: true
+                                   });
+                                   monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+                                     target: monaco.languages.typescript.ScriptTarget.ES2020,
+                                     allowNonTsExtensions: true,
+                                     checkJs: true
+                                   });
+                                 } catch (e) {
+                                   console.warn("Monaco TS defaults config error:", e);
+                                 }
+                               }
+                               
+                               editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+                                 void handleSaveRef.current();
+                               });
+
+                               editor.addAction({
+                                 id: 'add-to-chat-context',
+                                 label: 'Add to Chat Context',
+                                 keybindings: [
+                                   monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyC
+                                 ],
+                                 contextMenuGroupId: 'navigation',
+                                 contextMenuOrder: 1.5,
+                                 run: (ed) => {
+                                   const selection = ed.getSelection();
+                                   const model = ed.getModel();
+                                   if (selection && model) {
+                                     const selectedText = model.getValueInRange(selection);
+                                     const path = activeFilePathRef.current || 'file';
+                                     const ext = path.split('.').pop() || '';
+                                     if (selectedText) {
+                                       const codeBlock = `\n\`\`\`${ext}\n// ${path}\n${selectedText}\n\`\`\`\n`;
+                                       onAppendToChatRef.current(codeBlock);
+                                       addToast({ type: 'success', message: 'Added selection to Chat Context!' });
+                                     } else {
+                                       const position = ed.getPosition();
+                                       if (position) {
+                                         const lineContent = model.getLineContent(position.lineNumber);
+                                         if (lineContent.trim()) {
+                                           const lineBlock = `\n// ${path}:${position.lineNumber}\n${lineContent}\n`;
+                                           onAppendToChatRef.current(lineBlock);
+                                           addToast({ type: 'success', message: `Added line ${position.lineNumber} to Chat Context!` });
+                                         }
+                                       }
+                                     }
+                                   }
+                                 }
+                               });
+
+                               editor.addAction({
+                                 id: 'ask-ai-about-code',
+                                 label: 'Ask AI about selection',
+                                 keybindings: [
+                                   monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyA
+                                 ],
+                                 contextMenuGroupId: 'navigation',
+                                 contextMenuOrder: 1.6,
+                                 run: (ed) => {
+                                   const selection = ed.getSelection();
+                                   const model = ed.getModel();
+                                   if (selection && model) {
+                                     const selectedText = model.getValueInRange(selection);
+                                     const path = activeFilePathRef.current || 'file';
+                                     const ext = path.split('.').pop() || '';
+                                     if (selectedText) {
+                                       const prompt = `Please explain this code:\n\`\`\`${ext}\n// ${path}\n${selectedText}\n\`\`\`\n`;
+                                       onAppendToChatRef.current(prompt);
+                                     } else {
+                                       const position = ed.getPosition();
+                                       if (position) {
+                                         const lineContent = model.getLineContent(position.lineNumber);
+                                         if (lineContent.trim()) {
+                                           const prompt = `Please explain line ${position.lineNumber} in ${path}:\n\`\`\`${ext}\n// ${path}:${position.lineNumber}\n${lineContent}\n\`\`\`\n`;
+                                           onAppendToChatRef.current(prompt);
+                                         }
+                                       }
+                                     }
+                                   }
+                                 }
+                               });
+                             }}
+                            options={
+                              {
+                                minimap: { enabled: true, maxColumn: 80, renderCharacters: false },
+                                fontSize: 13,
+                                fontFamily: "'JetBrains Mono','Fira Code',Consolas,monospace",
+                                wordWrap: "on",
+                                padding: { top: 8, bottom: 16 },
+                                scrollBeyondLastLine: false,
+                                quickSuggestions: true,
+                                suggestOnTriggerCharacters: true,
+                                hover: { enabled: true, delay: 500 },
+                                renderWhitespace: "boundary",
+                                smoothScrolling: true,
+                              } as any
+                            }
+                          />
+                        )
+                      ) : (
+                        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-mute)" }} className="body-sm">
+                          Select a file to view
+                        </div>
+                      )
+                    )}
                   </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-              <div style={{ padding: "8px 16px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-glass-panel)", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
-                <button className={`btn btn-sm ${showTerminal ? "btn-secondary" : "btn-ghost"}`} onClick={() => setShowTerminal((s) => !s)}>
-                  <TerminalIcon size={13} className="mr-1" />
-                  Terminal
-                </button>
-              </div>
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-                {!showTerminal ? (
+                </div>
+              ) : (
+                <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+                  <div style={{ padding: "8px 16px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-glass-panel)", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
+                    <button className={`btn btn-sm ${showTerminal ? "btn-secondary" : "btn-ghost"}`} onClick={() => setShowTerminal((s) => !s)}>
+                      <TerminalIcon size={13} className="mr-1" />
+                      Terminal
+                    </button>
+                  </div>
                   <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-mute)" }} className="body-sm">
                     Select a file from the explorer
                   </div>
-                ) : (
-                  <TerminalPanel projectId={projectId} onClose={() => setShowTerminal(false)} triggerCommand={activeTermTab?.cmd ?? null} />
-                )}
-              </div>
-            </div>
-          )}
+                </div>
+              )}
+            </Panel>
+            {showTerminal && (
+              <>
+                <PanelResizeHandle className="resize-handle" />
+                <Panel id="fe-right-pane-lower" order={2} defaultSize={40} minSize={20} style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--color-hairline)", overflow: "hidden" }}>
+                  <div style={{ display: "flex", alignItems: "center", background: "var(--bg-glass-card)", borderBottom: "1px solid var(--color-hairline)", height: 30, flexShrink: 0 }}>
+                    {terminalTabs.map((tab) => (
+                      <div
+                        key={tab.id}
+                        onClick={() => setActiveTerminalTabId(tab.id)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          padding: "0 10px",
+                          height: "100%",
+                          cursor: "pointer",
+                          borderRight: "1px solid var(--color-hairline)",
+                          background: activeTerminalTabId === tab.id ? "var(--bg-glass-panel)" : "transparent",
+                          color: activeTerminalTabId === tab.id ? "var(--color-body)" : "var(--color-mute)",
+                          fontSize: 12,
+                          userSelect: "none",
+                        }}
+                        className="hover:bg-gray-800 transition-colors"
+                      >
+                        <TerminalIcon size={11} />
+                        <span>{tab.label}</span>
+                        <button
+                          onClick={(e) => closeTerminalTab(tab.id, e)}
+                          style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: "var(--color-mute)", display: "flex", alignItems: "center" }}
+                          className="hover:text-white"
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                    ))}
+                    <div style={{ display: "flex", alignItems: "center", position: "relative", height: "100%" }}>
+                      <button
+                        onClick={() => addTerminalTab("default")}
+                        title="New Terminal"
+                        style={{ padding: "0 4px 0 10px", height: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)", display: "flex", alignItems: "center" }}
+                        className="hover:text-white"
+                      >
+                        <Plus size={12} />
+                      </button>
+                      <button
+                        onClick={() => setShowShellDropdown((s) => !s)}
+                        title="Select Shell"
+                        style={{ padding: "0 8px 0 2px", height: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)", display: "flex", alignItems: "center" }}
+                        className="hover:text-white"
+                      >
+                        <ChevronDown size={10} />
+                      </button>
+                      {showShellDropdown && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: "100%",
+                            left: 0,
+                            background: "var(--color-surface)",
+                            border: "1px solid var(--border-subtle)",
+                            borderRadius: 6,
+                            zIndex: 100,
+                            padding: "4px 0",
+                            minWidth: 120,
+                            boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+                            marginTop: 4,
+                          }}
+                        >
+                          <div
+                            onClick={() => {
+                              addTerminalTab("bash");
+                              setShowShellDropdown(false);
+                            }}
+                            className="hover:bg-gray-800 transition-colors"
+                            style={{ padding: "6px 12px", cursor: "pointer", fontSize: 11, color: "var(--color-body)" }}
+                          >
+                            Git Bash / Bash
+                          </div>
+                          <div
+                            onClick={() => {
+                              addTerminalTab("powershell");
+                              setShowShellDropdown(false);
+                            }}
+                            className="hover:bg-gray-800 transition-colors"
+                            style={{ padding: "6px 12px", cursor: "pointer", fontSize: 11, color: "var(--color-body)" }}
+                          >
+                            PowerShell
+                          </div>
+                          <div
+                            onClick={() => {
+                              addTerminalTab("cmd");
+                              setShowShellDropdown(false);
+                            }}
+                            className="hover:bg-gray-800 transition-colors"
+                            style={{ padding: "6px 12px", cursor: "pointer", fontSize: 11, color: "var(--color-body)" }}
+                          >
+                            Command Prompt
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ flex: 1 }} />
+                    <button onClick={() => setShowTerminal(false)} style={{ padding: "0 8px", height: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)" }} className="hover:text-white">
+                      <X size={12} />
+                    </button>
+                  </div>
+                  {terminalTabs.map((tab) => (
+                    <div key={tab.id} style={{ flex: 1, display: activeTerminalTabId === tab.id ? "flex" : "none", flexDirection: "column", overflow: "hidden" }}>
+                      <TerminalPanel projectId={projectId} onClose={() => closeTerminalTab(tab.id)} triggerCommand={tab.cmd} shell={tab.shell} />
+                    </div>
+                  ))}
+                </Panel>
+              </>
+            )}
+          </PanelGroup>
         </Panel>
       </PanelGroup>
 

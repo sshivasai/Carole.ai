@@ -91,7 +91,13 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
   const [localDecision, setLocalDecision] = useState<"approved" | "denied" | null>(null);
   const [timeLeft, setTimeLeft] = useState<number>(60);
 
-  const rawStatus = msg.pending_approval?.status || (msg.type?.includes("approved") ? "approved" : msg.type?.includes("denied") ? "denied" : "pending");
+  const approvalId = msg.pending_approval?.tx_id || msg.tx_id || msg.id;
+
+  useEffect(() => {
+    setLocalDecision(null);
+  }, [approvalId]);
+
+  const rawStatus = msg.pending_approval?.status || msg.status || (msg.type?.includes("approved") ? "approved" : msg.type?.includes("denied") ? "denied" : "pending");
   const status = localDecision || (rawStatus === "approved" ? "approved" : rawStatus === "denied" ? "denied" : "pending");
 
   useEffect(() => {
@@ -224,16 +230,17 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
             <div style={{
               display: "flex", 
               justifyContent: "space-between", 
-              alignItems: "center",
-              marginBottom: "6px",
-              fontSize: "11px",
-              color: "#94a3b8"
+              alignItems: "flex-start",
+              marginBottom: "10px",
+              fontSize: "11.5px",
+              color: "#94a3b8",
+              gap: "12px"
             }}>
-              <span style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                <Loader2 size={11} className="animate-spin" />
-                Judge AI evaluating... (You can override)
+              <span style={{ display: "flex", alignItems: "flex-start", gap: "6px", whiteSpace: "pre-line", lineHeight: 1.4, flex: 1 }}>
+                <Loader2 size={12} className="animate-spin" style={{ marginTop: "2px", flexShrink: 0 }} />
+                <span>{msg.pending_approval?.text || msg.text || "Judge AI evaluating..."}</span>
               </span>
-              <span>{timeLeft}s remaining</span>
+              <span style={{ flexShrink: 0, fontWeight: 600 }}>{timeLeft}s</span>
             </div>
             
             <div style={{ height: "3px", background: "rgba(255,255,255,0.06)", borderRadius: "2px", marginBottom: "12px", overflow: "hidden" }}>

@@ -13,6 +13,7 @@ Responsibilities:
 
 import os
 import sys
+import signal
 import asyncio
 import subprocess
 import threading
@@ -72,7 +73,7 @@ class ShellTools:
         self,
         command: str,
         team_id: str,
-        timeout: float = 60.0,
+        timeout: float = 900.0,
         context: Optional[ToolExecutionContext] = None,
         cwd: Optional[str] = None
     ) -> str:
@@ -96,7 +97,12 @@ class ShellTools:
         topic = f"team:{team_id}"
 
         def _execute_sync():
-            # Use subprocess.Popen with pipes for cross-platform compatibility (Proactor/Selector agnostic)
+            kwargs = {}
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["preexec_fn"] = os.setpgrp
+
             proc = subprocess.Popen(
                 command,
                 shell=True,
@@ -106,8 +112,19 @@ class ShellTools:
                 bufsize=1,
                 encoding="utf-8",
                 errors="replace",
-                cwd=workdir
+                cwd=workdir,
+                **kwargs
             )
+            
+            def kill_proc_tree(p):
+                try:
+                    if os.name == "nt":
+                        os.kill(p.pid, signal.CTRL_BREAK_EVENT)
+                        p.kill()
+                    else:
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                except Exception:
+                    pass
 
             stdout_chunks = []
             stderr_chunks = []
@@ -117,10 +134,7 @@ class ShellTools:
                     if not line:
                         break
                     if context and context.cancellation_token and context.cancellation_token.is_cancelled:
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
+                        kill_proc_tree(proc)
                         break
 
                     if is_stderr:
@@ -167,18 +181,12 @@ class ShellTools:
             while proc.poll() is None:
                 if context and context.cancellation_token and context.cancellation_token.is_cancelled:
                     cancelled = True
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                    kill_proc_tree(proc)
                     break
 
                 if elapsed >= timeout:
                     timed_out = True
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                    kill_proc_tree(proc)
                     break
 
                 import time

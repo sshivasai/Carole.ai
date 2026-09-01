@@ -16,6 +16,9 @@ google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
 mcp>=1.0.0
 websockets
+langchain-openai
+langchain-anthropic
+langchain_google_genai
 
 # Rate limiting (Finding #7)
 slowapi>=0.1.9

@@ -51,7 +51,15 @@ token.json
 *.pem
 *.key
 
-
+.agents
+.impeccable
+skills-lock.json
 
 
 MANUAL_AGENT_TEST_CASES.md
+DESIGN.md
+PRODUCT.md
+GitPanel.diff.txt
+ChatInterface.diff.txt
+FileExplorerPanel.diff.txt
+agent_tools.diff.txt

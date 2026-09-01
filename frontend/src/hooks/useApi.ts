@@ -443,13 +443,23 @@ export const api = {
 
   // ── Git ──
   getGitStatus: (projectSlug: string) =>
-    nextApiFetch<{ status: string; changes: { file: string; status: string }[]; message?: string }>(`/api/git/status?slug=${projectSlug}`),
+    apiFetch<{ status: string; changes: { file: string; status: string; staged: boolean; unstaged: boolean }[]; message?: string }>(`/api/git/status?slug=${projectSlug}`),
   commitChanges: (message: string, projectSlug: string) =>
-    nextApiFetch<any>(`/api/git/commit?slug=${projectSlug}`, { method: "POST", body: JSON.stringify({ message }) }),
+    apiFetch<any>(`/api/git/commit?slug=${projectSlug}`, { method: "POST", body: JSON.stringify({ message }) }),
   initGit: (projectSlug: string) =>
-    nextApiFetch<any>(`/api/git/init?slug=${projectSlug}`, { method: "POST" }),
+    apiFetch<any>(`/api/git/init?slug=${projectSlug}`, { method: "POST" }),
   getGitFileContent: (filepath: string, projectSlug: string) =>
-    nextApiFetch<{ status: string; content: string; message?: string }>(`/api/git/show?slug=${projectSlug}&file=${encodeURIComponent(filepath)}`),
+    apiFetch<{ status: string; content: string; message?: string }>(`/api/git/show?slug=${projectSlug}&file=${encodeURIComponent(filepath)}`),
+  stageFile: (filepath: string, projectSlug: string) =>
+    apiFetch<any>(`/api/git/stage`, { method: "POST", body: JSON.stringify({ file: filepath, slug: projectSlug }) }),
+  unstageFile: (filepath: string, projectSlug: string) =>
+    apiFetch<any>(`/api/git/unstage`, { method: "POST", body: JSON.stringify({ file: filepath, slug: projectSlug }) }),
+  discardChanges: (filepath: string, projectSlug: string) =>
+    apiFetch<any>(`/api/git/discard`, { method: "POST", body: JSON.stringify({ file: filepath, slug: projectSlug }) }),
+  ignoreFile: (filepath: string, projectSlug: string) =>
+    apiFetch<any>(`/api/git/ignore`, { method: "POST", body: JSON.stringify({ file: filepath, slug: projectSlug }) }),
+  getGitLog: (projectSlug: string, limit = 50) =>
+    apiFetch<{ status: string; commits: { hash: string; author: string; date: string; message: string }[]; message?: string }>(`/api/git/log?slug=${projectSlug}&limit=${limit}`),
 
   // ── Search ──
   searchFiles: (query: string, projectId?: string) =>
@@ -470,4 +480,15 @@ export const api = {
   getGoogleStatus: () => apiFetch<any>("/api/auth/google/status"),
   disconnectGoogle: () => apiFetch<any>("/api/auth/google/disconnect", { method: "POST" }),
   getGoogleAuthUrl: () => `${getApiBase()}/api/auth/google/authorize`,
+
+  // ── Memory / Compaction ──
+  compactTeam: (teamId: string) =>
+    apiFetch<{ event_id: string; messages_compacted: number; triggered_by: string; summary_preview: string; created_at: string }>(
+      `/api/teams/${teamId}/compact`,
+      { method: "POST" }
+    ),
+  listCompactions: (teamId: string) =>
+    apiFetch<{ id: string; triggered_by: string; message_count_before?: number; summary_preview?: string; created_at?: string }[]>(
+      `/api/teams/${teamId}/compactions`
+    ),
 };

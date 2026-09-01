@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException, Query, Depends
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Depends, Header
+from fastapi.responses import StreamingResponse, FileResponse
 import os
 import io
 import shutil
@@ -52,10 +52,37 @@ class BatchDeleteRequest(BaseModel):
     project_id: str | None = None
 
 
-async def _broadcast_file_event(action: str, paths: List[str], project_id: Optional[str] = None, team_id: Optional[str] = None, diff: Optional[str] = None):
+async def _broadcast_file_event(action: str, paths: List[str], project_id: Optional[str] = None, team_id: Optional[str] = None, diff: Optional[str] = None, user: Optional[dict] = None):
     """Broadcasts file system mutation events over the EventBus to all subscribers."""
     try:
         from core.chat.event_bus import event_bus
+        
+        user_name = "User"
+        user_id = "human"
+        if user and "sub" in user:
+            user_id = user["sub"]
+            from core.memory.database import async_session
+            from core.memory.models import User as DBUser
+            from sqlalchemy import select
+            import uuid
+            try:
+                user_uuid = uuid.UUID(user["sub"])
+                async with async_session() as db:
+                    stmt = select(DBUser).where(DBUser.id == user_uuid)
+                    db_user = (await db.execute(stmt)).scalar_one_or_none()
+                    if db_user:
+                        parts = []
+                        if db_user.first_name:
+                            parts.append(db_user.first_name)
+                        if db_user.last_name:
+                            parts.append(db_user.last_name)
+                        if parts:
+                            user_name = " ".join(parts)
+                        else:
+                            user_name = db_user.email.split("@")[0]
+            except Exception:
+                pass
+
         evt = {
             "type": "file_system_updated",
             "action": action,
@@ -63,6 +90,8 @@ async def _broadcast_file_event(action: str, paths: List[str], project_id: Optio
             "path": paths[0] if paths else "",
             "project_id": project_id,
             "diff": diff,
+            "sender_id": user_id,
+            "sender_name": user_name,
             "_seq": int(os.times().system * 1000) if hasattr(os, "times") else 0,
         }
         if project_id:
@@ -79,7 +108,8 @@ async def _broadcast_file_event(action: str, paths: List[str], project_id: Optio
             "paths": paths,
             "project_id": project_id,
             "diff": diff or "",
-            "sender_name": "User",
+            "sender_id": user_id,
+            "sender_name": user_name,
         }
         if project_id:
             await event_bus.publish(f"project:{project_id}", file_change_evt)
@@ -137,11 +167,47 @@ async def read_file(path: str = Query(..., description="Relative path to file"),
         if not safe_path.is_file():
             raise HTTPException(status_code=400, detail=f"'{path}' is not a file.")
 
-        content = await file_tools.read_file(path, project_id)
+        content = await file_tools.read_file(path, project_id, force=True)
         if content.startswith("Error"):
             raise HTTPException(status_code=400, detail=content)
 
         return {"content": content}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/raw")
+async def get_raw_file(
+    path: str = Query(..., description="Relative path to file"),
+    project_id: Optional[str] = Query(None, description="Project ID"),
+    token: Optional[str] = Query(None, description="Auth token via query parameter"),
+    authorization: Optional[str] = Header(None, description="Auth token via Header")
+):
+    # Check auth header first, fall back to query token
+    auth_token = None
+    if authorization and authorization.startswith("Bearer "):
+        auth_token = authorization[7:]
+    elif token:
+        auth_token = token
+        
+    if not auth_token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    from core.auth.auth_service import _decode_jwt
+    payload = _decode_jwt(auth_token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        
+    try:
+        safe_path = await file_tools._resolve_safe_path(path, project_id)
+        if not safe_path.is_file():
+            raise HTTPException(status_code=400, detail=f"'{path}' is not a file.")
+        
+        if not safe_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+            
+        return FileResponse(path=safe_path)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
@@ -206,7 +272,7 @@ async def write_file_endpoint(req: WriteFileRequest, user: dict = Depends(requir
         res = await file_tools.write_file(req.path, req.content, agent_name="User", project_id=req.project_id)
         if res.message.startswith("Error"):
             raise HTTPException(status_code=400, detail=res.message)
-        await _broadcast_file_event("write", [req.path], project_id=req.project_id, diff=res.diff)
+        await _broadcast_file_event("write", [req.path], project_id=req.project_id, diff=res.diff, user=user)
         return {"status": "success", "message": res.message}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -219,7 +285,7 @@ async def create_folder_endpoint(req: CreateFolderRequest, user: dict = Depends(
         res = await file_tools.create_directory(req.path, project_id=req.project_id)
         if res.startswith("Error"):
             raise HTTPException(status_code=400, detail=res)
-        await _broadcast_file_event("create_folder", [req.path], project_id=req.project_id)
+        await _broadcast_file_event("create_folder", [req.path], project_id=req.project_id, user=user)
         return {"status": "success", "message": res}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -232,7 +298,7 @@ async def rename_endpoint(req: RenameRequest, user: dict = Depends(require_auth)
         res = await file_tools.move_file(req.source, req.destination, project_id=req.project_id)
         if res.startswith("Error"):
             raise HTTPException(status_code=400, detail=res)
-        await _broadcast_file_event("rename", [req.source, req.destination], project_id=req.project_id)
+        await _broadcast_file_event("rename", [req.source, req.destination], project_id=req.project_id, user=user)
         return {"status": "success", "message": res}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -253,7 +319,7 @@ async def copy_endpoint(req: CopyRequest, user: dict = Depends(require_auth)) ->
         else:
             shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
             
-        await _broadcast_file_event("copy", [req.destination], project_id=req.project_id)
+        await _broadcast_file_event("copy", [req.destination], project_id=req.project_id, user=user)
         return {"status": "success", "message": f"Copied '{req.source}' to '{req.destination}'"}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -285,7 +351,7 @@ async def duplicate_endpoint(req: DuplicateRequest, user: dict = Depends(require
         else:
             shutil.copytree(str(safe_path), str(parent / new_name))
             
-        await _broadcast_file_event("duplicate", [dst_rel], project_id=req.project_id)
+        await _broadcast_file_event("duplicate", [dst_rel], project_id=req.project_id, user=user)
         return {"status": "success", "new_path": dst_rel}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -318,7 +384,7 @@ async def batch_copy_endpoint(req: BatchCopyRequest, user: dict = Depends(requir
                 shutil.copytree(str(src_safe), str(target_path), dirs_exist_ok=True)
             copied.append(str(target_path.relative_to(root)).replace("\\", "/"))
             
-        await _broadcast_file_event("batch_copy", copied, project_id=req.project_id)
+        await _broadcast_file_event("batch_copy", copied, project_id=req.project_id, user=user)
         return {"status": "success", "copied": copied}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -344,7 +410,7 @@ async def batch_move_endpoint(req: BatchMoveRequest, user: dict = Depends(requir
             shutil.move(str(src_safe), str(target_path))
             moved.append(str(target_path.relative_to(root)).replace("\\", "/"))
             
-        await _broadcast_file_event("batch_move", moved, project_id=req.project_id)
+        await _broadcast_file_event("batch_move", moved, project_id=req.project_id, user=user)
         return {"status": "success", "moved": moved}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -375,7 +441,7 @@ async def batch_delete_endpoint(req: BatchDeleteRequest, user: dict = Depends(re
             except Exception:
                 pass
                 
-        await _broadcast_file_event("batch_delete", deleted, project_id=req.project_id)
+        await _broadcast_file_event("batch_delete", deleted, project_id=req.project_id, user=user)
         return {"status": "success", "deleted": deleted}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -456,7 +522,7 @@ async def delete_file_endpoint(path: str = Query(...), project_id: str | None = 
         else:
             raise HTTPException(status_code=404, detail="Path not found.")
             
-        await _broadcast_file_event("delete", [path], project_id=project_id)
+        await _broadcast_file_event("delete", [path], project_id=project_id, user=user)
         return {"status": "success", "message": res}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))

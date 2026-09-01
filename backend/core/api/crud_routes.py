@@ -8,13 +8,13 @@ Also provides a /api/seed endpoint for bootstrapping a demo environment.
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import get_db
-from core.memory.models import User, Project, Team, Agent, Message, Task, FileBackup, TaskComment, PlanInlineComment
+from core.memory.models import User, Project, Team, Agent, Message, Task, FileBackup, TaskComment, PlanInlineComment, CompactionEvent
 from core.tools.tool_registry import ToolRegistry
 from core.config import DEFAULT_FAST_MODEL
 from core.auth.auth_middleware import require_auth
@@ -952,7 +952,7 @@ async def list_messages(
 
     result = await db.execute(
         query
-        .where(Message.is_intermediate == False)  # noqa: E712 — never show internal correction logs to users
+        .where((Message.is_intermediate == False) | (Message.attachments.isnot(None)))
         .order_by(Message.created_at.desc(), nulls_last(Message.sequence.desc()))
         .limit(limit)
     )
@@ -1074,7 +1074,7 @@ _UPLOAD_DIR = str(_CAROLE_HOME_DIR / "uploads")
 os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
 @router.post("/upload")
-async def upload_file(file: UploadFile = File(...), team_id: Optional[str] = None, user: dict = Depends(require_auth)):
+async def upload_file(request: Request, file: UploadFile = File(...), team_id: Optional[str] = None, user: dict = Depends(require_auth)):
     """Handles file uploads for multimodal chat support, organizing them by workspace."""
     import uuid
     import os
@@ -1155,8 +1155,11 @@ async def upload_file(file: UploadFile = File(...), team_id: Optional[str] = Non
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}")
     
-    # Derive the base URL from environment so it works beyond localhost
-    base_url = os.getenv("PUBLIC_API_URL", "http://localhost:8001")
+    # Derive the base URL dynamically from request host if PUBLIC_API_URL is not set
+    base_url = os.getenv("PUBLIC_API_URL")
+    if not base_url or "localhost:8001" in base_url or "127.0.0.1:8001" in base_url:
+        base_url = str(request.base_url).rstrip("/")
+
         
     return {
         "id": file_id,
@@ -2448,3 +2451,165 @@ async def reset_prompt_block(key: str, user: dict = Depends(require_auth)):
     except ValueError as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================
+# /compact — Manual conversation compaction command
+# ============================================================
+
+@router.post("/teams/{team_id}/compact")
+async def compact_team_conversation(
+    team_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth),
+):
+    """
+    Manually compact the conversation history for a team.
+
+    Triggered by the /compact slash command in the chat UI.
+
+    Flow:
+    1. Load recent non-intermediate messages for the team.
+    2. Call the fast LLM to summarize them (same prompt as auto-compaction).
+    3. Persist a CompactionEvent checkpoint to DB.
+    4. Broadcast a 'compaction_event' SSE so the UI renders a divider.
+    5. Return the summary and event metadata to the caller.
+    """
+    from core.config import COMPACTION_SYSTEM_PROMPT, COMPACTION_USER_PROMPT, DEFAULT_FAST_MODEL
+    from core.llm.multi_model_router import llm_router
+    from core.chat.event_bus import event_bus
+    import json
+
+    try:
+        t_uuid = uuid.UUID(team_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid team_id")
+
+    # Verify team exists
+    team = (await db.execute(select(Team).where(Team.id == t_uuid))).scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # Load all non-intermediate messages since the last compaction checkpoint
+    from datetime import timezone
+    compaction_after_dt = None
+    last_cp = (
+        await db.execute(
+            select(CompactionEvent)
+            .where(CompactionEvent.team_id == t_uuid)
+            .order_by(CompactionEvent.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if last_cp:
+        compaction_after_dt = last_cp.created_at
+
+    msg_stmt = (
+        select(Message)
+        .where(Message.team_id == t_uuid)
+        .where(Message.is_intermediate == False)  # noqa: E712
+        .where(Message.is_private == False)        # noqa: E712
+    )
+    if compaction_after_dt:
+        msg_stmt = msg_stmt.where(Message.created_at > compaction_after_dt)
+
+    msg_stmt = msg_stmt.order_by(Message.created_at.asc())
+    messages_raw = (await db.execute(msg_stmt)).scalars().all()
+
+    if len(messages_raw) < 3:
+        raise HTTPException(
+            status_code=422,
+            detail="Not enough messages to compact (need at least 3 since last compaction)."
+        )
+
+    # Convert to LLM message format for summarization
+    messages_for_llm = [
+        {
+            "role": "assistant" if m.sender_id not in ("human", "system") else "user",
+            "content": f"[{m.sender_name or m.sender_id}]: {m.text}"
+        }
+        for m in messages_raw
+    ]
+
+    # Call LLM to summarize
+    summary_prompt = COMPACTION_USER_PROMPT.format(
+        context=json.dumps(messages_for_llm, default=str)
+    )
+    try:
+        summary = await llm_router.generate_completion(
+            model=DEFAULT_FAST_MODEL,
+            system_prompt=COMPACTION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": summary_prompt}],
+            temperature=0.3,
+            max_tokens=2000,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM compaction failed: {e}")
+
+    # Persist CompactionEvent checkpoint
+    cp_event = CompactionEvent(
+        team_id=t_uuid,
+        summary=summary,
+        message_count_before=len(messages_raw),
+        triggered_by="manual",
+    )
+    db.add(cp_event)
+    await db.commit()
+    await db.refresh(cp_event)
+
+    # Broadcast SSE so all connected clients render the compaction divider
+    topic = f"team:{team_id}"
+    await event_bus.publish(topic, {
+        "type": "compaction_event",
+        "id": str(cp_event.id),
+        "sender_id": "system",
+        "sender_name": "System",
+        "triggered_by": "manual",
+        "message_count_before": len(messages_raw),
+        "summary_preview": summary[:300] + "..." if len(summary) > 300 else summary,
+    })
+
+    return {
+        "event_id": str(cp_event.id),
+        "messages_compacted": len(messages_raw),
+        "triggered_by": "manual",
+        "summary_preview": summary[:200] + "..." if len(summary) > 200 else summary,
+        "created_at": cp_event.created_at.isoformat(),
+    }
+
+
+@router.get("/teams/{team_id}/compactions")
+async def get_team_compaction_events(
+    team_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth),
+):
+    """
+    Return all compaction events for a team so the UI can re-render
+    compaction dividers after a page reload.
+    """
+    try:
+        t_uuid = uuid.UUID(team_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid team_id")
+
+    events = (
+        await db.execute(
+            select(CompactionEvent)
+            .where(CompactionEvent.team_id == t_uuid)
+            .order_by(CompactionEvent.created_at.asc())
+        )
+    ).scalars().all()
+
+    return [
+        {
+            "id": str(e.id),
+            "triggered_by": e.triggered_by,
+            "message_count_before": e.message_count_before,
+            "summary_preview": (e.summary[:300] + "...") if e.summary and len(e.summary) > 300 else e.summary,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in events
+    ]
+

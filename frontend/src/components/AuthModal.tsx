@@ -103,9 +103,19 @@ export default function AuthModal({
           <X size={17} />
         </button>
 
-        {/* Animated Brand Logo */}
-        <div className={styles.logoWrap}>
-          <CaroleLogo variant="full" size={115} />
+        {/* Modal Header */}
+        <div className={styles.modalHeader}>
+          <div className={styles.logoWrap}>
+            <CaroleLogo variant="mark" size={32} />
+          </div>
+          <h2 className={styles.modalTitle}>
+            {mode === "login" ? "Sign in to Carole.ai" : "Create your account"}
+          </h2>
+          <p className={styles.modalSubtitle}>
+            {mode === "login"
+              ? "Access your autonomous multi-agent workspaces and flightdeck."
+              : "Start orchestrating autonomous engineering teams locally."}
+          </p>
         </div>
 
         {/* Tab Toggle: Sign In / Create Account */}
@@ -212,13 +222,9 @@ export default function AuthModal({
             disabled={loading}
           >
             {loading ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : mode === "login" ? (
-              <Zap size={16} />
-            ) : (
-              <Sparkles size={16} />
-            )}
-            <span>{mode === "login" ? "Sign In to Console" : "Create Free Account"}</span>
+              <Loader2 size={15} className="animate-spin" />
+            ) : null}
+            <span>{mode === "login" ? "Sign in to Console" : "Create Account"}</span>
           </button>
         </form>
 

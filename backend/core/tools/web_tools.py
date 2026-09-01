@@ -88,10 +88,10 @@ class WebTools:
                 if response.status_code != 200:
                     return f"[WebFetch Error {response.status_code} for {url}]"
 
-                content_type = response.headers.get("content-type", "")
+                content_type = response.headers.get("content-type", "").lower()
                 text = response.text
 
-                # Convert HTML to readable text using markdownify to preserve links
+                # Handle HTML natively using markdownify or regex
                 if "html" in content_type:
                     try:
                         import markdownify
@@ -103,8 +103,34 @@ class WebTools:
                         text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
                         text = re.sub(r"<[^>]+>", " ", text)
                         text = re.sub(r"\s+", " ", text).strip()
+                # Handle binary formats (PDF, DOCX, XLSX, Images, etc.)
+                elif any(x in content_type for x in ["pdf", "word", "excel", "officedocument", "image", "csv"]):
+                    import tempfile
+                    import os
+                    import json
+                    
+                    # Determine extension
+                    ext = ".tmp"
+                    if "pdf" in content_type or url.endswith(".pdf"): ext = ".pdf"
+                    elif "word" in content_type or url.endswith(".docx"): ext = ".docx"
+                    elif "excel" in content_type or url.endswith(".xlsx"): ext = ".xlsx"
+                    elif "image/jpeg" in content_type: ext = ".jpg"
+                    elif "image/png" in content_type: ext = ".png"
 
-                # Truncate to prevent context window overflow (100k char limit)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                        tmp.write(response.content)
+                        tmp_path = tmp.name
+                    
+                    # Return structured JSON for the router to intercept
+                    payload = {
+                        "_is_file": True,
+                        "local_path": tmp_path,
+                        "mime_type": content_type.split(";")[0],
+                        "source_url": url
+                    }
+                    return json.dumps(payload)
+
+                # Truncate text responses to prevent context window overflow (100k char limit)
                 MAX_MARKDOWN_LENGTH = 100000
                 if len(text) > MAX_MARKDOWN_LENGTH:
                     text = text[:MAX_MARKDOWN_LENGTH] + "\n\n[Content truncated due to length...]"

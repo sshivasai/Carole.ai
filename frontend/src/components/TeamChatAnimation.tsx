@@ -289,7 +289,7 @@ export default function TeamChatAnimation() {
                 fontWeight: 600,
               }}
             >
-              Carole.ai Console — {currentSceneMeta.badge}
+              Carole.ai Console: {currentSceneMeta.badge}
             </span>
           </div>
 
@@ -499,7 +499,7 @@ export default function TeamChatAnimation() {
                     </div>
                     <div>
                       <div style={{ fontSize: 14, fontWeight: 800, color: "#ffffff", letterSpacing: -0.2 }}>carole ai</div>
-                      <div style={{ fontSize: 7, fontWeight: 700, color: "#64748b", letterSpacing: 0.8, textTransform: "uppercase" }}>AI AGENTS. REAL WORK.</div>
+                      <div style={{ fontSize: 7, fontWeight: 700, color: "#64748b", letterSpacing: 0.8, textTransform: "uppercase" }}><del style={{ opacity: 0.6 }}>AI AGENTS.</del> <span style={{ color: "#a78bfa" }}>AI TEAMMATES.</span> REAL WORK.</div>
                     </div>
                   </div>
                   <ChevronLeft size={14} color="#64748b" />
@@ -681,7 +681,7 @@ export default function TeamChatAnimation() {
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 6px", borderRadius: 9999, background: "rgba(168, 85, 247, 0.2)", border: "1px solid rgba(168, 85, 247, 0.4)", fontSize: 9.5, fontWeight: 800, color: "#c084fc" }}>
                         <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#c084fc" }} /> LIVE
                       </span>
-                      <span style={{ fontSize: 11, color: "var(--color-body, #94a3b8)" }}>Collaborate with your AI agents · Shift+Enter for newline</span>
+                      <span style={{ fontSize: 11, color: "var(--color-body, #94a3b8)" }}>Collaborate with your <del style={{ opacity: 0.6 }}>AI agents</del> <span style={{ color: "#a78bfa", fontWeight: 500 }}>AI teammates</span> · Shift+Enter for newline</span>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <div style={{ padding: "4px 8px", borderRadius: 6, background: "rgba(255,255,255,0.04)", fontSize: 11, color: "#cbd5e1" }}>🌐 4 Agents Active</div>

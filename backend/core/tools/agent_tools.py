@@ -34,6 +34,7 @@ async def _publish_failure_notification(
     team_id: str,
     agent_name: str,
     exc: BaseException,
+    parent_message_id: Optional[str] = None,
 ) -> None:
     """Publish a failure <task-notification> to the parent coordinator's team topic.
 
@@ -53,14 +54,66 @@ async def _publish_failure_notification(
             f"{type(exc).__name__}: {exc}</result>\n"
             f"</task-notification>"
         )
-        await event_bus.publish(f"team:{team_id}", {
-            "type": "message",
-            "sender_id": agent_name,
-            "sender_name": agent_name,
-            "role": "subagent",
-            "text": notification,
-            "is_task_notification": True,
-        })
+        from core.memory.models import Message, Agent
+        async with async_session() as db:
+            # Differentiate sender_id (UUID) and sender_name (display name) by looking up the subagent
+            subagent_uuid = None
+            try:
+                team_uuid = uuid.UUID(team_id) if isinstance(team_id, str) else team_id
+                stmt = select(Agent).where(Agent.team_id == team_uuid, Agent.name == agent_name)
+                res = await db.execute(stmt)
+                subagent = res.scalar_one_or_none()
+                if subagent:
+                    subagent_uuid = str(subagent.id)
+            except Exception:
+                pass
+            
+            sender_uuid = subagent_uuid or agent_name
+
+            attachments_list = []
+            if parent_message_id:
+                attachments_list.append({
+                    "type": "parent_message",
+                    "id": parent_message_id
+                })
+
+            db_msg = Message(
+                team_id=uuid.UUID(team_id) if isinstance(team_id, str) else team_id,
+                sender_id=sender_uuid,
+                sender_name=agent_name,
+                text=notification,
+                attachments=attachments_list,
+            )
+            db.add(db_msg)
+            await db.commit()
+
+            await event_bus.publish(f"team:{team_id}", {
+                "type": "message",
+                "id": str(db_msg.id),
+                "sender_id": sender_uuid,
+                "sender_name": agent_name,
+                "role": "subagent",
+                "text": notification,
+                "is_task_notification": True,
+                "attachments": attachments_list,
+            })
+
+            if parent_coordinator_id:
+                try:
+                    from core.chat.message_router import message_router
+                    stmt = select(Agent).where(Agent.id == uuid.UUID(parent_coordinator_id) if isinstance(parent_coordinator_id, str) else parent_coordinator_id)
+                    res = await db.execute(stmt)
+                    parent_agent = res.scalar_one_or_none()
+                    if parent_agent:
+                        await message_router._enqueue_agent(
+                            agent=parent_agent,
+                            prompt_text=notification,
+                            db_session=db,
+                            attachments=[],
+                            trigger_message_id=str(db_msg.id)
+                        )
+                except Exception as e:
+                    logger.exception("Failed to notify parent coordinator %s of subagent crash: %s", parent_coordinator_id, e)
     except Exception:
         logger.exception(
             "Failed to publish failure task-notification for subagent %s (task_id=%s)",
@@ -73,6 +126,7 @@ def _make_done_callback(
     parent_coordinator_id: Optional[str],
     team_id: str,
     agent_name: str,
+    parent_message_id: Optional[str] = None,
 ):
     """Build a done_callback for a subagent asyncio.Task.
 
@@ -90,7 +144,7 @@ def _make_done_callback(
             return
         if exc is not None:
             coro = _publish_failure_notification(
-                task_id, parent_coordinator_id, team_id, agent_name, exc
+                task_id, parent_coordinator_id, team_id, agent_name, exc, parent_message_id
             )
             # Use get_running_loop() — get_event_loop() is deprecated in 3.10+
             # and raises RuntimeError during shutdown when no loop is running.
@@ -114,6 +168,7 @@ class AgentTools:
         task: str,
         team_id: str,
         parent_coordinator_id: Optional[str] = None,
+        parent_message_id: Optional[str] = None,
     ) -> str:
         """
         Looks up an agent by name within the team and spawns its ReACT loop
@@ -131,6 +186,10 @@ class AgentTools:
             if not agent:
                 return f"Error: No agent named '{agent_name}' found in this team."
 
+            # Local import to prevent circular dependency
+            from core.chat.message_router import message_router
+            task_id = f"agent-{str(uuid.uuid4())[:8]}"
+
             # Enqueue the task prompt to the agent's message_router FIFO queue.
             # This ensures they execute in a single managed loop, rather than
             # invisible detached background tasks.
@@ -141,11 +200,12 @@ class AgentTools:
                 attachments=[],
                 trigger_message_id=None,
                 parent_coordinator_id=parent_coordinator_id,
-                task_id=task_id
+                task_id=task_id,
+                parent_message_id=parent_message_id,
             )
 
         return (
-            f"Successfully delegated task '{task[:50]}...' to subagent '{agent_name}'. "
+            f"Successfully delegated task '{task[:50]}...' to teammate '{agent_name}'. "
             f"(Task ID: {task_id})"
         )
 
@@ -447,7 +507,16 @@ class AgentTools:
 
             return f"Successfully removed '@{deleted_name}' ({deleted_role}) from the team roster."
 
-    async def hire_subagent(self, role: str, expertise: str, task: str, team_id: str, _agent_id: str, model: str = None) -> str:
+    async def hire_subagent(
+        self,
+        role: str,
+        expertise: str,
+        task: str,
+        team_id: str,
+        _agent_id: str,
+        model: str = None,
+        parent_message_id: Optional[str] = None,
+    ) -> str:
         """
         Dynamically creates a new subagent row in the database and spawns its loop asynchronously.
         The subagent receives a full production-grade system prompt with planning lifecycle
@@ -527,6 +596,7 @@ class AgentTools:
             # agent that hired it. (Bug 4 fix.)
             fallback_model=getattr(new_agent, "fallback_model", None),
             reasoning_effort=getattr(new_agent, "reasoning_effort", "none") or "none",
+            parent_message_id=parent_message_id,
         )
 
         async def _run_and_cleanup():
@@ -556,7 +626,7 @@ class AgentTools:
         _task = asyncio.create_task(_run_and_cleanup())
         _running_subagent_tasks.add(_task)
         _task.add_done_callback(
-            _make_done_callback(task_id, _agent_id, str(team_id), subagent_name)
+            _make_done_callback(task_id, _agent_id, str(team_id), subagent_name, parent_message_id)
         )
 
         return (

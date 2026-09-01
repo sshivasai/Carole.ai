@@ -380,3 +380,34 @@ class EntityMemory(Base):
     
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class CompactionEvent(Base):
+    """
+    Records when context compaction occurred for a team conversation.
+
+    Each row represents one compaction checkpoint:
+    - summary: LLM-generated dense summary of everything before this point
+    - triggered_by: "auto" (token threshold hit) | "manual" (user invoked /compact)
+    - message_count_before: how many messages existed when compaction was triggered
+
+    The history loader uses the most recent CompactionEvent as a starting checkpoint:
+    it loads the summary as a synthetic first message, then only loads real messages
+    AFTER this event's created_at — making compaction persist across server restarts.
+    """
+    __tablename__ = "compaction_events"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # LLM-generated dense summary of all conversation content before this checkpoint
+    summary = Column(Text, nullable=False)
+
+    # How many total messages existed in the team when compaction fired
+    message_count_before = Column(Integer, nullable=True)
+
+    # "auto" = token threshold triggered it | "manual" = user invoked /compact command
+    triggered_by = Column(String(20), nullable=False, default="auto")
+
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+

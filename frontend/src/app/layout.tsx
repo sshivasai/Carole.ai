@@ -23,7 +23,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://carole.ai"),
-  title: "Carole.ai — Autonomous AI Engineering Teams & Multi-Agent Platform",
+  title: "Carole.ai: Autonomous AI Engineering Teams & Multi-Agent Platform",
   description:
     "Deploy self-coordinating AI engineering teams with Actor-model message queues, AST dead-end pruning, Judge AI security, and persistent LanceDB GraphRAG memory.",
   keywords: [
@@ -43,7 +43,7 @@ export const metadata: Metadata = {
     apple: "/apple-touch-icon.png",
   },
   openGraph: {
-    title: "Carole.ai — Autonomous AI Engineering Teams Platform",
+    title: "Carole.ai: Autonomous AI Engineering Teams Platform",
     description: "AI Engineering Teams. Real Work. 100% Free & Open Source.",
     images: [{ url: "/branding/logo-full.png", width: 1080, height: 1080 }],
   },

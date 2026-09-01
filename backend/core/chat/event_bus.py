@@ -67,6 +67,34 @@ class EventBus:
                 if not self._subscribers[topic]:
                     del self._subscribers[topic]
 
+    async def subscribe_to_topics(self, topics: List[str]) -> asyncio.Queue:
+        """Subscribe a single queue to multiple topics. Replays history of all topics."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+        async with self._lock:
+            for topic in topics:
+                if topic not in self._subscribers:
+                    self._subscribers[topic] = set()
+                if topic not in self._history:
+                    self._history[topic] = deque(maxlen=self._history_size)
+                self._subscribers[topic].add(queue)
+
+                # Replay recent history to late-joining subscriber
+                for event in self._history[topic]:
+                    try:
+                        queue.put_nowait(event)
+                    except asyncio.QueueFull:
+                        break
+        return queue
+
+    async def unsubscribe_from_topics(self, topics: List[str], queue: asyncio.Queue):
+        """Unsubscribe a queue from multiple topics."""
+        async with self._lock:
+            for topic in topics:
+                if topic in self._subscribers:
+                    self._subscribers[topic].discard(queue)
+                    if not self._subscribers[topic]:
+                        del self._subscribers[topic]
+
     async def publish(self, topic: str, message: dict):
         """Publish a message to all subscribers of a topic and record in history.
 

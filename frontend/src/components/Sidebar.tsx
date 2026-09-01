@@ -216,7 +216,7 @@ export default function Sidebar({
           <img src="/branding/logo-mark-animated.webp" alt="Carole.ai Logo" className={styles.sidebarLogoImg} />
           <img
             src={theme === "dark" ? "/branding/logo-wordmark-dark.png" : "/branding/logo-wordmark.png"}
-            alt="Carole.ai — AI Agents. Real Work."
+            alt="Carole.ai: AI Agents. Real Work."
             className={styles.sidebarLogoWordmark}
           />
         </div>

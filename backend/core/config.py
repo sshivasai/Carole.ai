@@ -24,12 +24,6 @@ DISABLED_GLOBAL_MCPS_FILE = CAROLE_HOME_DIR / "disabled_global_mcps.json"
 
 GLOBAL_MCPS = [
     {
-        "server_name": "playwright",
-        "command": "npx",
-        "args": ["-y", "@playwright/mcp@latest"],
-        "description": "Browser automation and web scraping"
-    },
-    {
         "server_name": "context7",
         "command": "npx",
         "args": ["-y", "@upstash/context7-mcp@latest"],

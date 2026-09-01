@@ -121,8 +121,12 @@ class AutoDreamWorker:
         stmt = (
             select(Message)
             .where(Message.team_id == team.id)
-            .where(Message.is_private == False)   # Never leak private messages
-            .where(Message.processed == False)     # Only unprocessed messages
+            .where(Message.is_private == False)    # Never leak private messages
+            .where(Message.processed == False)      # Only unprocessed messages
+            # Exclude intermediate tool-trace rows — they contain raw tool call
+            # args and error observations, not meaningful conversation content.
+            # Extracting "lessons" from these produces low-quality, noisy memories.
+            .where(Message.is_intermediate == False)
             .order_by(Message.created_at)
             .limit(50)
         )

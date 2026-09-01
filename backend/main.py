@@ -356,8 +356,28 @@ async def websocket_endpoint(
         return
 
     await websocket.accept()
-    topic = f"team:{team_id}"
-    event_queue = await event_bus.subscribe(topic)
+    
+    # Resolve project_id for this team to listen to file explorer updates
+    project_id = None
+    try:
+        from core.memory.database import async_session
+        from core.memory.models import Team
+        from sqlalchemy import select
+        import uuid
+        
+        async with async_session() as db:
+            team_uuid = uuid.UUID(team_id)
+            team = (await db.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
+            if team:
+                project_id = str(team.project_id)
+    except Exception as e:
+        logger.warning("Failed to resolve project_id for team %s: %s", team_id, e)
+
+    topics = [f"team:{team_id}"]
+    if project_id:
+        topics.append(f"project:{project_id}")
+
+    event_queue = await event_bus.subscribe_to_topics(topics)
 
     async def receive_from_client():
         try:
@@ -432,7 +452,7 @@ async def websocket_endpoint(
         for task in pending:
             task.cancel()
     finally:
-        await event_bus.unsubscribe(topic, event_queue)
+        await event_bus.unsubscribe_from_topics(topics, event_queue)
 
 
 # ============================================================

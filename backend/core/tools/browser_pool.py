@@ -171,6 +171,20 @@ async def get_page(agent_id: str):
         return await get_page(agent_id)
 
 
+async def get_new_page(agent_id: str):
+    """Create a brand-new page (tab) inside the agent's context."""
+    # Ensure context is initialized
+    await get_page(agent_id)
+    
+    context = _contexts.get(agent_id)
+    if not context:
+        raise RuntimeError(f"Context not found for agent {agent_id}")
+        
+    page = await context.new_page()
+    page.on("pageerror", lambda exc: logger.debug("Browser page error: %s", exc))
+    return page
+
+
 async def close_agent_browser(agent_id: str) -> bool:
     """Close and remove the browser context for a specific agent."""
     async with _lock:

@@ -207,6 +207,7 @@ const PROVIDER_FIELDS = [
   { key: "openrouter", label: "OpenRouter", placeholder: "sk-or-v1-..." },
   { key: "nvidia", label: "NVIDIA", placeholder: "nvapi-..." },
   { key: "tavily", label: "Tavily (Web Search)", placeholder: "tvly-..." },
+  { key: "browseruse", label: "Browser Use Cloud", placeholder: "Leave blank for free local agent..." },
 ];
 
 function ApiKeysCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
@@ -518,10 +519,11 @@ function BrowserAutomationCard({ onToast }: { onToast: (msg: string, type: any) 
               value={settings.provider || "local"}
               onChange={e => setSettings((d: any) => ({ ...d, provider: e.target.value }))}
             >
-              <option value="local">Local Playwright (Default Stealth)</option>
-              <option value="browserbase">Browserbase (Hosted Headless Browser)</option>
-              <option value="scraperapi">ScraperAPI (Proxy API)</option>
-              <option value="zenrows">ZenRows (Proxy API)</option>
+              <option value="local">Local Playwright (Stealth)</option>
+              <option value="browserbase">Browserbase Cloud</option>
+              <option value="browseruse">Browser Use (Agent)</option>
+              <option value="scraperapi">ScraperAPI Proxy</option>
+              <option value="zenrows">ZenRows Proxy</option>
             </select>
           </div>
 

@@ -1,72 +1,38 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   Sun,
   Moon,
   Sparkles,
-  Bot,
-  Terminal,
-  Shield,
-  ShieldCheck,
-  Layers,
-  ArrowRight,
-  GitBranch,
-  Cpu,
-  Database,
-  Lock,
   Zap,
-  Globe,
-  Code2,
-  CheckCircle2,
-  Copy,
-  ExternalLink,
-  Workflow,
-  Network,
-  Download,
-  Flame,
-  ChevronRight,
-  Activity,
-  Server,
-  Play,
-  FileCode,
-  ChevronDown,
-  Monitor,
-  Laptop,
-  Search,
+  ArrowRight,
   Check,
-  Brain,
-  Video,
-  Kanban,
+  Copy,
+  Terminal,
+  ShieldCheck,
+  Database,
+  Network,
   Boxes,
+  Code2,
+  GitBranch,
+  Search,
+  ExternalLink,
+  Laptop,
+  Cpu,
+  Brain,
+  Layers,
 } from "lucide-react";
 
 import styles from "./LandingPage.module.css";
 import { useTheme } from "@/hooks/useTheme";
+import { motion, AnimatePresence, useScroll, useTransform, useSpring } from "framer-motion";
 import SwarmTeamShowcase from "./SwarmTeamShowcase";
-import GravityText from "./GravityText";
-import GravityParticles from "./GravityParticles";
+import IntegrationsAnimation from "./IntegrationsAnimation";
 import MagneticCard from "./MagneticCard";
 import TeamChatAnimation from "./TeamChatAnimation";
 import SupportedModelsShowcase from "./SupportedModelsShowcase";
-
-function WindowsIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-      <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.551H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.951-1.801" />
-    </svg>
-  );
-}
-
-function AppleIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-      <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.9.04-2.02.6-2.66 1.34-.56.65-1.06 1.7-0.93 2.72 1.01.08 2.05-.46 2.67-1.21z" />
-    </svg>
-  );
-}
-
-
+import GravityParticles from "./GravityParticles";
 
 function GithubIcon({ size = 16 }: { size?: number }) {
   return (
@@ -86,7 +52,37 @@ interface LandingPageProps {
   onSignUp?: () => void;
 }
 
-type SandboxTab = "fullstack" | "graphrag" | "meeting" | "mcp";
+type QuickstartTab = "cli" | "source";
+
+function ScrollExpandWrapper({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { scrollYProgress } = useScroll({
+    target: ref,
+    offset: ["start end", "end center"],
+  });
+
+  const smoothProgress = useSpring(scrollYProgress, {
+    stiffness: 100,
+    damping: 20,
+    restDelta: 0.001
+  });
+
+  const scale = useTransform(smoothProgress, [0, 1], [0.93, 1]);
+  const y = useTransform(smoothProgress, [0, 1], [100, 0]);
+
+  return (
+    <motion.div
+      ref={ref}
+      style={{
+        scale,
+        y,
+        willChange: "transform",
+      }}
+    >
+      {children}
+    </motion.div>
+  );
+}
 
 export default function LandingPage({
   onLaunchApp,
@@ -94,72 +90,66 @@ export default function LandingPage({
   onSignUp,
 }: LandingPageProps) {
   const { theme, toggleTheme } = useTheme();
-  const [activeTab, setActiveTab] = useState<SandboxTab>("fullstack");
   const [copied, setCopied] = useState(false);
   const [copiedCli, setCopiedCli] = useState(false);
   const [selectedGraphQuery, setSelectedGraphQuery] = useState(0);
-
-  // Strategic Platform & Context Detection
-  const [userOS, setUserOS] = useState<"windows" | "mac" | "linux">("windows");
-  const [isLocalHost, setIsLocalHost] = useState(false);
-  const [navDropdownOpen, setNavDropdownOpen] = useState(false);
-  const [heroDropdownOpen, setHeroDropdownOpen] = useState(false);
+  const [quickstartTab, setQuickstartTab] = useState<QuickstartTab>("cli");
+  const [typedTitle1, setTypedTitle1] = useState("");
+  const [typedTitle2, setTypedTitle2] = useState("");
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      setIsLocalHost(
-        window.location.hostname === "localhost" ||
-        window.location.hostname === "127.0.0.1" ||
-        window.location.hostname.endsWith(".local")
-      );
-      const ua = navigator.userAgent.toLowerCase();
-      if (ua.includes("mac")) {
-        setUserOS("mac");
-      } else if (ua.includes("linux")) {
-        setUserOS("linux");
-      } else {
-        setUserOS("windows");
-      }
-    }
-  }, []);
+    const text1 = "Autonomous AI engineering teams.";
+    const text2 = "Built for hard engineering.";
+    let i = 0;
+    let j = 0;
 
-  // Close dropdowns on outside click
-  useEffect(() => {
-    const handleOutsideClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest(`.${styles.downloadSplitGroup}`)) {
-        setNavDropdownOpen(false);
-        setHeroDropdownOpen(false);
+    const interval1 = setInterval(() => {
+      setTypedTitle1(text1.substring(0, i + 1));
+      i++;
+      if (i >= text1.length) {
+        clearInterval(interval1);
+        setTimeout(() => {
+          const interval2 = setInterval(() => {
+            setTypedTitle2(text2.substring(0, j + 1));
+            j++;
+            if (j >= text2.length) clearInterval(interval2);
+          }, 35);
+        }, 200);
       }
+    }, 30);
+
+    return () => {
+      clearInterval(interval1);
     };
-    window.addEventListener("click", handleOutsideClick);
-    return () => window.removeEventListener("click", handleOutsideClick);
   }, []);
+
+  const staggerContainer = {
+    hidden: { opacity: 0 },
+    show: {
+      opacity: 1,
+      transition: { staggerChildren: 0.1, delayChildren: 0.1 }
+    }
+  };
+
+  const fadeUp = {
+    hidden: { opacity: 0, y: 24 },
+    show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] } }
+  };
+
+  const bentoItem = {
+    hidden: { opacity: 0, y: 20 },
+    show: { 
+      opacity: 1, 
+      y: 0,
+      transition: { type: "spring", stiffness: 100, damping: 18 }
+    }
+  };
 
   const copyCliSnippet = () => {
     navigator.clipboard.writeText("pip install carole-ai && carole run");
     setCopiedCli(true);
     setTimeout(() => setCopiedCli(false), 2000);
   };
-
-  const getPrimaryDownloadInfo = () => {
-    if (userOS === "mac") {
-      return {
-        label: "Download for macOS",
-        sub: "Apple Silicon & Intel (.dmg)",
-        icon: <AppleIcon size={16} />,
-        href: "https://github.com/sshivasai/Carole.ai/releases",
-      };
-    }
-    return {
-      label: "Download for Windows",
-      sub: "Windows 10 / 11 (.exe)",
-      icon: <WindowsIcon size={16} />,
-      href: "https://github.com/sshivasai/Carole.ai/releases",
-    };
-  };
-
-  const primaryDownload = getPrimaryDownloadInfo();
 
   const scrollToSection = (id: string) => {
     const el = document.getElementById(id);
@@ -176,7 +166,7 @@ export default function LandingPage({
       denseSummary:
         "Lightweight AST parser decomposes message history into ActionNodes and ObsNodes, safely pruning failed dead-end loops without stripping valid reasoning.",
       graphNodes:
-        "[ReActAgent] ──(generates)──> [ActionNode] ──(intercepts)──> [JudgeAIFirewall] ──(evaluates)──> [ToolExecutor]",
+        "[ReActAgent] -> (generates) -> [ActionNode] -> (intercepts) -> [JudgeAIFirewall] -> (evaluates) -> [ToolExecutor]",
     },
     {
       query: "Trace guarded subagent delegation & concurrency limits",
@@ -185,7 +175,7 @@ export default function LandingPage({
       denseSummary:
         "Primary coordinators spawn temporary specialist subagents (max depth 1, max 3 concurrent) with restricted toolsets to prevent infinite recursion.",
       graphNodes:
-        "[Archer (Coordinator)] ──(hires)──> [Sub-PythonDeveloper] ──(executes_task)──> [TaskNotification] ──(reports)──> [TeamChat]",
+        "[Archer Coordinator] -> (hires) -> [Sub-PythonDeveloper] -> (executes_task) -> [TaskNotification] -> (reports) -> [TeamChat]",
     },
     {
       query: "Inspect MCP sandbox tool authorization firewall",
@@ -194,11 +184,19 @@ export default function LandingPage({
       denseSummary:
         "JSON-RPC 2.0 tool execution interceptor with permission prompt firewall and per-agent token access control.",
       graphNodes:
-        "[AgentTask] ──(tool_call)──> [MCPFirewall] ──(validates_token)──> [PostgresMCPServer] ──(returns_payload)──> [AgentContext]",
+        "[AgentTask] -> (tool_call) -> [MCPFirewall] -> (validates_token) -> [PostgresMCPServer] -> (returns_payload) -> [AgentContext]",
     },
   ];
 
-  const quickstartManualSnippet = `# 1. Clone the open-source repository
+  const quickstartSnippets: Record<QuickstartTab, string> = {
+    cli: `# 1. Install Carole via pip
+pip install carole-ai
+
+# 2. Launch the autonomous AI engineering server
+carole run
+
+# Open web console at http://localhost:3000`,
+    source: `# 1. Clone the open-source repository
 git clone https://github.com/sshivasai/Carole.ai.git
 cd Carole.ai
 
@@ -209,31 +207,47 @@ source venv/bin/activate  # Windows: .\\venv\\Scripts\\activate
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8001
 
-# 3. In a separate terminal, launch Next.js frontend
+# 3. In a separate terminal, launch the Next.js frontend
 cd ../frontend
 npm install
 npm run dev
 
-# Open console at http://localhost:3000`;
+# 4. Open http://localhost:3000 to contribute & test`,
+  };
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(quickstartManualSnippet);
+  const handleCopyQuickstart = () => {
+    navigator.clipboard.writeText(quickstartSnippets[quickstartTab]);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   return (
     <div className={styles.landingRoot}>
+      {/*
+        THESIS: An autonomous engineering mission control landing page that replaces generic pastel SaaS templates with a high-density, cybernetic flightdeck.
+        OWN-WORLD: Obsidian Void (#030315) bedrock, 1px Starlight Hairlines (#2a2a3f), Cybernetic Lavender (#a78bfa) / Telemetry Cyan (#38bdf8) glows, 56px blueprint gridlines, and JetBrains Mono telemetry.
+        STORY: Developers discover true multi-agent swarm orchestration, verify AST context pruning and GraphRAG telemetry, and convert via 1-click web console launch or CLI install.
+        FIRST VIEWPORT: Sticky 24px backdrop-blur glass navbar with live telemetry pill, high-impact Bricolage Grotesque hero, dual conversion CLI copy bar + Launch Console CTA, over dynamic physics particles.
+        FORM: Persuade / Orbital Flightdeck.
+        FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance.
+      */}
+
       {/* Background Atmospheric Mesh */}
       <div className={styles.bgMeshContainer}>
         <div className={styles.bgGlowOrbPrimary} />
         <div className={styles.bgGlowOrbSecondary} />
         <div className={styles.bgBlueprintGrid} />
         <div className={styles.bgCrosshairs} />
+        <GravityParticles particleCount={70} connectionDistance={125} repelStrength={4.5} />
       </div>
 
       {/* Navigation Header */}
-      <header className={styles.navbar}>
+      <motion.header 
+        className={styles.navbar}
+        initial={{ y: -80, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+      >
         <div className={styles.navContainer}>
           <div
             className={styles.brandLink}
@@ -250,26 +264,32 @@ npm run dev
                   ? "/branding/logo-wordmark-dark.png"
                   : "/branding/logo-wordmark.png"
               }
-              alt="Carole.ai — AI Agents. Real Work."
+              alt="Carole.ai: AI Agents. Real Work."
               className={styles.navBrandWordmark}
             />
           </div>
 
           <nav className={styles.navLinks}>
             <span
+              onClick={() => scrollToSection("team")}
+              className={styles.navLink}
+            >
+              Agent Swarm
+            </span>
+            <span
               onClick={() => scrollToSection("models")}
               className={styles.navLink}
             >
-              Supported Models
+              Models
             </span>
             <span
               onClick={() => scrollToSection("graphrag")}
               className={styles.navLink}
             >
-              GraphRAG Engine
+              GraphRAG
             </span>
             <span
-              onClick={() => scrollToSection("features")}
+              onClick={() => scrollToSection("architecture")}
               className={styles.navLink}
             >
               Architecture
@@ -299,9 +319,9 @@ npm run dev
               aria-label="Toggle theme"
             >
               {theme === "dark" ? (
-                <Sun size={16} style={{ color: "#fbbf24" }} />
+                <Sun size={15} style={{ color: "#fbbf24" }} />
               ) : (
-                <Moon size={16} style={{ color: "#6366f1" }} />
+                <Moon size={15} style={{ color: "#6366f1" }} />
               )}
             </button>
 
@@ -313,357 +333,213 @@ npm run dev
               className={styles.githubBtn}
               title="Star on GitHub"
             >
-              <GithubIcon size={15} />
+              <GithubIcon size={14} />
               <span>Star</span>
             </a>
 
-            {/* Single Streamlined Sign In */}
+            {/* Sign In */}
             <button onClick={onSignIn || onLaunchApp} className={styles.signInBtn}>
               Sign In
             </button>
 
-            {/* Strategic Action: If running on localhost, show Launch Console. If on website, show Download with Dropdown */}
-            {isLocalHost ? (
-              <button
-                onClick={onLaunchApp || onSignIn}
-                className={styles.launchBtn}
-                title="Launch Local AI Engineering Console"
-              >
-                Launch Console
-                <ArrowRight size={14} />
-              </button>
-            ) : (
-              <div className={styles.downloadSplitGroup}>
-                <a
-                  href={primaryDownload.href}
-                  target="_blank"
-                  rel="noreferrer"
-                  className={styles.downloadSplitMain}
-                  title={`${primaryDownload.label} (${primaryDownload.sub})`}
-                >
-                  {primaryDownload.icon}
-                  <span>Download</span>
-                </a>
-                <button
-                  type="button"
-                  className={styles.downloadSplitChevron}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setNavDropdownOpen(!navDropdownOpen);
-                  }}
-                  title="Choose operating system"
-                  aria-label="Toggle download options"
-                >
-                  <ChevronDown size={14} />
-                </button>
-
-                {navDropdownOpen && (
-                  <div className={styles.downloadDropdownMenu}>
-                    <div className={styles.downloadDropdownHeader}>
-                      <span>DESKTOP APP</span>
-                      <span>v1.0.0</span>
-                    </div>
-                    <a
-                      href="https://github.com/sshivasai/Carole.ai/releases"
-                      target="_blank"
-                      rel="noreferrer"
-                      className={styles.downloadDropdownItem}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <div style={{ color: "#38bdf8", display: "flex" }}>
-                          <WindowsIcon size={18} />
-                        </div>
-                        <div>
-                          <div className={styles.downloadItemTitle}>Windows (64-bit)</div>
-                          <div className={styles.downloadItemSub}>Setup .exe • Windows 10 / 11</div>
-                        </div>
-                      </div>
-                      <span className={styles.downloadItemBadge}>.exe</span>
-                    </a>
-                    <a
-                      href="https://github.com/sshivasai/Carole.ai/releases"
-                      target="_blank"
-                      rel="noreferrer"
-                      className={styles.downloadDropdownItem}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <div style={{ color: "#f8fafc", display: "flex" }}>
-                          <AppleIcon size={18} />
-                        </div>
-                        <div>
-                          <div className={styles.downloadItemTitle}>macOS</div>
-                          <div className={styles.downloadItemSub}>Apple Silicon & Intel (.dmg)</div>
-                        </div>
-                      </div>
-                      <span className={styles.downloadItemBadge}>.dmg</span>
-                    </a>
-                    <div className={styles.downloadDropdownDivider} />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNavDropdownOpen(false);
-                        if (onLaunchApp || onSignIn) (onLaunchApp || onSignIn)!();
-                      }}
-                      className={styles.downloadDropdownItem}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <Sparkles size={17} style={{ color: "var(--color-primary)" }} />
-                        <div>
-                          <div className={styles.downloadItemTitle}>Launch Web Console</div>
-                          <div className={styles.downloadItemSub}>Instant browser access • Zero install</div>
-                        </div>
-                      </div>
-                      <ArrowRight size={14} style={{ opacity: 0.7 }} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+            {/* Launch Console */}
+            <button
+              onClick={onLaunchApp || onSignIn}
+              className={styles.navLaunchBtn}
+              title="Launch AI Engineering Console"
+            >
+              <span>Launch Console</span>
+              <ArrowRight size={13} />
+            </button>
           </div>
         </div>
-      </header>
+      </motion.header>
 
       {/* Hero Section */}
-      <section className={styles.heroSection}>
-        {/* Interactive Anti-Gravity Physics Canvas Background */}
-        <GravityParticles particleCount={88} connectionDistance={125} mouseRadius={170} />
+      <motion.section 
+        className={styles.heroSection}
+        variants={staggerContainer}
+        initial="hidden"
+        animate="show"
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(480px, 1fr))", gap: "40px", alignItems: "center", maxWidth: "1280px", margin: "0 auto", width: "100%", padding: "0 24px", transform: "translateY(-5vh)" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", textAlign: "left", maxWidth: "600px" }}>
+            {/* Release Status Badge */}
+            <motion.div variants={fadeUp} className={styles.releaseBadge} style={{ margin: "0 0 16px 0", alignSelf: "flex-start" }}>
+              <span className={styles.releaseDot} />
+              <span className={styles.releaseText}>Guarded Multi-Agent Engineering Runtime</span>
+              <span className={styles.releaseDivider}>|</span>
+              <span className={styles.releaseHighlight}>Apache 2.0</span>
+            </motion.div>
 
-        {/* HUD Status Pill */}
-        <div className={styles.hudBadge}>
-          <span className={styles.hudDot} />
-          <Zap size={13} style={{ color: "var(--color-primary, #a78bfa)", flexShrink: 0 }} />
-          <span>90+ BUILT-IN TOOLS • GUARDED MULTI-AGENT TEAMS • 100% LOCAL & OPEN SOURCE</span>
-        </div>
+            <motion.h1 variants={fadeUp} className={styles.heroTitle} style={{ minHeight: "180px", textAlign: "left", display: "flex", flexDirection: "column" }}>
+              <span style={{ minHeight: "60px" }}>
+                {typedTitle1}
+                {typedTitle1.length < "Autonomous AI engineering teams.".length && (
+                  <span className={styles.typingCursor}>|</span>
+                )}
+              </span>
+              <span className={styles.heroAccentText} style={{ minHeight: "60px" }}>
+                {typedTitle1.length >= "Autonomous AI engineering teams.".length && (
+                  <>
+                    {typedTitle2}
+                    {typedTitle2.length < "Built for hard engineering.".length && (
+                      <span className={styles.typingCursor}>|</span>
+                    )}
+                  </>
+                )}
+              </span>
+            </motion.h1>
 
-        <h1 className={styles.heroTitle}>
-          <GravityText text="Autonomous AI Engineering Teams." gravityStrength={32} radius={170} />{" "}
-          <span className={styles.heroGradientText}>
-            <GravityText text="Built for Hard Engineering." isGradient gravityStrength={38} radius={190} />
-          </span>
-        </h1>
+            <motion.p variants={fadeUp} className={styles.heroSubtitle} style={{ textAlign: "left", margin: "0 0 24px 0", maxWidth: "600px" }}>
+              Orchestrate autonomous agent swarms in a unified developer cockpit with hybrid GraphRAG, zero-trust MCP tools, and split-screen Kanban boards.
+            </motion.p>
 
-        <p className={styles.heroSubtitle}>
-          Deploy autonomous teams of AI engineers that collaborate to build features, fix bugs, run tests, and manage workflows — with real-time reasoning loops, safety guardrails, and long-term memory.
-        </p>
-
-        {/* Strategic Hero CTA Group */}
-        <div className={styles.heroCtaGroup}>
-          {/* Primary Download for OS with Dropdown */}
-          <div className={styles.downloadSplitGroup}>
-            <a
-              href={primaryDownload.href}
-              target="_blank"
-              rel="noreferrer"
-              className={styles.heroDownloadBtn}
-            >
-              {primaryDownload.icon}
-              <div style={{ textAlign: "left" }}>
-                <div>{primaryDownload.label}</div>
-                <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 500 }}>
-                  {primaryDownload.sub} • Free v1.0.0
-                </div>
+            {/* Primary CLI Command Bar */}
+            <motion.div variants={fadeUp} className={styles.heroCliBar} style={{ margin: "0 0 24px 0", alignSelf: "flex-start" }}>
+              <div className={styles.heroCliCode}>
+                <span className={styles.heroCliPrompt}>$</span>
+                <span>pip install carole-ai &amp;&amp; carole run</span>
               </div>
-            </a>
-            <button
-              type="button"
-              className={styles.heroDownloadChevron}
-              onClick={(e) => {
-                e.stopPropagation();
-                setHeroDropdownOpen(!heroDropdownOpen);
-              }}
-              title="Select Platform"
-              aria-label="Toggle download options"
-            >
-              <ChevronDown size={18} />
-            </button>
+              <button
+                onClick={copyCliSnippet}
+                className={`${styles.heroCliCopyBtn} ${copiedCli ? styles.heroCliCopyBtnCopied : ""}`}
+                title="Copy quickstart command"
+              >
+                {copiedCli ? (
+                  <>
+                    <Check size={12} />
+                    <span>Copied</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={12} />
+                    <span>Copy</span>
+                  </>
+                )}
+              </button>
+            </motion.div>
 
-            {heroDropdownOpen && (
-              <div className={styles.downloadDropdownMenu}>
-                <div className={styles.downloadDropdownHeader}>
-                  <span>OFFICIAL DESKTOP BUILDS</span>
-                  <span>v1.0.0</span>
-                </div>
-                <a
-                  href="https://github.com/sshivasai/Carole.ai/releases"
-                  target="_blank"
-                  rel="noreferrer"
-                  className={styles.downloadDropdownItem}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div style={{ color: "#38bdf8", display: "flex" }}>
-                      <WindowsIcon size={20} />
-                    </div>
-                    <div>
-                      <div className={styles.downloadItemTitle}>Windows 10 / 11</div>
-                      <div className={styles.downloadItemSub}>Setup Installer (.exe) • 64-bit</div>
-                    </div>
-                  </div>
-                  <span className={styles.downloadItemBadge}>.exe</span>
-                </a>
-                <a
-                  href="https://github.com/sshivasai/Carole.ai/releases"
-                  target="_blank"
-                  rel="noreferrer"
-                  className={styles.downloadDropdownItem}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div style={{ color: "#f8fafc", display: "flex" }}>
-                      <AppleIcon size={20} />
-                    </div>
-                    <div>
-                      <div className={styles.downloadItemTitle}>macOS</div>
-                      <div className={styles.downloadItemSub}>Apple Silicon (M1-M4) & Intel (.dmg)</div>
-                    </div>
-                  </div>
-                  <span className={styles.downloadItemBadge}>.dmg</span>
-                </a>
-                <div className={styles.downloadDropdownDivider} />
-                <div
-                  onClick={() => {
-                    setHeroDropdownOpen(false);
-                    copyCliSnippet();
-                  }}
-                  className={styles.downloadDropdownItem}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div style={{ color: "var(--color-primary)", display: "flex" }}>
-                      <Terminal size={18} />
-                    </div>
-                    <div>
-                      <div className={styles.downloadItemTitle}>Python Package (CLI)</div>
-                      <div className={styles.downloadItemSub}>pip install carole-ai && carole run</div>
-                    </div>
-                  </div>
-                  <span className={styles.downloadItemBadge}>pip</span>
-                </div>
-              </div>
-            )}
+            {/* Hero Actions */}
+            <motion.div variants={fadeUp} className={styles.heroCtaGroup} style={{ justifyContent: "flex-start", width: "100%" }}>
+              <button
+                onClick={onLaunchApp || onSignIn}
+                className={styles.heroPrimaryBtn}
+              >
+                <span>Launch Web Console</span>
+                <ArrowRight size={14} />
+              </button>
+
+              <a
+                href="https://github.com/sshivasai/Carole.ai"
+                target="_blank"
+                rel="noreferrer"
+                className={styles.heroSecondaryBtn}
+              >
+                <GithubIcon size={15} />
+                <span>Contribute on GitHub</span>
+                <ExternalLink size={12} style={{ opacity: 0.6 }} />
+              </a>
+            </motion.div>
           </div>
 
-          {/* Secondary Web Console Launch */}
-          <button
-            onClick={onLaunchApp || onSignIn}
-            className={styles.heroSecondaryBtn}
-          >
-            <Sparkles size={17} style={{ color: "var(--color-primary)" }} />
-            <span>Launch Web Console</span>
-            <ArrowRight size={15} style={{ opacity: 0.7 }} />
-          </button>
-        </div>
-
-        {/* Quick CLI Copyable Snippet */}
-        <div
-          className={styles.cliSnippetChip}
-          onClick={copyCliSnippet}
-          title="Click to copy quickstart command"
-        >
-          <Terminal size={14} style={{ color: "var(--color-primary)", flexShrink: 0 }} />
-          <span>$ pip install carole-ai && carole run</span>
-          {copiedCli ? (
-            <CheckCircle2 size={14} style={{ color: "#10b981", flexShrink: 0 }} />
-          ) : (
-            <Copy size={13} style={{ opacity: 0.6, flexShrink: 0 }} />
-          )}
-        </div>
-
-        {/* Interactive Swarm Team Showcase with Pretty Avatars */}
-        <div id="team" style={{ width: "100%" }}>
-          <SwarmTeamShowcase />
-        </div>
-
-        {/* Live Interactive Team Chat Workflow Animation */}
-        <div id="sandbox" style={{ width: "100%", maxWidth: 1200, margin: "48px auto 64px" }}>
-          <div style={{ textAlign: "center", marginBottom: 28 }}>
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "4px 14px",
-                borderRadius: 9999,
-                background: "rgba(16, 185, 129, 0.1)",
-                border: "1px solid rgba(16, 185, 129, 0.25)",
-                fontSize: 11,
-                fontWeight: 700,
-                color: "#10b981",
-                marginBottom: 12,
-                textTransform: "uppercase",
-                letterSpacing: 0.5,
-              }}
-            >
-              <Activity size={13} />
-              <span>Real-Time Autonomous Execution Simulator</span>
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
+            <div style={{ transform: "scale(0.9)", width: "100%" }}>
+              <IntegrationsAnimation />
             </div>
-            <h2
-              style={{
-                fontSize: "clamp(26px, 3.8vw, 38px)",
-                fontWeight: 800,
-                letterSpacing: "-0.03em",
-                color: "var(--color-ink-strong, #ffffff)",
-                marginBottom: 10,
-              }}
-            >
-              <GravityText text="Watch Your AI Team Execute Live Engineering." gravityStrength={20} radius={140} />
-            </h2>
-            <p
-              style={{
-                fontSize: 15,
-                color: "var(--color-mute, #94a3b8)",
-                maxWidth: 720,
-                margin: "0 auto",
-                lineHeight: 1.5,
-              }}
-            >
-              You give the team a goal. Watch Archer coordinate coder, research, and QA agents live across Team Chat, Kanban task boards, code diffs, terminal test runs, and security approval gates.
-            </p>
           </div>
-
-          <TeamChatAnimation />
         </div>
+      </motion.section>
+
+      {/* Interactive Swarm Team Showcase */}
+      <section id="team" className={styles.section} style={{ paddingTop: 48, paddingBottom: 24 }}>
+        <ScrollExpandWrapper>
+          <SwarmTeamShowcase />
+        </ScrollExpandWrapper>
+      </section>
+
+      {/* Live Interactive Team Execution Simulator */}
+      <section id="sandbox" className={styles.section} style={{ paddingTop: 24, paddingBottom: 48 }}>
+        <ScrollExpandWrapper>
+          <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <h2
+            style={{
+              fontSize: "clamp(24px, 3.4vw, 36px)",
+              fontWeight: 800,
+              letterSpacing: "-0.03em",
+              color: "var(--color-ink-strong, #ffffff)",
+              marginBottom: 8,
+            }}
+          >
+            Tag an agent. Watch the swarm execute.
+          </h2>
+          <p
+            style={{
+              fontSize: 14.5,
+              color: "var(--color-mute, #94a3b8)",
+              maxWidth: 680,
+              margin: "0 auto",
+              lineHeight: 1.5,
+            }}
+          >
+            Send a coding request in the team chat. Watch the lead coordinator break it down, dispatch specialized subagents, and push verified code in real-time.
+          </p>
+        </div>
+
+        <TeamChatAnimation />
+        </ScrollExpandWrapper>
       </section>
 
       {/* Stats Bar */}
-      <section className={styles.statsSection}>
+      <motion.section 
+        className={styles.statsSection}
+        variants={staggerContainer}
+        initial="hidden"
+        whileInView="show"
+        viewport={{ once: true, margin: "-50px" }}
+      >
         <div className={styles.statsGrid}>
-          <div className={styles.statItem}>
+          <motion.div variants={fadeUp} className={styles.statItem}>
             <span className={styles.statNumber}>&lt; 15ms</span>
             <span className={styles.statLabel}>Vector Search Latency</span>
-          </div>
-          <div className={styles.statItem}>
+          </motion.div>
+          <motion.div variants={fadeUp} className={styles.statItem}>
             <span className={styles.statNumber}>90+</span>
             <span className={styles.statLabel}>Built-in Tools & MCP</span>
-          </div>
-          <div className={styles.statItem}>
-            <span className={styles.statNumber}>Guarded</span>
-            <span className={styles.statLabel}>Safe Subagent Delegation</span>
-          </div>
-          <div className={styles.statItem}>
+          </motion.div>
+          <motion.div variants={fadeUp} className={styles.statItem}>
+            <span className={styles.statNumber}>Depth-1</span>
+            <span className={styles.statLabel}>Guarded Subagent Recursion</span>
+          </motion.div>
+          <motion.div variants={fadeUp} className={styles.statItem}>
             <span className={styles.statNumber}>100%</span>
-            <span className={styles.statLabel}>Local, Private & Open Source</span>
-          </div>
+            <span className={styles.statLabel}>Local-First & Open Source</span>
+          </motion.div>
         </div>
-      </section>
+      </motion.section>
 
       {/* Universal Supported Models Ecosystem */}
       <section id="models" className={styles.section}>
-        <SupportedModelsShowcase />
+        <ScrollExpandWrapper>
+          <SupportedModelsShowcase />
+        </ScrollExpandWrapper>
       </section>
 
-      {/* GraphRAG Interactive Engine Deep Dive */}
+      {/* GraphRAG Interactive Engine Explorer */}
       <section id="graphrag" className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <div className={styles.sectionEyebrow}>Semantic Intelligence</div>
+        <ScrollExpandWrapper>
+          <div className={styles.sectionHeader}>
           <h2 className={styles.sectionTitle}>
-            <GravityText text="Hybrid Code Search. Understand Every Corner of Your Project." gravityStrength={22} radius={140} />
+            GraphRAG Code Search.
           </h2>
           <p className={styles.sectionDesc}>
-            Traditional search misses how files connect. Carole.ai combines fast vector search with code relationship graphs to understand function calls, dependencies, and imports across your entire project.
+            Vector search combined with code relationship graphs to trace function calls, imports, and AST paths.
           </p>
         </div>
 
         <div className={styles.graphragContainer}>
           <div className={styles.graphQueryBar}>
-            <Search size={16} style={{ color: "var(--color-primary)" }} />
+            <Search size={15} style={{ color: "var(--color-primary)" }} />
             <input
               className={styles.graphQueryInput}
               value={graphQueries[selectedGraphQuery].query}
@@ -708,421 +584,416 @@ npm run dev
                   <Database size={15} style={{ color: "var(--color-primary)" }} />
                   <span>Dense Vector Engine</span>
                 </div>
-                <span className={styles.graphTag}>LanceDB (L2)</span>
+                <span className={styles.graphTag}>LanceDB HNSW</span>
               </div>
-              <div className={styles.graphResultItem}>
-                <div style={{ fontWeight: 600, color: "var(--color-ink-strong)", marginBottom: 4 }}>
-                  Match File: {graphQueries[selectedGraphQuery].denseFile}
-                </div>
-                <div style={{ fontSize: 12, color: "var(--color-primary)", marginBottom: 6 }}>
-                  {graphQueries[selectedGraphQuery].score}
-                </div>
-                <div>{graphQueries[selectedGraphQuery].denseSummary}</div>
-              </div>
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={selectedGraphQuery}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                  className={styles.graphResultItem}
+                >
+                  <div style={{ fontWeight: 600, color: "var(--color-ink-strong)", marginBottom: 4 }}>
+                    Match File: {graphQueries[selectedGraphQuery].denseFile}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--color-primary)", marginBottom: 6 }}>
+                    {graphQueries[selectedGraphQuery].score}
+                  </div>
+                  <div>{graphQueries[selectedGraphQuery].denseSummary}</div>
+                </motion.div>
+              </AnimatePresence>
             </div>
 
             <div className={styles.graphPane}>
               <div className={styles.graphPaneHeader}>
                 <div className={styles.graphPaneTitle}>
                   <Network size={15} style={{ color: "#38bdf8" }} />
-                  <span>Sparse Knowledge Ontology</span>
+                  <span>Sparse Knowledge Graph</span>
                 </div>
                 <span className={styles.graphTag} style={{ color: "#38bdf8" }}>
                   NetworkX Multi-Hop
                 </span>
               </div>
-              <div className={styles.graphResultItem}>
-                <div style={{ fontWeight: 600, color: "var(--color-ink-strong)", marginBottom: 6 }}>
-                  Discovered Entity Pathway
-                </div>
-                <div
-                  style={{
-                    fontFamily: "var(--font-family-mono, monospace)",
-                    fontSize: 11.5,
-                    color: "#38bdf8",
-                    lineHeight: 1.6,
-                  }}
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={selectedGraphQuery}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                  className={styles.graphResultItem}
                 >
-                  {graphQueries[selectedGraphQuery].graphNodes}
-                </div>
-              </div>
+                  <div style={{ fontWeight: 600, color: "var(--color-ink-strong)", marginBottom: 6 }}>
+                    Discovered Entity Pathway
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-family-mono, monospace)",
+                      fontSize: 11.5,
+                      color: "#38bdf8",
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {graphQueries[selectedGraphQuery].graphNodes}
+                  </div>
+                </motion.div>
+              </AnimatePresence>
             </div>
           </div>
         </div>
+        </ScrollExpandWrapper>
       </section>
 
-      {/* Core Features Architecture */}
-      <section id="features" className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <div className={styles.sectionEyebrow}>Multi-Agent Architecture</div>
-          <h2 className={styles.sectionTitle}>
-            <GravityText text="Everything your AI team needs to build real software." gravityStrength={22} radius={140} />
-          </h2>
-          <p className={styles.sectionDesc}>
-            Built from first principles for developers who demand genuine autonomy, safety guardrails, low latency, and zero vendor lock-in.
-          </p>
-        </div>
+      {/* Asymmetric Architecture Bento Grid */}
+      <section id="architecture" className={styles.section}>
+        <ScrollExpandWrapper>
+          <div className={styles.sectionHeader}>
+            <h2 className={styles.sectionTitle}>
+              System Architecture.
+            </h2>
+            <p className={styles.sectionDesc}>
+              Designed for deterministic execution, safety boundaries, and low latency.
+            </p>
+          </div>
 
-        <div className={styles.featuresGrid}>
-          {/* 1. Smart Context Management */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(167, 139, 250, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-context.svg"
-                alt="Smart Context Management"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>Smart Context Management</h3>
-              <p className={styles.featureText}>
-                Agents reason through tasks step-by-step. Failed attempts and dead ends are automatically pruned from context, keeping reasoning sharp and preventing token waste.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Smart Context Pruning
-              </span>
-            </div>
-          </MagneticCard>
+          <motion.div 
+            className={styles.bentoGrid}
+            variants={{
+              hidden: {},
+              show: {
+                transition: {
+                  staggerChildren: 0.1
+                }
+              }
+            }}
+            initial="hidden"
+            whileInView="show"
+            viewport={{ once: true, amount: 0.1 }}
+          >
+          {/* Cell 1: Smart Context AST Management (Span 7) */}
+          <motion.div variants={bentoItem} className={styles.bentoCellSpan7}>
+            <MagneticCard tiltMaxAngle={6} liftAmount={8} glowColor="rgba(167, 139, 250, 0.2)" style={{ height: "100%", borderRadius: 16 }}>
+              <div className={styles.bentoCard}>
+                <div>
+                  <div className={styles.bentoCardHeader}>
+                    <div className={styles.bentoIconWrapper}>
+                      <Code2 size={20} />
+                    </div>
+                    <div>
+                      <h3 className={styles.bentoTitle}>Smart Context Management</h3>
+                      <span className={styles.bentoBadge}>AST Dead-End Pruning</span>
+                    </div>
+                  </div>
+                  <p className={styles.bentoText}>
+                    Agents decompose reasoning into structured AST nodes. Dead-end tool attempts are safely pruned from history, preventing context bloat and token waste.
+                  </p>
+                </div>
+                <div className={styles.bentoVisual}>
+                  <div style={{ color: "#34d399", marginBottom: 4 }}>// AST History Optimizer</div>
+                  <div>- pruned_nodes: 3 dead-end tool loops (saved 1,840 tokens)</div>
+                  <div style={{ color: "var(--color-primary)" }}>+ active_context: 4,120 / 128,000 tokens (optimal reasoning window)</div>
+                </div>
+              </div>
+            </MagneticCard>
+          </motion.div>
 
-          {/* 2. Guarded Subagents */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(16, 185, 129, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-subagents.svg"
-                alt="Guarded Subagent Delegation"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>Guarded Subagent Delegation</h3>
-              <p className={styles.featureText}>
-                Lead agents spawn temporary specialists for focused subtasks. Strict delegation boundaries prevent runaway loops and keep execution fast and predictable.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Guarded Subagents
-              </span>
-            </div>
-          </MagneticCard>
+          {/* Cell 2: Guarded Subagents (Span 5) */}
+          <motion.div variants={bentoItem} className={styles.bentoCellSpan5}>
+            <MagneticCard tiltMaxAngle={6} liftAmount={8} glowColor="rgba(16, 185, 129, 0.2)" style={{ height: "100%", borderRadius: 16 }}>
+              <div className={styles.bentoCard}>
+                <div>
+                  <div className={styles.bentoCardHeader}>
+                    <div className={styles.bentoIconWrapper} style={{ color: "#10b981", background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.25)" }}>
+                      <Layers size={20} />
+                    </div>
+                    <div>
+                      <h3 className={styles.bentoTitle}>Guarded Subagent Delegation</h3>
+                      <span className={styles.bentoBadge} style={{ color: "#10b981" }}>Depth-1 Guard</span>
+                    </div>
+                  </div>
+                  <p className={styles.bentoText}>
+                    Lead coordinators spawn temporary specialists for isolated tasks with strict concurrency boundaries to prevent recursion loops.
+                  </p>
+                </div>
+                <div className={styles.bentoVisual}>
+                  <div style={{ color: "#10b981" }}>{"[Archer Lead] -> [Sub-PythonDev (Depth 1)]"}</div>
+                  <div style={{ color: "var(--color-mute)", marginTop: 4 }}>Status: Isolated sandbox • Subagent recursion blocked</div>
+                </div>
+              </div>
+            </MagneticCard>
+          </motion.div>
 
-          {/* 3. Judge AI Security Firewall */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(251, 191, 36, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-security.svg"
-                alt="Judge AI Security Firewall"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>Judge AI Security Firewall</h3>
-              <p className={styles.featureText}>
-                A built-in security evaluator inspects terminal commands, database operations, and file changes before execution, prompting for your approval on critical actions.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Security Guardrails
-              </span>
-            </div>
-          </MagneticCard>
+          {/* Cell 3: Judge AI Security Firewall (Span 5) */}
+          <motion.div variants={bentoItem} className={styles.bentoCellSpan5}>
+            <MagneticCard tiltMaxAngle={6} liftAmount={8} glowColor="rgba(251, 191, 36, 0.2)" style={{ height: "100%", borderRadius: 16 }}>
+              <div className={styles.bentoCard}>
+                <div>
+                  <div className={styles.bentoCardHeader}>
+                    <div className={styles.bentoIconWrapper} style={{ color: "#fbbf24", background: "rgba(251, 191, 36, 0.1)", borderColor: "rgba(251, 191, 36, 0.25)" }}>
+                      <ShieldCheck size={20} />
+                    </div>
+                    <div>
+                      <h3 className={styles.bentoTitle}>Judge AI Security Gate</h3>
+                      <span className={styles.bentoBadge} style={{ color: "#fbbf24" }}>Human Approval Gate</span>
+                    </div>
+                  </div>
+                  <p className={styles.bentoText}>
+                    Real-time security evaluator intercepts shell commands, database queries, and file deletions, requiring one-click confirmation for critical actions.
+                  </p>
+                </div>
+                <div className={styles.bentoVisual}>
+                  <div style={{ color: "#fbbf24" }}>&gt;_ Intercepted: git push origin main</div>
+                  <div style={{ color: "#e2e8f0" }}>Policy Rule: Production branch modification requires human sign-off</div>
+                </div>
+              </div>
+            </MagneticCard>
+          </motion.div>
 
-          {/* 4. Google Account & Workspace Sync */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(66, 133, 244, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-google.svg"
-                alt="Google Account & Workspace Connection"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>Google Account & Workspace Sync</h3>
-              <p className={styles.featureText}>
-                Connect Google OAuth with one click. Agents schedule Calendar events, read/write Google Drive files, extract meeting tasks from Google Meet, and draft emails.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> OAuth2 & Workspace API
-              </span>
-            </div>
-          </MagneticCard>
+          {/* Cell 4: Playwright Headless Browser QA (Span 7) */}
+          <motion.div variants={bentoItem} className={styles.bentoCellSpan7}>
+            <MagneticCard tiltMaxAngle={6} liftAmount={8} glowColor="rgba(244, 63, 94, 0.2)" style={{ height: "100%", borderRadius: 16 }}>
+              <div className={styles.bentoCard}>
+                <div>
+                  <div className={styles.bentoCardHeader}>
+                    <div className={styles.bentoIconWrapper} style={{ color: "#f43f5e", background: "rgba(244, 63, 94, 0.1)", borderColor: "rgba(244, 63, 94, 0.25)" }}>
+                      <Laptop size={20} />
+                    </div>
+                    <div>
+                      <h3 className={styles.bentoTitle}>Playwright Browser Automation</h3>
+                      <span className={styles.bentoBadge} style={{ color: "#f43f5e" }}>Headless DOM Tester</span>
+                    </div>
+                  </div>
+                  <p className={styles.bentoText}>
+                    Dedicated browser subagents navigate live web apps, inspect DOM elements, click, fill forms, execute tests, and capture verified screenshot artifacts.
+                  </p>
+                </div>
+                <div className={styles.bentoVisual}>
+                  <div style={{ color: "#f43f5e" }}>&gt; browser_navigate(url=&apos;http://localhost:3000/auth&apos;)</div>
+                  <div style={{ color: "#34d399" }}>DOM element #login-btn clicked • 14 assertion checks passed in 1.8s</div>
+                </div>
+              </div>
+            </MagneticCard>
+          </motion.div>
 
-          {/* 5. Safe File History & Rollback Snapshots */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(6, 182, 212, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-history.svg"
-                alt="File History & 1-Click Rollback"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>File History & 1-Click Rollback</h3>
-              <p className={styles.featureText}>
-                Every edit creates an atomic snapshot backup in <code>.carole_history</code>. Compare unified visual diffs and instantly rollback any accidental changes in one click.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Version Snapshots & Diffs
-              </span>
-            </div>
-          </MagneticCard>
-
-          {/* 6. Playwright Headless Browser Automation */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(225, 29, 72, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-browser.svg"
-                alt="Playwright Headless Browser Automation"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>Playwright Browser Automation</h3>
-              <p className={styles.featureText}>
-                Dedicated browser worker subagents navigate live web apps, inspect DOM elements, click, fill forms, execute tests, and capture verified screenshot artifacts.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Headless DOM & Visual QA
-              </span>
-            </div>
-          </MagneticCard>
-
-          {/* 7. Autonomous Kanban Boards */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(56, 189, 248, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-kanban.svg"
-                alt="Autonomous Kanban Boards"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>Autonomous Kanban Boards</h3>
-              <p className={styles.featureText}>
-                Agents autonomously create, estimate, assign, and track engineering tasks on visual Kanban boards with live updates, keeping you in full control of progress.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Live Task Boards
-              </span>
-            </div>
-          </MagneticCard>
-
-          {/* 8. Universal MCP Support & 90+ Built-in Tools */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(244, 114, 182, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-tools.svg"
-                alt="Universal MCP & 90+ Developer Tools"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>Universal MCP & 90+ Developer Tools</h3>
-              <p className={styles.featureText}>
-                Native support for Model Context Protocol (MCP) over stdio and SSE. Connect PostgreSQL, GitHub, Docker, Slack, and cloud tools directly to your agent workflows.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Universal MCP Protocol
-              </span>
-            </div>
-          </MagneticCard>
-
-          {/* 9. Plugin & Skills Studio */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(139, 92, 246, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-plugin.svg"
-                alt="Plugin Studio & Custom Tools"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>Plugin Studio & Custom Extensibility</h3>
-              <p className={styles.featureText}>
-                Extend agent capabilities in seconds with Python <code>@carole_tool</code> decorators and hot-reloadable agent skill scripts with automated YAML frontmatter schemas.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Python Plugins & Custom Skills
-              </span>
-            </div>
-          </MagneticCard>
-
-          {/* 10. Long-Term Memory & Learnings */}
-          <MagneticCard tiltMaxAngle={8} liftAmount={10} glowColor="rgba(129, 140, 248, 0.25)" style={{ borderRadius: 16 }}>
-            <div className={styles.featureCard} style={{ height: "100%" }}>
-              <img
-                src="/icons/feature-memory.svg"
-                alt="Long-Term Memory & Learnings"
-                className={styles.featureIconImg}
-              />
-              <h3 className={styles.featureTitle}>AutoDream Memory & Learnings</h3>
-              <p className={styles.featureText}>
-                Agents consolidate memory in the background, learning codebase design patterns, coding conventions, and bug fixes across sessions for personalized engineering.
-              </p>
-              <span className={styles.featureBadge}>
-                <Sparkles size={13} /> Persistent Vector Memory
-              </span>
-            </div>
-          </MagneticCard>
-        </div>
+          {/* Cell 5: AutoDream Codebase Memory (Span 12) */}
+          <motion.div variants={bentoItem} className={styles.bentoCellSpan8} style={{ gridColumn: "span 12" }}>
+            <MagneticCard tiltMaxAngle={4} liftAmount={6} glowColor="rgba(129, 140, 248, 0.2)" style={{ height: "100%", borderRadius: 16 }}>
+              <div className={styles.bentoCard}>
+                <div>
+                  <div className={styles.bentoCardHeader}>
+                    <div className={styles.bentoIconWrapper} style={{ color: "#818cf8", background: "rgba(129, 140, 248, 0.1)", borderColor: "rgba(129, 140, 248, 0.25)" }}>
+                      <Brain size={20} />
+                    </div>
+                    <div>
+                      <h3 className={styles.bentoTitle}>AutoDream Persistent Codebase Memory</h3>
+                      <span className={styles.bentoBadge} style={{ color: "#818cf8" }}>LanceDB + pgvector</span>
+                    </div>
+                  </div>
+                  <p className={styles.bentoText}>
+                    Agents consolidate architectural learnings in the background, remembering design patterns, conventions, and bug fixes across engineering sessions.
+                  </p>
+                </div>
+                <div className={styles.bentoVisual} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                  <div>
+                    <div style={{ color: "#818cf8" }}>Memory Consolidation Status: 48 codebase insights indexed</div>
+                    <div style={{ color: "var(--color-mute)" }}>Patterns remembered: Fastify auth routing, AST parser optimizations, Redis session locks</div>
+                  </div>
+                  <span className={styles.bentoBadge} style={{ color: "#34d399", background: "rgba(52, 211, 153, 0.1)", borderColor: "rgba(52, 211, 153, 0.3)" }}>
+                    Synchronized
+                  </span>
+                </div>
+              </div>
+            </MagneticCard>
+          </motion.div>
+          </motion.div>
+        </ScrollExpandWrapper>
       </section>
 
       {/* 100% Free & Open Source Hub */}
       <section id="opensource" className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <div className={styles.sectionEyebrow}>Free & Open Source</div>
-          <h2 className={styles.sectionTitle}>
-            <GravityText text="100% Open Source. Self-Host, Download, and Own Your Platform." gravityStrength={22} radius={140} />
-          </h2>
-          <p className={styles.sectionDesc}>
-            No subscriptions, no hidden limits, and no vendor lock-in. Run with
-            local LLMs (Ollama, vLLM, DeepSeek) or bring your own API keys.
-          </p>
-        </div>
-
-        <div className={styles.openSourceContainer}>
-          {/* 4 Pillars Grid */}
-          <div className={styles.osGrid}>
-            <MagneticCard tiltMaxAngle={10} liftAmount={12} glowColor="rgba(56, 189, 248, 0.25)" style={{ borderRadius: 16 }}>
-              <div className={styles.osPillarCard} style={{ height: "100%" }}>
-                <img
-                  src="/icons/pillar-opensource.svg"
-                  alt="Apache 2.0 Licensed"
-                  className={styles.osIconImg}
-                />
-                <div className={styles.osPillarTitle}>Apache 2.0 Licensed</div>
-                <div className={styles.osPillarDesc}>
-                  Completely free to use, modify, self-host, and embed in commercial
-                  or research platforms.
-                </div>
-              </div>
-            </MagneticCard>
-
-            <MagneticCard tiltMaxAngle={10} liftAmount={12} glowColor="rgba(16, 185, 129, 0.25)" style={{ borderRadius: 16 }}>
-              <div className={styles.osPillarCard} style={{ height: "100%" }}>
-                <img
-                  src="/icons/pillar-privacy.svg"
-                  alt="Local-First & Private"
-                  className={styles.osIconImg}
-                />
-                <div className={styles.osPillarTitle}>Local-First & Private</div>
-                <div className={styles.osPillarDesc}>
-                  PostgreSQL, pgvector, and agent workspaces run directly in your
-                  environment. Full privacy with zero telemetry.
-                </div>
-              </div>
-            </MagneticCard>
-
-            <MagneticCard tiltMaxAngle={10} liftAmount={12} glowColor="rgba(245, 158, 11, 0.25)" style={{ borderRadius: 16 }}>
-              <div className={styles.osPillarCard} style={{ height: "100%" }}>
-                <img
-                  src="/icons/pillar-multimodal.svg"
-                  alt="Multi-Modal Chat & Files"
-                  className={styles.osIconImg}
-                />
-                <div className={styles.osPillarTitle}>Multi-Modal Chat & Files</div>
-                <div className={styles.osPillarDesc}>
-                  Attach PDFs, Word docs, CSVs, and images directly in chat with
-                  automatic extraction and sandboxed file references.
-                </div>
-              </div>
-            </MagneticCard>
-
-            <MagneticCard tiltMaxAngle={10} liftAmount={12} glowColor="rgba(167, 139, 250, 0.25)" style={{ borderRadius: 16 }}>
-              <div className={styles.osPillarCard} style={{ height: "100%" }}>
-                <img
-                  src="/icons/pillar-mcp.svg"
-                  alt="Universal MCP Support"
-                  className={styles.osIconImg}
-                />
-                <div className={styles.osPillarTitle}>Universal MCP Support</div>
-                <div className={styles.osPillarDesc}>
-                  Plug in any open-source Model Context Protocol server for
-                  PostgreSQL, GitHub, Docker, and beyond.
-                </div>
-              </div>
-            </MagneticCard>
+        <ScrollExpandWrapper>
+          <div className={styles.sectionHeader}>
+            <h2 className={styles.sectionTitle}>
+              100% Open Source.
+            </h2>
+            <p className={styles.sectionDesc}>
+              Apache 2.0 licensed. Run with local models or bring your own API keys. No vendor lock-in.
+            </p>
           </div>
 
-          {/* Quickstart Terminal Card */}
-          <div id="quickstart" className={styles.terminalCard}>
+          <div className={styles.openSourceContainer}>
+          {/* 4 Pillars Grid */}
+          <motion.div 
+            className={styles.osPillarsGrid}
+            variants={{
+              hidden: {},
+              show: {
+                transition: {
+                  staggerChildren: 0.08
+                }
+              }
+            }}
+            initial="hidden"
+            whileInView="show"
+            viewport={{ once: true, amount: 0.15 }}
+          >
+            <motion.div variants={bentoItem} className={styles.osPillarCard}>
+              <div className={styles.osPillarIcon} style={{ background: "rgba(56, 189, 248, 0.1)", color: "#38bdf8" }}>
+                <GitBranch size={18} />
+              </div>
+              <div className={styles.osPillarTitle}>Apache 2.0 Licensed</div>
+              <div className={styles.osPillarDesc}>
+                Completely free to use, modify, self-host, and embed in commercial or research platforms.
+              </div>
+            </motion.div>
+
+            <motion.div variants={bentoItem} className={styles.osPillarCard}>
+              <div className={styles.osPillarIcon} style={{ background: "rgba(16, 185, 129, 0.1)", color: "#10b981" }}>
+                <ShieldCheck size={18} />
+              </div>
+              <div className={styles.osPillarTitle}>Local-First & Private</div>
+              <div className={styles.osPillarDesc}>
+                PostgreSQL, pgvector, and agent workspaces run directly in your environment with zero telemetry.
+              </div>
+            </motion.div>
+
+            <motion.div variants={bentoItem} className={styles.osPillarCard}>
+              <div className={styles.osPillarIcon} style={{ background: "rgba(245, 158, 11, 0.1)", color: "#f59e0b" }}>
+                <Boxes size={18} />
+              </div>
+              <div className={styles.osPillarTitle}>Multi-Modal Context</div>
+              <div className={styles.osPillarDesc}>
+                Attach PDFs, Word docs, CSVs, and code repositories directly with sandboxed file extractions.
+              </div>
+            </motion.div>
+
+            <motion.div variants={bentoItem} className={styles.osPillarCard}>
+              <div className={styles.osPillarIcon} style={{ background: "rgba(167, 139, 250, 0.1)", color: "#a78bfa" }}>
+                <Cpu size={18} />
+              </div>
+              <div className={styles.osPillarTitle}>Universal MCP Support</div>
+              <div className={styles.osPillarDesc}>
+                Plug in any open-source Model Context Protocol server for PostgreSQL, GitHub, Docker, and beyond.
+              </div>
+            </motion.div>
+          </motion.div>
+
+          {/* Quickstart & Contributor Terminal */}
+          <motion.div 
+            id="quickstart" 
+            variants={bentoItem} 
+            className={styles.terminalCard}
+            initial="hidden"
+            whileInView="show"
+            viewport={{ once: true, amount: 0.15 }}
+          >
             <div className={styles.terminalTop}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
-                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
-                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
-                </div>
-                <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "var(--font-family-mono, monospace)", color: "var(--color-ink-strong)" }}>
-                  Manual Setup & Installation (FastAPI + Next.js)
-                </span>
+              <div className={styles.terminalTabs}>
+                <button
+                  onClick={() => setQuickstartTab("cli")}
+                  className={`${styles.terminalTabBtn} ${quickstartTab === "cli" ? styles.terminalTabBtnActive : ""}`}
+                >
+                  Quickstart CLI (pip)
+                </button>
+                <button
+                  onClick={() => setQuickstartTab("source")}
+                  className={`${styles.terminalTabBtn} ${quickstartTab === "source" ? styles.terminalTabBtnActive : ""}`}
+                >
+                  Developer & Contributor Setup
+                </button>
               </div>
 
-              <button onClick={handleCopy} className={styles.copyBtn} title="Copy setup commands">
+              <button onClick={handleCopyQuickstart} className={styles.copyBtn} title="Copy setup commands">
                 {copied ? (
                   <>
                     <Check size={13} style={{ color: "#10b981" }} />
-                    <span style={{ color: "#10b981" }}>Copied to Clipboard!</span>
+                    <span style={{ color: "#10b981" }}>Copied!</span>
                   </>
                 ) : (
                   <>
                     <Copy size={13} />
-                    <span>Copy Command</span>
+                    <span>Copy Snippet</span>
                   </>
                 )}
               </button>
             </div>
 
-            <pre className={styles.terminalBody}>
-              <code>{quickstartManualSnippet}</code>
-            </pre>
-          </div>
+            <AnimatePresence mode="wait">
+              <motion.pre
+                key={quickstartTab}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                className={styles.terminalBody}
+              >
+                <code>{quickstartSnippets[quickstartTab]}</code>
+              </motion.pre>
+            </AnimatePresence>
+          </motion.div>
         </div>
+        </ScrollExpandWrapper>
       </section>
 
-      {/* CTA Banner */}
+      {/* Closing CTA Banner */}
       <section className={styles.ctaBanner}>
-        <h2 className={styles.ctaTitle}>
-          Ready to orchestrate your first autonomous AI team?
-        </h2>
-        <p
-          style={{
-            fontSize: 16.5,
-            color: "var(--color-body)",
-            maxWidth: 620,
-            margin: "0 auto 32px",
-            lineHeight: 1.6,
-          }}
-        >
-          Carole.ai is 100% free and open-source. Download the desktop app for
-          Windows & macOS, run locally via CLI, or launch the web console.
-        </p>
-        <div
-          style={{
-            display: "flex",
-            gap: 16,
-            justifyContent: "center",
-            flexWrap: "wrap",
-            alignItems: "center",
-          }}
-        >
-          <a
-            href={primaryDownload.href}
-            target="_blank"
-            rel="noreferrer"
-            className={styles.heroPrimaryBtn}
-            title={primaryDownload.label}
+        <ScrollExpandWrapper>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
+            <h2 className={styles.ctaTitle}>
+              Start Your Team in Minutes.
+            </h2>
+            <p className={styles.ctaDesc}>
+              100% open-source under Apache 2.0.
+            </p>
+        <div className={styles.ctaButtons}>
+          <div
+            onClick={copyCliSnippet}
+            className={styles.heroCliBar}
+            style={{ margin: 0, cursor: "pointer", maxWidth: 440 }}
+            title="Click to copy"
           >
-            {primaryDownload.icon}
-            <span>{primaryDownload.label}</span>
-          </a>
+            <div className={styles.heroCliCode} style={{ fontSize: 13 }}>
+              <Terminal size={15} style={{ color: "var(--color-primary)" }} />
+              <span>$ pip install carole-ai</span>
+            </div>
+            <span className={styles.heroCliCopyBtn}>
+              {copiedCli ? "Copied!" : "Copy"}
+            </span>
+          </div>
+
           <button
             onClick={onLaunchApp || onSignIn}
             className={styles.heroSecondaryBtn}
           >
-            <Sparkles size={17} style={{ color: "var(--color-primary)" }} />
+            <Sparkles size={16} style={{ color: "var(--color-primary)" }} />
             <span>Launch Web Console</span>
           </button>
+
           <a
             href="https://github.com/sshivasai/Carole.ai"
             target="_blank"
             rel="noreferrer"
             className={styles.heroSecondaryBtn}
           >
-            <GithubIcon size={17} />
+            <GithubIcon size={16} />
             <span>Star on GitHub</span>
           </a>
         </div>
+        </div>
+        </ScrollExpandWrapper>
       </section>
 
-      {/* Footer */}
+      {/* High-Precision Footer */}
       <footer className={styles.footer}>
         <div className={styles.footerInner}>
           <div className={styles.footerBrand}>
             <img
               src="/branding/logo-mark-animated.webp"
               alt="Carole.ai"
-              width={26}
-              height={26}
+              width={24}
+              height={24}
               style={{ objectFit: "contain" }}
             />
             <img
@@ -1132,7 +1003,7 @@ npm run dev
                   : "/branding/logo-wordmark.png"
               }
               alt="Carole.ai"
-              height={20}
+              height={18}
               style={{ objectFit: "contain" }}
             />
           </div>
@@ -1142,21 +1013,21 @@ npm run dev
             <span>All Systems Operational • v1.0.0</span>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <button
               onClick={toggleTheme}
               className={styles.themeBtn}
               title="Toggle Theme"
+              aria-label="Toggle Theme"
             >
               {theme === "dark" ? (
-                <Sun size={15} style={{ color: "#fbbf24" }} />
+                <Sun size={14} style={{ color: "#fbbf24" }} />
               ) : (
-                <Moon size={15} style={{ color: "#6366f1" }} />
+                <Moon size={14} style={{ color: "#6366f1" }} />
               )}
             </button>
             <span className={styles.footerCopyright}>
-              100% Free & Open-Source (Apache 2.0) • © {new Date().getFullYear()}{" "}
-              Carole.ai
+              100% Free & Open-Source (Apache 2.0) • © {new Date().getFullYear()} Carole.ai
             </span>
           </div>
         </div>

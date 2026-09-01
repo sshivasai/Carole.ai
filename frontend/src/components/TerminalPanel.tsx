@@ -11,9 +11,10 @@ interface TerminalPanelProps {
   projectId?: string;
   onClose?: () => void;
   triggerCommand?: { cmd: string; ts: number } | null;
+  shell?: "bash" | "powershell" | "cmd" | "default";
 }
 
-export default function TerminalPanel({ projectId, onClose, triggerCommand }: TerminalPanelProps) {
+export default function TerminalPanel({ projectId, onClose, triggerCommand, shell = "default" }: TerminalPanelProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<TerminalType | null>(null);
   const fitAddonRef = useRef<FitAddonType | null>(null);
@@ -39,10 +40,13 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
     let term: TerminalType;
     let fitAddon: FitAddonType;
     let resizeObserver: ResizeObserver;
+    let isMounted = true;
 
     const initTerminal = async () => {
       const { Terminal } = await import("@xterm/xterm");
       const { FitAddon } = await import("@xterm/addon-fit");
+
+      if (!isMounted) return;
 
       term = new Terminal({
         cursorBlink: true,
@@ -59,6 +63,48 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
       term.loadAddon(fitAddon);
 
       term.open(terminalRef.current!);
+
+      term.attachCustomKeyEventHandler((e) => {
+        if (e.key === "Tab") {
+          e.preventDefault();
+          if (e.type === "keydown" && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ action: "input", data: "\t" }));
+          }
+          return false;
+        }
+
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+          if (term.hasSelection()) {
+            navigator.clipboard.writeText(term.getSelection());
+            return false;
+          }
+          return true;
+        }
+
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+          if (e.type === "keydown") {
+            navigator.clipboard.readText().then((text) => {
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ action: "input", data: text }));
+              }
+            }).catch((err) => {
+              console.error("Clipboard paste failed:", err);
+            });
+          }
+          e.preventDefault();
+          return false;
+        }
+
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "x") {
+          e.preventDefault();
+          if (e.type === "keydown") {
+            if (onClose) onClose();
+          }
+          return false;
+        }
+
+        return true;
+      });
 
       // Wait for fonts to load before fitting
       if (document.fonts) {
@@ -78,8 +124,15 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
         console.warn("Failed to fetch terminal WS ticket:", err);
       }
 
+      if (!isMounted) return;
+
+      const params = new URLSearchParams();
+      if (ticket) params.set("ticket", ticket);
+      if (shell) params.set("shell", shell);
+      const queryStr = params.toString();
+
       const wsUrl = `${getWsBase()}/api/terminal/ws/${projectId || "default"}${
-        ticket ? `?ticket=${encodeURIComponent(ticket)}` : ""
+        queryStr ? `?${queryStr}` : ""
       }`;
 
       const ws = new WebSocket(wsUrl);
@@ -144,6 +197,7 @@ export default function TerminalPanel({ projectId, onClose, triggerCommand }: Te
     void initTerminal();
 
     return () => {
+      isMounted = false;
       if (resizeObserver) resizeObserver.disconnect();
       if (wsRef.current) wsRef.current.close();
       if (term) term.dispose();

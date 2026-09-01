@@ -36,6 +36,125 @@ from core.llm.config_manager import load_config, get_key
 logger = logging.getLogger("carole.router")
 
 
+# ── BYOK Error Classification ─────────────────────────────────────────────────
+# Structured error types for provider failures. The agent loop and frontend
+# use these to display actionable warnings instead of raw technical strings.
+
+ERROR_MISSING_KEY      = "missing_api_key"
+ERROR_INVALID_KEY      = "invalid_api_key"
+ERROR_INSUFFICIENT     = "insufficient_quota"
+ERROR_RATE_LIMITED     = "rate_limit_exceeded"
+ERROR_MODEL_NOT_FOUND  = "model_not_found"
+ERROR_PROVIDER_DOWN    = "provider_unavailable"
+
+# Human-readable action hints per error type
+_ACTION_HINTS = {
+    ERROR_MISSING_KEY:     "Open Settings → API Keys and add your {provider} key.",
+    ERROR_INVALID_KEY:     "Your {provider} API key appears to be invalid or revoked. Check Settings → API Keys.",
+    ERROR_INSUFFICIENT:    "Your {provider} account has insufficient credits or quota. Top up your balance or switch to a free model.",
+    ERROR_RATE_LIMITED:    "Rate limit exceeded for {provider}. Wait a moment or switch to another model.",
+    ERROR_MODEL_NOT_FOUND: "Model '{model}' is not available on {provider}. It may require a higher-tier account or may not exist.",
+    ERROR_PROVIDER_DOWN:   "{provider} is temporarily unreachable. Try again later or switch providers.",
+}
+
+# Provider display names
+_PROVIDER_DISPLAY = {
+    "openai": "OpenAI", "anthropic": "Anthropic", "google": "Google Gemini",
+    "openrouter": "OpenRouter", "nvidia": "NVIDIA", "ollama": "Ollama",
+}
+
+# Map URL patterns to (provider_key, missing_env_var_name)
+_URL_PROVIDER_MAP = {
+    "api.openai.com":            ("openai",     "OPENAI_API_KEY"),
+    "openrouter.ai":             ("openrouter", "OPENROUTER_API_KEY"),
+    "integrate.api.nvidia.com":  ("nvidia",     "NVIDIA_API_KEY"),
+    "generativelanguage.googleapis.com": ("google", "GOOGLE_API_KEY"),
+    "api.anthropic.com":         ("anthropic",  "ANTHROPIC_API_KEY"),
+}
+
+
+class LLMProviderError(Exception):
+    """Structured exception for LLM provider failures.
+
+    Attributes:
+        error_type: One of ERROR_* constants (missing_api_key, invalid_api_key, etc.)
+        provider:   Provider key string (openai, anthropic, google, etc.)
+        model:      Model string that was requested.
+        message:    Human-readable description of the error.
+        status_code: HTTP status code if applicable (401, 402, 429, etc.)
+        action_hint: Actionable suggestion for the user.
+        env_key_name: Environment variable name for the missing key (e.g. OPENAI_API_KEY).
+    """
+
+    def __init__(
+        self,
+        error_type: str,
+        provider: str,
+        model: str = "",
+        message: str = "",
+        status_code: int | None = None,
+        env_key_name: str = "",
+    ):
+        self.error_type = error_type
+        self.provider = provider
+        self.model = model
+        self.status_code = status_code
+        self.env_key_name = env_key_name
+
+        provider_display = _PROVIDER_DISPLAY.get(provider, provider.title())
+        self.message = message or _ACTION_HINTS.get(error_type, "An error occurred with {provider}.").format(
+            provider=provider_display, model=model
+        )
+        self.action_hint = _ACTION_HINTS.get(error_type, "").format(
+            provider=provider_display, model=model
+        )
+        super().__init__(self.message)
+
+    def to_dict(self) -> dict:
+        """Serialize for EventBus / WebSocket transmission."""
+        return {
+            "error_type": self.error_type,
+            "provider": self.provider,
+            "model": self.model,
+            "message": self.message,
+            "status_code": self.status_code,
+            "action_hint": self.action_hint,
+            "env_key_name": self.env_key_name,
+        }
+
+    @staticmethod
+    def classify_http_error(status_code: int, body: str, provider: str, model: str = "") -> "LLMProviderError":
+        """Classify an HTTP error response into a structured LLMProviderError."""
+        body_lower = body.lower()
+
+        if status_code in (401, 403):
+            return LLMProviderError(ERROR_INVALID_KEY, provider, model, status_code=status_code)
+
+        if status_code == 402 or any(kw in body_lower for kw in (
+            "insufficient_quota", "credit", "balance", "billing", "payment_required",
+            "exceeded your current quota",
+        )):
+            return LLMProviderError(ERROR_INSUFFICIENT, provider, model, status_code=status_code)
+
+        if status_code == 429:
+            return LLMProviderError(ERROR_RATE_LIMITED, provider, model, status_code=status_code)
+
+        if status_code == 404 or "model_not_found" in body_lower or "does not exist" in body_lower:
+            return LLMProviderError(ERROR_MODEL_NOT_FOUND, provider, model, status_code=status_code)
+
+        if status_code >= 500:
+            return LLMProviderError(
+                ERROR_PROVIDER_DOWN, provider, model,
+                message=f"{_PROVIDER_DISPLAY.get(provider, provider)} returned server error {status_code}.",
+                status_code=status_code,
+            )
+
+        # Fallback for unknown error codes
+        return LLMProviderError(
+            ERROR_PROVIDER_DOWN, provider, model,
+            message=f"{_PROVIDER_DISPLAY.get(provider, provider)} returned HTTP {status_code}: {body[:200]}",
+            status_code=status_code,
+        )
 
 def get_model_context_window(model: str) -> int:
     """Returns the approximate context window limit in tokens for a given model string."""
@@ -471,14 +590,11 @@ class MultiModelRouter:
         extra_body: Optional[dict] = None,
     ) -> AsyncGenerator[str, None]:
         if "api.openai.com" in url and not key:
-            yield "[Router Error: OPENAI_API_KEY is not configured.]"
-            return
+            raise LLMProviderError(ERROR_MISSING_KEY, "openai", model, env_key_name="OPENAI_API_KEY")
         if "openrouter.ai" in url and not key:
-            yield "[Router Error: OPENROUTER_API_KEY is not configured.]"
-            return
+            raise LLMProviderError(ERROR_MISSING_KEY, "openrouter", model, env_key_name="OPENROUTER_API_KEY")
         if "integrate.api.nvidia.com" in url and not key:
-            yield "[Router Error: NVIDIA_API_KEY is not configured.]"
-            return
+            raise LLMProviderError(ERROR_MISSING_KEY, "nvidia", model, env_key_name="NVIDIA_API_KEY")
 
         headers = {"Content-Type": "application/json"}
         if key:
@@ -611,8 +727,7 @@ class MultiModelRouter:
         reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         if not self.anthropic_key:
-            yield "[Router Error: ANTHROPIC_API_KEY is not configured in the backend environment.]"
-            return
+            raise LLMProviderError(ERROR_MISSING_KEY, "anthropic", model, env_key_name="ANTHROPIC_API_KEY")
 
         headers = {
             "x-api-key": self.anthropic_key,
@@ -658,8 +773,7 @@ class MultiModelRouter:
         self, model: str, system_prompt: str, messages: List[Dict[str, str]], temp: float, max_tokens: int
     ) -> AsyncGenerator[str, None]:
         if not self.gemini_key:
-            yield "[Router Error: GOOGLE_API_KEY is not configured in the backend environment.]"
-            return
+            raise LLMProviderError(ERROR_MISSING_KEY, "google", model, env_key_name="GOOGLE_API_KEY")
 
         # Build Gemini-format contents array
         contents = self._format_messages_for_provider(messages, "google")
@@ -684,8 +798,7 @@ class MultiModelRouter:
             async with self._http_client.stream("POST", url, json=payload) as response:
                 if response.status_code != 200:
                     err_body = await response.aread()
-                    yield f"[Gemini API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
-                    return
+                    raise LLMProviderError.classify_http_error(response.status_code, err_body.decode('utf-8'), "google", model)
 
                 async for line in response.aiter_lines():
                     if line.startswith("data:"):
@@ -704,8 +817,10 @@ class MultiModelRouter:
                                         yield text
                         except json.JSONDecodeError:
                             continue
+        except LLMProviderError:
+            raise
         except Exception as e:
-            yield f"[Router Connection Exception (Gemini): {str(e)}]"
+            raise LLMProviderError(ERROR_PROVIDER_DOWN, "google", model, message=f"Router Connection Exception (Gemini): {str(e)}")
 
     # ================================================================
     # Shared SSE streaming with retry
@@ -741,8 +856,7 @@ class MultiModelRouter:
 
                     if response.status_code != 200:
                         err_body = await response.aread()
-                        yield f"[API Error {response.status_code}: {err_body.decode('utf-8')[:500]}]"
-                        return
+                        raise LLMProviderError.classify_http_error(response.status_code, err_body.decode('utf-8'), parse_format)
 
                     async for line in response.aiter_lines():
                         if not line.startswith("data:"):
@@ -767,10 +881,11 @@ class MultiModelRouter:
                     )
                     await asyncio.sleep(wait)
                 else:
-                    yield f"[Router Connection Error after {max_retries} retries: {str(e)}]"
+                    raise LLMProviderError(ERROR_PROVIDER_DOWN, parse_format, message=f"Connection Error after {max_retries} retries: {str(e)}")
+            except LLMProviderError:
+                raise
             except Exception as e:
-                yield f"[Router Exception: {str(e)}]"
-                return
+                raise LLMProviderError(ERROR_PROVIDER_DOWN, parse_format, message=f"Router Exception: {str(e)}")
 
 
     @staticmethod
@@ -975,8 +1090,7 @@ class MultiModelRouter:
                         continue
                     if response.status_code != 200:
                         err = await response.aread()
-                        yield {"content": f"[API Error {response.status_code}: {err.decode()[:300]}]", "reasoning": ""}
-                        return
+                        raise LLMProviderError.classify_http_error(response.status_code, err.decode(), parse_format)
                     async for line in response.aiter_lines():
                         if not line.startswith("data:"):
                             continue
@@ -996,10 +1110,11 @@ class MultiModelRouter:
                     logger.warning("Connection error in rich stream: %s. Retrying...", e)
                     await asyncio.sleep(2 ** attempt)
                 else:
-                    yield {"content": f"[Connection Error: {e}]", "reasoning": ""}
+                    raise LLMProviderError(ERROR_PROVIDER_DOWN, parse_format, message=f"Connection Error: {e}")
+            except LLMProviderError:
+                raise
             except Exception as e:
-                yield {"content": f"[Stream Exception: {e}]", "reasoning": ""}
-                return
+                raise LLMProviderError(ERROR_PROVIDER_DOWN, parse_format, message=f"Stream Exception: {e}")
 
     # ================================================================
     # Embeddings (with Gemini fallback)
@@ -1170,6 +1285,29 @@ class MultiModelRouter:
                             })
                         else:
                             _log.warning("Image local_path not found or missing, skipping: %s", local_path)
+                    elif item["type"] == "document":
+                        local_path = item.get("local_path")
+                        mime = item.get("mime_type", "application/pdf")
+                        if local_path and os.path.exists(local_path):
+                            if mime == "application/pdf":
+                                with open(local_path, "rb") as f:
+                                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                                parts.append({
+                                    "inlineData": {
+                                        "mimeType": mime,
+                                        "data": b64
+                                    }
+                                })
+                            else:
+                                try:
+                                    from markitdown import MarkItDown
+                                    md = MarkItDown()
+                                    result = md.convert(local_path)
+                                    parts.append({"text": f"\n[Extracted Document ({mime})]\n{result.text_content}\n[/Extracted Document]\n"})
+                                except Exception as e:
+                                    parts.append({"text": f"[Error extracting {mime}: {e}]"})
+                        else:
+                            _log.warning("Document local_path not found, skipping: %s", local_path)
                 if parts:
                     formatted.append({"role": role, "parts": parts})
                 
@@ -1193,6 +1331,31 @@ class MultiModelRouter:
                             })
                         else:
                             _log.warning("Image local_path not found or missing, skipping: %s", local_path)
+                    elif item["type"] == "document":
+                        local_path = item.get("local_path")
+                        mime = item.get("mime_type", "application/pdf")
+                        if local_path and os.path.exists(local_path):
+                            if mime == "application/pdf":
+                                with open(local_path, "rb") as f:
+                                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                                parts.append({
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime,
+                                        "data": b64
+                                    }
+                                })
+                            else:
+                                try:
+                                    from markitdown import MarkItDown
+                                    md = MarkItDown()
+                                    result = md.convert(local_path)
+                                    parts.append({"type": "text", "text": f"\n[Extracted Document ({mime})]\n{result.text_content}\n[/Extracted Document]\n"})
+                                except Exception as e:
+                                    parts.append({"type": "text", "text": f"[Error extracting {mime}: {e}]"})
+                        else:
+                            _log.warning("Document local_path not found, skipping: %s", local_path)
                 if parts:
                     formatted.append({"role": msg["role"], "content": parts})
                 
@@ -1216,6 +1379,19 @@ class MultiModelRouter:
                             })
                         else:
                             _log.warning("Image local_path not found or missing, skipping: %s", local_path)
+                    elif item["type"] == "document":
+                        local_path = item.get("local_path")
+                        mime = item.get("mime_type", "application/pdf")
+                        if local_path and os.path.exists(local_path):
+                            try:
+                                from markitdown import MarkItDown
+                                md = MarkItDown()
+                                result = md.convert(local_path)
+                                parts.append({"type": "text", "text": f"\n[Extracted Document ({mime})]\n{result.text_content}\n[/Extracted Document]\n"})
+                            except Exception as e:
+                                parts.append({"type": "text", "text": f"[Error extracting {mime}: {e}]"})
+                        else:
+                            _log.warning("Document local_path not found, skipping: %s", local_path)
                 if parts:
                     formatted.append({"role": msg["role"], "content": parts})
                 
