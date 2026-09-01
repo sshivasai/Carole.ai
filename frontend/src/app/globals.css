@@ -6,13 +6,13 @@
 
 :root,
 .theme-dark {
-  /* Evervault-inspired Color Palette */
-  --color-primary: #a78bfa;
-  --color-primary-soft: #c4b5fd;
-  --color-primary-deep: #8b5cf6;
+  /* High-Contrast Deep Developer Blue Palette */
+  --color-primary: #4f46e5;
+  --color-primary-soft: #6366f1;
+  --color-primary-deep: #3730a3;
   --color-on-primary: #ffffff;
-  --color-primary-glow: rgba(167, 139, 250, 0.20);
-  --color-primary-glow-sm: rgba(167, 139, 250, 0.10);
+  --color-primary-glow: rgba(79, 70, 229, 0.35);
+  --color-primary-glow-sm: rgba(79, 70, 229, 0.18);
   
   --color-canvas: #030315;
   --color-canvas-soft: #0a0a1a;
@@ -22,8 +22,10 @@
   
   --color-ink: #f8fafc;
   --color-ink-strong: #ffffff;
-  --color-body: #94a3b8;
-  --color-mute: #64748b;
+  --color-fg: #f8fafc;
+  --color-fg-strong: #ffffff;
+  --color-body: #cbd5e1;
+  --color-mute: #94a3b8;
   --color-canvas-text-soft: #e2e8f0;
   
   --color-danger: #f87171;
@@ -46,13 +48,13 @@
 }
 
 .theme-light {
-  /* Evervault-inspired Eye-Comfort Grayish Light Palette */
-  --color-primary: #7c3aed;
-  --color-primary-soft: #8b5cf6;
-  --color-primary-deep: #6d28d9;
+  /* High-Contrast Vibrant Developer Indigo Light Palette */
+  --color-primary: #4f46e5;
+  --color-primary-soft: #6366f1;
+  --color-primary-deep: #3730a3;
   --color-on-primary: #ffffff;
-  --color-primary-glow: rgba(124, 58, 237, 0.16);
-  --color-primary-glow-sm: rgba(124, 58, 237, 0.08);
+  --color-primary-glow: rgba(79, 70, 229, 0.25);
+  --color-primary-glow-sm: rgba(79, 70, 229, 0.12);
   
   --color-canvas: #e2e6eb;
   --color-canvas-soft: #ebf0f5;
@@ -62,6 +64,8 @@
   
   --color-ink: #1e293b;
   --color-ink-strong: #0f172a;
+  --color-fg: #1e293b;
+  --color-fg-strong: #0f172a;
   --color-body: #475569;
   --color-mute: #64748b;
   --color-canvas-text-soft: #334155;
@@ -279,14 +283,17 @@ a:hover {
 .btn-primary {
   background: var(--color-primary);
   color: var(--color-on-primary);
-  border-color: var(--color-primary);
-  box-shadow: 0 0 12px var(--color-primary-glow-sm);
+  border: 1px solid var(--color-primary);
+  box-shadow: 0 2px 10px var(--color-primary-glow-sm);
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--color-primary-soft);
-  border-color: var(--color-primary-soft);
-  box-shadow: 0 0 20px var(--color-primary-glow);
+  background: var(--color-primary-deep);
+  border-color: var(--color-primary-deep);
+  color: #ffffff;
+  box-shadow: 0 4px 16px var(--color-primary-glow);
 }
 
 .btn-primary:active:not(:disabled) {

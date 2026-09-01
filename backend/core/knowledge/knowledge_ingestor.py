@@ -96,6 +96,7 @@ async def ingest_file(
 
             # Also insert into LanceDB vector store
             await lancedb_client.insert_learning(
+                learning_id=str(learning.id),
                 project_id=project_id,
                 team_id=team_id,
                 task_summary=learning.task_summary,
@@ -106,6 +107,8 @@ async def ingest_file(
         except Exception as e:
             logger.error("[KnowledgeIngestor] Error embedding chunk %d of '%s': %s", i, filename, e)
             continue
+
+    await db.commit()
 
     return {
         "filename": filename,

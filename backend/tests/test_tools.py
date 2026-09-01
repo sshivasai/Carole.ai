@@ -71,7 +71,7 @@ async def test_subagent_and_spawn_arg_parsing():
             team_id="team-1"
         )
         assert res == "Subagent hired"
-        mock_hire.assert_called_with("Python Developer", "Specialist in Python Developer", "Create hello.txt", "team-1", "", model=None)
+        mock_hire.assert_called_with("Python Developer", "Specialist in Python Developer", "Create hello.txt", "team-1", "", model=None, parent_message_id=None)
 
         # 2. Raw value string with comma-separated arguments
         res = await _wrap_hire_subagent(
@@ -86,7 +86,7 @@ async def test_subagent_and_spawn_arg_parsing():
             team_id="team-1"
         )
         assert res == "Subagent hired"
-        mock_hire.assert_called_with("Tester", "Specialist in Tester", "Run tests", "team-1", "", model=None)
+        mock_hire.assert_called_with("Tester", "Specialist in Tester", "Run tests", "team-1", "", model=None, parent_message_id=None)
 
     with patch("core.tools.agent_tools.agent_tools.spawn_agent", new_callable=AsyncMock) as mock_spawn:
         mock_spawn.return_value = "Agent spawned"
@@ -97,7 +97,7 @@ async def test_subagent_and_spawn_arg_parsing():
             team_id="team-1"
         )
         assert res == "Agent spawned"
-        mock_spawn.assert_called_with("Nova", "Build UI", "team-1", parent_coordinator_id=None)
+        mock_spawn.assert_called_with("Nova", "Build UI", "team-1", parent_coordinator_id=None, parent_message_id=None)
 
 
 

@@ -82,6 +82,12 @@ class WebTools:
         Fetches the text content of a web page.
         Strips HTML and returns plain text (limited to first 5000 chars to fit context).
         """
+        from core.tools.ssrf_guard import assert_safe_public_url
+        try:
+            url = assert_safe_public_url(url, allow_local=True)
+        except ValueError as e:
+            return f"Error: {e}"
+
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             try:
                 response = await client.get(url, headers={"User-Agent": "CaroleAI/1.0"})
@@ -161,6 +167,12 @@ class WebTools:
         method = method.upper()
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
             return f"Error: Unsupported HTTP method '{method}'. Use GET, POST, PUT, PATCH, DELETE, HEAD, or OPTIONS."
+
+        from core.tools.ssrf_guard import assert_safe_public_url
+        try:
+            url = assert_safe_public_url(url, allow_local=True)
+        except ValueError as e:
+            return f"Error: {e}"
 
         request_headers = {"User-Agent": "CaroleAI/1.0"}
         if headers:

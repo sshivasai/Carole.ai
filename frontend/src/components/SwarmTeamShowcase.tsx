@@ -171,7 +171,7 @@ export default function SwarmTeamShowcase() {
       opacity: 1,
       y: 0,
       transition: {
-        type: "spring",
+        type: "spring" as const,
         stiffness: 100,
         damping: 18,
       },
@@ -281,11 +281,11 @@ export default function SwarmTeamShowcase() {
                 gap: 6,
                 padding: "8px 16px",
                 borderRadius: 9999,
-                background: "rgba(255, 255, 255, 0.03)",
+                background: "var(--color-canvas-soft, rgba(255, 255, 255, 0.03))",
                 border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
                 fontSize: 12.5,
-                color: "#ffffff",
-                fontWeight: 500,
+                color: "var(--color-ink-strong, #0f172a)",
+                fontWeight: 600,
                 fontFamily: "'Google Sans Flex', -apple-system, sans-serif",
               }}
             >
@@ -407,7 +407,7 @@ export default function SwarmTeamShowcase() {
           onMouseEnter={() => setIsDetailHovered(true)}
           onMouseLeave={() => setIsDetailHovered(false)}
           style={{
-            background: "rgba(255, 255, 255, 0.01)",
+            background: "var(--color-canvas-raised, rgba(255, 255, 255, 0.02))",
             border: "1px solid transparent",
             outline: isDetailHovered
               ? `3.5px solid ${activeAgent.color}40`
@@ -426,7 +426,7 @@ export default function SwarmTeamShowcase() {
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] as const }}
             >
               {/* Header row */}
               <div
@@ -448,9 +448,9 @@ export default function SwarmTeamShowcase() {
                       <span
                         style={{
                           fontSize: 17.5,
-                          fontWeight: 600,
+                          fontWeight: 700,
                           fontFamily: "'Google Sans Flex', -apple-system, sans-serif",
-                          color: "var(--color-ink-strong, #ffffff)",
+                          color: "var(--color-ink-strong, #0f172a)",
                         }}
                       >
                         {activeAgent.name}
@@ -458,13 +458,13 @@ export default function SwarmTeamShowcase() {
                       <span
                         style={{
                           fontSize: 10,
-                          fontWeight: 500,
+                          fontWeight: 700,
                           fontFamily: "'Google Sans Flex', -apple-system, sans-serif",
                           padding: "2px 8px",
                           borderRadius: 9999,
-                          background: `${activeAgent.color}15`,
+                          background: `${activeAgent.color}18`,
                           color: activeAgent.color,
-                          border: `1px solid ${activeAgent.color}30`,
+                          border: `1px solid ${activeAgent.color}35`,
                           textTransform: "uppercase",
                           letterSpacing: "0.5px",
                         }}
@@ -476,7 +476,7 @@ export default function SwarmTeamShowcase() {
                           fontSize: 11,
                           fontFamily: "var(--font-mono, monospace)",
                           color: "var(--color-mute, #64748b)",
-                          fontWeight: 500,
+                          fontWeight: 600,
                         }}
                       >
                         {activeAgent.model}
@@ -492,12 +492,12 @@ export default function SwarmTeamShowcase() {
                     gap: 6,
                     padding: "4px 12px",
                     borderRadius: 9999,
-                    background: "rgba(255, 255, 255, 0.03)",
+                    background: "var(--color-canvas-soft, rgba(255, 255, 255, 0.03))",
                     border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
                     fontSize: 10,
-                    fontWeight: 500,
+                    fontWeight: 700,
                     fontFamily: "var(--font-mono, monospace)",
-                    color: "#ffffff",
+                    color: "var(--color-ink-strong, #0f172a)",
                     letterSpacing: "0.5px",
                   }}
                 >
@@ -520,7 +520,7 @@ export default function SwarmTeamShowcase() {
                   <div
                     style={{
                       fontSize: 11,
-                      fontWeight: 600,
+                      fontWeight: 700,
                       fontFamily: "'Google Sans Flex', -apple-system, sans-serif",
                       textTransform: "uppercase",
                       letterSpacing: "0.5px",
@@ -533,13 +533,14 @@ export default function SwarmTeamShowcase() {
                   <div
                     style={{
                       fontSize: 13.5,
+                      fontWeight: 500,
                       fontFamily: "'Google Sans Flex', -apple-system, sans-serif",
-                      color: "var(--color-ink, #f8fafc)",
-                      lineHeight: "20px",
+                      color: "var(--color-ink-strong, #0f172a)",
+                      lineHeight: "22px",
                       padding: "16px 20px",
-                      background: "rgba(255, 255, 255, 0.02)",
+                      background: "var(--color-canvas-soft, #f1f5f9)",
                       borderRadius: 12,
-                      border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
+                      border: "1px solid var(--color-hairline, rgba(0, 0, 0, 0.08))",
                       borderLeft: `4px solid ${activeAgent.color}`,
                     }}
                   >
@@ -552,7 +553,7 @@ export default function SwarmTeamShowcase() {
                   <div
                     style={{
                       fontSize: 11,
-                      fontWeight: 600,
+                      fontWeight: 700,
                       fontFamily: "'Google Sans Flex', -apple-system, sans-serif",
                       textTransform: "uppercase",
                       letterSpacing: "0.5px",
@@ -572,12 +573,12 @@ export default function SwarmTeamShowcase() {
                           gap: 6,
                           fontSize: 11.5,
                           fontFamily: "var(--font-mono, monospace)",
-                          fontWeight: 500,
+                          fontWeight: 600,
                           padding: "4px 10px",
                           borderRadius: 9999,
-                          background: "rgba(255, 255, 255, 0.02)",
-                          border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
-                          color: "var(--color-ink-strong, #ffffff)",
+                          background: "var(--color-canvas-soft, #f1f5f9)",
+                          border: "1px solid var(--color-hairline, rgba(0, 0, 0, 0.08))",
+                          color: "var(--color-ink-strong, #0f172a)",
                         }}
                       >
                         <Zap size={10} style={{ color: activeAgent.color, flexShrink: 0 }} />
@@ -593,18 +594,19 @@ export default function SwarmTeamShowcase() {
                       alignItems: "center",
                       gap: 10,
                       padding: "10px 16px",
-                      background: "rgba(0, 0, 0, 0.4)",
+                      background: "#0f172a",
                       borderRadius: 12,
                       border: `1px solid ${activeAgent.color}40`,
                       fontSize: 12,
                       fontFamily: "var(--font-mono, monospace)",
                       overflowX: "auto",
                       transition: "all 0.3s ease",
+                      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
                     }}
                   >
                     <Terminal size={13} style={{ color: "#38bdf8", flexShrink: 0 }} />
                     <span style={{ color: "#38bdf8", fontWeight: 700 }}>&gt;_ tool:</span>
-                    <span style={{ color: "#f1f5f9" }}>{typedToolCall}</span>
+                    <span style={{ color: "#f8fafc", fontWeight: 600 }}>{typedToolCall}</span>
                   </div>
                 </div>
               </div>

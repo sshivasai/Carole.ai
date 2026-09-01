@@ -22,7 +22,7 @@ import re
 
 
 def _validate_git_url(url: str) -> Optional[str]:
-    """Validates git clone URL to prevent SSRF targeting internal hosts/IPs."""
+    """Validates git clone URL to allow safe development while preventing cloud metadata attacks."""
     url_str = (url or "").strip()
     if not url_str:
         return "Error: Git URL cannot be empty."
@@ -31,23 +31,11 @@ def _validate_git_url(url: str) -> Optional[str]:
     if re.match(r"^git@[a-zA-Z0-9.\-]+:[a-zA-Z0-9_\-/\.]+(\.git)?$", url_str):
         return None
 
-    parsed = urllib.parse.urlparse(url_str)
-    if parsed.scheme not in ["https", "http", "git", "ssh"]:
-        return f"Error: Untrusted git URL scheme '{parsed.scheme}'. Only https, http, git, and ssh are allowed."
-
-    hostname = (parsed.hostname or "").lower()
-    if not hostname:
-        return "Error: Invalid Git URL — missing hostname."
-
-    if hostname in ["localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254"]:
-        return f"Error: Target host '{hostname}' is restricted."
-
+    from core.tools.ssrf_guard import assert_safe_public_url
     try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_link_local:
-            return f"Error: Target IP address '{hostname}' is in a restricted private range."
-    except ValueError:
-        pass  # Hostname is a domain name
+        assert_safe_public_url(url_str, allow_local=True)
+    except ValueError as e:
+        return f"Error: {e}"
 
     return None
 

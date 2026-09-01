@@ -1,12 +1,12 @@
 "use client";
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { ChatMessage, AgentConfig, CompactionEvent } from "@/lib/types";
-import { 
-  Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion, 
-  Loader2, ChevronDown, ChevronUp, ChevronRight, Search, Edit2, Trash2, 
-  History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode, 
-  Terminal, Copy, Check, ThumbsUp, ThumbsDown, Cpu, Scale, Sparkles, 
-  FileText, Globe, GitBranch, CheckCircle2, AlertTriangle, ShieldCheck, ArrowDown
+import {
+  Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion,
+  Loader2, ChevronDown, ChevronUp, ChevronRight, Search, Edit2, Trash2,
+  History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode,
+  Terminal, Copy, Check, ThumbsUp, ThumbsDown, Cpu, Scale, Sparkles,
+  FileText, Globe, GitBranch, CheckCircle2, AlertTriangle, ShieldCheck, ArrowDown, ShieldAlert
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -84,7 +84,7 @@ export function getToolMeta(toolName: string) {
 
 function TaskNotificationCard({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
-  
+
   const taskIdMatch = text.match(/<task_id>(.*?)<\/task_id>/);
   const agentMatch = text.match(/<agent>(.*?)<\/agent>/);
   const statusMatch = text.match(/<status>(.*?)<\/status>/);
@@ -122,9 +122,9 @@ function TaskNotificationCard({ text }: { text: string }) {
       </div>
       {isTruncated && (
         <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
-          <button 
-            onClick={() => setExpanded(!expanded)} 
-            className="btn-ghost" 
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="btn-ghost"
             style={{ fontSize: 11, padding: "2px 8px", minHeight: 24 }}
           >
             {expanded ? "Show Less" : "Expand Report"}
@@ -163,7 +163,7 @@ function AskUserCard({ msg }: { msg: ChatMessage }) {
   const { parsedQuestion, parsedOptions } = useMemo(() => {
     let questionText = msg.question || msg.text || "";
     let optionsList: string[] = (msg as any).options || [];
-    
+
     const trimmed = questionText.trim();
     if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
       try {
@@ -187,12 +187,12 @@ function AskUserCard({ msg }: { msg: ChatMessage }) {
         console.warn("Failed to parse stringified question object:", e);
       }
     }
-    
+
     if (questionText.startsWith("❓")) {
       const match = questionText.match(/❓\s*[^\n]+asks:\s*([\s\S]+)/i);
       if (match && match[1]) questionText = match[1].trim();
     }
-    
+
     return { parsedQuestion: questionText, parsedOptions: optionsList };
   }, [msg.question, msg.text, (msg as any).options]);
 
@@ -260,6 +260,116 @@ function AskUserCard({ msg }: { msg: ChatMessage }) {
             </button>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+function BrowserInterventionCard({ msg }: { msg: ChatMessage }) {
+  const [solutionText, setSolutionText] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [resolvedStatus, setResolvedStatus] = useState("");
+
+  const reason = (msg as any).reason || msg.text || "CAPTCHA or security challenge detected in the browser.";
+  const captchaImage = (msg as any).captcha_image;
+
+  const handleResolve = async (answerText: string) => {
+    if (!msg.question_id || submitted) return;
+    setLoading(true);
+    try {
+      await api.resolveBrowserHIL(msg.question_id, answerText);
+      setSubmitted(true);
+      setResolvedStatus(answerText);
+    } catch (e) {
+      console.error("Failed to resolve browser intervention:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      border: "1px solid var(--color-warning, #f59e0b)",
+      borderRadius: "var(--radius-md)",
+      padding: "var(--sp-lg)",
+      background: "rgba(245, 158, 11, 0.05)",
+      backdropFilter: "var(--blur-md)",
+      WebkitBackdropFilter: "var(--blur-md)",
+      boxShadow: "var(--shadow-clay)",
+      display: "flex",
+      flexDirection: "column",
+      gap: "var(--sp-md)",
+      maxWidth: 500,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+        <ShieldAlert size={16} color="var(--color-warning, #f59e0b)" />
+        <span className="body-sm-strong" style={{ color: "var(--color-warning, #f59e0b)" }}>
+          Browser Takeover Required
+        </span>
+        <span className="badge badge-warning" style={{ fontSize: 9, marginLeft: "auto" }}>HIL Takeover</span>
+      </div>
+
+      <div style={{ fontSize: 13, color: "var(--color-ink)", lineHeight: 1.5 }}>
+        <strong>{msg.sender_name}</strong> encountered a roadblock:
+        <p style={{ margin: "4px 0 0 0", color: "var(--color-mute)" }}>{reason}</p>
+      </div>
+
+      {captchaImage && (
+        <div style={{ border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)", overflow: "hidden", background: "#000", textAlign: "center" }}>
+          <img
+            src={captchaImage.startsWith("data:") ? captchaImage : `data:image/jpeg;base64,${captchaImage}`}
+            alt="CAPTCHA Challenge"
+            style={{ maxWidth: "100%", maxHeight: 200, objectFit: "contain" }}
+          />
+        </div>
+      )}
+
+      {submitted ? (
+        <span className="pill pill-live" style={{ alignSelf: "flex-start", background: "rgba(34, 197, 94, 0.15)", color: "#4ade80" }}>
+          Takeover resolved: {resolvedStatus} ✓
+        </span>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
+          {/* Solution 1: Direct text input for CAPTCHA / OTP code */}
+          <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
+            <input
+              className="input input-sm"
+              style={{ flex: 1 }}
+              placeholder="Enter CAPTCHA text or 2FA code..."
+              value={solutionText}
+              onChange={e => setSolutionText(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") handleResolve(solutionText); }}
+              autoFocus
+            />
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => handleResolve(solutionText)}
+              disabled={loading || !solutionText.trim()}
+            >
+              {loading ? <Loader2 size={12} className="animate-spin" /> : "Submit"}
+            </button>
+          </div>
+
+          {/* Quick Action Button for on-screen manual completion */}
+          <div style={{ display: "flex", gap: "var(--sp-sm)", flexWrap: "wrap" }}>
+            <button
+              className="btn btn-outline btn-sm"
+              style={{ flex: 1, borderColor: "var(--color-warning, #f59e0b)", color: "var(--color-warning, #f59e0b)" }}
+              onClick={() => handleResolve("Solved on screen by user")}
+              disabled={loading}
+            >
+              <CheckCircle2 size={12} /> I&apos;ve Solved It On Screen
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => handleResolve("Cancelled by user")}
+              disabled={loading}
+            >
+              Skip / Cancel
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -494,21 +604,21 @@ function extractFileChanges(reasoning: string, msg: ChatMessage): ChangedFileIte
   return Array.from(map.values());
 }
 
-function TraceToolCard({ 
-  toolName, 
-  argsObj, 
-  argsRaw, 
-  result, 
-  isError, 
+function TraceToolCard({
+  toolName,
+  argsObj,
+  argsRaw,
+  result,
+  isError,
   defaultOpen = false,
   agentName,
   timestamp
-}: { 
-  toolName: string; 
-  argsObj?: any; 
-  argsRaw?: string; 
-  result?: string; 
-  isError?: boolean; 
+}: {
+  toolName: string;
+  argsObj?: any;
+  argsRaw?: string;
+  result?: string;
+  isError?: boolean;
   defaultOpen?: boolean;
   agentName?: string;
   timestamp?: string | number;
@@ -531,7 +641,7 @@ function TraceToolCard({
   const statusBg = isError ? "rgba(239, 68, 68, 0.12)" : result ? "rgba(16, 185, 129, 0.12)" : "rgba(245, 158, 11, 0.12)";
 
   return (
-    <div 
+    <div
       style={{
         margin: "4px 0",
         borderRadius: "var(--radius-md, 8px)",
@@ -584,7 +694,7 @@ function TraceToolCard({
           </span>
 
           {summary && (
-            <span 
+            <span
               title={summary}
               style={{
                 fontFamily: "var(--font-mono, monospace)",
@@ -778,10 +888,10 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
 
   return (
     <div style={{ marginTop: "6px" }}>
-      <AgentActivityStream 
-        steps={activitySteps} 
-        isStreaming={isStreaming} 
-        elapsedSecs={elapsedSecs} 
+      <AgentActivityStream
+        steps={activitySteps}
+        isStreaming={isStreaming}
+        elapsedSecs={elapsedSecs}
       />
     </div>
   );
@@ -1157,8 +1267,8 @@ export default function ChatInterface({
 
   const commandItems = useMemo(() => {
     const q = commandQuery.toLowerCase();
-    const staticCommands = AVAILABLE_COMMANDS.filter(c => 
-      c.command.toLowerCase().includes(q) || 
+    const staticCommands = AVAILABLE_COMMANDS.filter(c =>
+      c.command.toLowerCase().includes(q) ||
       c.command.toLowerCase().replace("/", "").includes(q)
     );
 
@@ -1182,7 +1292,7 @@ export default function ChatInterface({
     const textBefore = inputText.slice(0, sel);
     const slashIndex = textBefore.lastIndexOf("/");
     if (slashIndex === -1) { setCommandOpen(false); return; }
-    
+
     // Ensure the slash was at the start of line or input
     const isStartOfLine = slashIndex === 0 || textBefore[slashIndex - 1] === "\n";
     if (!isStartOfLine) { setCommandOpen(false); return; }
@@ -1206,7 +1316,7 @@ export default function ChatInterface({
       setInputText("");
       setAttachments([]);
       if (onCompact) {
-        onCompact().catch(() => {/* error handled in parent */});
+        onCompact().catch(() => {/* error handled in parent */ });
       }
       return;
     }
@@ -1285,7 +1395,7 @@ export default function ChatInterface({
 
     const sel = e.target.selectionStart;
     const textBefore = val.slice(0, sel);
-    
+
     // Mention Check
     const atMatch = textBefore.match(/@([^\s]*)$/);
     if (atMatch) {
@@ -1471,11 +1581,11 @@ export default function ChatInterface({
                     </span>
                   )}
                 </h2>
-                <p className="caption">Collaborate with your <del style={{ opacity: 0.6 }}>AI agents</del> <span style={{ color: "var(--color-primary)", fontWeight: 500 }}>AI teammates</span> · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
+                <p className="caption">Collaborate with your <span style={{ color: "var(--color-primary)", fontWeight: 500 }}>AI</span> <del style={{ opacity: 0.6 }}> agents</del> <span style={{ color: "var(--color-primary)", fontWeight: 500 }}> teammates</span> · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
               </div>
-              
+
               <div style={{ position: "relative" }}>
-                <div 
+                <div
                   onClick={() => setShowTeamAgents(!showTeamAgents)}
                   className="live-team-presence"
                   style={{ cursor: "pointer" }}
@@ -1566,17 +1676,19 @@ export default function ChatInterface({
         </header>
 
         {/* Search bar */}
-        {searchMode && (
-          <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", borderBottom: "1px solid var(--border-glass)", background: "var(--bg-glass-panel)" }}>
-            <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", gap: "var(--sp-sm)" }}>
-              <input className="input" style={{ flex: 1, minHeight: 32 }} placeholder="Search messages..."
-                value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") handleSearch(); }} autoFocus />
-              <button className="btn btn-primary btn-sm" onClick={handleSearch}><Search size={13} /> Search</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => { setSearchMode(false); setSearchResults([]); setSearchQuery(""); }}>Clear</button>
+        {
+          searchMode && (
+            <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", borderBottom: "1px solid var(--border-glass)", background: "var(--bg-glass-panel)" }}>
+              <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", gap: "var(--sp-sm)" }}>
+                <input className="input" style={{ flex: 1, minHeight: 32 }} placeholder="Search messages..."
+                  value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") handleSearch(); }} autoFocus />
+                <button className="btn btn-primary btn-sm" onClick={handleSearch}><Search size={13} /> Search</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => { setSearchMode(false); setSearchResults([]); setSearchQuery(""); }}>Clear</button>
+              </div>
             </div>
-          </div>
-        )}
+          )
+        }
 
         {/* Messages */}
         <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-xl) var(--sp-2xl)" }}>
@@ -1611,6 +1723,7 @@ export default function ChatInterface({
               const isTool = msg.type === "tool_start" || msg.type === "tool_end";
               const isApproval = msg.type === "approval_request";
               const isQuestion = msg.type === "agent_question";
+              const isIntervention = msg.type === "browser_intervention";
               const isFileChange = msg.type === "file_change";
               const isSystem = msg.sender_id === "system";
               const isStreaming = msg.type === "streaming";
@@ -1622,7 +1735,7 @@ export default function ChatInterface({
               if (isIntermediate) {
                 const sections = parseReasoningIntoSections(msg.text || "");
                 const hasTools = sections.some(s => s.type === "tool");
-                
+
                 if (hasTools) {
                   return (
                     <div key={msg.id} style={{ marginLeft: 8, marginBottom: 4, maxWidth: "85%" }}>
@@ -1763,18 +1876,24 @@ export default function ChatInterface({
                   <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
                 </div>
               );
-              
+              if (isIntervention) return (
+                <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} role={msg.role} size={30} />
+                  <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><BrowserInterventionCard msg={msg} /></div>
+                </div>
+              );
+
               if (msg.type === "llm_error" && msg.llm_error) {
                 const err = msg.llm_error;
                 return (
                   <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
                     <div style={{
-                        width: 32, height: 32, borderRadius: "50%",
-                        background: "rgba(239, 68, 68, 0.15)", // red-500 with opacity
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        color: "#ef4444", flexShrink: 0
-                      }}>
-                        <AlertTriangle size={16} />
+                      width: 32, height: 32, borderRadius: "50%",
+                      background: "rgba(239, 68, 68, 0.15)", // red-500 with opacity
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      color: "#ef4444", flexShrink: 0
+                    }}>
+                      <AlertTriangle size={16} />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
@@ -1795,9 +1914,9 @@ export default function ChatInterface({
                         <div style={{ fontSize: "12px", color: "var(--color-mute)", marginBottom: "12px" }}>
                           Model: <span style={{ fontFamily: "monospace", color: "#fca5a5" }}>{err.model}</span>
                         </div>
-                        <div style={{ 
-                          background: "rgba(0,0,0,0.2)", 
-                          padding: "8px 12px", 
+                        <div style={{
+                          background: "rgba(0,0,0,0.2)",
+                          padding: "8px 12px",
                           borderRadius: "4px",
                           borderLeft: "2px solid #ef4444",
                           fontSize: "12px",
@@ -1851,12 +1970,12 @@ export default function ChatInterface({
                 return (
                   <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
                     <div style={{
-                        width: 32, height: 32, borderRadius: "50%",
-                        background: "rgba(167, 139, 250, 0.15)",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        color: "#a78bfa", flexShrink: 0
-                      }}>
-                        <CheckSquare size={16} />
+                      width: 32, height: 32, borderRadius: "50%",
+                      background: "rgba(167, 139, 250, 0.15)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      color: "#a78bfa", flexShrink: 0
+                    }}>
+                      <CheckSquare size={16} />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
@@ -2104,7 +2223,7 @@ export default function ChatInterface({
                             {childMessagesByParent[msg.id].map(child => {
                               const isChildTaskNotification = Boolean(child.text?.includes("<task-notification>"));
                               const isChildIntermediate = child.is_intermediate === true || child.type === "tool_trace";
-                              
+
                               if (isChildTaskNotification) {
                                 const childReasoning = child.reasoning || "";
                                 return (
@@ -2126,7 +2245,7 @@ export default function ChatInterface({
                                   </div>
                                 );
                               }
-                              
+
                               if (isChildIntermediate) {
                                 const sections = parseReasoningIntoSections(child.text || "");
                                 const hasTools = sections.some(s => s.type === "tool");
@@ -2147,12 +2266,12 @@ export default function ChatInterface({
                                             defaultOpen={false}
                                           />
                                         ) : (
-                                          <div key={idx} style={{ 
-                                            display: "flex", 
-                                            alignItems: "center", 
-                                            gap: "8px", 
-                                            padding: "6px 12px", 
-                                            color: "var(--text-secondary)", 
+                                          <div key={idx} style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: "8px",
+                                            padding: "6px 12px",
+                                            color: "var(--text-secondary)",
                                             fontSize: "12px",
                                             fontStyle: "italic",
                                             opacity: 0.85
@@ -2265,63 +2384,65 @@ export default function ChatInterface({
         </div>
 
         {/* Attachments preview */}
-        {attachments.length > 0 && (
-          <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
-            <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "var(--sp-sm)" }}>
-              {attachments.map((att, i) => {
-                const isImage = att.type?.startsWith("image/");
-                const ext = (att.name || "").split(".").pop()?.toLowerCase() ?? "";
-                const typeLabel: Record<string, string> = {
-                  pdf: "PDF", doc: "DOC", docx: "DOCX", xls: "XLS", xlsx: "XLSX",
-                  ppt: "PPT", pptx: "PPTX", txt: "TXT", csv: "CSV",
-                  json: "JSON", md: "MD", py: "PY", ts: "TS", tsx: "TSX", js: "JS",
-                };
-                const label = typeLabel[ext] ?? ext.toUpperCase() ?? "FILE";
-                return (
-                  <div key={i} style={{
-                    position: "relative",
-                    borderRadius: "var(--radius-sm)",
-                    border: "1px solid var(--color-hairline)",
-                    overflow: "hidden",
-                    background: "var(--color-canvas-soft)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    ...(isImage ? { width: 56, height: 56 } : { height: 44, maxWidth: 180, padding: "0 10px", gap: 6 })
-                  }}>
-                    {isImage ? (
-                      <img src={att.url} alt={att.name ?? "attachment"} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    ) : (
-                      <>
-                        <span style={{
-                          fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
-                          background: "var(--color-primary-glow)", color: "var(--color-primary)",
-                          borderRadius: 3, padding: "2px 5px", flexShrink: 0
-                        }}>{label}</span>
-                        <span style={{
-                          fontSize: 11, color: "var(--color-mute)",
-                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                          maxWidth: 110
-                        }} title={att.name}>{att.name}</span>
-                      </>
-                    )}
-                    <button
-                      onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
-                      style={{
-                        position: "absolute", top: 2, right: 2,
-                        background: "rgba(0,0,0,0.55)", color: "white",
-                        border: "none", borderRadius: "50%", padding: 2,
-                        cursor: "pointer", display: "flex", lineHeight: 1
-                      }}
-                    >
-                      <XCircle size={10} />
-                    </button>
-                  </div>
-                );
-              })}
+        {
+          attachments.length > 0 && (
+            <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
+              <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "var(--sp-sm)" }}>
+                {attachments.map((att, i) => {
+                  const isImage = att.type?.startsWith("image/");
+                  const ext = (att.name || "").split(".").pop()?.toLowerCase() ?? "";
+                  const typeLabel: Record<string, string> = {
+                    pdf: "PDF", doc: "DOC", docx: "DOCX", xls: "XLS", xlsx: "XLSX",
+                    ppt: "PPT", pptx: "PPTX", txt: "TXT", csv: "CSV",
+                    json: "JSON", md: "MD", py: "PY", ts: "TS", tsx: "TSX", js: "JS",
+                  };
+                  const label = typeLabel[ext] ?? ext.toUpperCase() ?? "FILE";
+                  return (
+                    <div key={i} style={{
+                      position: "relative",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid var(--color-hairline)",
+                      overflow: "hidden",
+                      background: "var(--color-canvas-soft)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      ...(isImage ? { width: 56, height: 56 } : { height: 44, maxWidth: 180, padding: "0 10px", gap: 6 })
+                    }}>
+                      {isImage ? (
+                        <img src={att.url} alt={att.name ?? "attachment"} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        <>
+                          <span style={{
+                            fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+                            background: "var(--color-primary-glow)", color: "var(--color-primary)",
+                            borderRadius: 3, padding: "2px 5px", flexShrink: 0
+                          }}>{label}</span>
+                          <span style={{
+                            fontSize: 11, color: "var(--color-mute)",
+                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                            maxWidth: 110
+                          }} title={att.name}>{att.name}</span>
+                        </>
+                      )}
+                      <button
+                        onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
+                        style={{
+                          position: "absolute", top: 2, right: 2,
+                          background: "rgba(0,0,0,0.55)", color: "white",
+                          border: "none", borderRadius: "50%", padding: 2,
+                          cursor: "pointer", display: "flex", lineHeight: 1
+                        }}
+                      >
+                        <XCircle size={10} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        )}
+          )
+        }
 
         {/* Input */}
         <div style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10, position: "relative" }}>
@@ -2465,28 +2586,28 @@ export default function ChatInterface({
           </div>
         </div>
 
-      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
+        <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
 
-      <Modal open={rollbackOpen} onClose={() => setRollbackOpen(false)} title="Confirm Rollback">
-        <p className="body-sm">
-          Are you sure? This will delete this message, all following messages, and revert any files the agents modified during those messages.
-        </p>
-        <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end", marginTop: "var(--sp-xl)" }}>
-          <button className="btn btn-ghost" onClick={() => setRollbackOpen(false)}>Cancel</button>
-          <button className="btn btn-danger" onClick={doRollbackConfirm}>Rollback</button>
-        </div>
-      </Modal>
+        <Modal open={rollbackOpen} onClose={() => setRollbackOpen(false)} title="Confirm Rollback">
+          <p className="body-sm">
+            Are you sure? This will delete this message, all following messages, and revert any files the agents modified during those messages.
+          </p>
+          <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end", marginTop: "var(--sp-xl)" }}>
+            <button className="btn btn-ghost" onClick={() => setRollbackOpen(false)}>Cancel</button>
+            <button className="btn btn-danger" onClick={doRollbackConfirm}>Rollback</button>
+          </div>
+        </Modal>
 
-      <Modal open={clearChatOpen} onClose={() => setClearChatOpen(false)} title="Confirm Clear Chat">
-        <p className="body-sm">
-          Are you sure? This will permanently delete <b>all</b> messages in this chat. This action cannot be undone.
-        </p>
-        <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end", marginTop: "var(--sp-xl)" }}>
-          <button className="btn btn-ghost" onClick={() => setClearChatOpen(false)}>Cancel</button>
-          <button className="btn btn-danger" onClick={doClearChatConfirm}>Clear Chat</button>
-        </div>
-      </Modal>
-      </div>
-    </div>
+        <Modal open={clearChatOpen} onClose={() => setClearChatOpen(false)} title="Confirm Clear Chat">
+          <p className="body-sm">
+            Are you sure? This will permanently delete <b>all</b> messages in this chat. This action cannot be undone.
+          </p>
+          <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end", marginTop: "var(--sp-xl)" }}>
+            <button className="btn btn-ghost" onClick={() => setClearChatOpen(false)}>Cancel</button>
+            <button className="btn btn-danger" onClick={doClearChatConfirm}>Clear Chat</button>
+          </div>
+        </Modal>
+      </div >
+    </div >
   );
 }

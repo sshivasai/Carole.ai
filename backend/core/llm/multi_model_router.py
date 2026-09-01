@@ -1144,8 +1144,10 @@ class MultiModelRouter:
             if result:
                 return result
 
-        # No keys available — return mock zero-vector
-        return [0.0] * 1536
+        # No keys available or all providers failed — raise explicit error
+        raise RuntimeError(
+            "No embedding provider configured or available. Please configure an OpenAI, Gemini, or OpenRouter API key."
+        )
 
     async def _embeddings_openai(self, text: str) -> Optional[List[float]]:
         """OpenAI text-embedding-3-small (1536 dimensions)."""

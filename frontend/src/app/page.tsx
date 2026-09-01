@@ -166,6 +166,8 @@ function applyWSEvent(prev: ChatMessage[], evt: any, user: any): ChatMessage[] {
     }
     case "agent_question":
       return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "agent_question", question_id: evt.question_id, question: evt.question, options: evt.options, timestamp: ts }];
+    case "browser_intervention":
+      return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "browser_intervention", question_id: evt.question_id, reason: evt.reason, captcha_image: evt.captcha_image, timestamp: ts }];
     case "llm_error":
       return [...prev, { id: makeId(), sender_id: evt.sender_id || "agent", type: "llm_error", text: evt.error?.message || "LLM Error", llm_error: evt.error, timestamp: ts }];
     case "collapse_to_reasoning": {
@@ -415,7 +417,7 @@ function AppShell() {
       setStreamingAgents(s => { const n = new Set(s); n.delete(evt.sender_id!); return n; });
     }
 
-    if (["thought_delta", "thought_reset", "stream_reasoning", "message", "approval_request", "approval_update", "approval_resolved", "agent_question", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "chat_cleared", "file_change", "collapse_to_reasoning", "llm_error"].includes(evt.type)) {
+    if (["thought_delta", "thought_reset", "stream_reasoning", "message", "approval_request", "approval_update", "approval_resolved", "agent_question", "browser_intervention", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "chat_cleared", "file_change", "collapse_to_reasoning", "llm_error"].includes(evt.type)) {
       setMessages(prev => {
         const updated = applyWSEvent(prev, evt, user);
         

@@ -318,6 +318,12 @@ export const api = {
   deleteMcpServer: (serverId: string) =>
     apiFetch<any>(`/api/mcp/${serverId}`, { method: "DELETE" }),
   getMcpStatus: () => apiFetch<Record<string, any>>("/api/mcp/status"),
+  getMcpTemplates: () => apiFetch<any[]>("/api/mcp/templates"),
+  resolveMcpLogo: (data: { server_name: string; command?: string; args?: string }) =>
+    apiFetch<{ slug: string; logo_url: string; cached: boolean }>("/api/mcp/resolve-logo", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 
   // ── Knowledge ──
   uploadKnowledgeFile: async (projectId: string, teamId: string | null, file: File) => {
@@ -480,6 +486,14 @@ export const api = {
   getGoogleStatus: () => apiFetch<any>("/api/auth/google/status"),
   disconnectGoogle: () => apiFetch<any>("/api/auth/google/disconnect", { method: "POST" }),
   getGoogleAuthUrl: () => `${getApiBase()}/api/auth/google/authorize`,
+
+  // ── Browser Automation Direct Interaction & Takeover ──
+  browserAct: (data: { agent_id?: string; kind: string; x?: number; y?: number; text?: string; key?: string; ref?: number; selector?: string; url?: string }) =>
+    apiFetch<{ status: string; url?: string; title?: string; screenshot?: string; message?: string }>("/api/browser/act", { method: "POST", body: JSON.stringify(data) }),
+  getBrowserScreenshot: (agentId = "global") =>
+    apiFetch<{ status: string; url?: string; title?: string; screenshot?: string; message?: string }>(`/api/browser/screenshot?agent_id=${encodeURIComponent(agentId)}`),
+  resolveBrowserHIL: (questionId: string, answer = "Solved by user") =>
+    apiFetch<{ status: string; message: string }>("/api/browser/resolve-hil", { method: "POST", body: JSON.stringify({ question_id: questionId, answer }) }),
 
   // ── Memory / Compaction ──
   compactTeam: (teamId: string) =>

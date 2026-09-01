@@ -795,6 +795,9 @@ async def restore_backup(
 
     try:
         shutil.copy2(str(backup_path), target_path)
+        norm_t = str(Path(target_path).resolve())
+        for s in _ft._read_state.values():
+            s.pop(norm_t, None)
         return {"status": "success", "message": f"Restored '{target_path}' from backup."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Restore failed: {e}")

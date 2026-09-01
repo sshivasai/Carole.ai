@@ -57,6 +57,7 @@ Available action types (ref refers to a bracketed number from the CURRENT snapsh
 - scroll_up  : {"type": "scroll_up"}                        — scroll page up
 - go_back    : {"type": "go_back"}                          — browser back
 - wait       : {"type": "wait", "ms": 2000}                 — wait for async content
+- browser_human_takeover : {"type": "browser_human_takeover", "reason": "Please solve the Cloudflare CAPTCHA / 2FA / Login on screen"} — request human takeover
 
 Rules:
 1. Ref numbers change after every navigation or DOM update. Always act on the LATEST snapshot's numbers — never reuse a stale ref.
@@ -66,6 +67,7 @@ Rules:
 5. If the same action fails twice, try a different approach (scroll to reveal, re-navigate, or use a different element).
 6. Only set done=true when the goal is truly finished (you have the answer / completed the action). If you cannot complete it, set done=true with success=false and a clear explanation.
 7. Prefer the most specific, visible element. Ignore hidden/duplicate refs.
+8. If you encounter a CAPTCHA (Cloudflare, reCAPTCHA), 2FA/OTP prompt, OAuth SSO login (Google/GitHub), or a stuck blocking modal you cannot bypass, call `browser_human_takeover` with a clear reason for the user.
 """
 
 
@@ -285,6 +287,24 @@ class BrowserAgent:
                     ref=ref,
                     text=action.get("text"),
                     value=action.get("value"),
+                )
+            if kind in ("browser_human_takeover", "ask_human"):
+                from core.tools.interaction_tools import interaction_tools
+                reason = action.get("reason") or "Manual user intervention required in the browser."
+                captcha_img = None
+                try:
+                    import base64
+                    shot_bytes = await page.screenshot(type="jpeg", quality=65)
+                    captcha_img = base64.b64encode(shot_bytes).decode("utf-8")
+                except Exception as shot_err:
+                    logger.debug("Takeover screenshot capture failed: %s", shot_err)
+
+                return await interaction_tools.browser_human_takeover(
+                    reason=reason,
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    team_id=team_id,
+                    captcha_image_base64=captcha_img,
                 )
             return f"Error: unknown action type '{kind}'."
         except Exception as e:

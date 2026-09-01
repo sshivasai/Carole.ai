@@ -26,7 +26,9 @@ class CodeAnalysisTools:
     def _resolve_safe_path(self, relative_path: str) -> Path:
         joined = Path(self.workspace_root / relative_path)
         resolved = joined.resolve()
-        if not str(resolved).startswith(str(self.workspace_root)):
+        try:
+            resolved.relative_to(self.workspace_root)
+        except ValueError:
             raise PermissionError("Access Denied: Path outside sandbox.")
         return resolved
 

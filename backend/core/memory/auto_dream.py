@@ -95,7 +95,9 @@ class AutoDreamWorker:
                     await lancedb_client.delete_learning(str(p_id))
                 await db.execute(delete(Learning).where(Learning.id.in_(prune_ids)))
                 logger.info("💤 [Dream] Pruned %d low-confidence memory rules.", len(prune_ids))
-                
+            
+            await db.commit()
+
             result = await db.execute(select(Team))
             teams = result.scalars().all()
 
@@ -221,8 +223,10 @@ class AutoDreamWorker:
                     lesson_rule=lesson_rule,
                 )
                 db.add(learning)
+                await db.flush()
 
                 await lancedb_client.insert_learning(
+                    learning_id=str(learning.id),
                     project_id=str(team.project_id),
                     team_id=str(team.id),
                     task_summary=task_summary,

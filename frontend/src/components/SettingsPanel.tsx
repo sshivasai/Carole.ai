@@ -472,15 +472,35 @@ function AgentRuntimeCard({ onToast }: { onToast: (msg: string, type: any) => vo
   );
 }
 
-// ── Browser Automation Card ────────────────────────────────────────────────────────
+// ── Browser Automation Card (3-Tier Architecture) ──────────────────────────
 function BrowserAutomationCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [settings, setSettings] = useState<any>({ provider: "local", api_keys: {} });
+  const [settings, setSettings] = useState<any>({
+    engine: "carole",
+    infrastructure: "local",
+    proxy_provider: "none",
+    display_mode: "headless",
+    vision_model: "inherit",
+    api_keys: {},
+    project_id: "",
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     api.getAppConfig()
-      .then((cfg: any) => setSettings(cfg.browser_automation || { provider: "local", api_keys: {} }))
+      .then((cfg: any) => {
+        const ba = cfg.browser_automation || {};
+        setSettings({
+          engine: ba.engine || (ba.provider === "browseruse" ? "browseruse" : "carole"),
+          infrastructure: ba.infrastructure || (ba.provider === "browserbase" ? "browserbase" : "local"),
+          proxy_provider: ba.proxy_provider || (["scraperapi", "zenrows"].includes(ba.provider) ? ba.provider : "none"),
+          display_mode: ba.display_mode || (ba.headless === false ? "windowed" : "headless"),
+          vision_model: ba.vision_model || "inherit",
+          api_keys: ba.api_keys || {},
+          project_id: ba.project_id || "",
+        });
+      })
       .catch(() => { })
       .finally(() => setLoading(false));
   }, []);
@@ -488,85 +508,285 @@ function BrowserAutomationCard({ onToast }: { onToast: (msg: string, type: any) 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateAppConfig({ browser_automation: settings });
+      const payload = {
+        ...settings,
+        // Backward-compatibility mapping for legacy tools:
+        provider: settings.engine === "browseruse" ? "browseruse" : (settings.infrastructure === "browserbase" ? "browserbase" : settings.proxy_provider !== "none" ? settings.proxy_provider : "local"),
+        headless: settings.display_mode !== "windowed",
+      };
+      await api.updateAppConfig({ browser_automation: payload });
       onToast("Browser automation settings saved ✓", "success");
     } catch {
       onToast("Failed to save browser automation settings", "error");
     } finally { setSaving(false); }
   };
 
+  const toggleKey = (name: string) => setShowKeys(p => ({ ...p, [name]: !p[name] }));
+
   return (
     <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-lg)" }}>
-        <Globe size={16} color="var(--color-primary)" />
-        <h3 className="display-sm">Browser Automation & Anti-Bot Settings</h3>
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-md)" }}>
+        <Globe size={18} color="var(--color-primary)" />
+        <h3 className="display-sm" style={{ margin: 0 }}>Browser Automation & Anti-Bot Architecture</h3>
+        <span className="pill pill-live" style={{ marginLeft: "auto", fontSize: 10 }}>Modular 3-Tier</span>
       </div>
-      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-md)" }}>
-        Configure external providers to bypass CAPTCHAs and bot protection during web scraping.
+      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-lg)" }}>
+        Configure how agents interact with the web, run local dev tests, bypass anti-bot walls, and handle Human-in-the-Loop (HIL) roadblocks.
       </p>
-      <div className="callout callout-info" style={{ marginBottom: "var(--sp-xl)" }}>
-        <strong>Note:</strong> By default, the local browser uses stealth mode. Only external proxy providers (Browserbase, ScraperAPI, ZenRows) will automatically handle advanced CAPTCHA solving.
-      </div>
 
       {loading ? (
         <div className="skeleton skeleton-text" style={{ width: "60%" }} />
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-          <div className="form-group">
-            <label className="form-label">Active Provider</label>
-            <select
-              className="input"
-              value={settings.provider || "local"}
-              onChange={e => setSettings((d: any) => ({ ...d, provider: e.target.value }))}
-            >
-              <option value="local">Local Playwright (Stealth)</option>
-              <option value="browserbase">Browserbase Cloud</option>
-              <option value="browseruse">Browser Use (Agent)</option>
-              <option value="scraperapi">ScraperAPI Proxy</option>
-              <option value="zenrows">ZenRows Proxy</option>
-            </select>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-xl)" }}>
+
+          {/* ── Tier 1: Automation Engine ───────────────────────────────────── */}
+          <div style={{ background: "var(--color-canvas-soft)", padding: "var(--sp-md) var(--sp-lg)", borderRadius: "var(--radius-md)", border: "1px solid var(--color-hairline)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-xs)" }}>
+              <span className="badge badge-primary" style={{ fontSize: 10 }}>Tier 1</span>
+              <strong className="body-sm-strong">Automation Engine</strong>
+            </div>
+            <p className="caption text-mute" style={{ marginBottom: "var(--sp-md)" }}>
+              Controls the inner agent decision loop and browser DOM parsing strategy.
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
+              <label
+                style={{
+                  display: "flex", flexDirection: "column", gap: 4, padding: "var(--sp-md)",
+                  borderRadius: "var(--radius-sm)", border: `2px solid ${settings.engine === "carole" ? "var(--color-primary)" : "var(--color-hairline)"}`,
+                  background: settings.engine === "carole" ? "rgba(99, 102, 241, 0.08)" : "var(--color-canvas)",
+                  cursor: "pointer", transition: "all var(--t-fast)"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                  <input
+                    type="radio" name="engine" value="carole" checked={settings.engine === "carole"}
+                    onChange={() => setSettings((s: any) => ({ ...s, engine: "carole" }))}
+                  />
+                  <strong className="body-sm-strong">Carole Native Agent</strong>
+                  <span className="pill pill-safe" style={{ fontSize: 9, marginLeft: "auto" }}>Recommended</span>
+                </div>
+                <span className="caption text-mute">
+                  Lightweight, built-in ReACT loop with XPath ref snapshots. Zero extra dependencies, instant response, fast local dev testing.
+                </span>
+              </label>
+
+              <label
+                style={{
+                  display: "flex", flexDirection: "column", gap: 4, padding: "var(--sp-md)",
+                  borderRadius: "var(--radius-sm)", border: `2px solid ${settings.engine === "browseruse" ? "var(--color-primary)" : "var(--color-hairline)"}`,
+                  background: settings.engine === "browseruse" ? "rgba(99, 102, 241, 0.08)" : "var(--color-canvas)",
+                  cursor: "pointer", transition: "all var(--t-fast)"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                  <input
+                    type="radio" name="engine" value="browseruse" checked={settings.engine === "browseruse"}
+                    onChange={() => setSettings((s: any) => ({ ...s, engine: "browseruse" }))}
+                  />
+                  <strong className="body-sm-strong">Browser-Use Framework</strong>
+                </div>
+                <span className="caption text-mute">
+                  External agentic framework with tree-based DOM extraction and dedicated vision guidance. Best for complex multi-page workflows.
+                </span>
+              </label>
+            </div>
           </div>
 
-          {settings.provider === "browserbase" && (
-            <div className="form-group">
-              <label className="form-label">Browserbase API Key</label>
-              <input
-                type="password"
-                className="input"
-                placeholder="sk-..."
-                value={settings.api_keys?.browserbase || ""}
-                onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, browserbase: e.target.value } }))}
-              />
+          {/* ── Tier 2: Browser Runtime / Infrastructure ─────────────────────── */}
+          <div style={{ background: "var(--color-canvas-soft)", padding: "var(--sp-md) var(--sp-lg)", borderRadius: "var(--radius-md)", border: "1px solid var(--color-hairline)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-xs)" }}>
+              <span className="badge badge-secondary" style={{ fontSize: 10 }}>Tier 2</span>
+              <strong className="body-sm-strong">Browser Runtime / Infrastructure</strong>
             </div>
-          )}
+            <p className="caption text-mute" style={{ marginBottom: "var(--sp-md)" }}>
+              Select where the Chromium browser instance runs and executes pages.
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
+              <label
+                style={{
+                  display: "flex", flexDirection: "column", gap: 4, padding: "var(--sp-md)",
+                  borderRadius: "var(--radius-sm)", border: `2px solid ${settings.infrastructure === "local" ? "var(--color-primary)" : "var(--color-hairline)"}`,
+                  background: settings.infrastructure === "local" ? "rgba(99, 102, 241, 0.08)" : "var(--color-canvas)",
+                  cursor: "pointer", transition: "all var(--t-fast)"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                  <input
+                    type="radio" name="infrastructure" value="local" checked={settings.infrastructure === "local"}
+                    onChange={() => setSettings((s: any) => ({ ...s, infrastructure: "local" }))}
+                  />
+                  <strong className="body-sm-strong">Local Playwright (On-Machine)</strong>
+                  <span className="pill pill-safe" style={{ fontSize: 9, marginLeft: "auto" }}>Free & Localhost</span>
+                </div>
+                <span className="caption text-mute">
+                  Runs directly on your machine. Full access to localhost:3000, local dev servers, and private LAN. Zero per-minute cloud cost.
+                </span>
+              </label>
 
-          {settings.provider === "scraperapi" && (
-            <div className="form-group">
-              <label className="form-label">ScraperAPI Key</label>
-              <input
-                type="password"
-                className="input"
-                value={settings.api_keys?.scraperapi || ""}
-                onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, scraperapi: e.target.value } }))}
-              />
+              <label
+                style={{
+                  display: "flex", flexDirection: "column", gap: 4, padding: "var(--sp-md)",
+                  borderRadius: "var(--radius-sm)", border: `2px solid ${settings.infrastructure === "browserbase" ? "var(--color-primary)" : "var(--color-hairline)"}`,
+                  background: settings.infrastructure === "browserbase" ? "rgba(99, 102, 241, 0.08)" : "var(--color-canvas)",
+                  cursor: "pointer", transition: "all var(--t-fast)"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                  <input
+                    type="radio" name="infrastructure" value="browserbase" checked={settings.infrastructure === "browserbase"}
+                    onChange={() => setSettings((s: any) => ({ ...s, infrastructure: "browserbase" }))}
+                  />
+                  <strong className="body-sm-strong">Browserbase Cloud</strong>
+                  <span className="pill pill-live" style={{ fontSize: 9, marginLeft: "auto" }}>Cloud Stealth</span>
+                </div>
+                <span className="caption text-mute">
+                  Managed cloud browser with residential IP pool, automatic cloud CAPTCHA solver, session replay logs, and live debug view.
+                </span>
+              </label>
             </div>
-          )}
 
-          {settings.provider === "zenrows" && (
-            <div className="form-group">
-              <label className="form-label">ZenRows API Key</label>
-              <input
-                type="password"
-                className="input"
-                value={settings.api_keys?.zenrows || ""}
-                onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, zenrows: e.target.value } }))}
-              />
+            {settings.infrastructure === "browserbase" && (
+              <div style={{ marginTop: "var(--sp-md)", display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
+                <div className="form-group">
+                  <label className="form-label" style={{ fontSize: 12 }}>Browserbase API Key</label>
+                  <div style={{ display: "flex", gap: "var(--sp-xs)" }}>
+                    <input
+                      type={showKeys["browserbase"] ? "text" : "password"}
+                      className="input"
+                      placeholder="bb_..."
+                      value={settings.api_keys?.browserbase || ""}
+                      onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, browserbase: e.target.value } }))}
+                    />
+                    <button className="btn btn-outline btn-sm" type="button" onClick={() => toggleKey("browserbase")}>
+                      {showKeys["browserbase"] ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label className="form-label" style={{ fontSize: 12 }}>Browserbase Project ID (Optional)</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="project_id"
+                    value={settings.project_id || ""}
+                    onChange={e => setSettings((d: any) => ({ ...d, project_id: e.target.value }))}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Tier 3: Proxy & Anti-Bot Service ─────────────────────────────── */}
+          <div style={{ background: "var(--color-canvas-soft)", padding: "var(--sp-md) var(--sp-lg)", borderRadius: "var(--radius-md)", border: "1px solid var(--color-hairline)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-xs)" }}>
+              <span className="badge badge-accent" style={{ fontSize: 10 }}>Tier 3</span>
+              <strong className="body-sm-strong">Proxy & Anti-Bot Provider</strong>
             </div>
-          )}
+            <p className="caption text-mute" style={{ marginBottom: "var(--sp-md)" }}>
+              Optional residential proxy routing to bypass IP rate-limiting, Cloudflare Turnstile, and geo-blocks.
+            </p>
+            <div className="form-group">
+              <select
+                className="input"
+                value={settings.proxy_provider || "none"}
+                onChange={e => setSettings((d: any) => ({ ...d, proxy_provider: e.target.value }))}
+              >
+                <option value="none">Direct Connection (No Proxy / Local Dev)</option>
+                <option value="scraperapi">ScraperAPI (Smart Rotating Residential Proxy)</option>
+                <option value="zenrows">ZenRows (Anti-Bypass Smart Proxy)</option>
+              </select>
+            </div>
 
+            {settings.proxy_provider === "scraperapi" && (
+              <div className="form-group" style={{ marginTop: "var(--sp-sm)" }}>
+                <label className="form-label" style={{ fontSize: 12 }}>ScraperAPI Key</label>
+                <div style={{ display: "flex", gap: "var(--sp-xs)" }}>
+                  <input
+                    type={showKeys["scraperapi"] ? "text" : "password"}
+                    className="input"
+                    value={settings.api_keys?.scraperapi || ""}
+                    onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, scraperapi: e.target.value } }))}
+                  />
+                  <button className="btn btn-outline btn-sm" type="button" onClick={() => toggleKey("scraperapi")}>
+                    {showKeys["scraperapi"] ? "Hide" : "Show"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {settings.proxy_provider === "zenrows" && (
+              <div className="form-group" style={{ marginTop: "var(--sp-sm)" }}>
+                <label className="form-label" style={{ fontSize: 12 }}>ZenRows API Key</label>
+                <div style={{ display: "flex", gap: "var(--sp-xs)" }}>
+                  <input
+                    type={showKeys["zenrows"] ? "text" : "password"}
+                    className="input"
+                    value={settings.api_keys?.zenrows || ""}
+                    onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, zenrows: e.target.value } }))}
+                  />
+                  <button className="btn btn-outline btn-sm" type="button" onClick={() => toggleKey("zenrows")}>
+                    {showKeys["zenrows"] ? "Hide" : "Show"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Display Mode (Headless ON/OFF) & Vision Model ──────────────── */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
+            <div className="form-group">
+              <label className="form-label">
+                <strong>Display Mode</strong>
+              </label>
+              <select
+                className="input"
+                value={settings.display_mode || "headless"}
+                onChange={e => setSettings((d: any) => ({ ...d, display_mode: e.target.value }))}
+              >
+                <option value="headless">Headless: ON (Background + In-Chat Card / Canvas)</option>
+                <option value="windowed">Headless: OFF (Real Desktop Chromium Window)</option>
+              </select>
+              <span className="caption text-mute" style={{ display: "block", marginTop: 4 }}>
+                {settings.display_mode === "windowed"
+                  ? "🖥️ A real browser window pops up on your machine. You can click and type directly."
+                  : "⚡ Zero window popups. View live screenshots and interact via the In-Chat Card or BrowserView."}
+              </span>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">
+                <strong>Vision Guidance Model</strong>
+              </label>
+              <select
+                className="input"
+                value={settings.vision_model || "inherit"}
+                onChange={e => setSettings((d: any) => ({ ...d, vision_model: e.target.value }))}
+              >
+                <option value="inherit">Inherit Calling Agent's Active Model</option>
+                <option value="gpt-4o">OpenAI GPT-4o (High-Accuracy Vision)</option>
+                <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (Best Reasoning & DOM)</option>
+                <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Massive Context)</option>
+              </select>
+              <span className="caption text-mute" style={{ display: "block", marginTop: 4 }}>
+                Optionally designate a dedicated high-accuracy vision model for screenshot analysis.
+              </span>
+            </div>
+          </div>
+
+          {/* ── Tradeoff & HIL Summary Callout ─────────────────────────────── */}
+          <div className="callout callout-info" style={{ fontSize: 12, lineHeight: 1.5 }}>
+            <strong>Human-in-the-Loop (HIL) & Roadblock Policy:</strong>
+            <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
+              <li><strong>`ask_user`:</strong> Used for textual preferences or missing parameters (e.g. &quot;What search term should I use?&quot;).</li>
+              <li><strong>`browser_human_takeover`:</strong> Automatically triggered for CAPTCHAs, 2FA SMS codes, Google/GitHub OAuth logins, or stuck modals. Solved via the In-Chat Input Card or Interactive BrowserView.</li>
+              <li><strong>Local Dev Safety:</strong> Localhost and local dev ports (3000, 5173, 8000) are fully accessible under Local Playwright runtime.</li>
+            </ul>
+          </div>
+
+          {/* ── Save Button ────────────────────────────────────────────────── */}
           <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
             <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Settings
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Browser Settings
             </button>
           </div>
         </div>

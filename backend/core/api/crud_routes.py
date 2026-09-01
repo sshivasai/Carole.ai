@@ -7,7 +7,7 @@ Also provides a /api/seed endpoint for bootstrapping a demo environment.
 
 import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Union, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
@@ -169,7 +169,7 @@ class McpServerCreate(BaseModel):
     team_id: str
     server_name: str
     command: str
-    args: List[str] = []  # List instead of comma-separated string to support args with commas
+    args: Union[List[str], str] = []  # Accepts either List[str] or raw string arguments
     agent_id: Optional[str] = None
     env_vars: Optional[dict] = None
 
@@ -286,8 +286,10 @@ async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_d
     )
     db.add(learning)
     await db.commit()
+    await db.refresh(learning)
     
     await lancedb_client.insert_learning(
+        learning_id=str(learning.id),
         project_id=body.project_id,
         team_id=body.team_id,
         task_summary=body.task_summary,
@@ -333,6 +335,8 @@ async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db), us
 @router.put("/learnings/{learning_id}")
 async def update_learning(learning_id: str, body: LearningUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import Learning
+    from core.memory.lancedb_client import lancedb_client
+    from core.llm.multi_model_router import llm_router
     
     stmt = select(Learning).where(Learning.id == uuid.UUID(learning_id))
     result = await db.execute(stmt)
@@ -340,23 +344,47 @@ async def update_learning(learning_id: str, body: LearningUpdate, db: AsyncSessi
     if not learning:
         raise HTTPException(status_code=404, detail="Learning not found")
         
-    if body.task_summary is not None:
+    text_changed = False
+    if body.task_summary is not None and body.task_summary != learning.task_summary:
         learning.task_summary = body.task_summary
-    if body.lesson_rule is not None:
+        text_changed = True
+    if body.lesson_rule is not None and body.lesson_rule != learning.lesson_rule:
         learning.lesson_rule = body.lesson_rule
+        text_changed = True
     if body.project_id == "null":
         learning.project_id = None
-        from core.memory.lancedb_client import lancedb_client
         await lancedb_client.update_project_id(learning_id, None)
 
-    await db.flush()
+    await db.commit()
+
+    if text_changed:
+        try:
+            combined_text = f"Task: {learning.task_summary} | Rule: {learning.lesson_rule}"
+            new_embedding = await llm_router.generate_embeddings(combined_text)
+            await lancedb_client.delete_learning(learning_id)
+            await lancedb_client.insert_learning(
+                learning_id=learning_id,
+                project_id=str(learning.project_id) if learning.project_id else "",
+                team_id=str(learning.team_id) if learning.team_id else None,
+                task_summary=learning.task_summary,
+                lesson_rule=learning.lesson_rule,
+                vector=new_embedding,
+            )
+        except Exception as e:
+            logger.warning("LanceDB re-embedding failed during update_learning: %s", e)
+
     return {"status": "updated", "id": learning_id}
 
 @router.delete("/learnings/{learning_id}")
 async def delete_learning(learning_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import Learning
+    from core.memory.lancedb_client import lancedb_client
     await db.execute(delete(Learning).where(Learning.id == uuid.UUID(learning_id)))
-    await db.flush()
+    await db.commit()
+    try:
+        await lancedb_client.delete_learning(learning_id)
+    except Exception as e:
+        logger.warning("LanceDB delete failed for %s: %s", learning_id, e)
     return {"status": "deleted", "id": learning_id}
 
 
@@ -2085,14 +2113,633 @@ async def get_mcp_status():
         safe_statuses[key_str] = v
     return safe_statuses
 
+@router.get("/mcp/templates")
+async def get_mcp_templates():
+    """Return the dynamic catalog of pre-configured MCP integration templates."""
+    import pathlib, json
+    
+    # We can load from a dynamic JSON/YAML configuration if present or return standard dynamic list
+    templates = [
+        {
+            "id": "github",
+            "name": "GitHub",
+            "category": "Developer",
+            "description": "Inspect repositories, file issues, review PRs, search code, and manage workflows.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-github",
+            "docsUrl": "https://github.com/settings/tokens",
+            "badge": "Official",
+            "logo": "github",
+            "fields": [
+                {
+                    "key": "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "label": "Personal Access Token",
+                    "placeholder": "ghp_xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Needs 'repo', 'workflow', and 'read:org' scopes."
+                }
+            ]
+        },
+        {
+            "id": "gitlab",
+            "name": "GitLab",
+            "category": "Developer",
+            "description": "Interact with GitLab projects, merge requests, issues, pipelines, and wiki.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-gitlab",
+            "docsUrl": "https://gitlab.com/-/user_settings/personal_access_tokens",
+            "badge": "Popular",
+            "logo": "gitlab",
+            "fields": [
+                {
+                    "key": "GITLAB_PERSONAL_ACCESS_TOKEN",
+                    "label": "Personal Access Token",
+                    "placeholder": "glpat-xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Create a token with 'api' and 'read_repository' scopes."
+                },
+                {
+                    "key": "GITLAB_API_URL",
+                    "label": "GitLab Instance URL (Optional)",
+                    "placeholder": "https://gitlab.com/api/v4",
+                    "required": False,
+                    "defaultValue": "https://gitlab.com/api/v4"
+                }
+            ]
+        },
+        {
+            "id": "sentry",
+            "name": "Sentry",
+            "category": "Developer",
+            "description": "Search production error issues, view stack traces, and analyze crash telemetry.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-sentry",
+            "docsUrl": "https://sentry.io/settings/account/api/auth-tokens/",
+            "logo": "sentry",
+            "fields": [
+                {
+                    "key": "SENTRY_AUTH_TOKEN",
+                    "label": "Auth Token",
+                    "placeholder": "sntrys_xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "User auth token from Sentry settings."
+                }
+            ]
+        },
+        {
+            "id": "puppeteer",
+            "name": "Puppeteer Web Automator",
+            "category": "Developer",
+            "description": "Direct Headless Chromium execution for automated scraping and testing.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-puppeteer",
+            "docsUrl": "https://pptr.dev",
+            "logo": "puppeteer",
+            "fields": [
+                {
+                    "key": "DOCKER_CONTAINER",
+                    "label": "Headless Sandbox Options (Optional)",
+                    "placeholder": "allow-all",
+                    "required": False
+                }
+            ]
+        },
+        {
+            "id": "docker",
+            "name": "Docker",
+            "category": "Developer",
+            "description": "Manage local & remote Docker containers, images, volumes, and compose swarms.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-docker",
+            "docsUrl": "https://docs.docker.com",
+            "badge": "Popular",
+            "logo": "docker",
+            "fields": [
+                {
+                    "key": "DOCKER_HOST",
+                    "label": "Docker Host (Optional)",
+                    "placeholder": "unix:///var/run/docker.sock",
+                    "required": False
+                }
+            ]
+        },
+        {
+            "id": "postgres",
+            "name": "PostgreSQL",
+            "category": "Database",
+            "description": "Run schema introspection, execute read queries, and analyze table structures.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-postgres",
+            "docsUrl": "https://www.postgresql.org/docs/",
+            "badge": "Official",
+            "logo": "postgres",
+            "fields": [
+                {
+                    "key": "POSTGRES_URL",
+                    "label": "Database Connection URI",
+                    "placeholder": "postgresql://user:password@localhost:5432/mydb",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Connection string with read/write access."
+                }
+            ]
+        },
+        {
+            "id": "redis",
+            "name": "Redis",
+            "category": "Database",
+            "description": "Query Redis keys, streams, cached objects, and pub/sub message queues.",
+            "command": "uvx",
+            "args": "mcp-server-redis",
+            "docsUrl": "https://redis.io/docs/",
+            "logo": "redis",
+            "fields": [
+                {
+                    "key": "REDIS_URL",
+                    "label": "Redis Connection URL",
+                    "placeholder": "redis://localhost:6379",
+                    "required": True,
+                    "defaultValue": "redis://localhost:6379"
+                }
+            ]
+        },
+        {
+            "id": "supabase",
+            "name": "Supabase",
+            "category": "Database",
+            "description": "Manage Supabase tables, Postgres functions, Auth users, and Storage buckets.",
+            "command": "npx",
+            "args": "-y,@supabase/mcp-server",
+            "docsUrl": "https://supabase.com/dashboard/project/_/settings/api",
+            "badge": "Popular",
+            "logo": "supabase",
+            "fields": [
+                {
+                    "key": "SUPABASE_URL",
+                    "label": "Project URL",
+                    "placeholder": "https://xyzcompany.supabase.co",
+                    "required": True
+                },
+                {
+                    "key": "SUPABASE_SERVICE_ROLE_KEY",
+                    "label": "Service Role Key (Secret)",
+                    "placeholder": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    "required": True,
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "mongodb",
+            "name": "MongoDB",
+            "category": "Database",
+            "description": "Query MongoDB document collections, indexes, and aggregation pipelines.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-mongodb",
+            "docsUrl": "https://www.mongodb.com/docs/",
+            "logo": "mongodb",
+            "fields": [
+                {
+                    "key": "MONGODB_URI",
+                    "label": "MongoDB Connection String",
+                    "placeholder": "mongodb://localhost:27017/mydb",
+                    "required": True,
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "slack",
+            "name": "Slack",
+            "category": "Communication",
+            "description": "Post messages, query channels, retrieve message threads, and reply to team members.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-slack",
+            "docsUrl": "https://api.slack.com/apps",
+            "badge": "Official",
+            "logo": "slack",
+            "fields": [
+                {
+                    "key": "SLACK_BOT_TOKEN",
+                    "label": "Bot User OAuth Token",
+                    "placeholder": "xoxb-xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Starts with 'xoxb-'. Needs channels:read, chat:write scopes."
+                },
+                {
+                    "key": "SLACK_TEAM_ID",
+                    "label": "Slack Team / Workspace ID",
+                    "placeholder": "T0123456789",
+                    "required": True
+                }
+            ]
+        },
+        {
+            "id": "discord",
+            "name": "Discord",
+            "category": "Communication",
+            "description": "Send channel notifications, inspect Discord servers, and interact with guilds.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-discord",
+            "docsUrl": "https://discord.com/developers/applications",
+            "logo": "discord",
+            "fields": [
+                {
+                    "key": "DISCORD_BOT_TOKEN",
+                    "label": "Discord Bot Token",
+                    "placeholder": "MTE0xxxxxxxxxxxxxxxxxxxx.xxxxxx.xxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "linear",
+            "name": "Linear",
+            "category": "Productivity",
+            "description": "Create and update issues, query sprint cycles, and track bug tickets.",
+            "command": "npx",
+            "args": "-y,@linear/mcp-server",
+            "docsUrl": "https://linear.app/settings/api",
+            "badge": "Popular",
+            "logo": "linear",
+            "fields": [
+                {
+                    "key": "LINEAR_API_KEY",
+                    "label": "Linear API Key",
+                    "placeholder": "lin_api_xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Generate a personal API key from Linear Settings → API."
+                }
+            ]
+        },
+        {
+            "id": "notion",
+            "name": "Notion",
+            "category": "Productivity",
+            "description": "Read & write Notion pages, query databases, and append structured documentation.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-notion",
+            "docsUrl": "https://www.notion.so/my-integrations",
+            "badge": "Official",
+            "logo": "notion",
+            "fields": [
+                {
+                    "key": "NOTION_API_KEY",
+                    "label": "Internal Integration Secret",
+                    "placeholder": "secret_xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Create an integration and connect it to your workspace pages."
+                }
+            ]
+        },
+        {
+            "id": "jira",
+            "name": "Jira & Confluence",
+            "category": "Productivity",
+            "description": "Manage Atlassian Jira epics/tasks, sprints, and Confluence wiki spaces.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-atlassian",
+            "docsUrl": "https://id.atlassian.com/manage-profile/security/api-tokens",
+            "logo": "jira",
+            "fields": [
+                {
+                    "key": "CONFLUENCE_DOMAIN",
+                    "label": "Atlassian Subdomain",
+                    "placeholder": "yourcompany.atlassian.net",
+                    "required": True
+                },
+                {
+                    "key": "ATLASSIAN_EMAIL",
+                    "label": "Account Email",
+                    "placeholder": "developer@company.com",
+                    "required": True
+                },
+                {
+                    "key": "ATLASSIAN_API_TOKEN",
+                    "label": "API Token",
+                    "placeholder": "ATATT3xFfGF0xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "google-drive",
+            "name": "Google Drive & Docs",
+            "category": "Productivity",
+            "description": "Search Google Drive files, extract text from Docs/Sheets, and export assets.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-google-drive",
+            "docsUrl": "https://console.cloud.google.com/apis/credentials",
+            "logo": "google-drive",
+            "fields": [
+                {
+                    "key": "GOOGLE_DRIVE_CREDENTIALS",
+                    "label": "Credentials JSON",
+                    "placeholder": "{\"type\": \"service_account\", ...}",
+                    "required": True,
+                    "type": "textarea",
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "airtable",
+            "name": "Airtable",
+            "category": "Productivity",
+            "description": "Read & write records in Airtable bases, manage schema tables, and query views.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-airtable",
+            "docsUrl": "https://airtable.com/create/tokens",
+            "badge": "Popular",
+            "logo": "airtable",
+            "fields": [
+                {
+                    "key": "AIRTABLE_API_KEY",
+                    "label": "Personal Access Token",
+                    "placeholder": "patxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Create a token with 'data.records:read' and 'data.records:write' scopes."
+                }
+            ]
+        },
+        {
+            "id": "figma",
+            "name": "Figma",
+            "category": "Productivity",
+            "description": "Inspect design components, extract CSS variables/tokens, and read canvas layers.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-figma",
+            "docsUrl": "https://www.figma.com/developers/api",
+            "logo": "figma",
+            "fields": [
+                {
+                    "key": "FIGMA_PERSONAL_ACCESS_TOKEN",
+                    "label": "Personal Access Token",
+                    "placeholder": "figd_xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "asana",
+            "name": "Asana",
+            "category": "Productivity",
+            "description": "Create tasks, query project sections, assign team owners, and update milestone status.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-asana",
+            "docsUrl": "https://app.asana.com/0/my-apps",
+            "logo": "asana",
+            "fields": [
+                {
+                    "key": "ASANA_ACCESS_TOKEN",
+                    "label": "Personal Access Token",
+                    "placeholder": "1/120xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "stripe",
+            "name": "Stripe",
+            "category": "Finance & CRM",
+            "description": "Query charges, invoices, subscription tiers, customer records, and payment events.",
+            "command": "npx",
+            "args": "-y,@stripe/mcp-server",
+            "docsUrl": "https://dashboard.stripe.com/apikeys",
+            "badge": "Official",
+            "logo": "stripe",
+            "fields": [
+                {
+                    "key": "STRIPE_SECRET_KEY",
+                    "label": "Secret Key (Test or Live)",
+                    "placeholder": "sk_test_51xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Restricted or standard secret key from Stripe dashboard."
+                }
+            ]
+        },
+        {
+            "id": "hubspot",
+            "name": "HubSpot",
+            "category": "Finance & CRM",
+            "description": "Search CRM contacts, deals, company pipelines, and customer notes.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-hubspot",
+            "docsUrl": "https://app.hubspot.com/private-apps",
+            "badge": "Popular",
+            "logo": "hubspot",
+            "fields": [
+                {
+                    "key": "HUBSPOT_ACCESS_TOKEN",
+                    "label": "Private App Access Token",
+                    "placeholder": "pat-na1-xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "aws-s3",
+            "name": "AWS Cloud & S3",
+            "category": "Cloud & Search",
+            "description": "Read, write, and list objects across Amazon S3 buckets and AWS cloud assets.",
+            "command": "uvx",
+            "args": "mcp-server-aws-s3",
+            "docsUrl": "https://aws.amazon.com/console/",
+            "logo": "aws",
+            "fields": [
+                {
+                    "key": "AWS_ACCESS_KEY_ID",
+                    "label": "Access Key ID",
+                    "placeholder": "AKIAIOSFODNN7EXAMPLE",
+                    "required": True
+                },
+                {
+                    "key": "AWS_SECRET_ACCESS_KEY",
+                    "label": "Secret Access Key",
+                    "placeholder": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                    "required": True,
+                    "isSecret": True
+                },
+                {
+                    "key": "AWS_REGION",
+                    "label": "AWS Region",
+                    "placeholder": "us-east-1",
+                    "defaultValue": "us-east-1",
+                    "required": True
+                }
+            ]
+        },
+        {
+            "id": "brave-search",
+            "name": "Brave Web Search",
+            "category": "Cloud & Search",
+            "description": "Independent web search index with fast text snippets, news, and links.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-brave-search",
+            "docsUrl": "https://brave.com/search/api/",
+            "badge": "Official",
+            "logo": "brave-search",
+            "fields": [
+                {
+                    "key": "BRAVE_API_KEY",
+                    "label": "Brave Search API Key",
+                    "placeholder": "BSAxxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True
+                }
+            ]
+        },
+        {
+            "id": "perplexity",
+            "name": "Perplexity AI Search",
+            "category": "Cloud & Search",
+            "description": "Real-time AI grounded web search, citation retrieval, and factual research engine.",
+            "command": "npx",
+            "args": "-y,perplexity-mcp",
+            "docsUrl": "https://www.perplexity.ai/settings/api",
+            "badge": "Popular",
+            "logo": "perplexity",
+            "fields": [
+                {
+                    "key": "PERPLEXITY_API_KEY",
+                    "label": "Perplexity API Key",
+                    "placeholder": "pplx-xxxxxxxxxxxxxxxxxxxx",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Obtain an API key from Perplexity AI account settings."
+                }
+            ]
+        },
+        {
+            "id": "mongodb",
+            "name": "MongoDB",
+            "category": "Database",
+            "description": "Query documents, aggregate collections, inspect BSON schemas, and run analytics.",
+            "command": "npx",
+            "args": "-y,@modelcontextprotocol/server-mongodb",
+            "docsUrl": "https://www.mongodb.com/docs/atlas/",
+            "badge": "Official",
+            "logo": "mongodb",
+            "fields": [
+                {
+                    "key": "MONGODB_URI",
+                    "label": "MongoDB Connection URI",
+                    "placeholder": "mongodb+srv://user:pass@cluster.mongodb.net/dbname",
+                    "required": True,
+                    "isSecret": True,
+                    "helpText": "Atlas or self-hosted MongoDB connection string."
+                }
+            ]
+        }
+    ]
+    return templates
+
+
+@router.post("/mcp/resolve-logo")
+async def resolve_mcp_logo_endpoint(body: dict):
+    """
+    Dynamically resolves or automatically downloads official brand SVG logo for any MCP server.
+    """
+    import re, pathlib, urllib.request
+
+    server_name = body.get("server_name", "").strip().lower()
+    command = body.get("command", "").strip().lower()
+    args = body.get("args", "")
+    if isinstance(args, list):
+        args = " ".join(args).lower()
+    else:
+        args = str(args).lower()
+
+    # Determine slug from server_name or package name
+    combined = f"{server_name} {args}"
+    slug = None
+    common_brands = [
+        "github", "gitlab", "slack", "discord", "linear", "notion", "jira", "confluence",
+        "postgres", "postgresql", "redis", "supabase", "google-drive", "google", "sentry",
+        "stripe", "aws", "airtable", "brave-search", "brave", "figma", "hubspot", "asana",
+        "puppeteer", "docker", "datadog", "posthog", "mongodb", "mysql", "clickup", "trello",
+        "zendesk", "intercom", "elasticsearch", "snowflake", "graphql", "kubernetes"
+    ]
+    
+    for brand in common_brands:
+        if brand in combined:
+            slug = "postgres" if brand == "postgresql" else ("brave-search" if brand == "brave" else brand)
+            break
+            
+    if not slug:
+        # Clean server_name to alphanumeric slug
+        slug = re.sub(r"[^a-z0-9\-]", "", server_name.replace(" ", "-").replace("_", "-"))
+        slug = slug.removeprefix("mcp-server-").removeprefix("server-").removeprefix("@modelcontextprotocol/")
+
+    if not slug:
+        slug = "default"
+
+    # Check if logo exists in frontend/public/logos
+    frontend_logo_dir = pathlib.Path(__file__).resolve().parents[3] / "frontend" / "public" / "logos"
+    frontend_logo_dir.mkdir(parents=True, exist_ok=True)
+    target_file = frontend_logo_dir / f"{slug}.svg"
+
+    if target_file.exists():
+        return {"slug": slug, "logo_url": f"/logos/{slug}.svg", "cached": True}
+
+    # Attempt to download from Simple Icons CDN API
+    cdn_slug = "postgresql" if slug == "postgres" else ("amazons3" if slug == "aws" else ("googledrive" if slug == "google-drive" else slug))
+    cdn_url = f"https://cdn.jsdelivr.net/npm/simple-icons@v14/icons/{cdn_slug}.svg"
+    try:
+        req = urllib.request.Request(cdn_url, headers={"User-Agent": "CaroleAI/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            svg_data = resp.read().decode("utf-8")
+            target_file.write_text(svg_data, encoding="utf-8")
+            return {"slug": slug, "logo_url": f"/logos/{slug}.svg", "cached": False, "downloaded": True}
+    except Exception:
+        # Generate custom SVG monogram badge as fallback
+        initial = (slug[:2] if len(slug) >= 2 else slug[:1]).upper()
+        fallback_svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <rect width="24" height="24" rx="5" fill="#6366F1"/>
+  <text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="#FFFFFF" font-size="10" font-weight="bold" font-family="sans-serif">{initial}</text>
+</svg>'''
+        target_file.write_text(fallback_svg, encoding="utf-8")
+        return {"slug": slug, "logo_url": f"/logos/{slug}.svg", "cached": False, "generated": True}
+
+
 @router.post("/mcp")
 async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import McpServer
     from core.tools.mcp_client import mcp_manager
     import asyncio
     
-    # args is now List[str] directly — no splitting needed
-    args_list = body.args
+    # Gracefully parse args whether string or list
+    if isinstance(body.args, str):
+        import shlex
+        try:
+            args_list = shlex.split(body.args) if body.args.strip() else []
+        except Exception:
+            args_list = body.args.split()
+    elif isinstance(body.args, list):
+        args_list = body.args
+    else:
+        args_list = []
+
+    # Automatically resolve/cache logo for this server
+    try:
+        asyncio.create_task(
+            resolve_mcp_logo_endpoint({"server_name": body.server_name, "command": body.command, "args": args_list})
+        )
+    except Exception:
+        pass
 
     server = McpServer(
         team_id=uuid.UUID(body.team_id),

@@ -35,6 +35,8 @@ async def list_plugins(user: dict = Depends(require_auth)):
     return plugins
 
 
+import ast
+
 _SAFE_PLUGIN_FILENAME_RE = re.compile(r'^[a-zA-Z0-9_-]+\.py$')
 
 
@@ -45,9 +47,11 @@ def _validate_plugin_filename(filename: str) -> None:
             400,
             "Invalid plugin filename. Only alphanumeric, underscore, and hyphen characters are allowed (e.g. my_tool.py)."
         )
-    # Double-check resolved path stays inside PLUGINS_DIR
+    # Double-check resolved path stays strictly inside PLUGINS_DIR
     resolved = (PLUGINS_DIR / filename).resolve()
-    if not str(resolved).startswith(str(PLUGINS_DIR.resolve())):
+    try:
+        resolved.relative_to(PLUGINS_DIR.resolve())
+    except ValueError:
         raise HTTPException(400, "Path traversal attempt detected.")
 
 
@@ -56,6 +60,12 @@ async def save_plugin(filename: str, body: PluginCode, user: dict = Depends(requ
     """Save a plugin file and hot-reload the tool registry. Requires authentication."""
     _validate_plugin_filename(filename)
     
+    # Pre-validate Python syntax before saving
+    try:
+        ast.parse(body.code, filename=filename)
+    except SyntaxError as e:
+        raise HTTPException(400, f"Python syntax error on line {e.lineno}: {e.msg}")
+
     file_path = PLUGINS_DIR / filename
     
     # Save the file

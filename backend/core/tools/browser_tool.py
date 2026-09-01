@@ -200,6 +200,10 @@ class BrowserTool:
 
     def _setup_dialog_handler(self, page, agent_id: str):
         """Attach a dialog listener to a page. Dialogs are queued for the agent."""
+        if getattr(page, "_carole_dialog_attached", False):
+            return
+        setattr(page, "_carole_dialog_attached", True)
+
         async def _on_dialog(dialog):
             info = {
                 "type": dialog.type,
@@ -231,6 +235,12 @@ class BrowserTool:
         """Navigate to a URL. Returns the page title + a compact snapshot.
         Automatically waits for JS rendering, detects CAPTCHAs, and polls
         up to 45 seconds for providers like Browserbase to solve them."""
+        from core.tools.ssrf_guard import assert_safe_public_url
+        try:
+            url = assert_safe_public_url(url, allow_local=True)
+        except ValueError as e:
+            return f"Error: {e}"
+
         try:
             page = await _get_page(agent_id)
             self._setup_dialog_handler(page, agent_id)
@@ -340,7 +350,11 @@ class BrowserTool:
                     build_tree(child_id, depth + 1 if idx is not None else depth)
                     
             build_tree(root_id, 0)
-            return "\n".join(text_lines)
+            full_text = "\n".join(text_lines)
+            MAX_SNAPSHOT_CHARS = 12000
+            if len(full_text) > MAX_SNAPSHOT_CHARS:
+                return full_text[:MAX_SNAPSHOT_CHARS] + "\n\n[Snapshot truncated: page contains more elements...]"
+            return full_text
             
         except Exception as e:
             return f"Error extracting page text: {str(e)}"
@@ -644,7 +658,6 @@ class BrowserTool:
         try:
             page = await _get_page(agent_id)
             selector = self._resolve_selector(selector, page)
-            selector = self._resolve_selector(selector, page)
             element = await page.query_selector(selector)
             if not element:
                 return f"Error: Element '{selector}' not found."
@@ -840,7 +853,6 @@ class BrowserTool:
     async def screenshot_element(self, selector: str, agent_id: str, agent_name: str, team_id: str) -> str:
         try:
             page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
             selector = self._resolve_selector(selector, page)
             element = await page.query_selector(selector)
             if not element:

@@ -47,6 +47,7 @@ from core.api.model_routes import router as model_router
 from core.api.scratchpad_routes import router as scratchpad_router
 from core.api.cron_routes import router as cron_router
 from core.api.notification_routes import router as notification_router
+from core.api.browser_routes import router as browser_router
 
 import logging
 import importlib
@@ -296,6 +297,7 @@ app.include_router(skill_router, prefix="/api/skills")
 app.include_router(model_router)
 app.include_router(cron_router)
 app.include_router(notification_router)
+app.include_router(browser_router)
 
 
 # ============================================================

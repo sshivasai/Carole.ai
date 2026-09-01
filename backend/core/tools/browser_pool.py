@@ -42,25 +42,27 @@ async def _ensure_browser():
             
             cfg = load_config()
             ba_cfg = cfg.get("browser_automation", {})
-            provider = ba_cfg.get("provider", "local")
+            infrastructure = ba_cfg.get("infrastructure") or ba_cfg.get("provider", "local")
+            proxy_provider = ba_cfg.get("proxy_provider", "none")
             keys = ba_cfg.get("api_keys", {})
+            display_mode = ba_cfg.get("display_mode", "headless")
+            is_headless = display_mode != "windowed" and ba_cfg.get("headless", True)
             
-            if provider == "browserbase" and keys.get("browserbase"):
+            if infrastructure == "browserbase" and keys.get("browserbase"):
                 key = keys["browserbase"]
                 _browser = await _playwright.chromium.connect_over_cdp(f"wss://connect.browserbase.com?apiKey={key}")
                 logger.info("🌐 [BrowserPool] Connected to Browserbase CDP.")
             else:
                 proxy_settings = None
-                if provider == "scraperapi" and keys.get("scraperapi"):
+                if (proxy_provider == "scraperapi" or infrastructure == "scraperapi") and keys.get("scraperapi"):
                     proxy_settings = {"server": f"http://scraperapi:{keys['scraperapi']}@proxy-server.scraperapi.com:8001"}
-                elif provider == "zenrows" and keys.get("zenrows"):
+                elif (proxy_provider == "zenrows" or infrastructure == "zenrows") and keys.get("zenrows"):
                     proxy_settings = {"server": f"http://{keys['zenrows']}:@proxy.zenrows.com:8001"}
                 
                 _browser = await _playwright.chromium.launch(
-                    headless=True,
+                    headless=is_headless,
                     proxy=proxy_settings,
                     args=[
-                        "--no-sandbox",
                         "--disable-dev-shm-usage",
                         "--disable-gpu",
                         "--disable-extensions",
@@ -73,7 +75,7 @@ async def _ensure_browser():
                         "--disable-renderer-backgrounding",
                     ],
                 )
-                logger.info(f"🌐 [BrowserPool] Chromium launched (provider={provider}, proxy={'yes' if proxy_settings else 'no'}).")
+                logger.info(f"🌐 [BrowserPool] Chromium launched (infra={infrastructure}, headless={is_headless}, proxy={'yes' if proxy_settings else 'no'}).")
         except Exception as e:
             logger.error("✗ [BrowserPool] Failed to launch browser: %s", e)
             raise

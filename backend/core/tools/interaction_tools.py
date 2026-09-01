@@ -92,6 +92,59 @@ class InteractionTools:
         logger.info("[InteractionTools] q_id=%s answered: %.80s", q_id[:8], answer)
         return f"Human answered: {answer}"
 
+    async def browser_human_takeover(
+        self,
+        reason: str,
+        agent_id: str,
+        agent_name: str,
+        team_id: str,
+        timeout: Optional[float] = None,
+        captcha_image_base64: Optional[str] = None,
+    ) -> str:
+        """
+        Pauses autonomous browser execution and requests human takeover/intervention
+        to solve a CAPTCHA, 2FA prompt, OAuth login, or manual roadblock.
+        Blocks until the human completes the action and confirms in the UI or chat.
+        """
+        q_id = str(uuid.uuid4())
+        event = asyncio.Event()
+        pending_questions[q_id] = event
+
+        payload = {
+            "type": "browser_intervention",
+            "question_id": q_id,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "reason": reason,
+            "text": f"🤖 {agent_name} needs browser takeover: {reason}",
+            "captcha_image": captcha_image_base64,
+        }
+
+        await event_bus.publish(f"team:{team_id}", payload)
+
+        wait_timeout = float(timeout) if timeout and timeout > 0 else float(APPROVAL_TIMEOUT_SECS)
+        logger.info(
+            "🌐 [BrowserHIL] Agent '%s' requested takeover: %.80s (q_id=%s, timeout=%ss)",
+            agent_name, reason, q_id[:8], wait_timeout
+        )
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=wait_timeout)
+        except asyncio.TimeoutError:
+            pending_questions.pop(q_id, None)
+            question_answers.pop(q_id, None)
+            logger.warning(
+                "[BrowserHIL] Takeover q_id=%s timed out after %ds — no confirmation received.",
+                q_id[:8], wait_timeout
+            )
+            return f"No human response received within {wait_timeout}s — browser takeover timed out."
+        finally:
+            pending_questions.pop(q_id, None)
+
+        answer = question_answers.pop(q_id, "")
+        logger.info("[BrowserHIL] q_id=%s resolved by human: %.80s", q_id[:8], answer or "Done")
+        return f"Human completed intervention ({answer or 'Done'}). Browser state updated."
+
     async def sleep(self, seconds: float) -> str:
         """Pauses execution for the given number of seconds (max 60)."""
         seconds = min(seconds, 60.0)

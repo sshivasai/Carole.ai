@@ -133,7 +133,7 @@ export default function LandingPage({
 
   const fadeUp = {
     hidden: { opacity: 0, y: 24 },
-    show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] } }
+    show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as const } }
   };
 
   const bentoItem = {
@@ -141,7 +141,7 @@ export default function LandingPage({
     show: { 
       opacity: 1, 
       y: 0,
-      transition: { type: "spring", stiffness: 100, damping: 18 }
+      transition: { type: "spring" as const, stiffness: 100, damping: 18 }
     }
   };
 
@@ -367,7 +367,7 @@ npm run dev
             {/* Release Status Badge */}
             <motion.div variants={fadeUp} className={styles.releaseBadge} style={{ margin: "0 0 16px 0", alignSelf: "flex-start" }}>
               <span className={styles.releaseDot} />
-              <span className={styles.releaseText}>Guarded Multi-Agent Engineering Runtime</span>
+              <span className={styles.releaseText}>Guarded Swarms • Playwright Automation • 30+ MCPs</span>
               <span className={styles.releaseDivider}>|</span>
               <span className={styles.releaseHighlight}>Apache 2.0</span>
             </motion.div>
@@ -391,8 +391,8 @@ npm run dev
               </span>
             </motion.h1>
 
-            <motion.p variants={fadeUp} className={styles.heroSubtitle} style={{ textAlign: "left", margin: "0 0 24px 0", maxWidth: "600px" }}>
-              Orchestrate autonomous agent swarms in a unified developer cockpit with hybrid GraphRAG, zero-trust MCP tools, and split-screen Kanban boards.
+            <motion.p variants={fadeUp} className={styles.heroSubtitle} style={{ textAlign: "left", margin: "0 0 24px 0", maxWidth: "560px" }}>
+              Autonomous AI engineering swarms with visual browser automation, 30+ 1-click MCP integrations, and hybrid GraphRAG.
             </motion.p>
 
             {/* Primary CLI Command Bar */}
@@ -609,10 +609,10 @@ npm run dev
             <div className={styles.graphPane}>
               <div className={styles.graphPaneHeader}>
                 <div className={styles.graphPaneTitle}>
-                  <Network size={15} style={{ color: "#38bdf8" }} />
+                  <Network size={15} style={{ color: "var(--color-primary)" }} />
                   <span>Sparse Knowledge Graph</span>
                 </div>
-                <span className={styles.graphTag} style={{ color: "#38bdf8" }}>
+                <span className={styles.graphTag}>
                   NetworkX Multi-Hop
                 </span>
               </div>
@@ -625,14 +625,15 @@ npm run dev
                   transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
                   className={styles.graphResultItem}
                 >
-                  <div style={{ fontWeight: 600, color: "var(--color-ink-strong)", marginBottom: 6 }}>
+                  <div style={{ fontWeight: 700, color: "var(--color-ink-strong)", marginBottom: 6 }}>
                     Discovered Entity Pathway
                   </div>
                   <div
                     style={{
                       fontFamily: "var(--font-family-mono, monospace)",
-                      fontSize: 11.5,
-                      color: "#38bdf8",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--color-primary-soft, #4f46e5)",
                       lineHeight: 1.6,
                     }}
                   >
@@ -751,7 +752,7 @@ npm run dev
             </MagneticCard>
           </motion.div>
 
-          {/* Cell 4: Playwright Headless Browser QA (Span 7) */}
+          {/* Cell 4: Playwright Headless & Visual Browser QA (Span 7) */}
           <motion.div variants={bentoItem} className={styles.bentoCellSpan7}>
             <MagneticCard tiltMaxAngle={6} liftAmount={8} glowColor="rgba(244, 63, 94, 0.2)" style={{ height: "100%", borderRadius: 16 }}>
               <div className={styles.bentoCard}>
@@ -761,17 +762,17 @@ npm run dev
                       <Laptop size={20} />
                     </div>
                     <div>
-                      <h3 className={styles.bentoTitle}>Playwright Browser Automation</h3>
-                      <span className={styles.bentoBadge} style={{ color: "#f43f5e" }}>Headless DOM Tester</span>
+                      <h3 className={styles.bentoTitle}>Visual Browser Automation &amp; Human Takeover</h3>
+                      <span className={styles.bentoBadge} style={{ color: "#f43f5e" }}>Playwright + Chromium Engine</span>
                     </div>
                   </div>
                   <p className={styles.bentoText}>
-                    Dedicated browser subagents navigate live web apps, inspect DOM elements, click, fill forms, execute tests, and capture verified screenshot artifacts.
+                    Browser subagents autonomously navigate live web apps, inspect DOM trees, fill forms, verify frontend regressions, and request interactive Human-in-the-Loop takeovers with live screen streaming for CAPTCHA solving.
                   </p>
                 </div>
                 <div className={styles.bentoVisual}>
-                  <div style={{ color: "#f43f5e" }}>&gt; browser_navigate(url=&apos;http://localhost:3000/auth&apos;)</div>
-                  <div style={{ color: "#34d399" }}>DOM element #login-btn clicked • 14 assertion checks passed in 1.8s</div>
+                  <div style={{ color: "#f43f5e" }}>&gt; browser_navigate(url=&apos;http://localhost:3000/dashboard&apos;)</div>
+                  <div style={{ color: "#34d399" }}>DOM element #submit-btn clicked • 14 E2E assertion checks passed • Verified screenshot attached</div>
                 </div>
               </div>
             </MagneticCard>
@@ -873,9 +874,9 @@ npm run dev
               <div className={styles.osPillarIcon} style={{ background: "rgba(167, 139, 250, 0.1)", color: "#a78bfa" }}>
                 <Cpu size={18} />
               </div>
-              <div className={styles.osPillarTitle}>Universal MCP Support</div>
+              <div className={styles.osPillarTitle}>1-Click MCP Marketplace</div>
               <div className={styles.osPillarDesc}>
-                Plug in any open-source Model Context Protocol server for PostgreSQL, GitHub, Docker, and beyond.
+                Connect 30+ pre-configured MCP servers (GitHub, PostgreSQL, Slack, Linear, Notion, Supabase, Stripe) with 1-click token authorization, live brand logos, and dynamic stdio/SSE registration.
               </div>
             </motion.div>
           </motion.div>

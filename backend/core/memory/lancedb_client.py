@@ -42,10 +42,14 @@ class LanceDBClient:
         lesson_rule: str,
         vector: List[float],
         team_id: Optional[str] = None,
-    ) -> None:
-        """Insert a new learning into the vector store (non-blocking)."""
+        learning_id: Optional[str] = None,
+    ) -> str:
+        """Insert a new learning into the vector store (non-blocking).
+        Uses learning_id if provided to correlate 1-to-1 with SQLite Learning.id.
+        """
+        row_id = str(learning_id) if learning_id else str(uuid.uuid4())
         data = [{
-            "id": str(uuid.uuid4()),
+            "id": row_id,
             "project_id": project_id or "",
             "team_id": team_id or "",
             "task_summary": task_summary,
@@ -53,6 +57,7 @@ class LanceDBClient:
             "vector": vector,
         }]
         await asyncio.to_thread(self._sync_insert, data)
+        return row_id
 
     async def search_learnings(
         self,
@@ -118,6 +123,7 @@ class LanceDBClient:
 
             results = (
                 table.search(vector)
+                .metric("cosine")
                 .where(filter_str)
                 .limit(limit)
                 .to_list()

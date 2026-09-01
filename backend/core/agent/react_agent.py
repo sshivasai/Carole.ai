@@ -18,7 +18,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.llm.multi_model_router import llm_router
@@ -293,12 +293,21 @@ class ReACTAgent:
             learnings_block += "\n"
             
         # 3.5 Format Entity Facts
-        fact_stmt = select(EntityMemory).where(
+        proj_uuid = uuid.UUID(str(self.project_id)) if self.project_id else None
+        fact_conditions = [
             or_(
                 EntityMemory.team_id == None,
-                EntityMemory.team_id == team_uuid
+                EntityMemory.team_id == team_uuid,
             )
-        )
+        ]
+        if proj_uuid:
+            fact_conditions.append(
+                or_(
+                    EntityMemory.project_id == proj_uuid,
+                    EntityMemory.project_id == None,
+                )
+            )
+        fact_stmt = select(EntityMemory).where(and_(*fact_conditions))
         fact_result = await db_session.execute(fact_stmt)
         entity_facts = fact_result.scalars().all()
         if entity_facts:
@@ -1557,7 +1566,8 @@ class ReACTAgent:
                     pass
 
                 if not is_file_obs:
-                    observation_text = f"[OBSERVATION] Tool output:\n{observation}\n[/OBSERVATION]"
+                    safe_obs = observation.replace("[/OBSERVATION]", "[\\/OBSERVATION]").replace("[ACTION]", "[\ACTION]")
+                    observation_text = f"[OBSERVATION] Tool output:\n{safe_obs}\n[/OBSERVATION]"
                     messages.append({
                         "role": "user",
                         "content": observation_text

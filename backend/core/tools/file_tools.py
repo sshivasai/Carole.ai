@@ -66,9 +66,10 @@ class FileTools:
             import re
 
             try:
-                project_uuid = uuid.UUID(project_id)
+                project_uuid = uuid.UUID(str(project_id))
             except ValueError:
-                return workspaces_dir / project_id
+                safe_id = re.sub(r'[^a-zA-Z0-9_-]+', '', str(project_id))
+                return (workspaces_dir / safe_id).resolve()
 
             async with async_session() as db:
                 result = await db.execute(select(Project).where(Project.id == project_uuid))
@@ -82,7 +83,8 @@ class FileTools:
                     return root
 
             # Fallback if project not found
-            fallback = (workspaces_dir / project_id).resolve()
+            safe_id = re.sub(r'[^a-zA-Z0-9_-]+', '', str(project_id))
+            fallback = (workspaces_dir / safe_id).resolve()
             self._project_workspace_cache[project_id] = fallback
             return fallback
 
@@ -237,7 +239,7 @@ class FileTools:
         force: bool = False
     ) -> str:
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=True)
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=False)
             lock = self._get_lock(safe_path)
             scope = team_id or "global"
             norm_path = str(safe_path.resolve())
@@ -326,8 +328,9 @@ class FileTools:
                 with open(safe_path, "w", encoding="utf-8") as f:
                     f.write(content)
                 diff = self._generate_diff(relative_path, before, content)
-                # Update read state to latest written state
-                self._read_state.setdefault(scope, {})[norm_path] = safe_path.stat().st_mtime
+                # Invalidate cached read state so subsequent reads fetch the fresh content
+                for s in self._read_state.values():
+                    s.pop(norm_path, None)
                 return FileChangeResult(
                     message=f"Success: File '{relative_path}' written ({len(content)} bytes).",
                     path=relative_path, action=action, before_content=before, after_content=content, diff=diff,
@@ -492,7 +495,7 @@ class FileTools:
 
     async def list_directory(self, relative_path: str = ".", project_id: Optional[str] = None) -> str:
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=True)
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=False)
             def _sync_list():
                 if not safe_path.is_dir():
                     return f"Error: '{relative_path}' is not a directory."
@@ -511,13 +514,15 @@ class FileTools:
     async def grep_search(self, pattern: str, relative_path: str = ".", case_sensitive: bool = True, project_id: Optional[str] = None) -> str:
         """Searches file contents for a regex pattern. Returns matching lines with file:line references."""
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id)
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=False)
             root_path = await self.get_workspace_root(project_id)
             def _sync_grep():
                 flags = 0 if case_sensitive else re.IGNORECASE
                 compiled = re.compile(pattern, flags)
                 results = []
                 max_results = 50
+                scanned_files = 0
+                max_scanned_files = 5000
 
                 def search_file(fpath: Path):
                     try:
@@ -538,9 +543,12 @@ class FileTools:
                         # Skip hidden dirs and common non-code dirs
                         dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', '.git', '.next', 'venv')]
                         for fname in sorted(files):
-                            if len(results) >= max_results:
+                            scanned_files += 1
+                            if scanned_files > max_scanned_files or len(results) >= max_results:
                                 break
                             search_file(Path(root) / fname)
+                        if scanned_files > max_scanned_files or len(results) >= max_results:
+                            break
 
                 if not results:
                     return f"No matches found for pattern '{pattern}'."

@@ -89,7 +89,9 @@ class ShellTools:
             return policy_violation
         workdir = cwd or str(self.workspace_root)
         try:
-            logger.info("[Shell] Executing in %s: '%s' (Timeout: %ss)", workdir, command, timeout)
+            sanitized_cmd = re.sub(r'(Bearer\s+|api[_-]?key[=:\s]+|token[=:\s]+|password[=:\s]+)([\w\-.~]+)', r'\1***REDACTED***', command, flags=re.IGNORECASE)
+            sanitized_cmd = re.sub(r'sk-[a-zA-Z0-9_\-]{16,}', 'sk-***REDACTED***', sanitized_cmd)
+            logger.info("[Shell] Executing in %s: '%s' (Timeout: %ss)", workdir, sanitized_cmd, timeout)
         except Exception:
             pass
 

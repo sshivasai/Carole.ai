@@ -107,6 +107,7 @@ class MemoryTools:
 
         try:
             await lancedb_client.insert_learning(
+                learning_id=learning_id,
                 project_id=project_id or "",
                 team_id=team_id,
                 task_summary=topic,
@@ -199,6 +200,7 @@ class MemoryTools:
             try:
                 await lancedb_client.delete_learning(memory_id)
                 await lancedb_client.insert_learning(
+                    learning_id=memory_id,
                     project_id=str(learning.project_id),
                     team_id=str(learning.team_id) if learning.team_id else None,
                     task_summary=learning.task_summary,

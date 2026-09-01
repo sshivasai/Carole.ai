@@ -1,4 +1,4 @@
-﻿(
+(
   args = {
     doHighlightElements: true,
     focusHighlightIndex: -1,
@@ -1253,9 +1253,12 @@
     return id;
   }
 
+  // Clean up any stale highlight overlays from previous snapshots
+  cleanupHighlights();
+
   const rootId = buildDomTree(document.body);
 
-  // Clear the cache before starting
+  // Clear the cache after building
   DOM_CACHE.clearCache();
 
   return { rootId, map: DOM_HASH_MAP };

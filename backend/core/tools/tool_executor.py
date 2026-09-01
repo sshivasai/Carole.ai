@@ -374,6 +374,14 @@ def register_builtin_tools():
                  {"task": {"type": "string", "required": True}},
                  "judge", _wrap_browser_use_task),
 
+        # ---- Browser Human Takeover (HIL) ----
+        ToolSpec("browser_human_takeover", "Pauses autonomous browser execution and requests human takeover/intervention in the browser to solve a CAPTCHA, 2FA prompt, OAuth login, or manual roadblock. Blocks until the user completes the action.", "browser",
+                 {"reason": {"type": "string", "required": True, "description": "Explanation of what the human user needs to do in the browser"}},
+                 "safe", _wrap_browser_human_takeover),
+        ToolSpec("browser_wait_for_human", "Alias for browser_human_takeover. Pauses autonomous browser execution and requests human takeover.", "browser",
+                 {"reason": {"type": "string", "required": True, "description": "Explanation of what the human user needs to do in the browser"}},
+                 "safe", _wrap_browser_human_takeover),
+
         # ---- Coordination ----
         ToolSpec("spawn_agent", "Spawn a teammate's ReACT loop with a task", "coordination",
                  {"agent_name": {"type": "string", "required": True},
@@ -657,6 +665,14 @@ _TOOL_CATEGORY: Dict[str, str] = {
     "send_google_meet_chat": "browser",
     "browser_snapshot": "browser", "browser_act": "browser",
     "browser_handle_dialog": "browser", "browser_task": "browser",
+    "browser_use_task": "browser", "browser_human_takeover": "browser",
+    "browser_wait_for_human": "browser", "browser_extract_text": "browser",
+    "browser_extract_html": "browser", "browser_switch_to_frame": "browser",
+    # scratchpad / state
+    "write_scratchpad": "edit", "update_scratchpad": "edit", "clear_scratchpad": "delete",
+    # memory
+    "add_memory": "create", "update_memory": "edit", "forget_memory": "delete", "search_memory": "view",
+    "add_fact": "create", "edit_fact": "edit", "delete_fact": "delete",
     # subagents
     "spawn_agent": "subagents", "hire_subagent": "subagents",
     "create_team_agent": "subagents",
@@ -693,13 +709,22 @@ def _get_effective_permissions(permissions: Any) -> Dict[str, Any]:
     if not isinstance(permissions, dict):
         permissions = {}
 
-    # If it's a legacy flat dict like {"read_file": "safe"}, treat that as overrides
+    # If it's a flat dict like {"read_file": "safe", "subagents": "block"}, separate categories from tool overrides
     if "categories" not in permissions and any(isinstance(v, str) for v in permissions.values() if not str(v).startswith("__")):
-        flat_overrides = {k: v for k, v in permissions.items() if isinstance(v, str) and not k.startswith("__")}
+        known_categories = set(_CATEGORY_DEFAULTS.keys()) | set(_TOOL_CATEGORY.values())
+        flat_categories = {}
+        flat_overrides = {}
+        for k, v in permissions.items():
+            if isinstance(v, str) and not k.startswith("__"):
+                if k in known_categories:
+                    flat_categories[k] = v
+                else:
+                    flat_overrides[k] = v
+
         return {
             "enable_judge": global_cfg.get("enable_judge", True),
             "judge_fallback": global_cfg.get("judge_fallback", "always_ask"),
-            "categories": global_cfg.get("categories", _CATEGORY_DEFAULTS),
+            "categories": {**_CATEGORY_DEFAULTS, **global_cfg.get("categories", {}), **flat_categories},
             "overrides": {**global_cfg.get("overrides", {}), **flat_overrides},
             "custom_skip_judge": global_cfg.get("custom_skip_judge", {"file_patterns": [], "command_prefixes": []}),
         }
@@ -1939,7 +1964,41 @@ async def _wrap_browser_handle_dialog(args: Dict[str, Any], team_id: str) -> str
     return await browser_tool.handle_dialog(agent_id, accept=accept, prompt_text=prompt_text)
 
 
+async def _wrap_browser_human_takeover(args: Dict[str, Any], team_id: str) -> str:
+    from core.tools.interaction_tools import interaction_tools
+    from core.tools.browser_pool import browser_pool
+    reason = args.get("reason") or args.get("question") or "Please complete the required manual browser action (CAPTCHA/2FA/Login)."
+    agent_id = args.get("_agent_id", "unknown")
+    agent_name = args.get("_agent_name", "Agent")
+
+    captcha_image = args.get("captcha_image") or args.get("captcha_image_base64")
+    if not captcha_image:
+        try:
+            page = await browser_pool.get_page(agent_id)
+            if page:
+                import base64
+                shot_bytes = await page.screenshot(type="jpeg", quality=65)
+                captcha_image = base64.b64encode(shot_bytes).decode("utf-8")
+        except Exception:
+            pass
+
+    return await interaction_tools.browser_human_takeover(
+        reason=reason,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        team_id=team_id,
+        captcha_image_base64=captcha_image,
+    )
+
+
 async def _wrap_spawn_agent(args: Dict[str, Any], team_id: str) -> str:
+    calling_agent_name = args.get("_agent_name", "")
+    if calling_agent_name.startswith("Subagent-") or calling_agent_name.startswith("Sub-"):
+        return (
+            "Error: Subagents cannot spawn further agents (max depth 1). "
+            "Complete the task directly using your available tools."
+        )
+
     pos = args.get("_positional_args", [])
     name = args.get("agent_name") or args.get("name") or ""
     task = args.get("task") or args.get("prompt", "")
@@ -2375,16 +2434,6 @@ async def _wrap_send_google_meet_chat(args: Dict[str, Any], team_id: str) -> str
     return await google_meet_tool.send_google_meet_chat(text, agent_id)
 
 # ---- New Filesystem Tools ----
-
-async def _wrap_append_file(args: Dict[str, Any], team_id: str):
-    path = args.get("relative_path") or args.get("path")
-    content = args.get("content")
-    agent_name = args.get("_agent_name", "Unknown")
-    if not path or content is None:
-        return "Error: Missing 'relative_path' or 'content'."
-    project_id = await _team_project_id(team_id)
-    return await file_tools.append_file(path, content, agent_name, project_id=project_id)
-
 
 async def _wrap_delete_file(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path") or args.get("path") or args.get("value")
