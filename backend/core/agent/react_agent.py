@@ -27,6 +27,7 @@ from core.memory.models import Message, Agent, Project, User, EntityMemory, Comp
 from core.tools.tool_registry import ToolRegistry
 from core.tools.context import CancellationToken, ToolExecutionContext, ToolPermissionContext
 from core.memory.lancedb_client import lancedb_client
+import core
 import core.config
 from core.config import (
     STRICT_REASONING_GUIDELINES, COMPACTION_SYSTEM_PROMPT, COMPACTION_USER_PROMPT,
@@ -97,6 +98,7 @@ class ReACTAgent:
         self._last_observation: str = ""
         self._no_progress_count: int = 0
         self._consecutive_tool_errors: int = 0
+        self._modified_files: set = set()
 
     async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20, exclude_msg_id: Optional[str] = None) -> List[Dict[str, str]]:
         """Loads recent team messages from the DB to give the agent conversation context.
@@ -165,8 +167,8 @@ class ReACTAgent:
             try:
                 ex_uuid = uuid.UUID(exclude_msg_id) if isinstance(exclude_msg_id, str) else exclude_msg_id
                 stmt = stmt.where(Message.id != ex_uuid)
-            except Exception:
-                pass
+            except Exception as e:
+                self._log.debug("Invalid exclude_msg_id format: %s", e)
         stmt = (
             stmt.order_by(Message.created_at.desc())
             .limit(limit)
@@ -247,6 +249,7 @@ class ReACTAgent:
         # Joined query: Project → User in two selects (still avoids a 3rd round-trip
         # by using project_id resolved from the agent's own team record)
         human_context = ""
+        row = None
         if self.project_id:
             try:
                 proj_uuid = uuid.UUID(str(self.project_id))
@@ -268,8 +271,8 @@ class ReACTAgent:
                         f"- Messages from other AI teammates are labeled '[AgentName (Teammate)]'.\n"
                         f"- Always distinguish between what the human user asked vs what AI teammates said.\n\n"
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                self._log.debug("Could not resolve project owner context: %s", e)
         capabilities_block += human_context
 
         # 1. Generate search embeddings
@@ -292,7 +295,7 @@ class ReACTAgent:
                 learnings_block += f"- Context: {learning.get('task_summary')}\n  Directive: {learning.get('lesson_rule')}\n"
             learnings_block += "\n"
             
-        # 3.5 Format Entity Facts
+        # 3.5 Format Entity Facts (with hard limit to prevent unbounded context growth)
         proj_uuid = uuid.UUID(str(self.project_id)) if self.project_id else None
         fact_conditions = [
             or_(
@@ -307,7 +310,7 @@ class ReACTAgent:
                     EntityMemory.project_id == None,
                 )
             )
-        fact_stmt = select(EntityMemory).where(and_(*fact_conditions))
+        fact_stmt = select(EntityMemory).where(and_(*fact_conditions)).limit(getattr(core.config, "ENTITY_FACTS_LIMIT", 40))
         fact_result = await db_session.execute(fact_stmt)
         entity_facts = fact_result.scalars().all()
         if entity_facts:
@@ -349,7 +352,7 @@ class ReACTAgent:
         tools_block = "AVAILABLE TOOLS:\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n\n"
         capabilities_block += tools_block
 
-        # 5. Worker reports
+        # 6. Worker reports
         worker_results_block = ""
         if self._worker_results:
             worker_results_block = "WORKER REPORTS:\n"
@@ -406,8 +409,8 @@ class ReACTAgent:
             _team_obj = (await db_session.execute(select(_TeamModel).where(_TeamModel.id == team_uuid))).scalar_one_or_none()
             if _team_obj:
                 _team_slug = _re.sub(r'[^a-zA-Z0-9_-]+', '-', _team_obj.name).strip('-') or _team_slug
-        except Exception:
-            pass
+        except Exception as e:
+            self._log.debug("Workspace slug resolution notice: %s", e)
         _carole_dir = str(CAROLE_HOME_DIR / "workspaces" / _project_slug / ".carole" / _team_slug)
         import pathlib as _pl
         _pl.Path(_carole_dir).mkdir(parents=True, exist_ok=True)
@@ -525,23 +528,32 @@ class ReACTAgent:
         return {**defaults, **user_compaction}
 
     def _estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
-        """Stage 3 helper: Role-aware token estimation.
-
-        Uses content-type heuristics for better accuracy than a flat chars/4:
-        - System prompt / tool list (dense structured text): chars / 3.5
-        - Tool observation blocks (JSON / code output):       chars / 3.0
-        - Regular prose (user/assistant dialogue):            chars / 4.0
-        - Compacted history blocks:                           chars / 3.5
-
-        These ratios approximate real tokenizer output within ~10-15% for the
-        models we use (Claude, GPT-4o, Gemini). We also add a 5% overhead buffer
-        for message role/formatting tokens that aren't in the content field.
+        """Exact token counting via tiktoken (cl100k_base / o200k_base) with
+        graceful fallback to role-aware character estimation.
         """
+        try:
+            import tiktoken
+            enc = tiktoken.get_encoding("cl100k_base")
+            total = 0
+            for m in messages:
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    text_parts = " ".join(
+                        p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                    total += len(enc.encode(text_parts, disallowed_special=()))
+                else:
+                    total += len(enc.encode(str(content), disallowed_special=()))
+                total += 4  # overhead per message
+            return total + 2  # priming tokens
+        except Exception:
+            pass
+
+        # Fallback heuristic: role-aware estimation
         total = 0
         for m in messages:
             content = m.get("content", "")
             if isinstance(content, list):
-                # Multi-part content (text + image blocks)
                 text_parts = " ".join(
                     p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
                 )
@@ -549,15 +561,11 @@ class ReACTAgent:
             else:
                 content_str = str(content)
                 if "[OBSERVATION]" in content_str or "```" in content_str:
-                    # Dense JSON/code content
                     total += len(content_str) // 3
                 elif "[COMPACTED HISTORY" in content_str:
-                    # Structured summary block
                     total += len(content_str) // 3
                 else:
-                    # Regular prose
                     total += len(content_str) // 4
-        # 5% overhead for role/formatting tokens
         return int(total * 1.05)
 
     @staticmethod
@@ -694,28 +702,21 @@ class ReACTAgent:
         if not to_compact:
             return messages
 
-        # High-Density Identifier Preservation Pass
-        # Extract file paths and identifiers to pin at the top of the context
-        extracted_paths = set()
-        for msg in to_compact:
-            content = str(msg.get("content", ""))
-            # Extract paths from tool calls
-            for m in re.finditer(r'[\'"]?(?:relative_path|path|filename)[\'"]?\s*[:=]\s*[\'"]([^\'"]+)[\'"]', content):
-                extracted_paths.add(m.group(1))
-            # Extract paths from markdown links
-            for m in re.finditer(r'\[.*?\]\(file:([^\)]+)\)', content):
-                extracted_paths.add(m.group(1))
-            # Extract paths from code block headers
-            for m in re.finditer(r'^\s*#\s+(?:backend|frontend|packages|src)/[a-zA-Z0-9_./-]+', content, re.MULTILINE):
-                extracted_paths.add(m.group(0).strip('# \t'))
+        from core.agent.context_condenser import ContextCondenser, WORKING_STATE_SYSTEM_PROMPT
 
-        pinned_block = ""
-        if extracted_paths:
-            pinned_block = "[PINNED CONTEXT: HIGH-DENSITY IDENTIFIERS]\n"
-            pinned_block += "Active File Paths & References:\n"
-            for p in sorted(extracted_paths):
-                pinned_block += f"- {p}\n"
-            pinned_block += "[/PINNED CONTEXT]\n\n"
+        # High-Density Identifier Preservation Pass
+        pinned_block = ContextCondenser.extract_pinned_identifiers(to_compact)
+
+        # Folded File Signatures Pass (AST-Aware symbol summaries)
+        try:
+            touched_files = list(self._modified_files) if hasattr(self, "_modified_files") and self._modified_files else []
+            from core.tools.file_tools import file_tools
+            workspace_root = await file_tools.get_workspace_root(self.project_id)
+            folded_block = ContextCondenser.generate_folded_signatures(touched_files, workspace_root=workspace_root)
+            if folded_block:
+                pinned_block = f"{pinned_block}{folded_block}" if pinned_block else folded_block
+        except Exception as f_err:
+            self._log.debug("Folded signatures pass notice: %s", f_err)
 
         # OpenClaw Pre-Compaction Memory Flush: extract facts & graph triples before truncation
         if db_session is not None:
@@ -729,16 +730,16 @@ class ReACTAgent:
         try:
             summary = await llm_router.generate_completion(
                 model=getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free"),
-                system_prompt=COMPACTION_SYSTEM_PROMPT,
+                system_prompt=WORKING_STATE_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": summary_prompt}],
-                temperature=0.3,
-                max_tokens=2000
+                temperature=0.2,
+                max_tokens=2500
             )
             full_summary = f"{pinned_block}{summary}" if pinned_block else summary
-            compacted = (
-                [messages[0]]
-                + [{"role": "user", "content": f"[COMPACTED HISTORY]\n{full_summary}\n[/COMPACTED HISTORY]"}]
-                + messages[-keep_recent:]
+            compacted = ContextCondenser.apply_sliding_window_pruning(
+                messages=messages,
+                checkpoint_card=full_summary,
+                keep_recent_turns=keep_recent
             )
             self._log.info("Rolling compaction complete. %d → %d messages.", len(messages), len(compacted))
 
@@ -905,24 +906,20 @@ class ReACTAgent:
 
         system_prompt = await self.assemble_system_prompt(db_session, initial_prompt)
 
-        # Dynamic history limit: scale to model context window.
-        # Larger-context models can use more history without risking truncation.
-        _CONTEXT_WINDOW_LIMITS = {
-            # Anthropic
-            "claude-opus": 40, "claude-sonnet": 40, "claude-haiku": 30,
-            # OpenAI
-            "gpt-4o": 35, "gpt-4": 25, "gpt-3.5": 6, "o4-": 40, "o3-": 40,
-            # Google
-            "gemini-2.5": 60, "gemini-2.0": 50, "gemini-1.5": 50, "gemini-flash": 50,
-            # Smaller open models
-            "phi": 4, "llama-3.1-8b": 15, "8k": 4, "4k": 2,
-        }
-        history_limit = 15  # safe default
-        model_lower = (self.model or "").lower()
-        for prefix, limit in _CONTEXT_WINDOW_LIMITS.items():
-            if prefix in model_lower:
-                history_limit = limit
-                break
+        # Dynamic history limit: scale to actual model context window token budget.
+        # Larger-context models can safely load more history without truncation.
+        from core.llm.multi_model_router import get_model_context_window
+        model_ctx = get_model_context_window(self.model)
+        if model_ctx >= 500000:
+            history_limit = 50
+        elif model_ctx >= 120000:
+            history_limit = 35
+        elif model_ctx >= 32000:
+            history_limit = 20
+        elif model_ctx >= 16000:
+            history_limit = 10
+        else:
+            history_limit = 4
 
         # Load conversation history for context continuity (excluding the current trigger message to prevent duplication)
         history = await self._load_conversation_history(db_session, limit=history_limit, exclude_msg_id=trigger_message_id)
@@ -1116,7 +1113,11 @@ class ReACTAgent:
                         reasoning_chunk = chunk.get("reasoning", "")
 
                         if reasoning_chunk:
-                            self._current_reasoning_buffer += reasoning_chunk
+                            # Hard cap reasoning buffer to prevent unbounded memory/payload growth across loops
+                            if len(self._current_reasoning_buffer) < 35000:
+                                self._current_reasoning_buffer += reasoning_chunk
+                            elif not self._current_reasoning_buffer.endswith("...[Reasoning trace truncated]"):
+                                self._current_reasoning_buffer += "\n...[Reasoning trace truncated]"
                             await event_bus.publish(self.topic, {
                                 "type": "stream_reasoning",
                                 "sender_id": self.agent_id,
@@ -1216,8 +1217,8 @@ class ReACTAgent:
                         "role": self.role,
                         "status": "idle",
                     })
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log.debug("Idle status broadcast notice: %s", e)
                 break
 
             messages.append({"role": "assistant", "content": thought_buffer})
@@ -1270,53 +1271,81 @@ class ReACTAgent:
                     })
                     break
 
-                # Heuristic: does the CURRENT turn look like an unexecuted promise,
-                # malformed tool call, or reasoning-only turn rather than a genuine final answer?
+                # --- Grammar-Based Intent & Refusal Engine ---
+                # Rather than maintaining brittle, infinite keyword lists, we match
+                # linguistic structures: [Intent Subject + Modal/Helper] + [Action Verb / Tool Target]
                 _curr_text = (thought_buffer or "").strip()
                 _lower = _curr_text.lower()
-                action_promise_triggers = [
-                    "[action", "[tool", "<tool", "tool_call", "function_call",
-                    "writing the file", "writing to", "creating the file", "creating a file",
-                    "i'll create", "i will create", "i'll write", "i will write",
-                    "let me write", "let me create", "let me execute", "running the command",
-                    "saving to", "creating file",
-                    # Starting / Beginning / Task acceptance triggers
-                    "let's start", "let's begin", "let's create", "let's write",
-                    "let's execute", "let's run", "let's implement", "let's build",
-                    "start by", "starting by", "starting with",
-                    "i'll start by", "i will start by", "i'll begin by", "i will begin by",
-                    "i'm going to create", "i will go ahead and create", "going to create",
-                    "i'll go ahead and", "i will go ahead and",
-                    "let me start", "let me begin",
-                    "creating the", "creating a", "writing the", "writing a",
-                    "executing the", "executing it", "running the",
-                    # Step narration triggers — agent describing what it WILL do without doing it
-                    "i'll now", "i will now", "i'll move on", "i'll work on", "i will work on",
-                    "i'll get that set up", "i'll finalize", "i'll build",
-                    "next, i'll", "next i'll", "now i'll", "now i will",
-                    "i'll proceed", "first, i'll",
-                    "let me handle", "let me proceed", "let me do this",
-                    # Delegation-intent triggers — agent promising to delegate without calling the tool
-                    "i'll hire", "i will hire", "i'll spawn", "i will spawn",
-                    "i'll delegate", "i will delegate", "i'll assign", "i will assign",
-                    "i'll use hire_subagent", "i'll use spawn_agent",
-                    "hiring a", "spawning a", "delegating to",
-                    "i'll kick off", "i will kick off",
-                    "i'll send", "i will send a message",
-                    # Retrieval & lookup intent triggers — model promising to fetch/check info without doing it
-                    "let me retrieve", "i'll retrieve", "i will retrieve",
-                    "let me check", "i'll check", "i will check",
-                    "let me find", "i'll find", "i will find",
-                    "let me look", "i'll look", "i will look",
-                    "let me search", "i'll search", "i will search",
-                    "let me get that", "let me get the",
-                    # Conversational stalling phrases without tool action or answer
-                    "just a moment", "one moment", "give me a moment", "hold on a moment",
-                ]
+
+                # 1. Structural Action Intent Regex: matches infinite variations of "I will X", "Let me X", "Proceeding to X", etc.
+                _PROMISE_PATTERN = re.compile(
+                    r"\b(?:"
+                    r"i\s*(?:will|'ll|shall|am\s+going\s+to|'m\s+going\s+to|'m\s+about\s+to|plan\s+to|aim\s+to|intend\s+to)"
+                    r"|let\s*(?:me|'s|us)"
+                    r"|allow\s+me\s+to"
+                    r"|going\s+to"
+                    r"|about\s+to"
+                    r"|proceeding\s+to"
+                    r"|starting\s+(?:to|by|with)"
+                    r"|commencing"
+                    r"|initiating"
+                    r")\s+(?:now\s+|first\s+|ahead\s+and\s+|just\s+|quickly\s+|directly\s+)?"
+                    r"([a-z_]{3,25})",
+                    re.IGNORECASE
+                )
+
+                # 2. Structural Capability Refusal Regex: matches "I can't X", "outside my capabilities", "you'll have to do it manually"
+                _REFUSAL_PATTERN = re.compile(
+                    r"\b(?:"
+                    r"i\s*(?:can(?:'t|not)|am\s+not\s+able\s+to|don(?:'t|t)\s+have\s+(?:the\s+)?(?:ability|access|capability|tools?))"
+                    r"|(?:outside|beyond)\s+my\s+capabilit(?:y|ies)"
+                    r"|not\s+(?:within|in)\s+my\s+capabilities"
+                    r"|you\s*(?:(?:'ll|will)\s+(?:have|need)\s+to|must)\s+(?:do|handle|solve|open|run|perform)\s+(?:this|it|that)\s+manually"
+                    r"|open\s+your\s+browser\s*(?:,|\band\b)"
+                    r")",
+                    re.IGNORECASE
+                )
+
+                # Dynamic Action Verb Dictionary (base mutating/execution verbs only)
+                _ACTION_VERBS = {
+                    'write', 'create', 'edit', 'append', 'modify', 'delete', 'remove', 'save',
+                    'search', 'find', 'lookup', 'query', 'fetch', 'open', 'browse', 'navigate',
+                    'extract', 'click', 'type', 'snapshot', 'screenshot', 'scrape', 'execute',
+                    'run', 'start', 'launch', 'build', 'compile', 'test', 'lint', 'install',
+                    'deploy', 'hire', 'spawn', 'delegate', 'assign', 'dispatch'
+                }
+                _CONVERSATIONAL_EXCLUSIONS = {
+                    'explain', 'describe', 'summarize', 'clarify', 'answer', 'discuss', 'review',
+                    'outline', 'provide', 'show', 'help', 'list', 'give', 'note', 'share',
+                    'walk', 'break', 'tell', 'talk', 'think', 'consider', 'suggest', 'detail'
+                }
+                # Derive additional verbs dynamically from registered tools, ignoring conversational terms
+                try:
+                    for _tname in ToolRegistry.list_names():
+                        for _part in _tname.split("_"):
+                            if len(_part) >= 3 and _part.lower() not in _CONVERSATIONAL_EXCLUSIONS:
+                                _ACTION_VERBS.add(_part.lower())
+                except Exception as e:
+                    self._log.debug("Tool verb extraction notice: %s", e)
+
                 # Match explicit pseudo tool calls (e.g. read_file({...}) or execute_command("..."))
-                # without [ACTION] tags
-                has_pseudo_call = bool(re.search(r"\b[a-z]+(?:_[a-z]+)+\s*\(\s*\{", _curr_text))
-                looks_like_tool_call = any(sig in _lower for sig in action_promise_triggers) or has_pseudo_call
+                has_pseudo_call = bool(re.search(r"\b[a-z]+(?:_[a-z]+)+\s*\(\s*\{", _curr_text)) or "[action" in _lower or "<tool" in _lower
+                
+                # Check for structural promise match (only if output is brief or ends in a promise)
+                has_structural_promise = False
+                _is_long_complete_response = len(_curr_text.split()) >= 80 and not _curr_text.endswith(("...", ":", "now", "here"))
+                _match = _PROMISE_PATTERN.search(_curr_text)
+                if _match and not _is_long_complete_response:
+                    _verb = _match.group(1).lower()
+                    # Clean trailing 'ing' / 's' for basic stemming
+                    _stem = _verb.rstrip('s')
+                    if _stem.endswith('ing') and len(_stem) > 4:
+                        _stem = _stem[:-3]
+                    if (_verb in _ACTION_VERBS or _stem in _ACTION_VERBS) and _verb not in _CONVERSATIONAL_EXCLUSIONS and _stem not in _CONVERSATIONAL_EXCLUSIONS:
+                        has_structural_promise = True
+
+                looks_like_tool_call = has_structural_promise or has_pseudo_call
+                has_browser_refusal = bool(_REFUSAL_PATTERN.search(_curr_text))
 
                 # Detect reasoning without content: model generated thoughts into reasoning but left content empty
                 has_thought_without_action = not _curr_text and bool(self._current_reasoning_buffer)
@@ -1333,8 +1362,40 @@ class ReACTAgent:
                 is_plan_without_action = (has_numbered_plan or has_plan_header)
                 is_code_in_chat = has_code_block and loop_count <= max_loops - 1
 
-                if (looks_like_tool_call or is_plan_without_action or is_code_in_chat or has_thought_without_action) and loop_count < max_loops - 1:
-                    if has_thought_without_action:
+                # Phase 1: Action-Gated Turn-1 Enforcement & Grammar Intent Engine
+                from core.agent.intent_engine import IntentEngine
+                is_action_request_without_tool = False
+                if loop_count == 1 and initial_prompt:
+                    if IntentEngine.is_action_request(initial_prompt) and not has_code_block:
+                        is_action_request_without_tool = True
+
+                false_refusal_msg = IntentEngine.detect_false_refusal(_curr_text)
+                unexecuted_promise_msg = IntentEngine.detect_unexecuted_promise(_curr_text, bool(looks_like_tool_call))
+
+                if (looks_like_tool_call or has_browser_refusal or false_refusal_msg or is_action_request_without_tool or is_plan_without_action or is_code_in_chat or has_thought_without_action or unexecuted_promise_msg) and loop_count < max_loops - 1:
+                    if false_refusal_msg:
+                        correction = false_refusal_msg
+                    elif has_browser_refusal:
+                        correction = (
+                            "[OBSERVATION] CRITICAL ERROR — False Refusal / Missing Browser Tool Call.\n"
+                            "You have full access to real Chromium browser automation tools (browser_navigate, browser_task, browser_act, browser_snapshot, browser_screenshot, browser_human_takeover).\n"
+                            "NEVER tell the user you cannot open a browser, browse the web, or tell them to do it manually in their browser.\n"
+                            "Execute the browser tool IMMEDIATELY NOW using this exact format:\n"
+                            "  [ACTION]browser_navigate({\"url\": \"https://www.google.com\"})[/ACTION]\n"
+                            "Or for autonomous goal execution:\n"
+                            "  [ACTION]browser_task({\"task\": \"search for the latest news and summarize\"})[/ACTION]\n"
+                            "Execute the browser action NOW.[/OBSERVATION]"
+                        )
+                    elif is_action_request_without_tool and not (looks_like_tool_call or is_code_in_chat or is_plan_without_action):
+                        correction = (
+                            "[OBSERVATION] Action Required — No Tool Call Executed.\n"
+                            f"The user gave an actionable task: \"{initial_prompt[:120]}\".\n"
+                            "You responded conversationally without executing any tool. You MUST execute the required tool immediately.\n"
+                            "Use the required format:\n"
+                            "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                            "Execute your tool call NOW.[/OBSERVATION]"
+                        )
+                    elif has_thought_without_action:
                         correction = (
                             "[OBSERVATION] You have completed your reasoning. Now execute your planned tool action immediately using the required format:\n"
                             "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
@@ -1357,6 +1418,8 @@ class ReACTAgent:
                             "  [ACTION]write_file({\"path\": \"index.html\", \"content\": \"<!DOCTYPE html>...\"})[/ACTION]\n"
                             "Start executing your first planned step RIGHT NOW. Do not stop until ALL steps are done.[/OBSERVATION]"
                         )
+                    elif unexecuted_promise_msg:
+                        correction = unexecuted_promise_msg
                     elif any(sig in _lower for sig in ["let me", "i'll", "i will", "let's", "working on it", "just a moment", "one moment"]):
                         correction = (
                             "[OBSERVATION] Incomplete Response / Unexecuted Promise.\n"
@@ -1551,26 +1614,33 @@ class ReACTAgent:
                     observation = await self._execute_tool(
                         name=tool_name, args=tool_args, permissions=permissions, token=token
                     )
+                    if tool_name in ("write_file", "edit_file", "append_file", "delete_file") and not str(observation).startswith("✗"):
+                        fpath = tool_args.get("path") or tool_args.get("relative_path") or tool_args.get("file_path")
+                        if fpath:
+                            self._modified_files.add(str(fpath))
                 except Exception as e:
                     observation = f"✗ Tool Error: {str(e)}"
                     self._log.error("Tool '%s' raised exception: %s", tool_name, e)
+
+                MAX_TRACE_OBS = 4000
+                display_obs = observation if len(observation) <= MAX_TRACE_OBS else (observation[:MAX_TRACE_OBS] + "\n... [output truncated]")
 
                 await event_bus.publish(self.topic, {
                     "type": "tool_end",
                     "sender_id": self.agent_id,
                     "sender_name": self.name,
                     "tool_name": tool_name,
-                    "observation": observation[:500]
+                    "observation": display_obs
                 })
                 
-                self._current_reasoning_buffer += f"\n📄 **Result:**\n```\n{observation[:1000]}\n```\n"
+                self._current_reasoning_buffer += f"\n📄 **Result:**\n```\n{display_obs}\n```\n"
 
                 # Broadcast the intermediate trace row (and persist to DB if spawned by a coordinator)
                 # is_intermediate=True so the UI renders it as a compact trace row
                 intermediate_trace = (
                     f"🛠️ **{tool_name}**\n"
                     f"```json\n{args_str}\n```\n"
-                    f"📄 **Result:**\n```\n{observation[:500]}\n```"
+                    f"📄 **Result:**\n```\n{display_obs}\n```"
                 )
                 
                 db_trace_msg_id = None
@@ -1667,11 +1737,13 @@ class ReACTAgent:
                                 {"type": "document", "local_path": file_path, "mime_type": mime}
                             ]
                         })
-                except Exception:
+                except (json.JSONDecodeError, ValueError, TypeError, KeyError):
                     pass
+                except Exception as e:
+                    self._log.debug("File observation check notice: %s", e)
 
                 if not is_file_obs:
-                    safe_obs = observation.replace("[/OBSERVATION]", "[\\/OBSERVATION]").replace("[ACTION]", "[\ACTION]")
+                    safe_obs = observation.replace("[/OBSERVATION]", "[\\/OBSERVATION]").replace("[ACTION]", "[\\ACTION]")
                     observation_text = f"[OBSERVATION] Tool output:\n{safe_obs}\n[/OBSERVATION]"
                     messages.append({
                         "role": "user",
@@ -1679,11 +1751,15 @@ class ReACTAgent:
                     })
 
                 # --- No-progress guard ---
-                # If the last 3 tool observations are identical, the agent is
-                # stuck in a loop (e.g. calling the same broken tool repeatedly).
-                # Break early with a diagnostic rather than burning all max_loops.
+                # Normalize observation text by stripping volatile elements (timestamps, hex memory pointers, elapsed durations)
+                # so identical errors with changing timestamps correctly trigger the loop guard.
+                norm_obs = re.sub(r'\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\b', '', observation)
+                norm_obs = re.sub(r'\b0x[0-9a-fA-F]+\b', '', norm_obs)
+                norm_obs = re.sub(r'\b\d+(?:\.\d+)?\s*(?:ms|seconds|s|sec)\b', '', norm_obs)
+                norm_obs = re.sub(r'\s+', ' ', norm_obs).strip()
+
                 import hashlib
-                obs_fingerprint = hashlib.md5(observation.strip().encode()).hexdigest()
+                obs_fingerprint = hashlib.md5(norm_obs.encode('utf-8')).hexdigest()
                 if obs_fingerprint and obs_fingerprint == self._last_observation:
                     self._no_progress_count += 1
                     if self._no_progress_count >= 2:  # bail out after 2 identical results, not 3
@@ -2088,16 +2164,34 @@ class ReACTAgent:
                 for a in tree.body.args:
                     try:
                         pos_vals.append(_ast.literal_eval(a))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log.debug("Positional arg literal_eval notice: %s", e)
                 if pos_vals:
                     arguments["_positional_args"] = pos_vals
+                    # Intelligently map single positional arg to tool's primary expected parameter
+                    if len(pos_vals) == 1:
+                        val = pos_vals[0]
+                        if any(k in tool_name for k in ("read_file", "view_file", "get_file_outline")):
+                            arguments["relative_path"] = val
+                        elif any(k in tool_name for k in ("search", "find", "grep")):
+                            arguments["query"] = val
+                        elif any(k in tool_name for k in ("command", "terminal", "bash", "execute")):
+                            arguments["command"] = val
+                        elif any(k in tool_name for k in ("navigate", "fetch", "url")):
+                            arguments["url"] = val
+                        elif "symbol" in tool_name:
+                            arguments["symbol_name"] = val
+                        else:
+                            arguments["value"] = val
             for kw in getattr(tree.body, "keywords", []):  # type: ignore[attr-defined]
-                arguments[kw.arg] = _ast.literal_eval(kw.value)
+                try:
+                    arguments[kw.arg] = _ast.literal_eval(kw.value)
+                except Exception as e:
+                    self._log.debug("Keyword arg literal_eval notice: %s", e)
             if arguments:
                 return tool_name, arguments
-        except Exception:
-            pass
+        except Exception as e:
+            self._log.debug("AST call parse attempt notice: %s", e)
 
         # 4. Fallback: Specialized regex extractor for write_file / edit_file with docstrings
         try:
@@ -2148,12 +2242,16 @@ class ReACTAgent:
 
     def _build_task_notification(self, result_text: str, status: str) -> str:
         task_id = self.task_id or "unknown"
-        result_summary = result_text[:1000] if len(result_text) > 1000 else result_text
+        result_summary = result_text[:1500] if len(result_text) > 1500 else result_text
+        files_block = ""
+        if hasattr(self, "_modified_files") and self._modified_files:
+            files_block = "  <files_modified>\n" + "\n".join(f"    <file>{f}</file>" for f in sorted(self._modified_files)) + "\n  </files_modified>\n"
         return (
             f"<task-notification>\n"
             f"  <task_id>{task_id}</task_id>\n"
             f"  <agent>{self.name}</agent>\n"
             f"  <status>{status}</status>\n"
+            f"{files_block}"
             f"  <result>{result_summary}</result>\n"
             f"</task-notification>"
         )

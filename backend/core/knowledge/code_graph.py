@@ -1,7 +1,8 @@
 """
 # backend/core/knowledge/code_graph.py
 
-Real-time Code Knowledge Graph for tracking dependencies and active file editors.
+Compiler-grade Code Knowledge Graph and AST Symbol Index.
+Tracks cross-file dependencies, symbol definitions, call hierarchies, and active file editor locks.
 """
 
 import os
@@ -13,8 +14,8 @@ import asyncio
 import networkx as nx
 from typing import Dict, Set, Optional, List, Any
 from core.config import CAROLE_HOME_DIR
-
 from core.chat.event_bus import event_bus
+from core.knowledge.ast_parser import parse_file_ast, ASTChunk
 
 CODE_EXTENSIONS = {
     ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
@@ -37,6 +38,7 @@ def is_tracked_code_file(path_str: str) -> bool:
     ext = posixpath.splitext(norm)[1].lower()
     return ext in CODE_EXTENSIONS
 
+
 class CodeGraph:
     def __init__(self, workspace_root: str = None):
         if not workspace_root:
@@ -45,6 +47,11 @@ class CodeGraph:
         
         self.graphs: Dict[str, nx.DiGraph] = {}
         self.active_editors: Dict[str, Dict[str, Set[str]]] = {}
+        
+        # AST-Aware In-Memory Indexes (project_id -> dict)
+        self.symbol_index: Dict[str, Dict[str, List[ASTChunk]]] = {}
+        self.file_chunks: Dict[str, Dict[str, List[ASTChunk]]] = {}
+        self.call_hierarchy: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         self._lock = asyncio.Lock()
         
         self.start_listening_task()
@@ -72,7 +79,6 @@ class CodeGraph:
                     with open(graph_file, "r") as f:
                         data = json.load(f)
                         g = nx.node_link_graph(data)
-                        # Clean out any non-code or scratchpad nodes from legacy saves
                         invalid_nodes = [n for n in g.nodes if not is_tracked_code_file(str(n))]
                         if invalid_nodes:
                             g.remove_nodes_from(invalid_nodes)
@@ -111,9 +117,14 @@ class CodeGraph:
             await self._save_graph(project_id)
 
     async def parse_file(self, relative_path: str, project_id: Optional[str] = None):
-        """Parses a code file for dependencies and updates the graph."""
+        """Parses a code file using the AST parser, updating the graph & symbol index."""
+        pid = project_id or "default"
+        if pid not in self.symbol_index:
+            self.symbol_index[pid] = {}
+            self.file_chunks[pid] = {}
+            self.call_hierarchy[pid] = {}
+
         if not is_tracked_code_file(relative_path):
-            # If an ignored/non-code file was previously added, remove it from graph
             graph = await self.get_graph(project_id)
             if graph.has_node(relative_path):
                 graph.remove_node(relative_path)
@@ -129,6 +140,8 @@ class CodeGraph:
             if graph.has_node(relative_path):
                 graph.remove_node(relative_path)
                 await self._save_graph(project_id)
+            # Clean index
+            self._remove_file_from_index(relative_path, pid)
             return
 
         try:
@@ -137,60 +150,65 @@ class CodeGraph:
         except Exception:
             return
 
+        # 1. Parse AST Symbols & Imports
+        chunks, raw_imports = parse_file_ast(content, relative_path)
+        
+        # 2. Update File Chunks & Symbol Index
+        self._remove_file_from_index(relative_path, pid)
+        self.file_chunks[pid][relative_path] = chunks
+
+        for chunk in chunks:
+            # Map symbol -> AST chunk
+            if chunk.name not in self.symbol_index[pid]:
+                self.symbol_index[pid][chunk.name] = []
+            self.symbol_index[pid][chunk.name].append(chunk)
+
+            # Map called function -> caller
+            for called in chunk.calls:
+                if called not in self.call_hierarchy[pid]:
+                    self.call_hierarchy[pid][called] = []
+                self.call_hierarchy[pid][called].append({
+                    "file": relative_path,
+                    "line": chunk.start_line,
+                    "caller": chunk.name,
+                    "caller_kind": chunk.kind,
+                    "code": f"{chunk.kind} {chunk.name}() calls {called}()"
+                })
+
+        # 3. Resolve file dependencies for NetworkX graph
         dependencies = set()
-        
-        if safe_path.suffix == ".py":
-            import_pattern = re.compile(r"^\s*(?:import|from)\s+([\.a-zA-Z0-9_]+)", re.MULTILINE)
-            for match in import_pattern.findall(content):
-                if match.startswith("."):
-                    # relative import
-                    dots = len(match) - len(match.lstrip("."))
-                    base_dir = posixpath.dirname(relative_path)
-                    for _ in range(dots - 1):
-                        base_dir = posixpath.dirname(base_dir)
-                    mod_name = match.lstrip(".")
-                    if mod_name:
-                        resolved_mod = posixpath.join(base_dir, mod_name.replace(".", "/"))
-                    else:
-                        resolved_mod = base_dir
-                    dependencies.add(f"{resolved_mod}.py")
-                    dependencies.add(f"{resolved_mod}/__init__.py")
-                else:
-                    # absolute module
-                    mod_path = match.replace(".", "/")
-                    dependencies.add(f"{mod_path}.py")
-                    dependencies.add(f"{mod_path}/__init__.py")
-                    dependencies.add(f"backend/{mod_path}.py")
-                    dependencies.add(f"backend/{mod_path}/__init__.py")
-                    dependencies.add(f"src/{mod_path}.py")
-                    dependencies.add(f"src/{mod_path}/__init__.py")
-                    
-        elif safe_path.suffix in (".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"):
-            import_pattern = re.compile(r"(?:import|require)\s*\(?\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
-            for match in import_pattern.findall(content):
-                if match.startswith("./") or match.startswith("../"):
-                    base_dir = posixpath.dirname(relative_path)
-                    resolved_mod = posixpath.normpath(posixpath.join(base_dir, match))
-                    dependencies.add(resolved_mod + ".ts")
-                    dependencies.add(resolved_mod + ".tsx")
-                    dependencies.add(resolved_mod + ".js")
-                    dependencies.add(resolved_mod + ".jsx")
-                    dependencies.add(resolved_mod + "/index.ts")
-                    dependencies.add(resolved_mod + "/index.js")
-                    dependencies.add(resolved_mod)
-        
+        for imp in raw_imports:
+            norm_imp = imp.replace(".", "/")
+            dependencies.add(f"{norm_imp}.py")
+            dependencies.add(f"{norm_imp}.ts")
+            dependencies.add(f"{norm_imp}.tsx")
+            dependencies.add(f"{norm_imp}.js")
+            dependencies.add(f"{norm_imp}/index.ts")
+
         graph.add_node(relative_path)
-        
         out_edges = list(graph.out_edges(relative_path))
         graph.remove_edges_from(out_edges)
-        
         for dep in dependencies:
             graph.add_edge(relative_path, dep)
             
         await self._save_graph(project_id)
 
+    def _remove_file_from_index(self, relative_path: str, pid: str):
+        """Clean old AST chunks when a file is re-parsed."""
+        old_chunks = self.file_chunks.get(pid, {}).pop(relative_path, [])
+        for c in old_chunks:
+            if c.name in self.symbol_index.get(pid, {}):
+                self.symbol_index[pid][c.name] = [
+                    x for x in self.symbol_index[pid][c.name] if x.file_path != relative_path
+                ]
+            for called in c.calls:
+                if called in self.call_hierarchy.get(pid, {}):
+                    self.call_hierarchy[pid][called] = [
+                        x for x in self.call_hierarchy[pid][called] if x["file"] != relative_path
+                    ]
+
     async def build_graph(self, project_id: Optional[str] = None):
-        """Scans project root and maps all code files."""
+        """Scans project root and maps all code files into AST index."""
         project_root = await self.get_project_root(project_id)
         for root, dirs, files in os.walk(project_root):
             dirs[:] = [d for d in dirs if not any(ign in d for ign in IGNORE_DIR_SUBSTRINGS) and not d.startswith('.')]
@@ -206,10 +224,48 @@ class CodeGraph:
                         pass
         await self._save_graph(project_id)
 
+    async def get_symbol_definitions(self, symbol_name: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Instant O(1) AST lookup for symbol definitions."""
+        pid = project_id or "default"
+        if pid not in self.symbol_index:
+            await self.build_graph(project_id)
+        
+        chunks = self.symbol_index.get(pid, {}).get(symbol_name, [])
+        return [c.to_dict() for c in chunks]
+
+    async def get_file_outline(self, file_path: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns structural outline of classes, functions, and methods in a file."""
+        pid = project_id or "default"
+        norm_path = file_path.replace("\\", "/")
+        if pid not in self.file_chunks or norm_path not in self.file_chunks[pid]:
+            await self.parse_file(norm_path, project_id)
+
+        chunks = self.file_chunks.get(pid, {}).get(norm_path, [])
+        return [
+            {
+                "name": c.name,
+                "kind": c.kind,
+                "start_line": c.start_line,
+                "end_line": c.end_line,
+                "parent": c.parent_symbol,
+                "params": c.params
+            }
+            for c in chunks
+        ]
+
     async def get_symbol_callers(self, symbol_name: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Finds all files and lines that import or invoke a symbol across the project."""
+        """Instant O(1) AST lookup for callers of any function or class."""
+        pid = project_id or "default"
+        if pid not in self.call_hierarchy:
+            await self.build_graph(project_id)
+
+        callers = self.call_hierarchy.get(pid, {}).get(symbol_name, [])
+        if callers:
+            return callers[:50]
+
+        # Fallback regex scan if symbol was dynamically imported/invoked
         project_root = await self.get_project_root(project_id)
-        callers = []
+        fallback_callers = []
         pattern = re.compile(rf"\b{re.escape(symbol_name)}\s*\(|\bimport\s+.*?\b{re.escape(symbol_name)}\b", re.MULTILINE)
         
         for root, dirs, files in os.walk(project_root):
@@ -223,50 +279,58 @@ class CodeGraph:
                             for idx, line in enumerate(f, 1):
                                 if pattern.search(line):
                                     rel = str(fpath.relative_to(project_root)).replace("\\", "/")
-                                    callers.append({
+                                    fallback_callers.append({
                                         "file": rel,
                                         "line": idx,
+                                        "caller": "global",
+                                        "caller_kind": "expression",
                                         "code": line.strip()
                                     })
-                                    if len(callers) >= 40:
+                                    if len(fallback_callers) >= 40:
                                         break
                     except Exception:
                         pass
-        return callers
+        return fallback_callers
 
     async def get_symbol_callees(self, function_name: str, file_path: str, project_id: Optional[str] = None) -> List[str]:
         """Finds all function calls invoked within a specific function/class definition."""
-        project_root = await self.get_project_root(project_id)
-        safe_path = (project_root / file_path).resolve()
-        if not safe_path.is_file():
-            return []
+        pid = project_id or "default"
+        norm_path = file_path.replace("\\", "/")
+        if pid not in self.file_chunks or norm_path not in self.file_chunks[pid]:
+            await self.parse_file(norm_path, project_id)
 
-        try:
-            with open(safe_path, "r", encoding="utf-8", errors="ignore") as f:
-                code = f.read()
+        chunks = self.file_chunks.get(pid, {}).get(norm_path, [])
+        for c in chunks:
+            if c.name == function_name:
+                return c.calls
 
-            callees = set()
-            if safe_path.suffix == ".py":
-                import ast
-                tree = ast.parse(code)
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
-                        for subnode in ast.walk(node):
-                            if isinstance(subnode, ast.Call):
-                                if isinstance(subnode.func, ast.Name):
-                                    callees.add(subnode.func.id)
-                                elif isinstance(subnode.func, ast.Attribute):
-                                    callees.add(subnode.func.attr)
-            else:
-                # Regex call extractor for JS/TS
-                call_pattern = re.compile(r"\b([a-zA-Z_]\w+)\s*\(")
-                for match in call_pattern.findall(code):
-                    if match not in ("if", "for", "while", "switch", "catch", "function", function_name):
-                        callees.add(match)
+        return []
 
-            return sorted(list(callees))[:30]
-        except Exception:
-            return []
+    async def get_module_dependencies(self, file_path: str, project_id: Optional[str] = None) -> Dict[str, List[str]]:
+        """Returns direct imports (dependencies) and modules that import this file (dependents)."""
+        norm_path = file_path.replace("\\", "/").strip("/")
+        graph = await self.get_graph(project_id)
+        if not graph.has_node(norm_path):
+            await self.parse_file(norm_path, project_id)
+            graph = await self.get_graph(project_id)
+
+        dependencies = list(graph.successors(norm_path)) if graph.has_node(norm_path) else []
+        dependents = list(graph.predecessors(norm_path)) if graph.has_node(norm_path) else []
+        return {
+            "file": norm_path,
+            "dependencies": dependencies,
+            "dependents": dependents,
+        }
+
+    async def get_all_chunks(self, project_id: Optional[str] = None) -> List[ASTChunk]:
+        """Returns all parsed ASTChunk objects across all workspace files."""
+        pid = project_id or "default"
+        if pid not in self.file_chunks:
+            await self.build_graph(project_id)
+        all_c = []
+        for chunks in self.file_chunks.get(pid, {}).values():
+            all_c.extend(chunks)
+        return all_c
 
     async def _listen_for_file_changes(self):
         queue = await event_bus.subscribe("system:file_changes")

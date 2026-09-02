@@ -157,7 +157,23 @@ export default function BrowserView({ screenshots }: Props) {
     : null);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: fullscreen ? 0 : "var(--sp-2xl)" }}>
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      height: "100%",
+      ...(fullscreen ? {
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 99999,
+        background: "var(--bg-surface, #0a0a14)",
+        padding: 0
+      } : {
+        padding: "var(--sp-2xl)"
+      })
+    }}>
       {!fullscreen && (
         <header className="flex-between" style={{ marginBottom: "var(--sp-xl)" }}>
           <div>

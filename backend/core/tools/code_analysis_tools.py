@@ -225,6 +225,46 @@ class CodeAnalysisTools:
         except Exception as e:
             return f"Error analyzing impact: {str(e)}"
 
+    async def find_symbol_definition(self, symbol_name: str, project_id: Optional[str] = None) -> str:
+        """Finds exact AST definition (functions, classes, interfaces) with code snippets and line numbers."""
+        from core.knowledge.code_graph import code_graph
+        try:
+            defs = await code_graph.get_symbol_definitions(symbol_name, project_id)
+            if not defs:
+                # Fallback to text matching
+                return self.find_function(symbol_name)
+            
+            output = [f"Found {len(defs)} AST definition(s) for symbol '{symbol_name}':\n"]
+            for d in defs:
+                parent_info = f" (inside class {d['parent_symbol']})" if d.get('parent_symbol') else ""
+                params_info = f"({', '.join(d.get('params', []))})" if d.get('params') is not None else ""
+                output.append(f"[{d['file_path']} L{d['start_line']}-L{d['end_line']}] [{d['kind']}] {d['name']}{params_info}{parent_info}")
+                if d.get('docstring'):
+                    output.append(f"  \"\"\"{d['docstring'].strip()}\"\"\"")
+                output.append("```\n" + d['code'] + "\n```\n")
+            return "\n".join(output)
+        except Exception as e:
+            return f"Error finding symbol definition: {str(e)}"
+
+    async def get_file_outline(self, file_path: str, project_id: Optional[str] = None) -> str:
+        """Returns the structural outline (classes, methods, functions) of a source file."""
+        from core.knowledge.code_graph import code_graph
+        try:
+            safe_path = self._resolve_safe_path(file_path)
+            rel_path = str(safe_path.relative_to(self.workspace_root)).replace("\\", "/")
+            outline = await code_graph.get_file_outline(rel_path, project_id)
+            if not outline:
+                return f"No symbols or structure found for '{file_path}'."
+            
+            lines = [f"Structure Outline for '{rel_path}':"]
+            for sym in outline:
+                indent = "    " if sym.get('parent') else "  "
+                params = f"({', '.join(sym.get('params', []))})" if sym.get('params') is not None else ""
+                lines.append(f"{indent}* [{sym['kind']}] {sym['name']}{params} (Lines {sym['start_line']}-{sym['end_line']})")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error extracting file outline: {str(e)}"
+
     async def get_symbol_callers(self, symbol_name: str, project_id: Optional[str] = None) -> str:
         """Finds all files and lines that import or invoke a symbol across the workspace."""
         from core.knowledge.code_graph import code_graph
@@ -235,7 +275,7 @@ class CodeAnalysisTools:
             
             lines = [f"Found {len(callers)} reference(s) to symbol '{symbol_name}':"]
             for c in callers:
-                lines.append(f"  • {c['file']}:{c['line']} -> {c['code']}")
+                lines.append(f"  * {c['file']}:{c['line']} -> {c.get('code', c.get('caller', 'call'))}")
             return "\n".join(lines)
         except Exception as e:
             return f"Error locating symbol callers: {str(e)}"
@@ -254,5 +294,44 @@ class CodeAnalysisTools:
             return f"Error analyzing symbol callees: {str(e)}"
 
 
+    async def find_definitions(self, symbol: str, project_id: Optional[str] = None) -> str:
+        """Jump straight to the source of a type, class, or function definition."""
+        return await self.find_symbol_definition(symbol, project_id)
+
+    async def find_callers(self, function_name: str, project_id: Optional[str] = None) -> str:
+        """Retrieve all call sites across the codebase before refactoring."""
+        return await self.get_symbol_callers(function_name, project_id)
+
+    async def get_module_dependencies(self, file_path: str, project_id: Optional[str] = None) -> str:
+        """Inspect import/export module dependency graph for a specific file."""
+        from core.knowledge.code_graph import code_graph
+        try:
+            safe_path = self._resolve_safe_path(file_path)
+            rel_path = str(safe_path.relative_to(self.workspace_root)).replace("\\", "/")
+            res = await code_graph.get_module_dependencies(rel_path, project_id)
+
+            lines = [f"📦 Module Dependencies for '{rel_path}':"]
+            deps = res.get("dependencies", [])
+            if deps:
+                lines.append(f"  Imports ({len(deps)} files):")
+                for d in deps:
+                    lines.append(f"    -> {d}")
+            else:
+                lines.append("  Imports: None detected internally.")
+
+            dependents = res.get("dependents", [])
+            if dependents:
+                lines.append(f"  Imported by ({len(dependents)} files):")
+                for d in dependents:
+                    lines.append(f"    <- {d}")
+            else:
+                lines.append("  Imported by: No internal dependents.")
+
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error extracting module dependencies: {str(e)}"
+
+
 # Singleton
 code_analysis_tools = CodeAnalysisTools()
+

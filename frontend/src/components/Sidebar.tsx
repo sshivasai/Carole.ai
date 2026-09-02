@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu, Code2, Server, BookOpen, StickyNote } from "lucide-react";
 import styles from "./Sidebar.module.css";
 import { api } from "@/hooks/useApi";
@@ -83,6 +83,7 @@ export default function Sidebar({
   const [showAddTeam, setShowAddTeam] = useState(false);
   const [internalCollapsed, setInternalCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
 
   const isCollapsed = controlledCollapsed !== undefined ? controlledCollapsed : internalCollapsed;
   const toggleCollapse = useCallback((forceState?: boolean) => {
@@ -92,6 +93,25 @@ export default function Sidebar({
       setInternalCollapsed(prev => forceState !== undefined ? forceState : !prev);
     }
   }, [onToggleCollapse]);
+
+  // Auto-close sidebar on click outside when expanded
+  useEffect(() => {
+    if (isCollapsed) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (sidebarRef.current && !sidebarRef.current.contains(e.target as Node)) {
+        toggleCollapse(true);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [isCollapsed, toggleCollapse]);
+
+  const handleNavClick = useCallback((id: string) => {
+    onViewChange(id);
+    if (!isCollapsed) {
+      toggleCollapse(true);
+    }
+  }, [onViewChange, isCollapsed, toggleCollapse]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -202,6 +222,7 @@ export default function Sidebar({
 
   return (
     <nav
+      ref={sidebarRef}
       className={styles.sidebar}
       style={{
         width: effectiveWidth,
@@ -266,7 +287,7 @@ export default function Sidebar({
         </div>
         {NAV.map(({ id, label, Icon }) => (
           <button key={id} className={`${styles.navItem} ${activeView === id ? styles.active : ""}`}
-            onClick={() => onViewChange(id)} title={label}>
+            onClick={() => handleNavClick(id)} title={label}>
             <Icon size={15} className={styles.navItemIcon} />
             <span>{label}</span>
             {activeView === id && <ChevronRight size={12} style={{ marginLeft: "auto", opacity: 0.5 }} />}

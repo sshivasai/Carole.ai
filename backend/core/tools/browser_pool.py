@@ -223,7 +223,6 @@ async def close_all():
             except Exception:
                 pass
             _browser = None
-
         if _playwright:
             try:
                 await _playwright.stop()
@@ -232,3 +231,9 @@ async def close_all():
             _playwright = None
 
     logger.info("🌐 [BrowserPool] All browser resources released.")
+
+
+import sys
+browser_pool = sys.modules[__name__]
+
+

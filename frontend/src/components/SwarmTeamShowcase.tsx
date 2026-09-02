@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, Variants } from "framer-motion";
 import PrettyAvatar, { PrettyAvatarPreset } from "./PrettyAvatar";
 import {
   Sparkles,
@@ -148,7 +148,7 @@ export default function SwarmTeamShowcase() {
     return () => clearInterval(typingInterval);
   }, [selectedAgent.toolCall]);
 
-  const slideVariants = {
+  const slideVariants: Variants = {
     enter: (dir: number) => ({
       x: dir > 0 ? 18 : -18,
       opacity: 0,
@@ -157,7 +157,7 @@ export default function SwarmTeamShowcase() {
       x: 0,
       opacity: 1,
       transition: {
-        x: { type: "spring", stiffness: 380, damping: 28 },
+        x: { type: "spring" as const, stiffness: 380, damping: 28 },
         opacity: { duration: 0.15 },
       },
     },
@@ -165,7 +165,7 @@ export default function SwarmTeamShowcase() {
       x: dir > 0 ? -18 : 18,
       opacity: 0,
       transition: {
-        x: { type: "spring", stiffness: 380, damping: 28 },
+        x: { type: "spring" as const, stiffness: 380, damping: 28 },
         opacity: { duration: 0.12 },
       },
     }),

@@ -28,7 +28,7 @@ import {
 
 import styles from "./LandingPage.module.css";
 import { useTheme } from "@/hooks/useTheme";
-import { motion, AnimatePresence, useScroll, useTransform, useSpring } from "framer-motion";
+import { motion, AnimatePresence, useScroll, useTransform, useSpring, Variants } from "framer-motion";
 import SwarmTeamShowcase from "./SwarmTeamShowcase";
 import IntegrationsAnimation from "./IntegrationsAnimation";
 import TeamChatAnimation from "./TeamChatAnimation";
@@ -135,31 +135,75 @@ export default function LandingPage({
 
   const graphQueries = [
     {
-      query: "How are agent context dead-ends and tool observations pruned?",
-      denseFile: "backend/core/agent/context_ast.py",
-      score: "0.968 (AST Context Match)",
-      denseSummary:
-        "Lightweight AST parser decomposes message history into ActionNodes and ObsNodes, safely pruning failed dead-end loops without stripping valid reasoning.",
-      graphNodes:
-        "[ReActAgent] -> (generates) -> [ActionNode] -> (intercepts) -> [JudgeAIFirewall] -> (evaluates) -> [ToolExecutor]",
+      query: 'find_symbol_definition("parse_file_ast") — AST definition & call hierarchy',
+      astKind: "function",
+      astSymbol: "parse_file_ast(content, rel_path)",
+      astFile: "backend/core/knowledge/ast_parser.py",
+      astLines: "Lines 237–247",
+      astSnippet: `def parse_file_ast(content: str, rel_path: str) -> tuple[List[ASTChunk], List[str]]:
+    norm_path = rel_path.replace("\\\\", "/").lower()
+    ext = posixpath.splitext(norm_path)[1]
+    if ext == ".py":
+        return parse_python_file(content, rel_path)
+    elif ext in (".ts", ".tsx", ".js", ".jsx"):
+        return parse_ts_js_file(content, rel_path)
+    return parse_polyglot_regex(content, rel_path)`,
+      denseVector: "LanceDB HNSW: Vectorized code semantics + Auto-Dream cross-task memory",
+      denseScore: "0.984 (Semantic Exact Match)",
+      graphPathway:
+        "[code_graph.parse_file] ──(invokes)──> [parse_file_ast] ──(dispatches)──> [PythonASTVisitor | parse_ts_js_file] ──(indexes)──> [ASTChunk & CallHierarchy]",
+      graphMetrics: [
+        { label: "Token Savings", val: "98.4% (Direct AST Slice)" },
+        { label: "Lookup Latency", val: "1.2ms (O(1) Symbol Index)" },
+        { label: "Call Sites", val: "6 Cross-File Invocations" },
+      ],
     },
     {
-      query: "Trace guarded subagent delegation & concurrency limits",
-      denseFile: "backend/core/tools/agent_tools.py",
-      score: "0.954 (Coordination Match)",
-      denseSummary:
-        "Primary coordinators spawn temporary specialist subagents (max depth 1, max 3 concurrent) with restricted toolsets to prevent infinite recursion.",
-      graphNodes:
-        "[Archer Coordinator] -> (hires) -> [Sub-PythonDeveloper] -> (executes_task) -> [TaskNotification] -> (reports) -> [TeamChat]",
+      query: 'get_file_outline("code_graph.py") — Symbol graph & active editor locks',
+      astKind: "class",
+      astSymbol: "CodeGraph (Symbol Index & Collision Lock)",
+      astFile: "backend/core/knowledge/code_graph.py",
+      astLines: "Lines 40–280",
+      astSnippet: `class CodeGraph:
+    def __init__(self, workspace_root: str = None):
+        self.symbol_index: Dict[str, Dict[str, List[ASTChunk]]] = {}
+        self.call_hierarchy: Dict[str, Dict[str, List[Dict]]] = {}
+        self.active_editors: Dict[str, Dict[str, Set[str]]] = {}
+    async def mark_file_active(self, path: str, agent_name: str): ...
+    async def get_symbol_definitions(self, symbol_name: str): ...`,
+      denseVector: "LanceDB: Multi-agent coordination patterns & AST dependency graphs",
+      denseScore: "0.961 (Dependency Graph Match)",
+      graphPathway:
+        "[ActiveEditorWatcher] ──(monitors)──> [write_file / edit_file] ──(collision_check)──> [JudgeAIFirewall] ──(alerts)──> [TeamChat SSE]",
+      graphMetrics: [
+        { label: "Indexed Symbols", val: "1,250+ AST Chunks" },
+        { label: "Editor Conflict Gate", val: "Zero-Latency Collision Lock" },
+        { label: "Graph Engine", val: "NetworkX DAG + In-Memory Index" },
+      ],
     },
     {
-      query: "Inspect MCP sandbox tool authorization firewall",
-      denseFile: "backend/core/tools/mcp_client.py",
-      score: "0.962 (JSON-RPC 2.0 Match)",
-      denseSummary:
-        "JSON-RPC 2.0 tool execution interceptor with permission prompt firewall and per-agent token access control.",
-      graphNodes:
-        "[AgentTask] -> (tool_call) -> [MCPFirewall] -> (validates_token) -> [PostgresMCPServer] -> (returns_payload) -> [AgentContext]",
+      query: 'get_symbol_callers("ast_snip_dead_ends") — Context compaction & pruning',
+      astKind: "function",
+      astSymbol: "ast_snip_dead_ends(messages)",
+      astFile: "backend/core/agent/context_ast.py",
+      astLines: "Lines 112–158",
+      astSnippet: `def ast_snip_dead_ends(messages: List[Dict]) -> tuple[List[Dict], int]:
+    ast = parse_to_context_ast(messages)
+    snipped = 0
+    for node in ast:
+        if node.is_failed_tool_dead_end():
+            node.prune()
+            snipped += 1
+    return reconstruct_messages(ast), snipped`,
+      denseVector: "LanceDB: Token compaction checkpoints & working state memory flush",
+      denseScore: "0.976 (Context Optimization Match)",
+      graphPathway:
+        "[ReACTAgent.run_loop] ──(evaluates)──> [_micro_compact] ──(prunes)──> [ast_snip_dead_ends] ──(flushes)──> [LanceDB & SQLite CompactionEvent]",
+      graphMetrics: [
+        { label: "Context Window Guard", val: "Sliding Window (80% Trigger)" },
+        { label: "Dead-End Pruning", val: "AST Observation Snipping" },
+        { label: "Checkpoint Durability", val: "Survives Server Restarts" },
+      ],
     },
   ];
 
@@ -196,12 +240,12 @@ npm run dev
     setTimeout(() => setCopiedTerminal(false), 2000);
   };
 
-  const fadeInUp = {
+  const fadeInUp: Variants = {
     hidden: { opacity: 0, y: 24 },
-    visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] } },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as const } },
   };
 
-  const staggerContainer = {
+  const staggerContainer: Variants = {
     hidden: { opacity: 0 },
     visible: {
       opacity: 1,
@@ -514,13 +558,16 @@ npm run dev
               </div>
 
               <div className={styles.graphDualGrid}>
+                {/* Left Pane: AST Symbol Definition & Slicing */}
                 <div className={styles.graphPane}>
                   <div className={styles.graphPaneHeader}>
                     <div className={styles.graphPaneTitle}>
-                      <Database size={15} style={{ color: "var(--color-primary-soft, #818cf8)" }} />
-                      <span>Dense Vector Engine</span>
+                      <Code2 size={15} style={{ color: "var(--color-primary-soft, #818cf8)" }} />
+                      <span>AST Semantic Chunk</span>
                     </div>
-                    <span className={styles.graphTag}>LanceDB HNSW</span>
+                    <span className={styles.graphTag}>
+                      {graphQueries[selectedGraphQuery].astKind} • {graphQueries[selectedGraphQuery].astLines}
+                    </span>
                   </div>
                   <AnimatePresence mode="wait">
                     <motion.div
@@ -532,23 +579,26 @@ npm run dev
                       className={styles.graphResultItem}
                     >
                       <div style={{ fontWeight: 600, color: "var(--color-ink-strong, #ffffff)", marginBottom: 4 }}>
-                        Match File: {graphQueries[selectedGraphQuery].denseFile}
+                        {graphQueries[selectedGraphQuery].astSymbol}
                       </div>
                       <div style={{ fontSize: 12, color: "var(--color-primary-soft, #818cf8)", marginBottom: 6 }}>
-                        {graphQueries[selectedGraphQuery].score}
+                        📁 {graphQueries[selectedGraphQuery].astFile}
                       </div>
-                      <div>{graphQueries[selectedGraphQuery].denseSummary}</div>
+                      <pre className={styles.graphCodeSnippet}>
+                        <code>{graphQueries[selectedGraphQuery].astSnippet}</code>
+                      </pre>
                     </motion.div>
                   </AnimatePresence>
                 </div>
 
+                {/* Right Pane: GraphRAG Multi-Hop & Semantic Vector */}
                 <div className={styles.graphPane}>
                   <div className={styles.graphPaneHeader}>
                     <div className={styles.graphPaneTitle}>
                       <Network size={15} style={{ color: "var(--color-primary-soft, #818cf8)" }} />
-                      <span>Sparse Knowledge Graph</span>
+                      <span>Dense Vector + Code Ontology</span>
                     </div>
-                    <span className={styles.graphTag}>NetworkX Multi-Hop</span>
+                    <span className={styles.graphTag}>LanceDB + NetworkX</span>
                   </div>
                   <AnimatePresence mode="wait">
                     <motion.div
@@ -559,18 +609,30 @@ npm run dev
                       transition={{ duration: 0.16 }}
                       className={styles.graphResultItem}
                     >
-                      <div style={{ fontWeight: 600, color: "var(--color-ink-strong, #ffffff)", marginBottom: 6 }}>
-                        Discovered Entity Pathway
+                      <div style={{ fontWeight: 600, color: "var(--color-ink-strong, #ffffff)", marginBottom: 4 }}>
+                        Semantic Vector Memory
                       </div>
-                      <div
-                        style={{
-                          fontFamily: "var(--font-family-mono, monospace)",
-                          fontSize: 12,
-                          color: "var(--color-primary-soft, #818cf8)",
-                          lineHeight: 1.6,
-                        }}
-                      >
-                        {graphQueries[selectedGraphQuery].graphNodes}
+                      <div style={{ fontSize: 12, color: "var(--color-primary-soft, #818cf8)", marginBottom: 8 }}>
+                        {graphQueries[selectedGraphQuery].denseScore}
+                      </div>
+                      <div style={{ fontSize: 12.5, color: "var(--color-mute, #94a3b8)", marginBottom: 8 }}>
+                        {graphQueries[selectedGraphQuery].denseVector}
+                      </div>
+                      
+                      <div style={{ fontWeight: 600, color: "var(--color-ink-strong, #ffffff)", marginTop: 10, marginBottom: 4 }}>
+                        Multi-Hop Call & Dependency Pathway
+                      </div>
+                      <div className={styles.graphPathwayBox}>
+                        {graphQueries[selectedGraphQuery].graphPathway}
+                      </div>
+
+                      <div className={styles.graphMetricsRow}>
+                        {graphQueries[selectedGraphQuery].graphMetrics.map((m, mIdx) => (
+                          <div key={mIdx} className={styles.graphMetricChip}>
+                            <span className={styles.graphMetricLabel}>{m.label}</span>
+                            <span className={styles.graphMetricVal}>{m.val}</span>
+                          </div>
+                        ))}
                       </div>
                     </motion.div>
                   </AnimatePresence>

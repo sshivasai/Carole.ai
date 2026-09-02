@@ -178,6 +178,24 @@ def register_builtin_tools():
                  {"path": {"type": "string", "required": True}}, "safe", _wrap_check_syntax),
         ToolSpec("analyze_impact", "Analyze the impact of modifying a file based on its dependencies and active editors", "code_analysis",
                  {"file_path": {"type": "string", "required": True}}, "safe", _wrap_analyze_impact),
+        ToolSpec("find_symbol_definition", "Find exact AST definition (functions, classes, interfaces) with code snippets and line numbers without reading whole files", "code_analysis",
+                 {"symbol_name": {"type": "string", "required": True}}, "safe", _wrap_find_symbol_definition),
+        ToolSpec("get_file_outline", "Get structural outline (classes, methods, functions) of a source file with line numbers", "code_analysis",
+                 {"file_path": {"type": "string", "required": True}}, "safe", _wrap_get_file_outline),
+        ToolSpec("get_symbol_callers", "Find all functions and files that invoke a symbol across the workspace", "code_analysis",
+                 {"symbol_name": {"type": "string", "required": True}}, "safe", _wrap_get_symbol_callers),
+        ToolSpec("get_symbol_callees", "Find all functions called inside a specific function/class", "code_analysis",
+                 {"function_name": {"type": "string", "required": True},
+                  "file_path": {"type": "string", "required": True}}, "safe", _wrap_get_symbol_callees),
+        ToolSpec("find_definitions", "Jump straight to the AST definition of a type, class, or function across the workspace", "code_analysis",
+                 {"symbol": {"type": "string", "required": True}}, "safe", _wrap_find_definitions),
+        ToolSpec("find_callers", "Retrieve all call sites and references for a symbol before refactoring", "code_analysis",
+                 {"function_name": {"type": "string", "required": True}}, "safe", _wrap_find_callers),
+        ToolSpec("get_module_dependencies", "Inspect import/export dependency graph for a specific module", "code_analysis",
+                 {"file_path": {"type": "string", "required": True}}, "safe", _wrap_get_module_dependencies),
+        ToolSpec("hybrid_code_search", "Dual BM25 and vector code retrieval fused via Reciprocal Rank Fusion", "code_analysis",
+                 {"query": {"type": "string", "required": True},
+                  "top_k": {"type": "number", "required": False}}, "safe", _wrap_hybrid_code_search),
 
         # ---- Web ----
         ToolSpec("web_search", "Search the web using Tavily API. Returns search result summaries with titles, URLs, and content snippets. Use for quick research, fact-checking, or finding resources. CRITICAL LIMITATIONS: (1) Results are search-engine summaries — URLs often point to aggregator/listing pages, NOT direct application or product links. If the user asks for 'exact links', 'direct links', or specific job/product URLs, you MUST follow up with browser_navigate + browser_get_all_links to extract actual destination URLs from the page. (2) ALWAYS include a 'Sources:' section at the end of your response listing URLs as markdown hyperlinks [Title](URL). (3) Use the CURRENT YEAR in search queries for recent information.", "web",
@@ -635,6 +653,8 @@ _TOOL_CATEGORY: Dict[str, str] = {
     "glob_search": "view", "diff_files": "view", "find_function": "view",
     "find_todos": "view", "count_lines": "view", "analyze_imports": "view",
     "check_syntax": "view", "analyze_impact": "view", "workspace_tree": "view",
+    "find_symbol_definition": "view", "get_file_outline": "view",
+    "get_symbol_callers": "view", "get_symbol_callees": "view",
     "read_scratchpad": "view",
     # edit
     "edit_file": "edit", "append_file": "edit",
@@ -889,13 +909,17 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
     import core.config
     model_name = getattr(core.config, "DEFAULT_SMART_MODEL", "gpt-4o")
     if agent_id:
-        async with async_session() as db:
-            agent_record = (await db.execute(select(DbAgent).where(DbAgent.id == agent_id))).scalar_one_or_none()
-            if agent_record and agent_record.model:
-                model_name = agent_record.model
+        try:
+            import uuid
+            agent_uuid = uuid.UUID(str(agent_id))
+            async with async_session() as db:
+                agent_record = (await db.execute(select(DbAgent).where(DbAgent.id == agent_uuid))).scalar_one_or_none()
+                if agent_record and agent_record.model:
+                    model_name = agent_record.model
+        except Exception:
+            pass
 
     try:
-        from browser_use import Browser, BrowserConfig
         from core.llm.config_manager import load_config
         cfg = load_config()
         
@@ -903,13 +927,19 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
         provider = ba_cfg.get("provider", "local")
         keys = ba_cfg.get("api_keys", {})
         
-        browser_config = None
-        if provider == "browserbase" and keys.get("browserbase"):
-            browser_config = BrowserConfig(cdp_url=f"wss://connect.browserbase.com?apiKey={keys['browserbase']}")
-        else:
-            browser_config = BrowserConfig(headless=True)
-            
-        browser_instance = Browser(config=browser_config)
+        try:
+            from browser_use import Browser, BrowserConfig
+            if provider == "browserbase" and keys.get("browserbase"):
+                browser_config = BrowserConfig(cdp_url=f"wss://connect.browserbase.com?apiKey={keys['browserbase']}")
+            else:
+                browser_config = BrowserConfig(headless=True)
+            browser_instance = Browser(config=browser_config)
+        except (ImportError, AttributeError):
+            from browser_use import Browser
+            if provider == "browserbase" and keys.get("browserbase"):
+                browser_instance = Browser(cdp_url=f"wss://connect.browserbase.com?apiKey={keys['browserbase']}")
+            else:
+                browser_instance = Browser(headless=True)
         
         keys = cfg.get("api_keys", {})
         
@@ -1037,6 +1067,21 @@ class ToolExecutor:
         if gate_level == "judge" and not effective_permissions.get("enable_judge", True):
             gate_level = _apply_judge_disabled_fallback(effective_permissions)
             logger.info("⚡ [Executor] Judge disabled — fallback gate='%s' for '%s'.", gate_level, tool_name)
+
+        # Phase 5: Destructive Command Guardrail — Escalate directly to Human-in-the-Loop modal
+        if tool_name == "execute_command":
+            import re
+            cmd = arguments.get("command") or arguments.get("value") or ""
+            destructive_patterns = [
+                r"\brm\s+-(?:[a-zA-Z]*[rf][a-zA-Z]*)\b",
+                r"\bdrop\s+(?:table|database|schema)\b",
+                r"\bgit\s+reset\s+--hard\b",
+                r"\bgit\s+clean\s+-(?:[a-zA-Z]*f[a-zA-Z]*)\b",
+                r"\btruncate\s+table\b",
+            ]
+            if any(re.search(pat, cmd, re.IGNORECASE) for pat in destructive_patterns):
+                logger.warning("🛑 High-risk destructive command: '%s'. Escalating gate to 'human'.", cmd)
+                gate_level = "human"
 
         # ── Documentation fast-path (frictionless .md/.txt writes) ───────────
         if _is_doc_write(tool_name, arguments):
@@ -1601,6 +1646,24 @@ async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
     command = args.get("command") or args.get("value")
     if not command:
         return "Error: Missing parameter 'command'."
+
+    # Phase 5: Destructive Command Guardrails
+    import re
+    destructive_patterns = [
+        r"\brm\s+-(?:[a-zA-Z]*[rf][a-zA-Z]*)\b",
+        r"\bdrop\s+(?:table|database|schema)\b",
+        r"\bgit\s+reset\s+--hard\b",
+        r"\bgit\s+clean\s+-(?:[a-zA-Z]*f[a-zA-Z]*)\b",
+        r"\btruncate\s+table\b",
+    ]
+    if any(re.search(pat, command, re.IGNORECASE) for pat in destructive_patterns):
+        if not args.get("_human_confirmed") and not args.get("confirm_destructive"):
+            return (
+                f"⚠️ HIGH-RISK DESTRUCTIVE ACTION INTERCEPTED: '{command}'.\n"
+                "This command contains destructive operations (rm -rf, DROP TABLE, git reset --hard) that risk irreversible data loss.\n"
+                "To execute this command, you must explicitly confirm with the operator or pass confirm_destructive=True."
+            )
+
     timeout = float(args.get("timeout", 60.0))
     context = args.get("_context")
     base_cwd = await _team_cwd(team_id)
@@ -2548,6 +2611,77 @@ async def _wrap_analyze_impact(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'file_path'."
     project_id = await _team_project_id(team_id)
     return await code_analysis_tools.analyze_impact(path, project_id)
+
+async def _wrap_find_symbol_definition(args: Dict[str, Any], team_id: str) -> str:
+    symbol_name = args.get("symbol_name") or args.get("name") or args.get("value", "")
+    if not symbol_name:
+        return "Error: Missing 'symbol_name'."
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.find_symbol_definition(symbol_name, project_id)
+
+async def _wrap_get_file_outline(args: Dict[str, Any], team_id: str) -> str:
+    file_path = args.get("file_path") or args.get("path") or args.get("value", "")
+    if not file_path:
+        return "Error: Missing 'file_path'."
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.get_file_outline(file_path, project_id)
+
+async def _wrap_get_symbol_callers(args: Dict[str, Any], team_id: str) -> str:
+    symbol_name = args.get("symbol_name") or args.get("name") or args.get("value", "")
+    if not symbol_name:
+        return "Error: Missing 'symbol_name'."
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.get_symbol_callers(symbol_name, project_id)
+
+async def _wrap_get_symbol_callees(args: Dict[str, Any], team_id: str) -> str:
+    function_name = args.get("function_name") or args.get("name") or args.get("value", "")
+    file_path = args.get("file_path") or args.get("path", "")
+    if not function_name:
+        return "Error: Missing 'function_name'."
+    if not file_path:
+        return "Error: Missing 'file_path'."
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.get_symbol_callees(function_name, file_path, project_id)
+
+async def _wrap_find_definitions(args: Dict[str, Any], team_id: str) -> str:
+    symbol = args.get("symbol") or args.get("symbol_name") or args.get("name") or args.get("value", "")
+    if not symbol:
+        return "Error: Missing parameter 'symbol'."
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.find_definitions(symbol, project_id)
+
+async def _wrap_find_callers(args: Dict[str, Any], team_id: str) -> str:
+    function_name = args.get("function_name") or args.get("symbol") or args.get("name") or args.get("value", "")
+    if not function_name:
+        return "Error: Missing parameter 'function_name'."
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.find_callers(function_name, project_id)
+
+async def _wrap_get_module_dependencies(args: Dict[str, Any], team_id: str) -> str:
+    file_path = args.get("file_path") or args.get("path") or args.get("value", "")
+    if not file_path:
+        return "Error: Missing parameter 'file_path'."
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.get_module_dependencies(file_path, project_id)
+
+async def _wrap_hybrid_code_search(args: Dict[str, Any], team_id: str) -> str:
+    query = args.get("query") or args.get("value", "")
+    if not query:
+        return "Error: Missing parameter 'query'."
+    top_k = int(args.get("top_k", 10))
+    from core.knowledge.hybrid_search import hybrid_code_search
+    from core.knowledge.code_graph import code_graph
+    project_id = await _team_project_id(team_id)
+    chunks = await code_graph.get_all_chunks(project_id)
+    hybrid_code_search.index_workspace_chunks(chunks)
+    results = await hybrid_code_search.search(query, top_k=top_k)
+    if not results:
+        return f"No code snippets found matching '{query}'."
+    output = [f"Hybrid Search Results for '{query}':"]
+    for r in results:
+        output.append(f"\n[{r['file_path']} L{r['start_line']}-L{r['end_line']}] ({r['kind']}) {r['name']} (score: {r['score']})")
+        output.append("```\n" + r['code'][:500] + ("\n..." if len(r['code']) > 500 else "") + "\n```")
+    return "\n".join(output)
 
 # ---- Memory Wrappers ----
 

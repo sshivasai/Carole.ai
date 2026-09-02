@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import type { AgentConfig, ScheduledTask, AccessControlConfig } from "@/lib/types";
+import type { AgentConfig, ScheduledTask, AccessControlConfig, PermissionLevel } from "@/lib/types";
 import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock, Shield, Shuffle, Sparkles, RefreshCw, FileText } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
@@ -33,15 +33,19 @@ function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
 
   return (
     <div 
-      className={`card ${isThinking ? "status-ring-thinking" : ""}`} 
+      className="card" 
       style={{ 
         padding: "var(--sp-lg)", 
         display: "flex", 
         flexDirection: "column", 
+        justifyContent: "space-between",
+        height: "100%",
+        minHeight: 240,
         gap: "var(--sp-md)", 
         position: "relative", 
         transition: "all var(--t-fast)",
         border: isSubagent ? "1px solid rgba(251, 191, 36, 0.45)" : isThinking ? "1px solid var(--color-primary)" : "1px solid var(--border-subtle)",
+        boxShadow: isThinking ? "0 0 16px rgba(0, 217, 146, 0.15)" : "none",
         background: isSubagent ? "linear-gradient(135deg, rgba(251, 191, 36, 0.04), var(--bg-surface))" : "var(--bg-surface)",
       }}
     >
@@ -50,89 +54,93 @@ function AgentCard({ agent, isThinking, queueDepth, onEdit, onDelete }: {
         <button className="btn btn-icon-sm btn-ghost" style={{ color: "var(--color-danger)" }} onClick={onDelete} title="Delete agent"><Trash2 size={12} /></button>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)" }}>
-        <AgentHoverCard agent={agent} isThinking={isThinking}>
-          <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={40} isThinking={isThinking} isSubagent={isSubagent} />
-        </AgentHoverCard>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", flexWrap: "wrap" }}>
-            <AgentHoverCard agent={agent} isThinking={isThinking}>
-              <span className="body-sm-strong" style={{ fontSize: 13, cursor: "pointer" }}>{agent.name}</span>
-            </AgentHoverCard>
-            {isSubagent && (
-              <span className="subagent-chip" style={{ fontSize: 9, padding: "1px 5px" }}>
-                SUBAGENT
-              </span>
-            )}
-            {isThinking && (
-              <span className="pill pill-thinking" style={{ fontSize: 10 }}>
-                <span className="animate-pulse" style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />
-                working
-              </span>
-            )}
-            {!isThinking && queueDepth > 0 && (
-              <span style={{
-                fontSize: 10, padding: "1px 6px", borderRadius: 8,
-                background: "rgba(251,191,36,0.15)", color: "#FBBF24",
-                border: "1px solid rgba(251,191,36,0.3)", fontWeight: 600,
-              }}>
-                ⏳ {queueDepth} queued
-              </span>
-            )}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginTop: 4, flexWrap: "wrap" }}>
-            <span className="badge badge-gray" style={{ fontSize: 9, textTransform: "capitalize" }}>{agent.role}</span>
-            <span className="caption" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--color-primary-soft)" }}>{agent.model}</span>
-          </div>
-          {agent.fallback_model && (
-            <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
-              <span style={{ fontSize: 10, color: "var(--color-mute)" }}>↩ fallback:</span>
-              <span className="caption" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 10, color: "var(--color-mute)" }}>{agent.fallback_model}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)", flex: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)" }}>
+          <AgentHoverCard agent={agent} isThinking={isThinking}>
+            <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={40} isThinking={isThinking} isSubagent={isSubagent} />
+          </AgentHoverCard>
+          <div style={{ flex: 1, minWidth: 0, paddingRight: 48 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", flexWrap: "wrap" }}>
+              <AgentHoverCard agent={agent} isThinking={isThinking}>
+                <span className="body-sm-strong" style={{ fontSize: 13, cursor: "pointer" }}>{agent.name}</span>
+              </AgentHoverCard>
+              {isSubagent && (
+                <span className="subagent-chip" style={{ fontSize: 9, padding: "1px 5px" }}>
+                  SUBAGENT
+                </span>
+              )}
+              {isThinking && (
+                <span className="pill pill-thinking" style={{ fontSize: 10 }}>
+                  <span className="animate-pulse" style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />
+                  working
+                </span>
+              )}
+              {!isThinking && queueDepth > 0 && (
+                <span style={{
+                  fontSize: 10, padding: "1px 6px", borderRadius: 8,
+                  background: "rgba(251,191,36,0.15)", color: "#FBBF24",
+                  border: "1px solid rgba(251,191,36,0.3)", fontWeight: 600,
+                }}>
+                  ⏳ {queueDepth} queued
+                </span>
+              )}
             </div>
-          )}
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginTop: 4, flexWrap: "wrap" }}>
+              <span className="badge badge-gray" style={{ fontSize: 9, textTransform: "capitalize" }}>{agent.role}</span>
+              <span className="caption" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--color-primary-soft)" }}>{agent.model}</span>
+            </div>
+            {agent.fallback_model && (
+              <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                <span style={{ fontSize: 10, color: "var(--color-mute)" }}>↩ fallback:</span>
+                <span className="caption" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 10, color: "var(--color-mute)" }}>{agent.fallback_model}</span>
+              </div>
+            )}
+          </div>
         </div>
+
+        {agent.skills && agent.skills.length > 0 ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, flex: 1, alignContent: "flex-start" }}>
+            {agent.skills.map(s => <span key={s} className="code-inline" style={{ fontSize: 10, padding: "2px 6px" }}>{s}</span>)}
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, flex: 1, alignContent: "flex-start" }}>
+            <span className="code-inline" style={{ fontSize: 10, padding: "2px 6px", opacity: 0.85 }}>
+              {agent.role}
+            </span>
+          </div>
+        )}
       </div>
 
-      {agent.skills && agent.skills.length > 0 ? (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {agent.skills.map(s => <span key={s} className="code-inline" style={{ fontSize: 10, padding: "2px 6px" }}>{s}</span>)}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          <span className="code-inline" style={{ fontSize: 10, padding: "2px 6px", opacity: 0.85 }}>
-            {agent.role}
-          </span>
-        </div>
-      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-xs)", marginTop: "auto" }}>
+        {isThinking && (
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "4px 8px",
+            background: "rgba(168, 85, 247, 0.08)",
+            border: "1px solid rgba(168, 85, 247, 0.25)",
+            borderRadius: "var(--radius-xs)",
+            fontSize: 10,
+            color: "#c084fc",
+          }}>
+            <span className="animate-pulse" style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#c084fc" }} />
+            <span style={{ fontWeight: 500 }}>Actively executing tasks...</span>
+          </div>
+        )}
 
-      {isThinking && (
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "4px 8px",
-          background: "rgba(168, 85, 247, 0.08)",
-          border: "1px solid rgba(168, 85, 247, 0.25)",
-          borderRadius: "var(--radius-xs)",
-          fontSize: 10,
-          color: "#c084fc",
-        }}>
-          <span className="animate-pulse" style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#c084fc" }} />
-          <span style={{ fontWeight: 500 }}>Actively executing tasks...</span>
-        </div>
-      )}
-
-      {agent.personality && (
-        <button onClick={() => setExpanded(e => !e)} className="btn btn-ghost btn-sm" style={{ justifyContent: "flex-start", padding: "2px 0", gap: 4, fontSize: 11, color: "var(--color-mute)" }}>
-          {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-          {expanded ? "Hide" : "Show"} instructions
-        </button>
-      )}
-      {expanded && agent.personality && (
-        <p className="caption" style={{ borderLeft: "2px solid var(--color-primary)", paddingLeft: "var(--sp-sm)", color: "var(--color-body)", background: "var(--color-canvas)", padding: "6px 8px", borderRadius: "0 var(--radius-xs) var(--radius-xs) 0", margin: 0 }}>
-          {agent.personality}
-        </p>
-      )}
+        {agent.personality && (
+          <button onClick={() => setExpanded(e => !e)} className="btn btn-ghost btn-sm" style={{ justifyContent: "flex-start", padding: "2px 0", gap: 4, fontSize: 11, color: "var(--color-mute)" }}>
+            {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+            {expanded ? "Hide" : "Show"} instructions
+          </button>
+        )}
+        {expanded && agent.personality && (
+          <p className="caption" style={{ borderLeft: "2px solid var(--color-primary)", paddingLeft: "var(--sp-sm)", color: "var(--color-body)", background: "var(--color-canvas)", padding: "6px 8px", borderRadius: "0 var(--radius-xs) var(--radius-xs) 0", margin: 0 }}>
+            {agent.personality}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -250,6 +258,16 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   const [accessControl, setAccessControl] = useState<AccessControlConfig>(() => {
     const tp = initial?.tool_permissions;
     if (tp && typeof tp === "object" && "categories" in tp) return tp as AccessControlConfig;
+    if (tp && typeof tp === "object") {
+      const overrides: Record<string, PermissionLevel> = {};
+      for (const [k, v] of Object.entries(tp)) {
+        if (v === "safe" || v === "allow") overrides[k] = "allow";
+        else if (v === "judge") overrides[k] = "judge";
+        else if (v === "always_ask" || v === "human") overrides[k] = "always_ask";
+        else if (v === "block") overrides[k] = "block";
+      }
+      return { ...DEFAULT_ACCESS_CONTROL, categories: { ...DEFAULT_ACCESS_CONTROL.categories }, overrides, custom_skip_judge: { file_patterns: [], command_prefixes: [] } };
+    }
     return { ...DEFAULT_ACCESS_CONTROL, categories: { ...DEFAULT_ACCESS_CONTROL.categories }, overrides: {}, custom_skip_judge: { file_patterns: [], command_prefixes: [] } };
   });
 
@@ -270,18 +288,18 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
 
   // Load model catalog from backend on mount
   useEffect(() => {
-    api.listModels().then(cat => {
+    api.getModelCatalog().then(cat => {
       setCatalog(cat);
       setCatalogLoaded(true);
-      if (initial?.model) {
-        setPrimProvider(detectProvider(initial.model, cat));
-      } else {
+      if (!initial?.model) {
         // Default: first provider in catalog
         const firstProv = Object.keys(cat)[0];
         if (firstProv) {
           setPrimProvider(firstProv);
           setPrimModel(cat[firstProv]?.models?.[0]?.value || "");
         }
+      } else {
+        setPrimProvider(detectProvider(initial.model, cat));
       }
       if (initial?.fallback_model) {
         setFallProvider(detectProvider(initial.fallback_model, cat));
@@ -329,6 +347,17 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
         const prov = detectProvider(tmpl.recommended_model, catalog);
         setPrimProvider(prov);
         setPrimModel(tmpl.recommended_model);
+      }
+
+      if (tmpl.recommended_permissions && typeof tmpl.recommended_permissions === "object") {
+        const overrides: Record<string, PermissionLevel> = {};
+        for (const [k, v] of Object.entries(tmpl.recommended_permissions)) {
+          if (v === "safe" || v === "allow") overrides[k] = "allow";
+          else if (v === "judge") overrides[k] = "judge";
+          else if (v === "always_ask" || v === "human") overrides[k] = "always_ask";
+          else if (v === "block") overrides[k] = "block";
+        }
+        setAccessControl(prev => ({ ...prev, overrides }));
       }
     } catch (err) {
       console.error("Failed to apply role template:", err);
@@ -388,7 +417,7 @@ function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
 
       {/* Access Control tab */}
       {activeTab === "access" && (
-        <div style={{ overflowY: "auto", maxHeight: 500, paddingRight: 2 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
           <p className="caption" style={{ margin: "0 0 var(--sp-md)" }}>
             Configure per-agent permissions. These override global defaults and control which tools this agent can use without friction.
           </p>
@@ -660,7 +689,7 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
                 CORE AGENTS ({agents.filter(a => !a.name.startsWith("Sub-") && !a.name.startsWith("Subagent-")).length})
               </span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)", alignItems: "start" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "var(--sp-lg)", alignItems: "stretch" }}>
               {agents.filter(a => !a.name.startsWith("Sub-") && !a.name.startsWith("Subagent-")).map(a => (
                 <AgentCard
                   key={a.id}
@@ -681,7 +710,7 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
                 <span className="subagent-chip" style={{ fontSize: 10 }}>🤖 TEMPORARY SUBAGENTS</span>
                 <span className="caption" style={{ color: "var(--color-mute)" }}>Specialist workers spawned for specific subtasks (Depth 1 guarded)</span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--sp-lg)", alignItems: "start" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "var(--sp-lg)", alignItems: "stretch" }}>
                 {agents.filter(a => a.name.startsWith("Sub-") || a.name.startsWith("Subagent-")).map(a => (
                   <AgentCard
                     key={a.id}
@@ -717,12 +746,12 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
               {scheduledTasks.map(task => (
-                <div key={task.id} className="card" style={{ padding: "var(--sp-md)", display: "flex", alignItems: "center", gap: "var(--sp-md)" }}>
+                <div key={task.id} className="card" style={{ padding: "var(--sp-md) var(--sp-lg)", display: "flex", alignItems: "center", justifyContent: "space-between", opacity: task.is_active ? 1 : 0.6 }}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span className="body-sm-strong">{task.name}</span>
-                      <span className={`badge ${task.is_active ? 'badge-primary' : 'badge-gray'}`}>
-                        {task.is_active ? "Active" : "Inactive"}
+                      <span className={`badge ${task.is_active ? 'badge-primary' : 'badge-gray'}`} style={{ fontSize: 9 }}>
+                        {task.is_active ? "Active" : "Paused"}
                       </span>
                     </div>
                     <div className="caption" style={{ marginTop: 4, display: "flex", gap: 12 }}>
@@ -764,7 +793,7 @@ export default function AgentPanel({ agents, teamId, streamingAgents, agentQueue
       )}
 
       <Modal open={modalOpen} onClose={() => { setModalOpen(false); setEditingAgent(undefined); }}
-        title={editingAgent ? "Edit Agent" : "New Agent"} maxWidth={520}>
+        title={editingAgent ? "Edit Agent" : "New Agent"} maxWidth={880}>
         <AgentForm initial={editingAgent} teamId={teamId} roleTemplates={templates} onSave={handleSaved} onClose={() => { setModalOpen(false); setEditingAgent(undefined); }} />
       </Modal>
 

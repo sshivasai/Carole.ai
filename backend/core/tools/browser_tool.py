@@ -262,7 +262,7 @@ class BrowserTool:
                 )
 
             # Check for intercepted download
-            if getattr(page, "_last_download_path", None):
+            if getattr(page, "_last_download_path", None) and isinstance(getattr(page, "_last_download_path", None), str):
                 import json
                 dl_path = page._last_download_path
                 dl_url = getattr(page, "_last_download_url", url)
@@ -358,6 +358,27 @@ class BrowserTool:
             
         except Exception as e:
             return f"Error extracting page text: {str(e)}"
+
+    async def snapshot(
+        self,
+        agent_id: str,
+        agent_name: str = "Agent",
+        team_id: str = "default",
+        include_screenshot: bool = True,
+    ) -> str:
+        """Capture an accessibility snapshot of the current page for the agent.
+        Optionally stream a screenshot to the event bus.
+        """
+        try:
+            page = await _get_page(agent_id)
+            if include_screenshot:
+                await _publish_screenshot(page, agent_id, agent_name, team_id, "Snapshot")
+            snapshot_text = await self._build_snapshot_text(page)
+            title = await page.title()
+            url = page.url
+            return f"Page: {url}\nTitle: {title}\n\n-- Page Snapshot --\n{snapshot_text}"
+        except Exception as e:
+            return f"Error capturing snapshot: {str(e)}"
 
     # -- Unified Act ----------------------------------------------------------─
 
@@ -513,7 +534,7 @@ class BrowserTool:
                 pass
 
             # Check for intercepted download
-            if getattr(page, "_last_download_path", None):
+            if getattr(page, "_last_download_path", None) and isinstance(getattr(page, "_last_download_path", None), str):
                 import json
                 dl_path = page._last_download_path
                 dl_url = getattr(page, "_last_download_url", page.url)

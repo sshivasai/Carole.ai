@@ -866,10 +866,11 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
 
   useEffect(() => {
     if (isStreaming) {
-      const interval = setInterval(() => setElapsedSecs(s => s + 1), 1000);
+      const start = Date.now();
+      const interval = setInterval(() => {
+        setElapsedSecs(Math.max(1, Math.floor((Date.now() - start) / 1000)));
+      }, 1000);
       return () => clearInterval(interval);
-    } else {
-      setElapsedSecs(0);
     }
   }, [isStreaming]);
 
