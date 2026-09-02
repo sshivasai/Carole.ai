@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.llm.multi_model_router import llm_router
 from core.chat.event_bus import event_bus
-from core.memory.models import Message, Agent, Project, User, EntityMemory, CompactionEvent
+from core.memory.models import Message, Agent, Project, User, EntityMemory, CompactionEvent, GraphTriple
 from core.tools.tool_registry import ToolRegistry
 from core.tools.context import CancellationToken, ToolExecutionContext, ToolPermissionContext
 from core.memory.lancedb_client import lancedb_client
@@ -314,6 +314,18 @@ class ReACTAgent:
             learnings_block += "ENTITY FACTS (Explicit details you must know):\n"
             for fact in entity_facts:
                 learnings_block += f"- {fact.key}: {fact.value}\n"
+            learnings_block += "\n"
+
+        # 3.6 Format Knowledge Graph Triples (Multi-Hop GraphRAG)
+        triple_stmt = select(GraphTriple).where(
+            or_(GraphTriple.team_id == team_uuid, GraphTriple.team_id == None)
+        ).limit(30)
+        triple_result = await db_session.execute(triple_stmt)
+        triples = triple_result.scalars().all()
+        if triples:
+            learnings_block += "KNOWLEDGE GRAPH RELATIONS (Subject-Predicate-Object Triples):\n"
+            for t in triples:
+                learnings_block += f"- ({t.subject}) --[{t.predicate}]--> ({t.object_val})\n"
             learnings_block += "\n"
 
         capabilities_block += learnings_block
@@ -705,6 +717,13 @@ class ReACTAgent:
                 pinned_block += f"- {p}\n"
             pinned_block += "[/PINNED CONTEXT]\n\n"
 
+        # OpenClaw Pre-Compaction Memory Flush: extract facts & graph triples before truncation
+        if db_session is not None:
+            try:
+                await self._pre_compaction_memory_flush(to_compact, db_session)
+            except Exception as flush_err:
+                self._log.warning("Pre-compaction memory flush error: %s", flush_err)
+
         self._log.info("Rolling compaction: summarizing %d messages (keeping first + last %d).", len(to_compact), keep_recent)
         summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact, default=str))
         try:
@@ -758,6 +777,92 @@ class ReACTAgent:
         except Exception as e:
             self._log.warning("Rolling compaction failed, continuing with full context: %s", e)
             return messages
+
+    async def _pre_compaction_memory_flush(self, messages_to_flush: list, db_session: AsyncSession):
+        """
+        OpenClaw Pre-Compaction Memory Flush:
+        Extracts durable facts, user preferences, API keys, ports, and graph triples
+        from raw messages before compaction replaces them with a high-level summary.
+        Saves extracted facts directly into EntityMemory and GraphTriple tables.
+        """
+        if not messages_to_flush or db_session is None:
+            return
+
+        try:
+            flush_prompt = (
+                "You are an expert knowledge extraction system. Analyze the following conversation turns "
+                "that are about to be compacted and truncated.\n\n"
+                "Extract any durable facts, permanent user preferences, environment constants, ports, "
+                "passwords/keys (if non-ephemeral), or architectural dependencies.\n"
+                "Format your response strictly as a JSON object with two arrays:\n"
+                "{\n"
+                '  "facts": [{"key": "short_snake_case_key", "value": "detailed fact description"}],\n'
+                '  "triples": [{"subject": "EntityA", "predicate": "connects_to|uses|prefers", "object": "EntityB"}]\n'
+                "}\n"
+                "If no durable facts or relations are found, return {\"facts\": [], \"triples\": []}.\n\n"
+                f"Conversation:\n{json.dumps(messages_to_flush, default=str)[:6000]}"
+            )
+
+            res = await llm_router.generate_completion(
+                model=getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free"),
+                system_prompt="You extract structured durable memory and knowledge graph triples before context compaction.",
+                messages=[{"role": "user", "content": flush_prompt}],
+                temperature=0.0,
+                max_tokens=600,
+            )
+
+            # Clean JSON
+            json_str = res.strip()
+            if "```json" in json_str:
+                json_str = json_str.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif "```" in json_str:
+                json_str = json_str.split("```", 1)[1].split("```", 1)[0].strip()
+
+            parsed = json.loads(json_str)
+            team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+            proj_uuid = uuid.UUID(str(self.project_id)) if self.project_id else None
+
+            # 1. Save EntityMemory facts
+            saved_facts = 0
+            for item in parsed.get("facts", []):
+                k = item.get("key", "").strip()
+                v = item.get("value", "").strip()
+                if k and v:
+                    entity = EntityMemory(
+                        team_id=team_uuid,
+                        project_id=proj_uuid,
+                        key=k[:255],
+                        value=v
+                    )
+                    db_session.add(entity)
+                    saved_facts += 1
+
+            # 2. Save GraphTriples
+            saved_triples = 0
+            for t in parsed.get("triples", []):
+                s = t.get("subject", "").strip()
+                p = t.get("predicate", "").strip()
+                o = t.get("object", "").strip()
+                if s and p and o:
+                    triple = GraphTriple(
+                        team_id=team_uuid,
+                        project_id=proj_uuid,
+                        subject=s[:255],
+                        predicate=p[:255],
+                        object_val=o,
+                        confidence_score=1.0
+                    )
+                    db_session.add(triple)
+                    saved_triples += 1
+
+            if saved_facts or saved_triples:
+                await db_session.flush()
+                self._log.info(
+                    "Pre-compaction memory flush completed: extracted %d facts, %d graph triples.",
+                    saved_facts, saved_triples
+                )
+        except Exception as flush_err:
+            self._log.warning("Pre-compaction memory flush extraction error: %s", flush_err)
 
 
     async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None, trigger_message_id: Optional[str] = None):

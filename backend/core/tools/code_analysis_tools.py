@@ -225,6 +225,34 @@ class CodeAnalysisTools:
         except Exception as e:
             return f"Error analyzing impact: {str(e)}"
 
+    async def get_symbol_callers(self, symbol_name: str, project_id: Optional[str] = None) -> str:
+        """Finds all files and lines that import or invoke a symbol across the workspace."""
+        from core.knowledge.code_graph import code_graph
+        try:
+            callers = await code_graph.get_symbol_callers(symbol_name, project_id)
+            if not callers:
+                return f"No callers or imports found for symbol '{symbol_name}'."
+            
+            lines = [f"Found {len(callers)} reference(s) to symbol '{symbol_name}':"]
+            for c in callers:
+                lines.append(f"  • {c['file']}:{c['line']} -> {c['code']}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error locating symbol callers: {str(e)}"
+
+    async def get_symbol_callees(self, function_name: str, file_path: str, project_id: Optional[str] = None) -> str:
+        """Finds all function calls invoked within a specific function/class definition."""
+        from core.knowledge.code_graph import code_graph
+        try:
+            safe_path = self._resolve_safe_path(file_path)
+            rel_path = str(safe_path.relative_to(self.workspace_root)).replace("\\", "/")
+            callees = await code_graph.get_symbol_callees(function_name, rel_path, project_id)
+            if not callees:
+                return f"No internal function calls found inside '{function_name}' in '{file_path}'."
+            return f"Function '{function_name}' calls {len(callees)} function(s):\n  " + ", ".join(callees)
+        except Exception as e:
+            return f"Error analyzing symbol callees: {str(e)}"
+
 
 # Singleton
 code_analysis_tools = CodeAnalysisTools()

@@ -2293,25 +2293,6 @@ async def get_mcp_templates():
             ]
         },
         {
-            "id": "mongodb",
-            "name": "MongoDB",
-            "category": "Database",
-            "description": "Query MongoDB document collections, indexes, and aggregation pipelines.",
-            "command": "npx",
-            "args": "-y,@modelcontextprotocol/server-mongodb",
-            "docsUrl": "https://www.mongodb.com/docs/",
-            "logo": "mongodb",
-            "fields": [
-                {
-                    "key": "MONGODB_URI",
-                    "label": "MongoDB Connection String",
-                    "placeholder": "mongodb://localhost:27017/mydb",
-                    "required": True,
-                    "isSecret": True
-                }
-            ]
-        },
-        {
             "id": "slack",
             "name": "Slack",
             "category": "Communication",
@@ -2873,33 +2854,71 @@ async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db), use
 async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import McpServer
     from core.tools.mcp_client import mcp_manager
-    stmt = select(McpServer).where(McpServer.id == uuid.UUID(server_id))
-    result = await db.execute(stmt)
-    server = result.scalars().first()
+
+    # Try UUID lookup first
+    server = None
+    try:
+        stmt = select(McpServer).where(McpServer.id == uuid.UUID(server_id))
+        result = await db.execute(stmt)
+        server = result.scalars().first()
+    except ValueError:
+        pass
+
+    # If not found by UUID, try lookup by server_name
     if not server:
-        raise HTTPException(404, "MCP server not found")
-        
-    await db.delete(server)
-    
-    # Also disconnect from mcp_manager
-    # mcp_manager uses a tuple key: (team_id, agent_id, server_name)
-    key = (str(server.team_id), str(server.agent_id) if server.agent_id else "global", server.server_name)
-    if key in mcp_manager.sessions:
-        # Drop our reference to the session. The underlying connection is owned by
-        # the manager's AsyncExitStack and is fully released on app shutdown.
-        mcp_manager.sessions.pop(key, None)
-    
-    await db.commit()
-    from core.chat.message_router import message_router
-    human_name = await _get_human_name(db, server.team_id)
-    await message_router.route_message(
-        text=f"[MCP_DELETE] MCP Server '{server.server_name}' was disconnected by {human_name}",
-        sender_id="system",
-        team_id=str(server.team_id),
-        sender_name="System",
-        attachments=[]
+        stmt = select(McpServer).where(McpServer.server_name == server_id)
+        result = await db.execute(stmt)
+        server = result.scalars().first()
+
+    server_name = server.server_name if server else server_id
+    team_id_str = str(server.team_id) if (server and server.team_id) else None
+    agent_id_str = str(server.agent_id) if (server and server.agent_id) else None
+
+    if server:
+        await db.delete(server)
+        await db.commit()
+
+    # Fully disconnect from mcp_manager (sessions, statuses, ToolRegistry)
+    await mcp_manager.disconnect_server(
+        team_id=team_id_str,
+        agent_id=agent_id_str,
+        server_name=server_name
     )
-    
+
+    if server and server.team_id:
+        from core.chat.message_router import message_router
+        human_name = await _get_human_name(db, server.team_id)
+        await message_router.route_message(
+            text=f"[MCP_DELETE] MCP Server '{server_name}' was disconnected by {human_name}",
+            sender_id="system",
+            team_id=str(server.team_id),
+            sender_name="System",
+            attachments=[]
+        )
+
+    return {"ok": True}
+
+
+@router.post("/mcp/disconnect/{server_name}")
+async def disconnect_mcp_by_name(server_name: str, body: dict = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    from core.memory.models import McpServer
+    from core.tools.mcp_client import mcp_manager
+
+    team_id = (body or {}).get("team_id")
+    stmt = select(McpServer).where(McpServer.server_name == server_name)
+    if team_id:
+        try:
+            stmt = stmt.where(McpServer.team_id == uuid.UUID(team_id))
+        except ValueError:
+            pass
+
+    res = await db.execute(stmt)
+    servers = res.scalars().all()
+    for s in servers:
+        await db.delete(s)
+    await db.commit()
+
+    await mcp_manager.disconnect_server(team_id=team_id, server_name=server_name)
     return {"ok": True}
 
 

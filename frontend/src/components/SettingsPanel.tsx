@@ -1,14 +1,34 @@
 "use client";
-import React, { useState, useEffect, useCallback } from "react";
-import { Settings, Trash2, Upload, Loader2, AlertTriangle, CheckCircle, RefreshCw, Key, Eye, EyeOff, Save, MessageSquare, Layers, DollarSign, Globe, ToggleLeft, ToggleRight, RotateCcw, ChevronDown, ChevronUp, Shield } from "lucide-react";
-import type { PromptBlock, AccessControlConfig } from "@/lib/types";
-import { api } from "@/hooks/useApi";
-import PromptsEditor from "./settings/PromptsEditor";
-import ModelCatalogEditor from "./settings/ModelCatalogEditor";
+import React, { useState, useMemo } from "react";
+import {
+  Settings,
+  User,
+  Key,
+  Cpu,
+  Shield,
+  MessageSquare,
+  Globe,
+  DollarSign,
+  Search,
+  Trash2,
+  AlertTriangle,
+  Loader2,
+  ChevronRight,
+  Sliders,
+  Sparkles,
+} from "lucide-react";
 import type { AgentConfig } from "@/lib/types";
+import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
-import { useAuth } from "@/hooks/useAuth";
-import AccessControlMatrix, { DEFAULT_ACCESS_CONTROL } from "./AccessControlMatrix";
+
+// Sub-components
+import GeneralSettings from "./settings/GeneralSettings";
+import ProvidersSettings from "./settings/ProvidersSettings";
+import ModelsSettings from "./settings/ModelsSettings";
+import RuntimeSafetySettings from "./settings/RuntimeSafetySettings";
+import BrowserSettings from "./settings/BrowserSettings";
+import PromptsSettings from "./settings/PromptsSettings";
+import ProjectCostSettings from "./settings/ProjectCostSettings";
 
 interface Props {
   teamId: string | null;
@@ -19,1355 +39,350 @@ interface Props {
   onProjectDeleted: () => void;
 }
 
-interface HealthData { status: string; tools_registered?: number; version?: string; }
-interface UsageData { total_messages?: number; total_tasks?: number; total_agents?: number; }
+type TabKey = "general" | "providers" | "models" | "runtime" | "prompts" | "browser" | "project";
 
-
-// ── Global Access Control Card ─────────────────────────────────────────────────
-
-function GlobalAccessControlCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [config, setConfig] = useState<AccessControlConfig>({ ...DEFAULT_ACCESS_CONTROL, categories: { ...DEFAULT_ACCESS_CONTROL.categories }, overrides: {}, custom_skip_judge: { file_patterns: [], command_prefixes: [] } });
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-
-  useEffect(() => {
-    api.getSettings().then((s: any) => {
-      if (s?.access_control && typeof s.access_control === "object" && "categories" in s.access_control) {
-        setConfig(s.access_control as AccessControlConfig);
-      }
-    }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await api.saveSettings({ access_control: config });
-      onToast("Access Control defaults saved", "success");
-    } catch {
-      onToast("Failed to save Access Control settings", "error");
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
-      <button
-        type="button"
-        onClick={() => setExpanded(v => !v)}
-        style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "var(--sp-xl)", display: "flex", alignItems: "center", gap: "var(--sp-md)", textAlign: "left" }}
-      >
-        <div style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(167,139,250,0.12)", border: "1.5px solid rgba(167,139,250,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-          <Shield size={18} color="#a78bfa" />
-        </div>
-        <div style={{ flex: 1 }}>
-          <div className="body-sm-strong">Access Control &amp; Safety Defaults</div>
-          <div className="caption">Global permission defaults for all agents — per-agent settings override these.</div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-          <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, fontWeight: 700, background: config.enable_judge ? "rgba(167,139,250,0.15)" : "rgba(251,191,36,0.15)", color: config.enable_judge ? "#a78bfa" : "#fbbf24", border: `1px solid ${config.enable_judge ? "rgba(167,139,250,0.35)" : "rgba(251,191,36,0.35)"}` }}>
-            {config.enable_judge ? "Judge ON" : "Judge OFF"}
-          </span>
-          {expanded ? <ChevronUp size={15} color="var(--color-mute)" /> : <ChevronDown size={15} color="var(--color-mute)" />}
-        </div>
-      </button>
-
-      {expanded && (
-        <div style={{ padding: "0 var(--sp-xl) var(--sp-xl)", borderTop: "1px solid var(--color-hairline)" }}>
-          {loading ? (
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", padding: "var(--sp-xl)" }}>
-              <Loader2 size={16} className="animate-spin" style={{ color: "var(--color-primary)" }} />
-              <span className="caption">Loading settings…</span>
-            </div>
-          ) : (
-            <>
-              <div style={{ paddingTop: "var(--sp-xl)" }}>
-                <AccessControlMatrix value={config} onChange={setConfig} />
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "var(--sp-xl)", paddingTop: "var(--sp-md)", borderTop: "1px solid var(--color-hairline)" }}>
-                <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>
-                  {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-                  Save Global Defaults
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
+interface TabDefinition {
+  id: TabKey;
+  label: string;
+  icon: React.ElementType;
+  description: string;
+  keywords: string[];
+  group: "System & Access" | "AI & Capabilities" | "Workspace & Data";
 }
 
-// ── Google Account Card ───────────────────────────────────────────────────────
-
-function GoogleAccountCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [status, setStatus] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [disconnecting, setDiscon] = useState(false);
-
-  const fetchStatus = useCallback(async () => {
-    setLoading(true);
-    try { setStatus(await api.getGoogleStatus()); }
-    catch { setStatus(null); }
-    finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => {
-    fetchStatus();
-    // If returning from OAuth (query param), refresh status
-    if (typeof window !== "undefined" && window.location.search.includes("google_connected")) {
-      fetchStatus();
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, [fetchStatus]);
-
-  const handleConnect = () => {
-    window.location.href = api.getGoogleAuthUrl();
-  };
-
-  const handleDisconnect = async () => {
-    setDiscon(true);
-    try {
-      await api.disconnectGoogle();
-      setStatus({ connected: false });
-      onToast("Google account disconnected", "info");
-    } catch {
-      onToast("Failed to disconnect", "error");
-    } finally { setDiscon(false); }
-  };
-
-  const connected = status?.connected;
-
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-lg)" }}>
-        {/* Google G icon */}
-        <svg width="18" height="18" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
-          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-        </svg>
-        <h3 className="display-sm">Google Account</h3>
-      </div>
-      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-xl)" }}>
-        Connect your Google account to let agents manage your <strong>Calendar</strong>, schedule <strong>Meet</strong> calls, and send <strong>Gmail</strong> messages.
-      </p>
-
-      {loading ? (
-        <div className="skeleton skeleton-text" style={{ width: "60%" }} />
-      ) : connected ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", padding: "var(--sp-md)", background: "rgba(0,217,146,0.08)", border: "1px solid rgba(0,217,146,0.25)", borderRadius: "var(--radius-sm)" }}>
-            <CheckCircle size={14} color="var(--color-primary)" />
-            <div>
-              <div className="body-sm-strong" style={{ color: "var(--color-primary)" }}>Connected</div>
-              {status?.email && <div className="caption">{status.email}</div>}
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: "var(--sp-sm)", flexWrap: "wrap" }}>
-            {["📅 Calendar & Meet", "✉️ Gmail Send & Read"].map(s => (
-              <span key={s} className="badge badge-gray" style={{ fontSize: 11 }}>{s}</span>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: "var(--sp-md)", justifyContent: "flex-end" }}>
-            <button className="btn btn-ghost btn-sm" onClick={handleDisconnect} disabled={disconnecting}
-              style={{ color: "var(--color-danger)", borderColor: "rgba(248,113,113,0.3)" }}>
-              {disconnecting ? <Loader2 size={13} className="animate-spin" /> : null}
-              Disconnect
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
-            <AlertTriangle size={14} color="var(--color-mute)" />
-            <div className="caption">No Google account connected</div>
-          </div>
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <button id="connect-google" className="btn btn-primary btn-sm" onClick={handleConnect}
-              style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-              <svg width="14" height="14" viewBox="0 0 48 48">
-                <path fill="#fff" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-              </svg>
-              Connect Google Account
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── API Keys Card ─────────────────────────────────────────────────────────────
-
-const PROVIDER_FIELDS = [
-  { key: "openai", label: "OpenAI", placeholder: "sk-proj-..." },
-  { key: "anthropic", label: "Anthropic", placeholder: "sk-ant-api03-..." },
-  { key: "google", label: "Google Gemini", placeholder: "AIzaSy..." },
-  { key: "openrouter", label: "OpenRouter", placeholder: "sk-or-v1-..." },
-  { key: "nvidia", label: "NVIDIA", placeholder: "nvapi-..." },
-  { key: "tavily", label: "Tavily (Web Search)", placeholder: "tvly-..." },
-  { key: "browseruse", label: "Browser Use Cloud", placeholder: "Leave blank for free local agent..." },
+const SETTINGS_TABS: TabDefinition[] = [
+  {
+    id: "general",
+    label: "General & Health",
+    icon: User,
+    description: "Account profile, Google Workspace OAuth, and live backend health telemetry.",
+    keywords: ["profile", "user", "email", "google", "calendar", "gmail", "meet", "health", "fastapi", "tools", "websocket"],
+    group: "System & Access",
+  },
+  {
+    id: "providers",
+    label: "API Keys & Providers",
+    icon: Key,
+    description: "API keys for OpenAI, Anthropic, Gemini, OpenRouter, NVIDIA, Tavily, and Ollama.",
+    keywords: ["api", "keys", "openai", "anthropic", "claude", "gemini", "google", "openrouter", "deepseek", "nvidia", "tavily", "ollama", "localhost"],
+    group: "System & Access",
+  },
+  {
+    id: "models",
+    label: "Models & Catalog",
+    icon: Cpu,
+    description: "Global fallback models (Fast, Smart, Coder, Judge) and provider model catalog.",
+    keywords: ["models", "defaults", "catalog", "fast", "smart", "coder", "judge", "gpt", "claude", "gemini", "llama", "temperature"],
+    group: "AI & Capabilities",
+  },
+  {
+    id: "runtime",
+    label: "Safety & Runtime",
+    icon: Shield,
+    description: "Access control matrix, safety judge arbiter, loop limits, and memory compaction.",
+    keywords: ["access", "safety", "judge", "security", "permissions", "matrix", "loops", "timeout", "dream", "memory", "compaction"],
+    group: "AI & Capabilities",
+  },
+  {
+    id: "prompts",
+    label: "Prompts & Capabilities",
+    icon: MessageSquare,
+    description: "Agent persona roles and modular system capability instruction blocks.",
+    keywords: ["prompts", "roles", "personas", "system", "capabilities", "blocks", "instructions", "orchestrator", "coder", "debugger", "personality"],
+    group: "AI & Capabilities",
+  },
+  {
+    id: "browser",
+    label: "Browser Automation",
+    icon: Globe,
+    description: "3-tier browser engine, Browserbase cloud stealth, anti-bot proxies, and vision model.",
+    keywords: ["browser", "web", "automation", "playwright", "browseruse", "browserbase", "cloud", "proxy", "scraperapi", "zenrows", "headless", "windowed", "captcha", "vision"],
+    group: "Workspace & Data",
+  },
+  {
+    id: "project",
+    label: "Project, Cost & Danger",
+    icon: DollarSign,
+    description: "Token spend tracking, budget caps, knowledge base documents, and data deletion.",
+    keywords: ["project", "cost", "spend", "tokens", "budget", "usage", "analytics", "knowledge", "upload", "pdf", "danger", "delete", "team"],
+    group: "Workspace & Data",
+  },
 ];
 
-function ApiKeysCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [keys, setKeys] = useState<Record<string, string>>({});
-  const [ollamaUrl, setOllamaUrl] = useState("");
-  const [visible, setVisible] = useState<Record<string, boolean>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    api.getAppConfig()
-      .then((cfg: any) => { setKeys(cfg.api_keys || {}); setOllamaUrl(cfg.providers?.ollama_base_url || ""); })
-      .catch(() => { })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await api.updateAppConfig({ api_keys: keys, providers: { ollama_base_url: ollamaUrl } });
-      onToast("API keys saved & router reloaded ✓", "success");
-    } catch {
-      onToast("Failed to save settings", "error");
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-lg)" }}>
-        <Key size={16} color="var(--color-primary)" />
-        <h3 className="display-sm">API Keys &amp; Providers</h3>
-      </div>
-      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-xl)" }}>
-        Keys are saved to{" "}
-        <code style={{ background: "var(--color-canvas-raised)", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>.carole/config.json</code>
-        {" "}and hot-reloaded — no server restart needed.
-      </p>
-
-      {loading ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {[1, 2, 3].map(i => <div key={i} className="skeleton skeleton-text" />)}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-          {PROVIDER_FIELDS.map(({ key, label, placeholder }) => (
-            <div key={key} className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">{label}</label>
-              <div style={{ position: "relative" }}>
-                <input
-                  id={`apikey-${key}`}
-                  className="input"
-                  type={visible[key] ? "text" : "password"}
-                  placeholder={placeholder}
-                  value={keys[key] || ""}
-                  onChange={e => setKeys(k => ({ ...k, [key]: e.target.value }))}
-                  style={{ paddingRight: 40 }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setVisible(v => ({ ...v, [key]: !v[key] }))}
-                  style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)", padding: 0 }}
-                >
-                  {visible[key] ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
-          ))}
-
-          <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">Ollama Base URL</label>
-            <input id="ollama-url" className="input" type="text" placeholder="http://localhost:11434/v1"
-              value={ollamaUrl} onChange={e => setOllamaUrl(e.target.value)} />
-          </div>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
-            <button id="save-api-keys" className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Configuration
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Health Card ───────────────────────────────────────────────────────────────
-
-function HealthCard({ teamId }: { teamId: string | null }) {
-  const [health, setHealth] = useState<HealthData | null>(null);
-  const [wsStatus, setWsStatus] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [h, ws] = await Promise.all([
-        api.healthCheck(),
-        teamId ? api.wsStatus(teamId) : Promise.resolve(null),
-      ]);
-      setHealth(h); setWsStatus(ws);
-    } catch { /* ignore */ }
-    finally { setLoading(false); }
-  }, [teamId]);
-
-  useEffect(() => { refresh(); }, [refresh]);
-  const isOk = health?.status === "ok";
-
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <div className="flex-between" style={{ marginBottom: "var(--sp-lg)" }}>
-        <h3 className="display-sm">System Health</h3>
-        <button className="btn btn-icon btn-ghost btn-sm" onClick={refresh} disabled={loading} title="Refresh">
-          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-        </button>
-      </div>
-      {loading ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div className="skeleton skeleton-text" /><div className="skeleton skeleton-text" style={{ width: "70%" }} />
-        </div>
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "var(--sp-md)" }}>
-          {[
-            { label: "API Status", value: health?.status || "—", ok: isOk },
-            { label: "Tools", value: health?.tools_registered ?? "—", ok: true },
-            { label: "WS Connections", value: wsStatus?.connections ?? (teamId ? "—" : "N/A"), ok: true },
-          ].map(r => (
-            <div key={r.label} style={{ background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)", padding: "var(--sp-md)" }}>
-              <div className="caption" style={{ marginBottom: 4 }}>{r.label}</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                {r.ok ? <CheckCircle size={13} color="var(--color-primary)" /> : <AlertTriangle size={13} color="var(--color-danger)" />}
-                <span className="body-sm-strong">{String(r.value)}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Usage Card ────────────────────────────────────────────────────────────────
-
-function UsageCard({ projectId }: { projectId: string }) {
-  const [usage, setUsage] = useState<UsageData | null>(null);
-  useEffect(() => { api.getProjectUsage(projectId).then(setUsage).catch(() => { }); }, [projectId]);
-  if (!usage) return null;
-  const stats = [
-    { label: "Messages", value: usage.total_messages ?? 0 },
-    { label: "Tasks", value: usage.total_tasks ?? 0 },
-    { label: "Agents", value: usage.total_agents ?? 0 },
-  ];
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <h3 className="display-sm" style={{ marginBottom: "var(--sp-lg)" }}>Project Usage</h3>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "var(--sp-md)" }}>
-        {stats.map(s => (
-          <div key={s.label} style={{ textAlign: "center", padding: "var(--sp-lg)", background: "var(--color-canvas-raised)", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)" }}>
-            <div style={{ fontSize: 24, fontWeight: 700, color: "var(--color-primary)" }}>{s.value.toLocaleString()}</div>
-            <div className="caption">{s.label}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Knowledge Upload ──────────────────────────────────────────────────────────
-
-function KnowledgeUpload({ projectId, teamId, onToast }: { projectId: string; teamId: string | null; onToast: any }) {
-  const [uploading, setUploading] = useState(false);
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    setUploading(true);
-    try { await api.uploadKnowledgeFile(projectId, teamId, file); onToast(`Uploaded "${file.name}"`, "success"); }
-    catch { onToast("Upload failed", "error"); }
-    finally { setUploading(false); e.target.value = ""; }
-  };
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <h3 className="display-sm" style={{ marginBottom: "var(--sp-sm)" }}>Knowledge Upload</h3>
-      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-lg)" }}>Upload documents for agents to reference during tasks.</p>
-      <label style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)", padding: "var(--sp-lg)", border: "2px dashed var(--color-hairline)", borderRadius: "var(--radius-md)", cursor: "pointer", transition: "border-color var(--t-fast)" }}
-        onMouseEnter={e => (e.currentTarget.style.borderColor = "var(--color-primary)")}
-        onMouseLeave={e => (e.currentTarget.style.borderColor = "var(--color-hairline)")}>
-        {uploading ? <Loader2 size={20} className="animate-spin" color="var(--color-primary)" /> : <Upload size={20} color="var(--color-mute)" />}
-        <div>
-          <div className="body-sm-strong">{uploading ? "Uploading…" : "Click to upload"}</div>
-          <div className="caption">PDF, TXT, MD, DOCX supported</div>
-        </div>
-        <input type="file" style={{ display: "none" }} accept=".pdf,.txt,.md,.docx" onChange={handleFile} disabled={uploading} />
-      </label>
-    </div>
-  );
-}
-
-// ── Agent Runtime Settings Card ────────────────────────────────────────────────
-function AgentRuntimeCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [settings, setSettings] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    api.getAppConfig()
-      .then((cfg: any) => setSettings(cfg.agent_settings || {}))
-      .catch(() => { })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await api.updateAppConfig({ agent_settings: settings });
-      onToast("Agent runtime settings saved ✓", "success");
-    } catch {
-      onToast("Failed to save agent runtime settings", "error");
-    } finally { setSaving(false); }
-  };
-
-  const fields = [
-    { key: "MAX_LOOPS", label: "Max Agent Loops", default: 10 },
-    { key: "APPROVAL_TIMEOUT_SECS", label: "Approval Timeout (sec)", default: 300 },
-    { key: "MAX_QUEUE_SIZE", label: "Max Event Queue Size", default: 500 },
-    { key: "DREAM_INTERVAL_MINUTES", label: "Dream Interval (min)", default: 15 },
-    { key: "MEMORY_RETRIEVAL_LIMIT", label: "Memory Retrieval Limit", default: 3 },
-    { key: "CONTEXT_COMPACTION_THRESHOLD", label: "Context Compaction Threshold", default: 15 },
-  ];
-
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <h3 className="display-sm" style={{ marginBottom: "var(--sp-lg)" }}>Agent Runtime & Memory Settings</h3>
-      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-xl)" }}>
-        Configure execution limits, timeouts, and background processing intervals. Leave blank to use defaults.
-      </p>
-
-      {loading ? (
-        <div className="skeleton skeleton-text" style={{ width: "60%" }} />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-md)" }}>
-            {fields.map(f => (
-              <div key={f.key} className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">{f.label}</label>
-                <input
-                  type="number"
-                  className="input"
-                  placeholder={`Default: ${f.default}`}
-                  value={settings[f.key] || ""}
-                  onChange={e => setSettings(d => ({ ...d, [f.key]: parseInt(e.target.value) || f.default }))}
-                />
-              </div>
-            ))}
-          </div>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
-            <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Settings
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Browser Automation Card (3-Tier Architecture) ──────────────────────────
-function BrowserAutomationCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [settings, setSettings] = useState<any>({
-    engine: "carole",
-    infrastructure: "local",
-    proxy_provider: "none",
-    display_mode: "headless",
-    vision_model: "inherit",
-    api_keys: {},
-    project_id: "",
-  });
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
-
-  useEffect(() => {
-    api.getAppConfig()
-      .then((cfg: any) => {
-        const ba = cfg.browser_automation || {};
-        setSettings({
-          engine: ba.engine || (ba.provider === "browseruse" ? "browseruse" : "carole"),
-          infrastructure: ba.infrastructure || (ba.provider === "browserbase" ? "browserbase" : "local"),
-          proxy_provider: ba.proxy_provider || (["scraperapi", "zenrows"].includes(ba.provider) ? ba.provider : "none"),
-          display_mode: ba.display_mode || (ba.headless === false ? "windowed" : "headless"),
-          vision_model: ba.vision_model || "inherit",
-          api_keys: ba.api_keys || {},
-          project_id: ba.project_id || "",
-        });
-      })
-      .catch(() => { })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const payload = {
-        ...settings,
-        // Backward-compatibility mapping for legacy tools:
-        provider: settings.engine === "browseruse" ? "browseruse" : (settings.infrastructure === "browserbase" ? "browserbase" : settings.proxy_provider !== "none" ? settings.proxy_provider : "local"),
-        headless: settings.display_mode !== "windowed",
-      };
-      await api.updateAppConfig({ browser_automation: payload });
-      onToast("Browser automation settings saved ✓", "success");
-    } catch {
-      onToast("Failed to save browser automation settings", "error");
-    } finally { setSaving(false); }
-  };
-
-  const toggleKey = (name: string) => setShowKeys(p => ({ ...p, [name]: !p[name] }));
-
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-md)" }}>
-        <Globe size={18} color="var(--color-primary)" />
-        <h3 className="display-sm" style={{ margin: 0 }}>Browser Automation & Anti-Bot Architecture</h3>
-        <span className="pill pill-live" style={{ marginLeft: "auto", fontSize: 10 }}>Modular 3-Tier</span>
-      </div>
-      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-lg)" }}>
-        Configure how agents interact with the web, run local dev tests, bypass anti-bot walls, and handle Human-in-the-Loop (HIL) roadblocks.
-      </p>
-
-      {loading ? (
-        <div className="skeleton skeleton-text" style={{ width: "60%" }} />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-xl)" }}>
-
-          {/* ── Tier 1: Automation Engine ───────────────────────────────────── */}
-          <div style={{ background: "var(--color-canvas-soft)", padding: "var(--sp-md) var(--sp-lg)", borderRadius: "var(--radius-md)", border: "1px solid var(--color-hairline)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-xs)" }}>
-              <span className="badge badge-primary" style={{ fontSize: 10 }}>Tier 1</span>
-              <strong className="body-sm-strong">Automation Engine</strong>
-            </div>
-            <p className="caption text-mute" style={{ marginBottom: "var(--sp-md)" }}>
-              Controls the inner agent decision loop and browser DOM parsing strategy.
-            </p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
-              <label
-                style={{
-                  display: "flex", flexDirection: "column", gap: 4, padding: "var(--sp-md)",
-                  borderRadius: "var(--radius-sm)", border: `2px solid ${settings.engine === "carole" ? "var(--color-primary)" : "var(--color-hairline)"}`,
-                  background: settings.engine === "carole" ? "rgba(99, 102, 241, 0.08)" : "var(--color-canvas)",
-                  cursor: "pointer", transition: "all var(--t-fast)"
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-                  <input
-                    type="radio" name="engine" value="carole" checked={settings.engine === "carole"}
-                    onChange={() => setSettings((s: any) => ({ ...s, engine: "carole" }))}
-                  />
-                  <strong className="body-sm-strong">Carole Native Agent</strong>
-                  <span className="pill pill-safe" style={{ fontSize: 9, marginLeft: "auto" }}>Recommended</span>
-                </div>
-                <span className="caption text-mute">
-                  Lightweight, built-in ReACT loop with XPath ref snapshots. Zero extra dependencies, instant response, fast local dev testing.
-                </span>
-              </label>
-
-              <label
-                style={{
-                  display: "flex", flexDirection: "column", gap: 4, padding: "var(--sp-md)",
-                  borderRadius: "var(--radius-sm)", border: `2px solid ${settings.engine === "browseruse" ? "var(--color-primary)" : "var(--color-hairline)"}`,
-                  background: settings.engine === "browseruse" ? "rgba(99, 102, 241, 0.08)" : "var(--color-canvas)",
-                  cursor: "pointer", transition: "all var(--t-fast)"
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-                  <input
-                    type="radio" name="engine" value="browseruse" checked={settings.engine === "browseruse"}
-                    onChange={() => setSettings((s: any) => ({ ...s, engine: "browseruse" }))}
-                  />
-                  <strong className="body-sm-strong">Browser-Use Framework</strong>
-                </div>
-                <span className="caption text-mute">
-                  External agentic framework with tree-based DOM extraction and dedicated vision guidance. Best for complex multi-page workflows.
-                </span>
-              </label>
-            </div>
-          </div>
-
-          {/* ── Tier 2: Browser Runtime / Infrastructure ─────────────────────── */}
-          <div style={{ background: "var(--color-canvas-soft)", padding: "var(--sp-md) var(--sp-lg)", borderRadius: "var(--radius-md)", border: "1px solid var(--color-hairline)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-xs)" }}>
-              <span className="badge badge-secondary" style={{ fontSize: 10 }}>Tier 2</span>
-              <strong className="body-sm-strong">Browser Runtime / Infrastructure</strong>
-            </div>
-            <p className="caption text-mute" style={{ marginBottom: "var(--sp-md)" }}>
-              Select where the Chromium browser instance runs and executes pages.
-            </p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
-              <label
-                style={{
-                  display: "flex", flexDirection: "column", gap: 4, padding: "var(--sp-md)",
-                  borderRadius: "var(--radius-sm)", border: `2px solid ${settings.infrastructure === "local" ? "var(--color-primary)" : "var(--color-hairline)"}`,
-                  background: settings.infrastructure === "local" ? "rgba(99, 102, 241, 0.08)" : "var(--color-canvas)",
-                  cursor: "pointer", transition: "all var(--t-fast)"
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-                  <input
-                    type="radio" name="infrastructure" value="local" checked={settings.infrastructure === "local"}
-                    onChange={() => setSettings((s: any) => ({ ...s, infrastructure: "local" }))}
-                  />
-                  <strong className="body-sm-strong">Local Playwright (On-Machine)</strong>
-                  <span className="pill pill-safe" style={{ fontSize: 9, marginLeft: "auto" }}>Free & Localhost</span>
-                </div>
-                <span className="caption text-mute">
-                  Runs directly on your machine. Full access to localhost:3000, local dev servers, and private LAN. Zero per-minute cloud cost.
-                </span>
-              </label>
-
-              <label
-                style={{
-                  display: "flex", flexDirection: "column", gap: 4, padding: "var(--sp-md)",
-                  borderRadius: "var(--radius-sm)", border: `2px solid ${settings.infrastructure === "browserbase" ? "var(--color-primary)" : "var(--color-hairline)"}`,
-                  background: settings.infrastructure === "browserbase" ? "rgba(99, 102, 241, 0.08)" : "var(--color-canvas)",
-                  cursor: "pointer", transition: "all var(--t-fast)"
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-                  <input
-                    type="radio" name="infrastructure" value="browserbase" checked={settings.infrastructure === "browserbase"}
-                    onChange={() => setSettings((s: any) => ({ ...s, infrastructure: "browserbase" }))}
-                  />
-                  <strong className="body-sm-strong">Browserbase Cloud</strong>
-                  <span className="pill pill-live" style={{ fontSize: 9, marginLeft: "auto" }}>Cloud Stealth</span>
-                </div>
-                <span className="caption text-mute">
-                  Managed cloud browser with residential IP pool, automatic cloud CAPTCHA solver, session replay logs, and live debug view.
-                </span>
-              </label>
-            </div>
-
-            {settings.infrastructure === "browserbase" && (
-              <div style={{ marginTop: "var(--sp-md)", display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
-                <div className="form-group">
-                  <label className="form-label" style={{ fontSize: 12 }}>Browserbase API Key</label>
-                  <div style={{ display: "flex", gap: "var(--sp-xs)" }}>
-                    <input
-                      type={showKeys["browserbase"] ? "text" : "password"}
-                      className="input"
-                      placeholder="bb_..."
-                      value={settings.api_keys?.browserbase || ""}
-                      onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, browserbase: e.target.value } }))}
-                    />
-                    <button className="btn btn-outline btn-sm" type="button" onClick={() => toggleKey("browserbase")}>
-                      {showKeys["browserbase"] ? "Hide" : "Show"}
-                    </button>
-                  </div>
-                </div>
-                <div className="form-group">
-                  <label className="form-label" style={{ fontSize: 12 }}>Browserbase Project ID (Optional)</label>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="project_id"
-                    value={settings.project_id || ""}
-                    onChange={e => setSettings((d: any) => ({ ...d, project_id: e.target.value }))}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── Tier 3: Proxy & Anti-Bot Service ─────────────────────────────── */}
-          <div style={{ background: "var(--color-canvas-soft)", padding: "var(--sp-md) var(--sp-lg)", borderRadius: "var(--radius-md)", border: "1px solid var(--color-hairline)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-xs)" }}>
-              <span className="badge badge-accent" style={{ fontSize: 10 }}>Tier 3</span>
-              <strong className="body-sm-strong">Proxy & Anti-Bot Provider</strong>
-            </div>
-            <p className="caption text-mute" style={{ marginBottom: "var(--sp-md)" }}>
-              Optional residential proxy routing to bypass IP rate-limiting, Cloudflare Turnstile, and geo-blocks.
-            </p>
-            <div className="form-group">
-              <select
-                className="input"
-                value={settings.proxy_provider || "none"}
-                onChange={e => setSettings((d: any) => ({ ...d, proxy_provider: e.target.value }))}
-              >
-                <option value="none">Direct Connection (No Proxy / Local Dev)</option>
-                <option value="scraperapi">ScraperAPI (Smart Rotating Residential Proxy)</option>
-                <option value="zenrows">ZenRows (Anti-Bypass Smart Proxy)</option>
-              </select>
-            </div>
-
-            {settings.proxy_provider === "scraperapi" && (
-              <div className="form-group" style={{ marginTop: "var(--sp-sm)" }}>
-                <label className="form-label" style={{ fontSize: 12 }}>ScraperAPI Key</label>
-                <div style={{ display: "flex", gap: "var(--sp-xs)" }}>
-                  <input
-                    type={showKeys["scraperapi"] ? "text" : "password"}
-                    className="input"
-                    value={settings.api_keys?.scraperapi || ""}
-                    onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, scraperapi: e.target.value } }))}
-                  />
-                  <button className="btn btn-outline btn-sm" type="button" onClick={() => toggleKey("scraperapi")}>
-                    {showKeys["scraperapi"] ? "Hide" : "Show"}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {settings.proxy_provider === "zenrows" && (
-              <div className="form-group" style={{ marginTop: "var(--sp-sm)" }}>
-                <label className="form-label" style={{ fontSize: 12 }}>ZenRows API Key</label>
-                <div style={{ display: "flex", gap: "var(--sp-xs)" }}>
-                  <input
-                    type={showKeys["zenrows"] ? "text" : "password"}
-                    className="input"
-                    value={settings.api_keys?.zenrows || ""}
-                    onChange={e => setSettings((d: any) => ({ ...d, api_keys: { ...d.api_keys, zenrows: e.target.value } }))}
-                  />
-                  <button className="btn btn-outline btn-sm" type="button" onClick={() => toggleKey("zenrows")}>
-                    {showKeys["zenrows"] ? "Hide" : "Show"}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── Display Mode (Headless ON/OFF) & Vision Model ──────────────── */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
-            <div className="form-group">
-              <label className="form-label">
-                <strong>Display Mode</strong>
-              </label>
-              <select
-                className="input"
-                value={settings.display_mode || "headless"}
-                onChange={e => setSettings((d: any) => ({ ...d, display_mode: e.target.value }))}
-              >
-                <option value="headless">Headless: ON (Background + In-Chat Card / Canvas)</option>
-                <option value="windowed">Headless: OFF (Real Desktop Chromium Window)</option>
-              </select>
-              <span className="caption text-mute" style={{ display: "block", marginTop: 4 }}>
-                {settings.display_mode === "windowed"
-                  ? "🖥️ A real browser window pops up on your machine. You can click and type directly."
-                  : "⚡ Zero window popups. View live screenshots and interact via the In-Chat Card or BrowserView."}
-              </span>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">
-                <strong>Vision Guidance Model</strong>
-              </label>
-              <select
-                className="input"
-                value={settings.vision_model || "inherit"}
-                onChange={e => setSettings((d: any) => ({ ...d, vision_model: e.target.value }))}
-              >
-                <option value="inherit">Inherit Calling Agent's Active Model</option>
-                <option value="gpt-4o">OpenAI GPT-4o (High-Accuracy Vision)</option>
-                <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (Best Reasoning & DOM)</option>
-                <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Massive Context)</option>
-              </select>
-              <span className="caption text-mute" style={{ display: "block", marginTop: 4 }}>
-                Optionally designate a dedicated high-accuracy vision model for screenshot analysis.
-              </span>
-            </div>
-          </div>
-
-          {/* ── Tradeoff & HIL Summary Callout ─────────────────────────────── */}
-          <div className="callout callout-info" style={{ fontSize: 12, lineHeight: 1.5 }}>
-            <strong>Human-in-the-Loop (HIL) & Roadblock Policy:</strong>
-            <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
-              <li><strong>`ask_user`:</strong> Used for textual preferences or missing parameters (e.g. &quot;What search term should I use?&quot;).</li>
-              <li><strong>`browser_human_takeover`:</strong> Automatically triggered for CAPTCHAs, 2FA SMS codes, Google/GitHub OAuth logins, or stuck modals. Solved via the In-Chat Input Card or Interactive BrowserView.</li>
-              <li><strong>Local Dev Safety:</strong> Localhost and local dev ports (3000, 5173, 8000) are fully accessible under Local Playwright runtime.</li>
-            </ul>
-          </div>
-
-          {/* ── Save Button ────────────────────────────────────────────────── */}
-          <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
-            <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Browser Settings
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Cost Management Card ────────────────────────────────────────────────────────
-
-function CostManagementCard({ projectId, onToast }: { projectId: string; onToast: (msg: string, type: any) => void }) {
-  const [costStats, setCostStats] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [budgetLimit, setBudgetLimit] = useState<string>("");
-
-  const fetchCostStats = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await api.getCostStats(projectId);
-      setCostStats(data);
-      setBudgetLimit(data.budget_limit_usd !== null && data.budget_limit_usd !== undefined ? String(data.budget_limit_usd) : "");
-    } catch {
-      // Ignore errors
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId]);
-
-  useEffect(() => {
-    fetchCostStats();
-  }, [fetchCostStats]);
-
-  const handleSaveBudget = async () => {
-    setSaving(true);
-    try {
-      await api.updateBudget({
-        project_id: projectId,
-        budget_limit_usd: budgetLimit ? parseFloat(budgetLimit) : null
-      });
-      onToast("Budget limit updated", "success");
-      fetchCostStats();
-    } catch {
-      onToast("Failed to update budget limit", "error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: "var(--sp-lg)" }}>
-        <DollarSign size={16} color="var(--color-primary)" />
-        <h3 className="display-sm">Cost Management & Tracking</h3>
-      </div>
-      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-xl)" }}>
-        Track real-time API token usage and total expenditure across all models in this project.
-      </p>
-
-      {loading ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {[1, 2, 3].map(i => <div key={i} className="skeleton skeleton-text" />)}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-          {costStats && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--sp-md)", marginBottom: "var(--sp-md)" }}>
-              <div style={{ padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
-                <div className="caption">Total Spend</div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: "var(--color-primary)" }}>${costStats.total_spend_usd?.toFixed(4) || "0.0000"}</div>
-              </div>
-              <div style={{ padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
-                <div className="caption">Total Tokens</div>
-                <div style={{ fontSize: 18, fontWeight: 600 }}>{costStats.total_tokens?.toLocaleString() || "0"}</div>
-              </div>
-              <div style={{ padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
-                <div className="caption">Prompt Tokens</div>
-                <div style={{ fontSize: 18, fontWeight: 600 }}>{costStats.total_prompt_tokens?.toLocaleString() || "0"}</div>
-              </div>
-              <div style={{ padding: "var(--sp-md)", background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)" }}>
-                <div className="caption">Completion Tokens</div>
-                <div style={{ fontSize: 18, fontWeight: 600 }}>{costStats.total_completion_tokens?.toLocaleString() || "0"}</div>
-              </div>
-            </div>
-          )}
-
-          <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">Budget Limit (USD)</label>
-            <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
-              <input
-                className="input"
-                type="number"
-                step="0.01"
-                placeholder="No limit"
-                value={budgetLimit}
-                onChange={e => setBudgetLimit(e.target.value)}
-                style={{ maxWidth: 200 }}
-              />
-              <button className="btn btn-primary btn-sm" onClick={handleSaveBudget} disabled={saving}>
-                {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Budget
-              </button>
-            </div>
-          </div>
-          {costStats?.budget_limit_usd && costStats.total_spend_usd > costStats.budget_limit_usd && (
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", padding: "var(--sp-md)", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "var(--radius-sm)", color: "var(--color-danger)" }}>
-              <AlertTriangle size={14} />
-              <div className="body-sm-strong">Warning: Budget Limit Exceeded!</div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Default Models Card ────────────────────────────────────────────────────────
-
-function DefaultModelsCard({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [defaults, setDefaults] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [catalog, setCatalog] = useState<Record<string, any>>({});
-
-  useEffect(() => {
-    Promise.all([api.getAppConfig(), api.getModelCatalog()])
-      .then(([cfg, cat]: [any, any]) => {
-        setDefaults(cfg.default_models || {});
-        setCatalog(cat);
-      })
-      .catch(() => { })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await api.updateAppConfig({ default_models: defaults });
-      onToast("Default models saved ✓", "success");
-    } catch {
-      onToast("Failed to save defaults", "error");
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-      <h3 className="display-sm" style={{ marginBottom: "var(--sp-lg)" }}>Global Model Defaults</h3>
-      <p className="body-sm text-mute" style={{ marginBottom: "var(--sp-xl)" }}>
-        These models are used as system-wide defaults (e.g. for the Judge agent, or fallback generation).
-      </p>
-
-      {loading ? (
-        <div className="skeleton skeleton-text" style={{ width: "60%" }} />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-          {["DEFAULT_FAST_MODEL", "DEFAULT_SMART_MODEL", "DEFAULT_CODER_MODEL", "DEFAULT_JUDGE_MODEL"].map(key => (
-            <div key={key} className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">{key.replace("DEFAULT_", "").replace("_MODEL", "")} Model</label>
-              <select
-                className="input"
-                value={defaults[key] || ""}
-                onChange={e => setDefaults(d => ({ ...d, [key]: e.target.value }))}
-              >
-                <option value="">-- Use Environment Variable --</option>
-                {Object.entries(catalog).map(([providerId, provider]: [string, any]) => (
-                  <optgroup key={providerId} label={provider.label || providerId}>
-                    {provider.models?.map((m: any, idx: number) => (
-                      <option key={`${m.value}-${idx}`} value={m.value}>
-                        {m.label || m.value}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </div>
-          ))}
-
-          <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
-            <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Defaults
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Prompt Blocks Editor ────────────────────────────────────────────────────
-
-const CATEGORY_ORDER = ["Memory", "Filesystem", "Automation", "Browser"];
-
-const BLOCK_VARS: Record<string, string[]> = {
-  workspace_paths: ["{carole_dir}"],
-};
-
-function PromptBlocksEditor({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [blocks, setBlocks] = useState<PromptBlock[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [dirty, setDirty] = useState<Record<string, { enabled: boolean; content: string }>>({});
-
-  useEffect(() => {
-    api.getPromptBlocks()
-      .then(setBlocks)
-      .catch(() => onToast("Failed to load prompt blocks", "error"))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const patch = (key: string, field: "enabled" | "content", value: any) => {
-    const block = blocks.find(b => b.key === key);
-    if (!block) return;
-    setDirty(d => ({
-      ...d,
-      [key]: {
-        enabled: field === "enabled" ? value : (d[key]?.enabled ?? block.enabled),
-        content: field === "content" ? value : (d[key]?.content ?? block.content),
-      },
-    }));
-  };
-
-  const handleSaveAll = async () => {
-    if (!Object.keys(dirty).length) return;
-    setSaving(true);
-    try {
-      const updates = Object.entries(dirty).map(([key, val]) => ({ key, ...val }));
-      const updated = await api.savePromptBlocks(updates);
-      setBlocks(updated);
-      setDirty({});
-      onToast("Prompt blocks saved successfully", "success");
-    } catch {
-      onToast("Failed to save prompt blocks", "error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleReset = async (key: string) => {
-    try {
-      const updated = await api.resetPromptBlock(key);
-      setBlocks(prev => prev.map(b => b.key === key ? { ...b, ...updated, content: updated.content, enabled: updated.enabled, is_customized: false } : b));
-      setDirty(d => { const n = { ...d }; delete n[key]; return n; });
-      onToast(`"${key}" reset to default`, "success");
-    } catch {
-      onToast("Failed to reset block", "error");
-    }
-  };
-
-  if (loading) return <div className="skeleton skeleton-text" style={{ width: "60%", marginTop: "var(--sp-md)" }} />;
-
-  const grouped = CATEGORY_ORDER.map(cat => ({
-    cat,
-    items: blocks.filter(b => b.category === cat),
-  })).filter(g => g.items.length > 0);
-
-  const hasDirty = Object.keys(dirty).length > 0;
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-xl)" }}>
-      <div style={{ background: "var(--color-bg-secondary)", border: "1px solid var(--color-hairline)", borderRadius: 8, padding: "var(--sp-md) var(--sp-lg)" }}>
-        <p className="text-secondary" style={{ fontSize: "0.82rem", margin: 0, lineHeight: 1.5 }}>
-          ⚙️ <strong>System Capability Blocks </strong> are automatically appended to every agent&apos;s context.
-          Toggle any capability on or off with 1 click, or click <strong>Customize Prompt</strong> to fine-tune the instructions.
-        </p>
-      </div>
-
-      {grouped.map(({ cat, items }) => (
-        <div key={cat}>
-          <div style={{ fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--color-text-tertiary)", marginBottom: "var(--sp-sm)" }}>
-            {cat}
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
-            {items.map(block => {
-              const override = dirty[block.key];
-              const enabled = override ? override.enabled : block.enabled;
-              const content = override ? override.content : block.content;
-              const isOpen = !!expanded[block.key];
-              const isModified = !!override || block.is_customized;
-              const requiredVars = BLOCK_VARS[block.key] || [];
-              const missingVars = requiredVars.filter(v => !content.includes(v));
-
-              return (
-                <div
-                  key={block.key}
-                  className="card"
-                  style={{
-                    padding: "var(--sp-lg)",
-                    border: `1px solid ${isModified ? "var(--color-brand-primary)" : "var(--color-hairline)"}`,
-                    opacity: enabled ? 1 : 0.6,
-                    transition: "all 0.2s ease",
-                  }}
-                >
-                  {/* Header Row */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)", justifyContent: "space-between" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-md)", flex: 1, minWidth: 0 }}>
-                      {/* Toggle Switch */}
-                      <button
-                        onClick={() => patch(block.key, "enabled", !enabled)}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          padding: 0,
-                          color: enabled ? "var(--color-brand-primary)" : "var(--color-text-tertiary)",
-                          flexShrink: 0,
-                          display: "flex",
-                          alignItems: "center",
-                        }}
-                        title={enabled ? "Click to disable this capability" : "Click to enable this capability"}
-                      >
-                        {enabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
-                      </button>
-
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", flexWrap: "wrap" }}>
-                          <span style={{ fontWeight: 600, fontSize: "0.88rem" }}>{block.display_name}</span>
-
-                          {/* Status Pills */}
-                          <span
-                            style={{
-                              fontSize: "0.68rem",
-                              padding: "1px 6px",
-                              borderRadius: 4,
-                              background: enabled ? "rgba(16, 185, 129, 0.15)" : "rgba(107, 114, 128, 0.15)",
-                              color: enabled ? "var(--color-success)" : "var(--color-text-tertiary)",
-                              border: `1px solid ${enabled ? "rgba(16, 185, 129, 0.3)" : "rgba(107, 114, 128, 0.3)"}`,
-                              fontWeight: 500,
-                            }}
-                          >
-                            {enabled ? "Active" : "Disabled"}
-                          </span>
-
-                          {isModified && (
-                            <span style={{ fontSize: "0.68rem", padding: "1px 6px", borderRadius: 4, background: "var(--color-brand-primary)", color: "#fff", fontWeight: 500 }}>
-                              customized
-                            </span>
-                          )}
-
-                          {/* Required Variables Badge */}
-                          {requiredVars.map(v => (
-                            <span
-                              key={v}
-                              style={{
-                                fontSize: "0.68rem",
-                                padding: "1px 6px",
-                                borderRadius: 4,
-                                fontFamily: "var(--font-mono, monospace)",
-                                background: "rgba(99, 102, 241, 0.12)",
-                                color: "var(--color-brand-primary)",
-                                border: "1px solid rgba(99, 102, 241, 0.25)",
-                              }}
-                            >
-                              Variable: {v}
-                            </span>
-                          ))}
-                        </div>
-
-                        <div className="text-secondary" style={{ fontSize: "0.78rem", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {block.description}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div style={{ display: "flex", gap: "var(--sp-sm)", flexShrink: 0, alignItems: "center" }}>
-                      {(block.is_customized || override) && (
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          style={{ gap: "var(--sp-xs)", fontSize: "0.78rem" }}
-                          onClick={() => handleReset(block.key)}
-                          title="Reset to default prompt"
-                        >
-                          <RotateCcw size={12} /> Reset
-                        </button>
-                      )}
-                      <button
-                        className={`btn btn-sm ${isOpen ? "btn-secondary" : "btn-ghost"}`}
-                        style={{ gap: "var(--sp-xs)", fontSize: "0.78rem" }}
-                        onClick={() => setExpanded(e => ({ ...e, [block.key]: !e[block.key] }))}
-                      >
-                        {isOpen ? (
-                          <>
-                            <ChevronUp size={13} /> Hide Prompt
-                          </>
-                        ) : (
-                          <>
-                            <ChevronDown size={13} /> Customize Prompt
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Expandable Editor (Progressive Disclosure) */}
-                  {isOpen && (
-                    <div style={{ marginTop: "var(--sp-md)", paddingTop: "var(--sp-md)", borderTop: "1px solid var(--color-hairline)" }}>
-                      <textarea
-                        value={content}
-                        onChange={e => patch(block.key, "content", e.target.value)}
-                        rows={Math.min(18, Math.max(6, content.split("\n").length + 2))}
-                        spellCheck={false}
-                        style={{
-                          width: "100%",
-                          boxSizing: "border-box",
-                          fontFamily: "var(--font-mono, 'Fira Code', monospace)",
-                          fontSize: "0.78rem",
-                          lineHeight: 1.6,
-                          background: "var(--color-bg-tertiary)",
-                          border: `1px solid ${missingVars.length > 0 ? "var(--color-warning)" : "var(--color-hairline)"}`,
-                          borderRadius: 6,
-                          padding: "var(--sp-md)",
-                          color: "var(--color-text-primary)",
-                          resize: "vertical",
-                        }}
-                      />
-
-                      {/* Missing Variable Warning */}
-                      {missingVars.length > 0 && (
-                        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-xs)", color: "var(--color-warning)", fontSize: "0.76rem", marginTop: "var(--sp-xs)" }}>
-                          <AlertTriangle size={13} />
-                          <span>
-                            Warning: Required placeholder <code>{missingVars.join(", ")}</code> is missing from the text.
-                          </span>
-                        </div>
-                      )}
-
-                      {block.key === "workspace_paths" && missingVars.length === 0 && (
-                        <p className="text-secondary" style={{ fontSize: "0.75rem", marginTop: "var(--sp-xs)", marginBottom: 0 }}>
-                          💡 <code>{`{carole_dir}`}</code> will be automatically replaced at runtime with the scoped project+team path.
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-
-      <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: "var(--sp-sm)" }}>
-        <button className="btn btn-primary btn-sm" onClick={handleSaveAll} disabled={saving || !hasDirty} style={{ gap: "var(--sp-sm)" }}>
-          {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-          Save Changes{hasDirty ? ` (${Object.keys(dirty).length})` : ""}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ── Prompts Configuration Section ────────────────────────────────────────────
-
-function PromptsConfigSection({ onToast }: { onToast: (msg: string, type: any) => void }) {
-  const [promptSubTab, setPromptSubTab] = useState<"roles" | "capabilities">("roles");
-
-  return (
-    <div style={{ marginBottom: "var(--sp-xl)" }}>
-      {/* Sub-navigation switcher for Prompts */}
-      <div
-        style={{
-          display: "inline-flex",
-          gap: "var(--sp-xs)",
-          marginBottom: "var(--sp-md)",
-          background: "var(--color-bg-secondary)",
-          padding: "4px",
-          borderRadius: "var(--radius-md)",
-          border: "1px solid var(--color-hairline)",
-        }}
-      >
-        <button
-          className={`btn btn-xs ${promptSubTab === "roles" ? "btn-primary" : "btn-ghost"}`}
-          style={{ borderRadius: "var(--radius-sm)", gap: "var(--sp-xs)" }}
-          onClick={() => setPromptSubTab("roles")}
-        >
-          🎭 Roles &amp; Personas
-        </button>
-        <button
-          className={`btn btn-xs ${promptSubTab === "capabilities" ? "btn-primary" : "btn-ghost"}`}
-          style={{ borderRadius: "var(--radius-sm)", gap: "var(--sp-xs)" }}
-          onClick={() => setPromptSubTab("capabilities")}
-        >
-          ⚙️ System Capabilities
-        </button>
-      </div>
-
-      {/* Prompts Content */}
-      {promptSubTab === "roles" && <PromptsEditor onToast={onToast} />}
-      {promptSubTab === "capabilities" && (
-        <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-          <div className="flex-between" style={{ marginBottom: "var(--sp-md)" }}>
-            <div>
-              <h3 className="display-sm">System Capabilities</h3>
-              <p className="caption" style={{ marginTop: 2 }}>
-                Modular capability prompts injected into agent context. Toggle on/off or customize.
-              </p>
-            </div>
-          </div>
-          <PromptBlocksEditor onToast={onToast} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Main ─────────────────────────────────────────────────────────────────────
-
-export default function SettingsPanel({ teamId, projectId, onToast, onTeamDeleted, onProjectDeleted }: Props) {
-  const { user } = useAuth();
+export default function SettingsPanel({
+  teamId,
+  projectId,
+  agents,
+  onToast,
+  onTeamDeleted,
+  onProjectDeleted,
+}: Props) {
+  const [activeTab, setActiveTab] = useState<TabKey>("general");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Deletion modals state
   const [confirmDelete, setConfirmDelete] = useState<"team" | "project" | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const handleDeleteTeam = async (deleteContent: boolean) => {
-    if (!teamId) return; setDeleting(true);
-    try { await api.deleteTeam(teamId, deleteContent); onTeamDeleted(); onToast("Team deleted", "success"); }
-    catch { onToast("Failed to delete team", "error"); }
-    finally { setDeleting(false); setConfirmDelete(null); }
+    if (!teamId) return;
+    setDeleting(true);
+    try {
+      await api.deleteTeam(teamId, deleteContent);
+      onTeamDeleted();
+      onToast("Team deleted successfully", "success");
+    } catch {
+      onToast("Failed to delete team", "error");
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(null);
+    }
   };
+
   const handleDeleteProject = async (deleteContent: boolean) => {
-    if (!projectId) return; setDeleting(true);
-    try { await api.deleteProject(projectId, deleteContent); onProjectDeleted(); onToast("Project deleted", "success"); }
-    catch { onToast("Failed to delete project", "error"); }
-    finally { setDeleting(false); setConfirmDelete(null); }
+    if (!projectId) return;
+    setDeleting(true);
+    try {
+      await api.deleteProject(projectId, deleteContent);
+      onProjectDeleted();
+      onToast("Project deleted successfully", "success");
+    } catch {
+      onToast("Failed to delete project", "error");
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(null);
+    }
   };
+
+  // Filter tabs by search query
+  const filteredTabs = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return SETTINGS_TABS;
+    return SETTINGS_TABS.filter(
+      t =>
+        t.label.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q) ||
+        t.keywords.some(k => k.toLowerCase().includes(q))
+    );
+  }, [searchQuery]);
+
+  // Group tabs by category
+  const groupedTabs = useMemo(() => {
+    const groups: Record<string, TabDefinition[]> = {};
+    filteredTabs.forEach(t => {
+      if (!groups[t.group]) groups[t.group] = [];
+      groups[t.group].push(t);
+    });
+    return groups;
+  }, [filteredTabs]);
+
+  const activeTabDef = SETTINGS_TABS.find(t => t.id === activeTab) || SETTINGS_TABS[0];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflowY: "auto", padding: "var(--sp-2xl)" }}>
-      <h2 className="display-md" style={{ marginBottom: "var(--sp-3xl)", display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-        <Settings size={20} /> Settings
-      </h2>
-
-      {user && (
-        <div className="card" style={{ marginBottom: "var(--sp-xl)" }}>
-          <h3 className="display-sm" style={{ marginBottom: "var(--sp-lg)" }}>Profile</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-md)" }}>
-            <div className="form-group"><label className="form-label">First Name</label><input className="input" value={user.first_name || ""} readOnly /></div>
-            <div className="form-group"><label className="form-label">Last Name</label><input className="input" value={user.last_name || ""} readOnly /></div>
-            <div className="form-group" style={{ gridColumn: "span 2" }}><label className="form-label">Email</label><input className="input" value={user.email} readOnly /></div>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        background: "var(--color-canvas)",
+        color: "var(--color-ink)",
+        overflow: "hidden",
+      }}
+    >
+      {/* ── Top Header Bar ── */}
+      <div
+        style={{
+          padding: "var(--sp-lg) var(--sp-2xl)",
+          borderBottom: "1px solid var(--color-hairline)",
+          background: "var(--color-canvas-soft)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: "var(--radius-sm)",
+              background: "var(--color-primary-glow)",
+              border: "1px solid var(--color-primary-soft)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--color-primary)",
+            }}
+          >
+            <Settings size={16} />
+          </div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-xs)", fontSize: 13, fontWeight: 700 }}>
+              <span>Settings</span>
+              <ChevronRight size={13} color="var(--color-mute)" />
+              <span style={{ color: "var(--color-primary)" }}>{activeTabDef.label}</span>
+            </div>
+            <div className="caption text-mute" style={{ fontSize: 10 }}>
+              Configure AI models, agent safety policies, runtime limits, and integrations
+            </div>
           </div>
         </div>
-      )}
 
-      <GoogleAccountCard onToast={onToast} />
-      <ApiKeysCard onToast={onToast} />
-      <DefaultModelsCard onToast={onToast} />
-      <AgentRuntimeCard onToast={onToast} />
-      <BrowserAutomationCard onToast={onToast} />
-
-      {/* ── Prompts & Behavior ── */}
-      <PromptsConfigSection onToast={onToast} />
-
-      {/* ── Access Control & Safety Defaults ── */}
-      <GlobalAccessControlCard onToast={onToast} />
-
-      {/* ── Model Catalog (Standalone Card) ── */}
-      <ModelCatalogEditor onToast={onToast} />
-
-      <HealthCard teamId={teamId} />
-      {projectId && <UsageCard projectId={projectId} />}
-      {projectId && <CostManagementCard projectId={projectId} onToast={onToast} />}
-      {projectId && <KnowledgeUpload projectId={projectId} teamId={teamId} onToast={onToast} />}
-
-
-
-      <div className="card card-danger" style={{ marginBottom: "var(--sp-xl)", borderRadius: "var(--radius-md)", padding: "var(--sp-2xl)" }}>
-        <h3 className="display-sm text-danger" style={{ marginBottom: "var(--sp-md)" }}>Danger Zone</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-          {teamId && (
-            <div className="flex-between" style={{ padding: "var(--sp-md)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: "var(--radius-sm)" }}>
-              <div><div className="body-sm-strong">Delete Team</div><div className="caption">Permanently delete this team and all its messages.</div></div>
-              <button className="btn btn-danger btn-sm" onClick={() => setConfirmDelete("team")}><Trash2 size={13} /> Delete Team</button>
-            </div>
-          )}
-          {projectId && (
-            <div className="flex-between" style={{ padding: "var(--sp-md)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: "var(--radius-sm)" }}>
-              <div><div className="body-sm-strong">Delete Project</div><div className="caption">Permanently delete this project and all associated data.</div></div>
-              <button className="btn btn-danger btn-sm" onClick={() => setConfirmDelete("project")}><Trash2 size={13} /> Delete Project</button>
-            </div>
-          )}
+        {/* Global indicator pill */}
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+          <span className="pill pill-live" style={{ fontSize: 10 }}>
+            {agents.length} active {agents.length === 1 ? "agent" : "agents"}
+          </span>
         </div>
       </div>
 
+      {/* ── Main Two-Column Master-Detail Layout ── */}
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        {/* ── Left Sidebar Navigation ── */}
+        <div
+          style={{
+            width: 260,
+            flexShrink: 0,
+            borderRight: "1px solid var(--color-hairline)",
+            background: "var(--color-canvas-soft)",
+            display: "flex",
+            flexDirection: "column",
+            overflowY: "auto",
+          }}
+        >
+          {/* Search Bar */}
+          <div style={{ padding: "var(--sp-md) var(--sp-lg)", borderBottom: "1px solid var(--color-hairline)" }}>
+            <div style={{ position: "relative" }}>
+              <Search
+                size={13}
+                style={{
+                  position: "absolute",
+                  left: 10,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  color: "var(--color-mute)",
+                }}
+              />
+              <input
+                type="text"
+                placeholder="Search settings..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="input"
+                style={{
+                  paddingLeft: 30,
+                  fontSize: 11,
+                  height: 28,
+                  borderRadius: "var(--radius-sm)",
+                  background: "var(--color-canvas)",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Grouped Navigation Links */}
+          <div style={{ padding: "var(--sp-md)", display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
+            {Object.entries(groupedTabs).map(([groupName, tabs]) => (
+              <div key={groupName}>
+                <div
+                  style={{
+                    fontSize: 9.5,
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "var(--color-mute)",
+                    padding: "0 var(--sp-sm) var(--sp-xs)",
+                  }}
+                >
+                  {groupName}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {tabs.map(tab => {
+                    const Icon = tab.icon;
+                    const isActive = activeTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setActiveTab(tab.id)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "var(--sp-sm)",
+                          padding: "7px 10px",
+                          borderRadius: "var(--radius-sm)",
+                          border: `1px solid ${isActive ? "var(--color-primary-soft)" : "transparent"}`,
+                          background: isActive ? "var(--color-primary-glow)" : "transparent",
+                          color: isActive ? "var(--color-primary-soft)" : "var(--color-ink)",
+                          fontWeight: isActive ? 600 : 500,
+                          fontSize: 11.5,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          transition: "all var(--t-fast)",
+                          outline: "none",
+                        }}
+                      >
+                        <Icon size={14} color={isActive ? "var(--color-primary)" : "var(--color-mute)"} />
+                        <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {tab.label}
+                        </span>
+                        {isActive && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--color-primary)" }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            {filteredTabs.length === 0 && (
+              <div style={{ padding: "var(--sp-xl)", textAlign: "center", color: "var(--color-mute)", fontSize: 11 }}>
+                No settings match &quot;{searchQuery}&quot;
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Right Content Area ── */}
+        <div
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "var(--sp-2xl) var(--sp-3xl)",
+            maxWidth: 1000,
+          }}
+        >
+          {/* Active Tab Header */}
+          <div style={{ marginBottom: "var(--sp-xl)" }}>
+            <h2 className="display-sm" style={{ margin: 0, fontSize: 18 }}>
+              {activeTabDef.label}
+            </h2>
+            <p className="body-sm text-mute" style={{ marginTop: 2, marginBottom: 0 }}>
+              {activeTabDef.description}
+            </p>
+          </div>
+
+          {/* Active Tab View */}
+          <div className="animate-entrance">
+            {activeTab === "general" && <GeneralSettings teamId={teamId} onToast={onToast} />}
+            {activeTab === "providers" && <ProvidersSettings onToast={onToast} />}
+            {activeTab === "models" && <ModelsSettings onToast={onToast} />}
+            {activeTab === "runtime" && <RuntimeSafetySettings onToast={onToast} />}
+            {activeTab === "prompts" && <PromptsSettings onToast={onToast} />}
+            {activeTab === "browser" && <BrowserSettings onToast={onToast} />}
+            {activeTab === "project" && (
+              <ProjectCostSettings
+                teamId={teamId}
+                projectId={projectId}
+                onToast={onToast}
+                onRequestDelete={setConfirmDelete}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Deletion Confirmation Modal ── */}
       <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Confirm Deletion" maxWidth={450}>
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
           <p className="body-sm">
@@ -1376,7 +391,7 @@ export default function SettingsPanel({ teamId, projectId, onToast, onTeamDelete
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)" }}>
             <button
               className="btn btn-danger btn-sm"
-              onClick={() => confirmDelete === "team" ? handleDeleteTeam(false) : handleDeleteProject(false)}
+              onClick={() => (confirmDelete === "team" ? handleDeleteTeam(false) : handleDeleteProject(false))}
               disabled={deleting}
               style={{ width: "100%", justifyContent: "center" }}
             >
@@ -1384,13 +399,24 @@ export default function SettingsPanel({ teamId, projectId, onToast, onTeamDelete
             </button>
             <button
               className="btn btn-danger btn-sm"
-              onClick={() => confirmDelete === "team" ? handleDeleteTeam(true) : handleDeleteProject(true)}
+              onClick={() => (confirmDelete === "team" ? handleDeleteTeam(true) : handleDeleteProject(true))}
               disabled={deleting}
-              style={{ width: "100%", justifyContent: "center", background: "var(--color-danger-dark)", borderColor: "var(--color-danger-dark)" }}
+              style={{
+                width: "100%",
+                justifyContent: "center",
+                background: "var(--color-danger)",
+                borderColor: "var(--color-danger)",
+                color: "#fff",
+              }}
             >
               {deleting ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />} Delete {confirmDelete} AND Content on Disk
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDelete(null)} disabled={deleting} style={{ width: "100%", justifyContent: "center", marginTop: "var(--sp-xs)" }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setConfirmDelete(null)}
+              disabled={deleting}
+              style={{ width: "100%", justifyContent: "center", marginTop: "var(--sp-xs)" }}
+            >
               Cancel
             </button>
           </div>

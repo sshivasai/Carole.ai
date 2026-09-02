@@ -170,19 +170,21 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
 
   // Check if a template is already connected
   const isTemplateConnected = (templateId: string) => {
-    return servers.some(
-      (s) =>
-        s.server_name?.toLowerCase() === templateId.toLowerCase() ||
-        s.args?.toLowerCase().includes(templateId.toLowerCase())
-    );
+    const tid = templateId.toLowerCase();
+    return servers.some((s) => {
+      const name = (s.server_name || "").toLowerCase();
+      const argsStr = (Array.isArray(s.args) ? s.args.join(" ") : String(s.args || "")).toLowerCase();
+      return name === tid || argsStr.includes(tid);
+    });
   };
 
   const getConnectedServer = (templateId: string) => {
-    return servers.find(
-      (s) =>
-        s.server_name?.toLowerCase() === templateId.toLowerCase() ||
-        s.args?.toLowerCase().includes(templateId.toLowerCase())
-    );
+    const tid = templateId.toLowerCase();
+    return servers.find((s) => {
+      const name = (s.server_name || "").toLowerCase();
+      const argsStr = (Array.isArray(s.args) ? s.args.join(" ") : String(s.args || "")).toLowerCase();
+      return name === tid || argsStr.includes(tid);
+    });
   };
 
   // Open 1-Click Connect Modal
@@ -297,7 +299,11 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
 
   // Filter templates
   const filteredTemplates = useMemo(() => {
+    const seen = new Set<string>();
     return templates.filter((tpl) => {
+      if (seen.has(tpl.id)) return false;
+      seen.add(tpl.id);
+
       const matchesSearch =
         tpl.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         tpl.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -657,7 +663,7 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
                       {s.server_name}
                     </span>
                     <span className="caption text-mute" style={{ marginLeft: 8 }}>
-                      {s.command} {s.args}
+                      {s.command} {Array.isArray(s.args) ? s.args.join(" ") : String(s.args || "")}
                     </span>
                   </div>
                 </div>

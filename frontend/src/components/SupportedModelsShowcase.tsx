@@ -67,10 +67,10 @@ const PROVIDERS: ModelProvider[] = [
     id: "anthropic",
     name: "Anthropic Claude",
     badge: "Flagship Reasoning & Code Architecture",
-    color: "#d97706",
-    gradient: "linear-gradient(135deg, #d97706 0%, #b45309 100%)",
-    bgGlow: "rgba(217, 119, 6, 0.18)",
-    cardBg: "radial-gradient(ellipse at top left, rgba(217, 119, 6, 0.15), rgba(15, 17, 32, 0.95))",
+    color: "#818cf8",
+    gradient: "linear-gradient(135deg, #a78bfa 0%, #6366f1 100%)",
+    bgGlow: "rgba(99, 102, 241, 0.16)",
+    cardBg: "radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.12), rgba(15, 17, 32, 0.95))",
     description: "Industry-leading hybrid thinking and coding precision with massive 200k context windows and AST-level refactoring.",
     featuredModels: [
       {
@@ -100,10 +100,10 @@ const PROVIDERS: ModelProvider[] = [
     id: "openai",
     name: "OpenAI",
     badge: "o-Series Reasoning & Function Calling",
-    color: "#10a37f",
-    gradient: "linear-gradient(135deg, #10a37f 0%, #059669 100%)",
-    bgGlow: "rgba(16, 163, 127, 0.18)",
-    cardBg: "radial-gradient(ellipse at top left, rgba(16, 163, 127, 0.15), rgba(15, 17, 32, 0.95))",
+    color: "#818cf8",
+    gradient: "linear-gradient(135deg, #a78bfa 0%, #6366f1 100%)",
+    bgGlow: "rgba(99, 102, 241, 0.16)",
+    cardBg: "radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.12), rgba(15, 17, 32, 0.95))",
     description: "Deep chain-of-thought reasoning models with strict typed schema adherence and high-throughput tool calling.",
     featuredModels: [
       {
@@ -133,10 +133,10 @@ const PROVIDERS: ModelProvider[] = [
     id: "google",
     name: "Google Gemini",
     badge: "2M+ Massive Context & Multimodal",
-    color: "#4285f4",
-    gradient: "linear-gradient(135deg, #4285f4 0%, #9b72cf 50%, #d96570 100%)",
-    bgGlow: "rgba(66, 133, 244, 0.2)",
-    cardBg: "radial-gradient(ellipse at top left, rgba(66, 133, 244, 0.16), rgba(155, 114, 207, 0.1), rgba(15, 17, 32, 0.95))",
+    color: "#818cf8",
+    gradient: "linear-gradient(135deg, #a78bfa 0%, #6366f1 100%)",
+    bgGlow: "rgba(99, 102, 241, 0.16)",
+    cardBg: "radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.12), rgba(15, 17, 32, 0.95))",
     description: "Unmatched 2,000,000+ token context capacity with native multi-modal image, audio, and large codebase ingestion.",
     featuredModels: [
       {
@@ -166,10 +166,10 @@ const PROVIDERS: ModelProvider[] = [
     id: "deepseek",
     name: "DeepSeek",
     badge: "Open Weights & Code Architecture",
-    color: "#0284c7",
-    gradient: "linear-gradient(135deg, #0284c7 0%, #2563eb 100%)",
-    bgGlow: "rgba(2, 132, 199, 0.2)",
-    cardBg: "radial-gradient(ellipse at top left, rgba(2, 132, 199, 0.18), rgba(15, 17, 32, 0.95))",
+    color: "#818cf8",
+    gradient: "linear-gradient(135deg, #a78bfa 0%, #6366f1 100%)",
+    bgGlow: "rgba(99, 102, 241, 0.16)",
+    cardBg: "radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.12), rgba(15, 17, 32, 0.95))",
     description: "Highly specialized, open-weights reasoning and code generation models with full local self-hosting capability.",
     featuredModels: [
       {
@@ -199,10 +199,10 @@ const PROVIDERS: ModelProvider[] = [
     id: "ollama",
     name: "Local Ollama & Open Source",
     badge: "100% Private, Air-Gapped & Offline",
-    color: "#a855f7",
-    gradient: "linear-gradient(135deg, #a855f7 0%, #ec4899 100%)",
-    bgGlow: "rgba(168, 85, 247, 0.2)",
-    cardBg: "radial-gradient(ellipse at top left, rgba(168, 85, 247, 0.18), rgba(15, 17, 32, 0.95))",
+    color: "#818cf8",
+    gradient: "linear-gradient(135deg, #a78bfa 0%, #6366f1 100%)",
+    bgGlow: "rgba(99, 102, 241, 0.16)",
+    cardBg: "radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.12), rgba(15, 17, 32, 0.95))",
     description: "Execute completely offline on local GPUs via Ollama, vLLM, or LM Studio with zero external data transfer.",
     featuredModels: [
       {

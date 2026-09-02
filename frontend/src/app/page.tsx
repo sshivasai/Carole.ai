@@ -294,13 +294,17 @@ function AppShell() {
   };
 
   const [activeView, setActiveView] = useState("chat");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(260);
 
   useEffect(() => {
     try {
       const savedCollapsed = localStorage.getItem("carole_sidebar_collapsed");
-      if (savedCollapsed !== null) setSidebarCollapsed(savedCollapsed === "true");
+      if (savedCollapsed !== null) {
+        setSidebarCollapsed(savedCollapsed === "true");
+      } else {
+        setSidebarCollapsed(true);
+      }
       const savedWidth = localStorage.getItem("carole_sidebar_width");
       if (savedWidth !== null) {
         const parsed = parseInt(savedWidth, 10);

@@ -740,9 +740,21 @@ class MultiModelRouter:
 
         formatted_messages = self._format_messages_for_provider(messages, "anthropic")
 
+        # Enable Anthropic Prompt Caching for system instructions > 1024 chars
+        if len(system_prompt) > 1024:
+            system_payload: Any = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+        else:
+            system_payload = system_prompt
+
         payload: dict = {
             "model": model,
-            "system": system_prompt,
+            "system": system_payload,
             "messages": formatted_messages,
             "max_tokens": max_tokens,
             "stream": True,
@@ -1123,41 +1135,66 @@ class MultiModelRouter:
     async def generate_embeddings(self, text: str) -> List[float]:
         """
         Generates a vector embedding for the input text.
-        Tries OpenAI first (1536-dim), falls back to Gemini (768-dim, zero-padded to 1536).
-        Returns a zero vector if no API key is available.
+        Honors DEFAULT_EMBEDDING_MODEL if configured, otherwise follows waterfall cascade:
+        OpenAI -> Gemini -> OpenRouter -> Ollama.
         """
-        # Try OpenAI first
+        import core.config
+        configured = getattr(core.config, "DEFAULT_EMBEDDING_MODEL", "auto")
+
+        # 1. Direct provider routing if user explicitly specified a model
+        if configured and configured != "auto":
+            conf_lower = configured.lower()
+            if "gemini" in conf_lower and self.gemini_key:
+                res = await self._embeddings_gemini(text)
+                if res: return res
+            elif ("openai" in conf_lower or "text-embedding" in conf_lower) and self.openai_key:
+                model_name = "text-embedding-3-large" if "large" in conf_lower else "text-embedding-3-small"
+                res = await self._embeddings_openai(text, model=model_name)
+                if res: return res
+            elif "nemotron" in conf_lower and self.openrouter_key:
+                res = await self._embeddings_openrouter(text)
+                if res: return res
+            elif "ollama" in conf_lower:
+                model_name = conf_lower.replace("ollama/", "") if "/" in conf_lower else conf_lower
+                res = await self._embeddings_ollama(text, model=model_name)
+                if res: return res
+
+        # 2. Fallback waterfall cascade
         if self.openai_key:
             result = await self._embeddings_openai(text)
             if result:
                 return result
 
-        # Fallback to Gemini
         if self.gemini_key:
             result = await self._embeddings_gemini(text)
             if result:
                 return result
 
-        # Fallback to OpenRouter (NVIDIA Nemotron 3 Embed 1B free)
         if self.openrouter_key:
             result = await self._embeddings_openrouter(text)
             if result:
                 return result
 
+        # Try local Ollama if running
+        result = await self._embeddings_ollama(text)
+        if result:
+            return result
+
         # No keys available or all providers failed — raise explicit error
         raise RuntimeError(
-            "No embedding provider configured or available. Please configure an OpenAI, Gemini, or OpenRouter API key."
+            "No embedding provider configured or available. Please configure an OpenAI, Gemini, or OpenRouter API key, or start Ollama."
         )
 
-    async def _embeddings_openai(self, text: str) -> Optional[List[float]]:
-        """OpenAI text-embedding-3-small (1536 dimensions)."""
+    async def _embeddings_openai(self, text: str, model: str = "text-embedding-3-small") -> Optional[List[float]]:
+        """OpenAI embeddings (1536 dimensions for small, truncated to 1536 for large)."""
         headers = {
             "Authorization": f"Bearer {self.openai_key}",
             "Content-Type": "application/json"
         }
         payload = {
             "input": text,
-            "model": "text-embedding-3-small"
+            "model": model,
+            "dimensions": 1536
         }
 
         try:
@@ -1238,6 +1275,30 @@ class MultiModelRouter:
                 return None
         except Exception as e:
             logger.warning("OpenRouter Embeddings connection error: %s", e)
+            return None
+
+    async def _embeddings_ollama(self, text: str, model: str = "nomic-embed-text") -> Optional[List[float]]:
+        """Local Ollama embeddings (e.g. nomic-embed-text or all-minilm, zero-padded/truncated to 1536)."""
+        ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        payload = {
+            "model": model,
+            "prompt": text
+        }
+        try:
+            response = await self._http_client.post(
+                f"{ollama_host}/api/embeddings",
+                json=payload,
+                timeout=5.0
+            )
+            if response.status_code == 200:
+                data = response.json()
+                values = data.get("embedding", [])
+                if values:
+                    while len(values) < 1536:
+                        values.append(0.0)
+                    return values[:1536]
+            return None
+        except Exception:
             return None
 
 

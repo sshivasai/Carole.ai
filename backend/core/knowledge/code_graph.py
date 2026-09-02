@@ -11,7 +11,7 @@ import posixpath
 from pathlib import Path
 import asyncio
 import networkx as nx
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, List, Any
 from core.config import CAROLE_HOME_DIR
 
 from core.chat.event_bus import event_bus
@@ -205,6 +205,68 @@ class CodeGraph:
                     except ValueError:
                         pass
         await self._save_graph(project_id)
+
+    async def get_symbol_callers(self, symbol_name: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Finds all files and lines that import or invoke a symbol across the project."""
+        project_root = await self.get_project_root(project_id)
+        callers = []
+        pattern = re.compile(rf"\b{re.escape(symbol_name)}\s*\(|\bimport\s+.*?\b{re.escape(symbol_name)}\b", re.MULTILINE)
+        
+        for root, dirs, files in os.walk(project_root):
+            dirs[:] = [d for d in dirs if not any(ign in d for ign in IGNORE_DIR_SUBSTRINGS) and not d.startswith('.')]
+            for file in files:
+                ext = Path(file).suffix.lower()
+                if ext in CODE_EXTENSIONS:
+                    fpath = Path(root) / file
+                    try:
+                        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                            for idx, line in enumerate(f, 1):
+                                if pattern.search(line):
+                                    rel = str(fpath.relative_to(project_root)).replace("\\", "/")
+                                    callers.append({
+                                        "file": rel,
+                                        "line": idx,
+                                        "code": line.strip()
+                                    })
+                                    if len(callers) >= 40:
+                                        break
+                    except Exception:
+                        pass
+        return callers
+
+    async def get_symbol_callees(self, function_name: str, file_path: str, project_id: Optional[str] = None) -> List[str]:
+        """Finds all function calls invoked within a specific function/class definition."""
+        project_root = await self.get_project_root(project_id)
+        safe_path = (project_root / file_path).resolve()
+        if not safe_path.is_file():
+            return []
+
+        try:
+            with open(safe_path, "r", encoding="utf-8", errors="ignore") as f:
+                code = f.read()
+
+            callees = set()
+            if safe_path.suffix == ".py":
+                import ast
+                tree = ast.parse(code)
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
+                        for subnode in ast.walk(node):
+                            if isinstance(subnode, ast.Call):
+                                if isinstance(subnode.func, ast.Name):
+                                    callees.add(subnode.func.id)
+                                elif isinstance(subnode.func, ast.Attribute):
+                                    callees.add(subnode.func.attr)
+            else:
+                # Regex call extractor for JS/TS
+                call_pattern = re.compile(r"\b([a-zA-Z_]\w+)\s*\(")
+                for match in call_pattern.findall(code):
+                    if match not in ("if", "for", "while", "switch", "catch", "function", function_name):
+                        callees.add(match)
+
+            return sorted(list(callees))[:30]
+        except Exception:
+            return []
 
     async def _listen_for_file_changes(self):
         queue = await event_bus.subscribe("system:file_changes")

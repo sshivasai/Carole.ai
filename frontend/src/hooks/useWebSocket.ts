@@ -69,6 +69,8 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
 
   const connect = useCallback(async () => {
     if (!teamId || !isMounted.current) return;
+    const token = getWsToken();
+    if (!token) return;
 
     let ticket = "";
     try {
@@ -76,12 +78,12 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
       ticket = res.ticket;
     } catch (err) {
       console.warn("Failed to fetch WS ticket:", err);
-      // Fallback: The backend will reject if strict, but maybe local dev is lenient
+      return;
     }
 
-    if (!isMounted.current) return;
+    if (!isMounted.current || !ticket) return;
 
-    const url = `${getWsBase()}/ws/chat/${teamId}${ticket ? `?ticket=${encodeURIComponent(ticket)}` : ""}`;
+    const url = `${getWsBase()}/ws/chat/${teamId}?ticket=${encodeURIComponent(ticket)}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

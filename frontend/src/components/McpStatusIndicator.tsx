@@ -1,24 +1,34 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Server, Loader2, AlertCircle, CheckCircle2, Plug } from "lucide-react";
+"use client";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { Server, Loader2, AlertCircle, CheckCircle2, Plug, Trash2, X } from "lucide-react";
 import { api } from "../hooks/useApi";
 
 export const McpStatusIndicator: React.FC = () => {
   const [statuses, setStatuses] = useState<Record<string, any>>({});
   const [isOpen, setIsOpen] = useState(false);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     try {
       const data = await api.getMcpStatus();
-      setStatuses(data);
+      setStatuses(data || {});
     } catch (e) {
       console.error("Failed to fetch MCP status", e);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchStatus();
-  }, []);
+  }, [fetchStatus]);
+
+  // Poll while popover is open
+  useEffect(() => {
+    if (!isOpen) return;
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 3500);
+    return () => clearInterval(interval);
+  }, [isOpen, fetchStatus]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -32,9 +42,34 @@ export const McpStatusIndicator: React.FC = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
-  const statusList = Object.values(statuses);
-  if (statusList.length === 0) return null; // Don't show if no MCPs
+  const handleDisconnect = async (server: any, keyStr: string) => {
+    const name = server.server_name;
+    setDisconnecting(name);
+    try {
+      // Optimistically remove from state immediately
+      setStatuses(prev => {
+        const next = { ...prev };
+        delete next[keyStr];
+        return next;
+      });
 
+      if (server.id) {
+        await api.deleteMcpServer(server.id);
+      } else {
+        await api.deleteMcpServer(name);
+      }
+      await fetchStatus();
+    } catch (e) {
+      console.error("Failed to disconnect MCP server", e);
+    } finally {
+      setDisconnecting(null);
+    }
+  };
+
+  const statusEntries = Object.entries(statuses);
+  if (statusEntries.length === 0) return null; // Don't show if no MCPs
+
+  const statusList = statusEntries.map(([k, v]) => ({ keyStr: k, ...v }));
   const isLoading = statusList.some((s) => s.status === "loading");
   const hasError = statusList.some((s) => s.status === "error");
 
@@ -87,34 +122,52 @@ export const McpStatusIndicator: React.FC = () => {
           </div>
           
           <div style={{ maxHeight: "300px", overflowY: "auto", padding: "8px" }}>
-            {statusList.map((server, i) => (
-              <div key={i} style={{ padding: "8px", borderBottom: i < statusList.length - 1 ? "1px solid var(--color-hairline)" : "none" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
-                  <span style={{ fontWeight: 500, fontSize: "13px" }}>{server.server_name}</span>
-                  {server.status === "connected" && <CheckCircle2 size={14} color="var(--color-success)" />}
-                  {server.status === "loading" && <Loader2 size={14} className="animate-spin" color="var(--color-primary)" />}
-                  {server.status === "error" && <AlertCircle size={14} color="var(--color-danger)" />}
+            {statusList.map((server, i) => {
+              const isGlobal = !server.team_id || server.team_id === "None";
+              const isBusy = disconnecting === server.server_name;
+              return (
+                <div key={server.keyStr || i} style={{ padding: "8px", borderBottom: i < statusList.length - 1 ? "1px solid var(--color-hairline)" : "none" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ fontWeight: 500, fontSize: "13px" }}>{server.server_name}</span>
+                      {server.status === "connected" && <CheckCircle2 size={13} color="var(--color-success)" />}
+                      {server.status === "loading" && <Loader2 size={13} className="animate-spin" color="var(--color-primary)" />}
+                      {server.status === "error" && <AlertCircle size={13} color="var(--color-danger)" />}
+                    </div>
+
+                    {!isGlobal && (
+                      <button
+                        className="btn btn-ghost btn-xs"
+                        style={{ padding: "2px 6px", color: "var(--color-mute)", height: "auto" }}
+                        title={`Disconnect ${server.server_name}`}
+                        onClick={() => handleDisconnect(server, server.keyStr)}
+                        disabled={isBusy}
+                      >
+                        {isBusy ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                      </button>
+                    )}
+                  </div>
+                  
+                  {server.status === "error" && (
+                    <div style={{ fontSize: "11px", color: "var(--color-danger)", marginTop: "4px" }}>
+                      {server.error || "Failed to initialize"}
+                    </div>
+                  )}
+                  
+                  {server.status === "connected" && server.tools && (
+                    <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "4px" }}>
+                      {server.tools.length} tool(s) registered
+                    </div>
+                  )}
+                  
+                  {server.team_id && server.team_id !== "None" && (
+                    <span style={{ display: "inline-block", fontSize: "10px", padding: "2px 6px", background: "var(--bg-surface-elevated)", borderRadius: "4px", marginTop: "4px" }}>
+                      Team specific
+                    </span>
+                  )}
                 </div>
-                
-                {server.status === "error" && (
-                  <div style={{ fontSize: "11px", color: "var(--color-danger)", marginTop: "4px" }}>
-                    {server.error}
-                  </div>
-                )}
-                
-                {server.status === "connected" && server.tools && (
-                  <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "4px" }}>
-                    {server.tools.length} tool(s) registered
-                  </div>
-                )}
-                
-                {server.team_id && server.team_id !== "None" && (
-                  <span style={{ display: "inline-block", fontSize: "10px", padding: "2px 6px", background: "var(--bg-surface-elevated)", borderRadius: "4px", marginTop: "6px" }}>
-                    Team specific
-                  </span>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

@@ -49,7 +49,7 @@ const SCENES: SceneMeta[] = [
     description:
       "Admin dispatches a high-level engineering prompt. Watch real-time typing, message dispatch, and Archer's ReAct loop orchestrating specialist subagents.",
     icon: Bot,
-    color: "#a78bfa",
+    color: "#818cf8",
   },
   {
     id: "kanban",
@@ -59,7 +59,7 @@ const SCENES: SceneMeta[] = [
     description:
       "Agents automatically decompose complex workstreams into prioritized task cards with assigned PrettyAvatars and bidirectional WebSocket status synchronization.",
     icon: LayoutGrid,
-    color: "#38bdf8",
+    color: "#818cf8",
   },
   {
     id: "explorer",
@@ -69,7 +69,7 @@ const SCENES: SceneMeta[] = [
     description:
       "Browse the complete codebase tree, inspect syntax-highlighted side-by-side code diffs, and restore point-in-time rollback backup snapshots.",
     icon: Folder,
-    color: "#10b981",
+    color: "#818cf8",
   },
   {
     id: "terminal",
@@ -79,7 +79,7 @@ const SCENES: SceneMeta[] = [
     description:
       "Interactive shell streams pytest suite execution (24 passed in 0.94s), visualizes git branch commits, and runs headless Playwright browser tests.",
     icon: Terminal,
-    color: "#f472b6",
+    color: "#818cf8",
   },
   {
     id: "security",
@@ -89,7 +89,7 @@ const SCENES: SceneMeta[] = [
     description:
       "A dedicated security evaluator LLM intercepts shell commands, git pushes, and database mutations with automated risk scoring and human approval escalation.",
     icon: ShieldCheck,
-    color: "#fbbf24",
+    color: "#818cf8",
   },
 ];
 
@@ -531,116 +531,146 @@ export default function TeamChatAnimation() {
 
                   {/* Chat Room */}
                   <div
+                    onClick={() => {
+                      setActiveScene("chat");
+                      setScenePhase("ui");
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
                       padding: "7px 10px",
                       borderRadius: 8,
-                      background: activeScene === "chat" ? "rgba(167, 139, 250, 0.18)" : "transparent",
-                      border: activeScene === "chat" ? "1px solid rgba(167, 139, 250, 0.35)" : "1px solid transparent",
+                      background: activeScene === "chat" ? "rgba(99, 102, 241, 0.18)" : "transparent",
+                      border: activeScene === "chat" ? "1px solid rgba(99, 102, 241, 0.35)" : "1px solid transparent",
                       color: activeScene === "chat" ? "#ffffff" : "var(--color-body, #94a3b8)",
                       fontSize: 12,
                       fontWeight: 600,
                       marginBottom: 2,
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Bot size={14} color={activeScene === "chat" ? "#a78bfa" : "#64748b"} />
+                      <Bot size={14} color={activeScene === "chat" ? "var(--color-primary-soft, #818cf8)" : "#64748b"} />
                       <span>Chat Room</span>
                     </div>
-                    {activeScene === "chat" && <ChevronRight size={13} color="#a78bfa" />}
+                    {activeScene === "chat" && <ChevronRight size={13} color="var(--color-primary-soft, #818cf8)" />}
                   </div>
 
                   {/* Task Board */}
                   <div
+                    onClick={() => {
+                      setActiveScene("kanban");
+                      setScenePhase("ui");
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
                       padding: "7px 10px",
                       borderRadius: 8,
-                      background: activeScene === "kanban" ? "rgba(56, 189, 248, 0.18)" : "transparent",
-                      border: activeScene === "kanban" ? "1px solid rgba(56, 189, 248, 0.35)" : "1px solid transparent",
+                      background: activeScene === "kanban" ? "rgba(99, 102, 241, 0.18)" : "transparent",
+                      border: activeScene === "kanban" ? "1px solid rgba(99, 102, 241, 0.35)" : "1px solid transparent",
                       color: activeScene === "kanban" ? "#ffffff" : "var(--color-body, #94a3b8)",
                       fontSize: 12,
                       fontWeight: 600,
                       marginBottom: 2,
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <LayoutGrid size={14} color={activeScene === "kanban" ? "#38bdf8" : "#64748b"} />
+                      <LayoutGrid size={14} color={activeScene === "kanban" ? "var(--color-primary-soft, #818cf8)" : "#64748b"} />
                       <span>Task Board</span>
                     </div>
-                    {activeScene === "kanban" && <ChevronRight size={13} color="#38bdf8" />}
+                    {activeScene === "kanban" && <ChevronRight size={13} color="var(--color-primary-soft, #818cf8)" />}
                   </div>
 
                   {/* File Explorer */}
                   <div
+                    onClick={() => {
+                      setActiveScene("explorer");
+                      setScenePhase("ui");
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
                       padding: "7px 10px",
                       borderRadius: 8,
-                      background: activeScene === "explorer" ? "rgba(16, 185, 129, 0.18)" : "transparent",
-                      border: activeScene === "explorer" ? "1px solid rgba(16, 185, 129, 0.35)" : "1px solid transparent",
+                      background: activeScene === "explorer" ? "rgba(99, 102, 241, 0.18)" : "transparent",
+                      border: activeScene === "explorer" ? "1px solid rgba(99, 102, 241, 0.35)" : "1px solid transparent",
                       color: activeScene === "explorer" ? "#ffffff" : "var(--color-body, #94a3b8)",
                       fontSize: 12,
                       fontWeight: 600,
                       marginBottom: 2,
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Folder size={14} color={activeScene === "explorer" ? "#10b981" : "#64748b"} />
+                      <Folder size={14} color={activeScene === "explorer" ? "var(--color-primary-soft, #818cf8)" : "#64748b"} />
                       <span>File Explorer</span>
                     </div>
-                    {activeScene === "explorer" && <ChevronRight size={13} color="#10b981" />}
+                    {activeScene === "explorer" && <ChevronRight size={13} color="var(--color-primary-soft, #818cf8)" />}
                   </div>
 
                   {/* Terminal & Git */}
                   <div
+                    onClick={() => {
+                      setActiveScene("terminal");
+                      setScenePhase("ui");
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
                       padding: "7px 10px",
                       borderRadius: 8,
-                      background: activeScene === "terminal" ? "rgba(244, 114, 182, 0.18)" : "transparent",
-                      border: activeScene === "terminal" ? "1px solid rgba(244, 114, 182, 0.35)" : "1px solid transparent",
+                      background: activeScene === "terminal" ? "rgba(99, 102, 241, 0.18)" : "transparent",
+                      border: activeScene === "terminal" ? "1px solid rgba(99, 102, 241, 0.35)" : "1px solid transparent",
                       color: activeScene === "terminal" ? "#ffffff" : "var(--color-body, #94a3b8)",
                       fontSize: 12,
                       fontWeight: 600,
                       marginBottom: 2,
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Terminal size={14} color={activeScene === "terminal" ? "#f472b6" : "#64748b"} />
+                      <Terminal size={14} color={activeScene === "terminal" ? "var(--color-primary-soft, #818cf8)" : "#64748b"} />
                       <span>Terminal & Git</span>
                     </div>
-                    {activeScene === "terminal" && <ChevronRight size={13} color="#f472b6" />}
+                    {activeScene === "terminal" && <ChevronRight size={13} color="var(--color-primary-soft, #818cf8)" />}
                   </div>
 
                   {/* Security Gate */}
                   <div
+                    onClick={() => {
+                      setActiveScene("security");
+                      setScenePhase("ui");
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
                       padding: "7px 10px",
                       borderRadius: 8,
-                      background: activeScene === "security" ? "rgba(251, 191, 36, 0.18)" : "transparent",
-                      border: activeScene === "security" ? "1px solid rgba(251, 191, 36, 0.35)" : "1px solid transparent",
+                      background: activeScene === "security" ? "rgba(99, 102, 241, 0.18)" : "transparent",
+                      border: activeScene === "security" ? "1px solid rgba(99, 102, 241, 0.35)" : "1px solid transparent",
                       color: activeScene === "security" ? "#ffffff" : "var(--color-body, #94a3b8)",
                       fontSize: 12,
                       fontWeight: 600,
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <ShieldCheck size={14} color={activeScene === "security" ? "#fbbf24" : "#64748b"} />
+                      <ShieldCheck size={14} color={activeScene === "security" ? "var(--color-primary-soft, #818cf8)" : "#64748b"} />
                       <span>Security Gate</span>
                     </div>
-                    {activeScene === "security" && <ChevronRight size={13} color="#fbbf24" />}
+                    {activeScene === "security" && <ChevronRight size={13} color="var(--color-primary-soft, #818cf8)" />}
                   </div>
                 </div>
               </div>

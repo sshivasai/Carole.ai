@@ -46,17 +46,19 @@ export default function NotificationBell({ className }: Props = {}) {
   // ── WebSocket connection ───────────────────────────────────────────
   const connect = useCallback(async () => {
     if (!isMounted.current) return;
+    const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
+    if (!token) return;
 
     let ticket = "";
     try {
       const res = await api.getWsTicket();
       ticket = res.ticket;
     } catch {
-      // fallback: backend will reject if auth required
+      return;
     }
-    if (!isMounted.current) return;
+    if (!isMounted.current || !ticket) return;
 
-    const url = `${getWsBase()}/ws/notifications${ticket ? `?ticket=${encodeURIComponent(ticket)}` : ""}`;
+    const url = `${getWsBase()}/ws/notifications?ticket=${encodeURIComponent(ticket)}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

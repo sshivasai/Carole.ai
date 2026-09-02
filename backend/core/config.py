@@ -98,6 +98,7 @@ _MODEL_DEFAULTS = {
     "DEFAULT_SMART_MODEL": "openrouter/free",
     "DEFAULT_CODER_MODEL": "openrouter/free",
     "DEFAULT_JUDGE_MODEL": "openrouter/free",
+    "DEFAULT_EMBEDDING_MODEL": "auto",
 }
 
 _AGENT_SETTINGS_DEFAULTS = {

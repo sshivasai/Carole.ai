@@ -382,6 +382,28 @@ class EntityMemory(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class GraphTriple(Base):
+    """
+    Knowledge Graph Triples (Subject -> Predicate -> Object) for Multi-Hop GraphRAG.
+    Example:
+    Subject: 'ChatInterface' | Predicate: 'renders' | Object: 'BrowserView'
+    Subject: 'BrowserView'   | Predicate: 'connects_to' | Object: 'browser_routes.py'
+    """
+    __tablename__ = "graph_triples"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id = Column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=True)
+
+    subject = Column(String(255), nullable=False, index=True)
+    predicate = Column(String(255), nullable=False, index=True)
+    object_val = Column(Text, nullable=False)
+    confidence_score = Column(Float, default=1.0)
+
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 class CompactionEvent(Base):
     """
     Records when context compaction occurred for a team conversation.

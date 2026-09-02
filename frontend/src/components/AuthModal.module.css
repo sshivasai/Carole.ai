@@ -276,3 +276,75 @@
     transform: scale(1) translateY(0);
   }
 }
+
+/* Light Theme Polish */
+:global(.theme-light) .modalContent {
+  background: var(--color-canvas-raised, #e8ecf2);
+  border-color: var(--color-hairline, #bcc6d2);
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.2);
+}
+
+:global(.theme-light) .closeBtn {
+  background: var(--color-canvas-soft);
+  border-color: var(--color-hairline);
+  color: var(--color-mute);
+}
+
+:global(.theme-light) .closeBtn:hover {
+  background: var(--color-canvas);
+  color: var(--color-ink-strong);
+  border-color: var(--color-primary-soft);
+}
+
+:global(.theme-light) .modalTitle {
+  color: var(--color-ink-strong, #020617);
+}
+
+:global(.theme-light) .modalSubtitle {
+  color: var(--color-body, #334155);
+}
+
+:global(.theme-light) .tabToggle {
+  background: var(--color-canvas-soft, #d0d7e2);
+  border-color: var(--color-hairline, #bcc6d2);
+}
+
+:global(.theme-light) .tabBtn {
+  color: var(--color-mute, #59677a);
+}
+
+:global(.theme-light) .tabBtn:hover:not(.tabBtnActive) {
+  color: var(--color-ink-strong, #020617);
+}
+
+:global(.theme-light) .tabBtnActive {
+  background: var(--color-canvas-raised, #e8ecf2);
+  color: var(--color-ink-strong, #020617) !important;
+  border-color: var(--color-hairline, #bcc6d2);
+}
+
+:global(.theme-light) .formLabel {
+  color: var(--color-body, #334155);
+}
+
+:global(.theme-light) .formInput {
+  background: var(--color-canvas-soft, #d0d7e2);
+  border-color: var(--color-hairline, #bcc6d2);
+  color: var(--color-ink-strong, #020617);
+}
+
+:global(.theme-light) .formInput:focus {
+  border-color: var(--color-primary-soft);
+  box-shadow: 0 0 0 2px var(--color-primary-glow-sm);
+}
+
+:global(.theme-light) .submitBtn {
+  background: #0f172a;
+  color: #ffffff;
+  border-color: #0f172a;
+}
+
+:global(.theme-light) .submitBtn:hover:not(:disabled) {
+  background: #1e293b;
+  border-color: #1e293b;
+}

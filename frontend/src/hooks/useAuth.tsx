@@ -29,6 +29,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setAuth = useCallback((u: User, t: string) => {
     localStorage.setItem("carole_token", t);
     localStorage.setItem("carole_user", JSON.stringify(u));
+    localStorage.setItem("carole_sidebar_collapsed", "true");
     setUser(u);
     setToken(t);
   }, []);
@@ -51,19 +52,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Bootstrap from localStorage on mount
   useEffect(() => {
-    const storedToken = localStorage.getItem("carole_token");
-    const storedUser  = localStorage.getItem("carole_user");
-    if (storedToken && storedUser) {
-      try {
-        setToken(storedToken);
-        setUser(JSON.parse(storedUser));
-        // Validate in background
-        api.getMe().then(me => setUser(me)).catch(() => logout());
-      } catch {
-        logout();
+    async function bootstrap() {
+      const storedToken = localStorage.getItem("carole_token");
+      const storedUser = localStorage.getItem("carole_user");
+      if (storedToken && storedUser) {
+        try {
+          const me = await api.getMe();
+          setToken(storedToken);
+          setUser(me);
+        } catch {
+          logout();
+        }
       }
+      setLoading(false);
     }
-    setLoading(false);
+    bootstrap();
   }, [logout]);
 
   const login = useCallback(async (email: string, password: string) => {

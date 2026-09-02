@@ -48,45 +48,45 @@
 }
 
 .theme-light {
-  /* High-Contrast Vibrant Developer Indigo Light Palette */
+  /* Clean Studio Minimalist Neutral-Grey Light Palette */
   --color-primary: #4f46e5;
   --color-primary-soft: #6366f1;
   --color-primary-deep: #3730a3;
   --color-on-primary: #ffffff;
-  --color-primary-glow: rgba(79, 70, 229, 0.25);
-  --color-primary-glow-sm: rgba(79, 70, 229, 0.12);
+  --color-primary-glow: rgba(79, 70, 229, 0.16);
+  --color-primary-glow-sm: rgba(79, 70, 229, 0.08);
   
-  --color-canvas: #e2e6eb;
-  --color-canvas-soft: #ebf0f5;
-  --color-canvas-raised: #f7f9fc;
-  --color-hairline: #cbd5e1;
-  --color-hairline-soft: #b0bec5;
+  --color-canvas: #eeeeee;
+  --color-canvas-soft: #e2e2e2;
+  --color-canvas-raised: #f5f5f5;
+  --color-hairline: #d1d5db;
+  --color-hairline-soft: #9ca3af;
   
-  --color-ink: #1e293b;
-  --color-ink-strong: #0f172a;
-  --color-fg: #1e293b;
-  --color-fg-strong: #0f172a;
-  --color-body: #475569;
-  --color-mute: #64748b;
-  --color-canvas-text-soft: #334155;
+  --color-ink: #27272a;
+  --color-ink-strong: #18181b;
+  --color-fg: #27272a;
+  --color-fg-strong: #18181b;
+  --color-body: #52525b;
+  --color-mute: #71717a;
+  --color-canvas-text-soft: #3f3f46;
   
-  --color-danger: #ef4444;
-  --color-danger-glow: rgba(239, 68, 68, 0.15);
-  --color-warning: #f59e0b;
-  --color-info: #3b82f6;
-  --color-success: #10b981;
+  --color-danger: #dc2626;
+  --color-danger-glow: rgba(220, 38, 38, 0.12);
+  --color-warning: #d97706;
+  --color-info: #2563eb;
+  --color-success: #059669;
   
-  --grid-line: rgba(15, 23, 42, 0.05);
+  --grid-line: rgba(0, 0, 0, 0.04);
 
   /* Glassmorphism & Cards */
-  --bg-glass-panel: rgba(235, 240, 245, 0.95);
-  --bg-glass-card: rgba(255, 255, 255, 0.94);
+  --bg-glass-panel: rgba(238, 238, 238, 0.95);
+  --bg-glass-card: rgba(245, 245, 245, 0.92);
   --blur-md: blur(12px);
   --blur-lg: blur(24px);
-  --shadow-clay: 0 4px 20px rgba(15, 23, 42, 0.08);
-  --shadow-clay-sm: 0 2px 8px rgba(15, 23, 42, 0.05);
+  --shadow-clay: 0 4px 16px rgba(0, 0, 0, 0.05);
+  --shadow-clay-sm: 0 2px 6px rgba(0, 0, 0, 0.03);
   --shadow-clay-inset: none;
-  --border-glass: #cbd5e1;
+  --border-glass: #d1d5db;
 }
 
 :root {
@@ -216,6 +216,14 @@ a:hover {
   background: rgba(255, 255, 255, 0.2)
 }
 
+.theme-light ::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.18);
+}
+
+.theme-light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.32);
+}
+
 /* More visible scrollbar for Thoughts Panel */
 .thoughts-scrollbar::-webkit-scrollbar {
   width: 6px;
@@ -225,6 +233,10 @@ a:hover {
   background: rgba(0, 0, 0, 0.2);
   border-radius: 4px;
   border-left: 1px solid var(--border-glass);
+}
+
+.theme-light .thoughts-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.05);
 }
 
 .thoughts-scrollbar::-webkit-scrollbar-thumb {
@@ -242,7 +254,12 @@ a:hover {
 
 ::selection {
   background: var(--color-primary);
-  color: #000
+  color: #ffffff;
+}
+
+.theme-light ::selection {
+  background: var(--color-primary-soft);
+  color: #ffffff;
 }
 
 /* BUTTONS */
@@ -709,6 +726,43 @@ select.input {
   font-size: 13px;
   font-weight: 600;
   line-height: 20px;
+}
+
+/* Light Theme Typography Refinement (Sleek, Clean, Not Over-Bold) */
+.theme-light h1,
+.theme-light h2,
+.theme-light h3,
+.theme-light h4,
+.theme-light h5,
+.theme-light h6 {
+  font-weight: 600;
+  color: var(--color-ink-strong);
+}
+
+.theme-light .display-xl,
+.theme-light .display-lg {
+  font-weight: 500;
+  color: var(--color-ink-strong);
+}
+
+.theme-light .display-md {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.theme-light .display-sm {
+  font-weight: 550;
+  color: var(--color-ink);
+}
+
+.theme-light .body-md-strong,
+.theme-light .body-sm-strong {
+  font-weight: 550;
+  color: var(--color-ink);
+}
+
+.theme-light .button-md {
+  font-weight: 550;
 }
 
 .label {
