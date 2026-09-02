@@ -149,17 +149,43 @@ class MCPManager:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(MCPManager, cls).__new__(cls)
-            cls._instance.exit_stack = AsyncExitStack()
+            cls._instance.exit_stacks = {}
             cls._instance.sessions = {}
             cls._instance.statuses = {}
         return cls._instance
-    
+
+    @property
+    def exit_stack(self):
+        """Backward compatibility for any callers expecting a single exit stack."""
+        if not hasattr(self, "_fallback_stack"):
+            self._fallback_stack = AsyncExitStack()
+        return self._fallback_stack
+
+    async def _close_stack(self, stack: AsyncExitStack, server_name: str = ""):
+        """Safely close an AsyncExitStack without crashing on AnyIO cross-task cancel scopes."""
+        try:
+            await stack.aclose()
+        except Exception as e:
+            # AnyIO raises RuntimeError when an AsyncExitStack that entered a TaskGroup
+            # is closed from a different asyncio task than the one that entered it.
+            # Child process and streams are already cleaned up in the generator's finally block.
+            logger.debug("[MCP] Exit stack cleanup note for %s: %s", server_name, e)
+        except BaseException as e:
+            if type(e).__name__ in ("BaseExceptionGroup", "ExceptionGroup"):
+                logger.debug("[MCP] Exit stack group note for %s: %s", server_name, e)
+            else:
+                raise
+
     async def shutdown(self):
         """Safely close all MCP server connections and resources."""
-        if self.exit_stack:
-            await self.exit_stack.aclose()
-            self.sessions.clear()
-            self.statuses.clear()
+        for key, stack in list(self.exit_stacks.items()):
+            server_name = key[2] if len(key) > 2 else "unknown"
+            await self._close_stack(stack, server_name)
+        self.exit_stacks.clear()
+        self.sessions.clear()
+        self.statuses.clear()
+        if hasattr(self, "_fallback_stack"):
+            await self._close_stack(self._fallback_stack, "fallback")
 
     async def disconnect_server(self, team_id: str = None, agent_id: str = None, server_name: str = None):
         """
@@ -179,6 +205,9 @@ class MCPManager:
         for key in keys_to_remove:
             self.statuses.pop(key, None)
             self.sessions.pop(key, None)
+            stack = self.exit_stacks.pop(key, None)
+            if stack:
+                await self._close_stack(stack, server_name)
 
         # Unregister tools from ToolRegistry
         prefix = f"{server_name}_"
@@ -227,6 +256,14 @@ class MCPManager:
         # Key matches the format expected by delete_mcp_server
         key = (str(team_id) if team_id else "None", str(agent_id) if agent_id else "global", server_name)
         
+        # Close existing stack if reconnecting
+        old_stack = self.exit_stacks.pop(key, None)
+        if old_stack:
+            await self._close_stack(old_stack, server_name)
+
+        server_stack = AsyncExitStack()
+        self.exit_stacks[key] = server_stack
+
         self.statuses[key] = {
             "server_name": server_name,
             "team_id": team_id,
@@ -243,17 +280,17 @@ class MCPManager:
         
             # Connect to stdio server using safe_stdio_client
             client_cm = safe_stdio_client(server_parameters) if safe_stdio_client else stdio_client(server_parameters)
-            stdio_transport = await self.exit_stack.enter_async_context(client_cm)
+            stdio_transport = await server_stack.enter_async_context(client_cm)
             read_stream, write_stream = stdio_transport[0], stdio_transport[1]
         
-            # Initialize session with 25s timeout
-            session = await self.exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await asyncio.wait_for(session.initialize(), timeout=25.0)
+            # Initialize session with 60s timeout to allow cold-boot package installation (e.g. uvx/npx)
+            session = await server_stack.enter_async_context(ClientSession(read_stream, write_stream))
+            await asyncio.wait_for(session.initialize(), timeout=60.0)
         
             self.sessions[key] = session
         
-            # List tools and register with 15s timeout
-            tools_response = await asyncio.wait_for(session.list_tools(), timeout=15.0)
+            # List tools and register with 30s timeout
+            tools_response = await asyncio.wait_for(session.list_tools(), timeout=30.0)
         
             registered_tools = []
             for tool in tools_response.tools:
@@ -341,9 +378,19 @@ class MCPManager:
             self.statuses[key]["tools"] = registered_tools
 
         except Exception as e:
+            err_msg = str(e).strip()
+            if not err_msg:
+                if isinstance(e, asyncio.TimeoutError):
+                    err_msg = "Connection timed out (initialization exceeded 60s limit)"
+                else:
+                    err_msg = f"{type(e).__name__} during startup"
             self.statuses[key]["status"] = "error"
-            self.statuses[key]["error"] = str(e)
-            print(f"  [ERROR] Failed to start MCP server {server_name}: {e}")
+            self.statuses[key]["error"] = err_msg
+            print(f"  [ERROR] Failed to start MCP server {server_name}: {err_msg}")
+            
+            failed_stack = self.exit_stacks.pop(key, None)
+            if failed_stack:
+                await self._close_stack(failed_stack, server_name)
             raise
 
 mcp_manager = MCPManager()
