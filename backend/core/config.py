@@ -86,6 +86,7 @@ _PROMPT_ALIASES = {
     "JUDGE_SYSTEM_PROMPT":      "system.judge",
     "STRICT_REASONING_GUIDELINES": "system.tool_use",
     "COORDINATOR_DIRECTIVES":   "system.coordinator_directives",
+    "ORCHESTRATOR_DIRECTIVES":  "system.coordinator_directives",
     "COMPACTION_SYSTEM_PROMPT": "system.compaction_system",
     "COMPACTION_USER_PROMPT":   "system.compaction_user",
     "KEYWORD_EXTRACTION_PROMPT":"system.keyword_extraction",

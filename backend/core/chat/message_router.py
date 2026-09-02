@@ -490,7 +490,7 @@ class MessageRouter:
                 team = result.scalar_one_or_none()
                 project_id = str(team.project_id) if team else ""
 
-        if snapshot.role == "Coordinator":
+        if snapshot.role.lower() in ("orchestrator", "coordinator") or "orchestrator" in snapshot.role.lower():
             from core.agent.coordinator import CoordinatorAgent
             react = CoordinatorAgent(
                 agent_id=agent_id,

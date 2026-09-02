@@ -59,3 +59,7 @@ class CoordinatorAgent(ReACTAgent):
         assembled = await super().assemble_system_prompt(db_session, current_task)
         self.system_prompt = original_system_prompt  # restore
         return assembled
+
+
+# Canonical role name alias
+OrchestratorAgent = CoordinatorAgent

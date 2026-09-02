@@ -48,3 +48,4 @@ class ToolExecutionContext:
     cancellation_token: CancellationToken
     emit_progress: Optional[Callable[[str], Awaitable[None]]] = None
     active_message_id: Optional[str] = None
+    agent_role: Optional[str] = None

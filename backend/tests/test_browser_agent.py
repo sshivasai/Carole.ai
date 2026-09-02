@@ -175,6 +175,7 @@ class TestBrowserPool:
             ctx.pages = []
             page = AsyncMock()
             page.is_closed.return_value = False
+            page.on = MagicMock()
             ctx.new_page = AsyncMock(return_value=page)
             return ctx
 

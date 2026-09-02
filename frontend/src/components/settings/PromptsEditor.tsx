@@ -46,7 +46,7 @@ const PROMPT_META: Record<string, { label: string; group: string; description: s
   "role.orchestrator": {
     group: "Agent Roles",
     label: "Orchestrator",
-    description: "Workflow coordinator — decomposes requests, delegates in parallel, and synthesizes results.",
+    description: "Workflow orchestrator — decomposes requests, delegates in parallel, and synthesizes results.",
   },
   "role.coder": {
     group: "Agent Roles",
@@ -117,7 +117,7 @@ const PROMPT_META: Record<string, { label: string; group: string; description: s
   },
   "system.coordinator_directives": {
     group: "Agent Behavior",
-    label: "Coordinator Directives",
+    label: "Orchestrator Directives",
     description: "Directives injected into team orchestrator agents for task delegation.",
   },
   "system.output_efficiency": {

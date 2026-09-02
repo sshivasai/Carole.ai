@@ -78,7 +78,7 @@ class CodeGraph:
                 try:
                     with open(graph_file, "r") as f:
                         data = json.load(f)
-                        g = nx.node_link_graph(data)
+                        g = nx.node_link_graph(data, edges="links")
                         invalid_nodes = [n for n in g.nodes if not is_tracked_code_file(str(n))]
                         if invalid_nodes:
                             g.remove_nodes_from(invalid_nodes)
@@ -95,7 +95,7 @@ class CodeGraph:
             graph_file.parent.mkdir(parents=True, exist_ok=True)
             g = await self.get_graph(project_id)
             with open(graph_file, "w") as f:
-                json.dump(nx.node_link_data(g), f)
+                json.dump(nx.node_link_data(g, edges="links"), f)
         except Exception as e:
             print(f"Error saving code graph for project {project_id}: {e}")
 
@@ -331,6 +331,98 @@ class CodeGraph:
         for chunks in self.file_chunks.get(pid, {}).values():
             all_c.extend(chunks)
         return all_c
+
+    async def generate_repo_map(
+        self,
+        project_id: Optional[str] = None,
+        max_tokens: int = 800,
+        focus_files: Optional[List[str]] = None
+    ) -> str:
+        """Generates a compact, PageRank-weighted structural repository map.
+
+        Inspired by Aider's Tree-Sitter + PageRank context budgeting:
+        - Extracts key classes, functions, and method signatures without function bodies.
+        - Ranks files and symbols by NetworkX PageRank centrality (most imported/referenced).
+        - Enforces a strict token budget (default 800 tokens) so agent context is never flooded.
+        """
+        pid = project_id or "default"
+        if pid not in self.file_chunks or not self.file_chunks[pid]:
+            await self.build_graph(project_id)
+
+        file_chunks_map = self.file_chunks.get(pid, {})
+        if not file_chunks_map:
+            return ""
+
+        graph = await self.get_graph(project_id)
+
+        # Calculate PageRank scores across the dependency graph
+        pagerank_scores: Dict[str, float] = {}
+        if len(graph) > 1 and graph.number_of_edges() > 0:
+            try:
+                personalization = None
+                if focus_files:
+                    norm_focus = [f.replace("\\", "/") for f in focus_files]
+                    matched_focus = [f for f in norm_focus if f in graph]
+                    if matched_focus:
+                        personalization = {n: (10.0 if n in matched_focus else 1.0) for n in graph.nodes()}
+                        total = sum(personalization.values())
+                        personalization = {k: v / total for k, v in personalization.items()}
+
+                pagerank_scores = nx.pagerank(graph, alpha=0.85, max_iter=100, personalization=personalization)
+            except Exception:
+                pagerank_scores = {node: 1.0 / len(graph) for node in graph.nodes()}
+        else:
+            pagerank_scores = {node: 1.0 for node in graph.nodes()}
+
+        # Sort files by PageRank score descending
+        ranked_files = sorted(
+            file_chunks_map.keys(),
+            key=lambda f: pagerank_scores.get(f, 0.0),
+            reverse=True
+        )
+
+        lines = ["<repo-map>"]
+        max_chars = max_tokens * 4
+        current_chars = len(lines[0])
+
+        for file_path in ranked_files:
+            chunks = file_chunks_map[file_path]
+            if not chunks:
+                continue
+
+            file_header = f"{file_path}:"
+            file_lines = [file_header]
+
+            for chunk in chunks:
+                sig = ""
+                code = chunk.code.strip()
+                if chunk.kind in ("class", "function", "method"):
+                    first_line = code.splitlines()[0].strip() if code else ""
+                    if first_line:
+                        indent = "  " if chunk.kind in ("class", "function") else "    "
+                        sig = f"{indent}{first_line}"
+                elif chunk.kind in ("interface", "type"):
+                    first_line = code.splitlines()[0].strip() if code else ""
+                    if first_line:
+                        sig = f"  {first_line}"
+
+                if sig:
+                    file_lines.append(sig)
+
+            # Only include file if it had definitions
+            if len(file_lines) > 1:
+                file_block = "\n".join(file_lines)
+                if current_chars + len(file_block) + 2 > max_chars:
+                    # Truncate to stay strictly under the token budget
+                    break
+                lines.append(file_block)
+                current_chars += len(file_block) + 2
+
+        lines.append("</repo-map>")
+        if len(lines) <= 2:
+            return ""
+
+        return "\n".join(lines)
 
     async def _listen_for_file_changes(self):
         queue = await event_bus.subscribe("system:file_changes")

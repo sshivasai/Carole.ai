@@ -6,7 +6,7 @@ Also provides a /api/seed endpoint for bootstrapping a demo environment.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Union, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from pydantic import BaseModel, Field
@@ -1608,7 +1608,7 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
         task.title = body.title
     if body.description is not None:
         task.description = body.description
-    task.updated_at = datetime.utcnow()
+    task.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
     from core.chat.message_router import message_router
@@ -1677,7 +1677,7 @@ async def delete_task(task_id: str, db: AsyncSession = Depends(get_db), user: di
     blocked_tasks = unblock_res.scalars().all()
     for b_task in blocked_tasks:
         b_task.blocked_by_task_id = None
-        b_task.updated_at = datetime.utcnow()
+        b_task.updated_at = datetime.now(timezone.utc)
         if b_task.assigned_agent_id:
             agent_res = await db.execute(select(Agent).where(Agent.id == b_task.assigned_agent_id))
             b_agent = agent_res.scalar_one_or_none()
@@ -1948,7 +1948,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
     agents_data = [
         {
             "name": "Archer",
-            "role": "Coordinator",
+            "role": "Orchestrator",
             "model": DEFAULT_FAST_MODEL,
             "personality": "casual",
             "tool_permissions": {
@@ -1956,6 +1956,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
                 "web_search": "safe", "web_fetch": "safe",
                 "spawn_agent": "safe", "send_message": "safe",
                 "create_task": "safe", "list_tasks": "safe", "update_task": "safe",
+                "write_file": "block", "edit_file": "block", "create_directory": "block",
             },
         },
         {

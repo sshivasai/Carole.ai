@@ -333,6 +333,15 @@ class ReACTAgent:
 
         capabilities_block += learnings_block
 
+        # 3.7 Structural Repo Map (PageRank Context Map - Aider Pattern)
+        try:
+            from core.knowledge.code_graph import code_graph
+            repo_map = await code_graph.generate_repo_map(project_id=self.project_id, max_tokens=800)
+            if repo_map:
+                capabilities_block += f"REPOSITORY SYMBOL MAP (Top Ranked Interfaces):\n{repo_map}\n\n"
+        except Exception as e:
+            self._log.debug("Could not generate repo map: %s", e)
+
         # 4. Dynamic Skills (Injected before tools so LLM reads skill context first)
         from core.skills.skill_manager import SkillManager
         active_skills = await SkillManager.get_team_skills(db_session, str(self.team_id), active_only=True)
@@ -1372,6 +1381,8 @@ class ReACTAgent:
                 false_refusal_msg = IntentEngine.detect_false_refusal(_curr_text)
                 unexecuted_promise_msg = IntentEngine.detect_unexecuted_promise(_curr_text, bool(looks_like_tool_call))
 
+                _is_orchestrator = (getattr(self, 'role', '') or '').lower() in ("orchestrator", "coordinator") or "orchestrator" in (getattr(self, 'role', '') or '').lower()
+
                 if (looks_like_tool_call or has_browser_refusal or false_refusal_msg or is_action_request_without_tool or is_plan_without_action or is_code_in_chat or has_thought_without_action or unexecuted_promise_msg) and loop_count < max_loops - 1:
                     if false_refusal_msg:
                         correction = false_refusal_msg
@@ -1387,21 +1398,41 @@ class ReACTAgent:
                             "Execute the browser action NOW.[/OBSERVATION]"
                         )
                     elif is_action_request_without_tool and not (looks_like_tool_call or is_code_in_chat or is_plan_without_action):
-                        correction = (
-                            "[OBSERVATION] Action Required — No Tool Call Executed.\n"
-                            f"The user gave an actionable task: \"{initial_prompt[:120]}\".\n"
-                            "You responded conversationally without executing any tool. You MUST execute the required tool immediately.\n"
-                            "Use the required format:\n"
-                            "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                            "Execute your tool call NOW.[/OBSERVATION]"
-                        )
+                        if _is_orchestrator:
+                            correction = (
+                                "[OBSERVATION] Action Required — No Delegation Executed.\n"
+                                f"The user gave an actionable project request: \"{initial_prompt[:120]}\".\n"
+                                "As Orchestrator, you must break down the request and delegate to your specialists or create Kanban task items.\n"
+                                "You must NOT write code or project files yourself.\n"
+                                "Use the required format:\n"
+                                "  [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION]\n"
+                                "  [ACTION]create_task({\"title\": \"...\", \"description\": \"...\"})[/ACTION]\n"
+                                "Execute your delegation tool call NOW.[/OBSERVATION]"
+                            )
+                        else:
+                            correction = (
+                                "[OBSERVATION] Action Required — No Tool Call Executed.\n"
+                                f"The user gave an actionable task: \"{initial_prompt[:120]}\".\n"
+                                "You responded conversationally without executing any tool. You MUST execute the required tool immediately.\n"
+                                "Use the required format:\n"
+                                "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                                "Execute your tool call NOW.[/OBSERVATION]"
+                            )
                     elif has_thought_without_action:
-                        correction = (
-                            "[OBSERVATION] You have completed your reasoning. Now execute your planned tool action immediately using the required format:\n"
-                            "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                            "For example: [ACTION]write_file({\"relative_path\": \"hello_subagent.txt\", \"content\": \"Hello from subagent!\"})[/ACTION]\n"
-                            "Execute your tool call NOW.[/OBSERVATION]"
-                        )
+                        if _is_orchestrator:
+                            correction = (
+                                "[OBSERVATION] You have completed your reasoning. Now execute your orchestration action immediately using the required format:\n"
+                                "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                                "For example: [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION] or [ACTION]create_task({\"title\": \"...\"})[/ACTION]\n"
+                                "Execute your delegation tool call NOW.[/OBSERVATION]"
+                            )
+                        else:
+                            correction = (
+                                "[OBSERVATION] You have completed your reasoning. Now execute your planned tool action immediately using the required format:\n"
+                                "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                                "For example: [ACTION]write_file({\"relative_path\": \"hello_subagent.txt\", \"content\": \"Hello from subagent!\"})[/ACTION]\n"
+                                "Execute your tool call NOW.[/OBSERVATION]"
+                            )
                     elif is_code_in_chat and not looks_like_tool_call:
                         correction = (
                             "[OBSERVATION] CRITICAL ERROR — Code in Chat Detected.\n"
@@ -1411,13 +1442,23 @@ class ReACTAgent:
                             "Execute write_file NOW with the code you just showed in chat.[/OBSERVATION]"
                         )
                     elif is_plan_without_action and not looks_like_tool_call:
-                        correction = (
-                            "[OBSERVATION] CRITICAL ERROR — Plan Without Execution Detected.\n"
-                            "You described a plan but did not execute any of it. A plan is NOT progress.\n"
-                            "You MUST immediately execute your first step using a tool call. Exact format:\n"
-                            "  [ACTION]write_file({\"path\": \"index.html\", \"content\": \"<!DOCTYPE html>...\"})[/ACTION]\n"
-                            "Start executing your first planned step RIGHT NOW. Do not stop until ALL steps are done.[/OBSERVATION]"
-                        )
+                        if _is_orchestrator:
+                            correction = (
+                                "[OBSERVATION] You are the ORCHESTRATOR. You described a plan but have not delegated work.\n"
+                                "An Orchestrator MUST NOT write source code or create project files directly.\n"
+                                "You MUST immediately delegate tasks to your teammates or register work on the Kanban board:\n"
+                                "  [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION]\n"
+                                "  [ACTION]create_task({\"title\": \"...\", \"description\": \"...\"})[/ACTION]\n"
+                                "Execute your delegation tool call NOW.[/OBSERVATION]"
+                            )
+                        else:
+                            correction = (
+                                "[OBSERVATION] CRITICAL ERROR — Plan Without Execution Detected.\n"
+                                "You described a plan but did not execute any of it. A plan is NOT progress.\n"
+                                "You MUST immediately execute your first step using a tool call. Exact format:\n"
+                                "  [ACTION]write_file({\"path\": \"index.html\", \"content\": \"<!DOCTYPE html>...\"})[/ACTION]\n"
+                                "Start executing your first planned step RIGHT NOW. Do not stop until ALL steps are done.[/OBSERVATION]"
+                            )
                     elif unexecuted_promise_msg:
                         correction = unexecuted_promise_msg
                     elif any(sig in _lower for sig in ["let me", "i'll", "i will", "let's", "working on it", "just a moment", "one moment"]):
@@ -2362,7 +2403,8 @@ class ReACTAgent:
             team_id=self.team_id,
             cancellation_token=token or CancellationToken(),
             emit_progress=emit_progress,
-            active_message_id=self.active_message_id
+            active_message_id=self.active_message_id,
+            agent_role=self.role,
         )
         
         # Build permission context

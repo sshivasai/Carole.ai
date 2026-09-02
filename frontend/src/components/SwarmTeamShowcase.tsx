@@ -31,7 +31,7 @@ const TEAM_MEMBERS: TeamMember[] = [
   {
     id: "archer",
     name: "Archer",
-    role: "Lead Coordinator & Architect",
+    role: "Lead Orchestrator & Architect",
     preset: "archer",
     model: "anthropic/claude-3-7-sonnet",
     skills: ["Workflow Planning", "Subagent Delegation", "Git Integration", "Task Breakdown"],

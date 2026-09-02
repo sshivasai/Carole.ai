@@ -38,6 +38,120 @@ def _normalize_quotes(text: str) -> str:
     return text
 
 
+def _validate_code_syntax(path_str: str, content: str) -> Optional[str]:
+    """Validates code syntax before writing or editing files on disk.
+
+    Inspired by SWE-agent's Agent-Computer Interface (ACI) proactive error mitigation:
+    catches syntax errors at the tool boundary before they touch disk or break test suites.
+    Returns an error message string if invalid, or None if valid/unsupported.
+    """
+    if not content or not content.strip():
+        return None
+
+    ext = Path(path_str).suffix.lower()
+
+    # 1. Python Syntax Validation via native ast.parse
+    if ext == ".py":
+        try:
+            import ast
+            ast.parse(content, filename=path_str)
+        except SyntaxError as e:
+            line_snippet = ""
+            if e.text:
+                line_snippet = f"\n  Line {e.lineno}: {e.text.rstrip()}"
+                if e.offset:
+                    line_snippet += f"\n          {' ' * (e.offset - 1)}^"
+            return (
+                f"✗ Syntax Error: Your edit introduced invalid Python syntax on line {e.lineno}: {e.msg}{line_snippet}\n"
+                f"File '{path_str}' was NOT written to disk. Please correct the syntax error and retry."
+            )
+        except Exception:
+            pass
+
+    # 2. JSON Syntax Validation
+    elif ext == ".json":
+        try:
+            import json
+            json.loads(content)
+        except json.JSONDecodeError as e:
+            return (
+                f"✗ JSON Syntax Error in '{path_str}' at line {e.lineno}, column {e.colno}: {e.msg}\n"
+                f"File was NOT written to disk. Please fix the JSON formatting and retry."
+            )
+
+    # 3. JavaScript / TypeScript Basic Syntax Checks (delimiter balancer)
+    elif ext in (".js", ".jsx", ".ts", ".tsx"):
+        stack = []
+        pairs = {')': '(', ']': '[', '}': '{'}
+        in_string = None
+        escape = False
+        in_line_comment = False
+        in_block_comment = False
+
+        lines = content.splitlines()
+        for lineno, line in enumerate(lines, 1):
+            i = 0
+            while i < len(line):
+                ch = line[i]
+                if in_line_comment:
+                    break
+                if in_block_comment:
+                    if line[i:i+2] == '*/':
+                        in_block_comment = False
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == '\\':
+                        escape = True
+                    elif ch == in_string:
+                        in_string = None
+                    i += 1
+                    continue
+
+                if line[i:i+2] == '//':
+                    break
+                if line[i:i+2] == '/*':
+                    in_block_comment = True
+                    i += 2
+                    continue
+
+                if ch in ("'", '"', '`'):
+                    in_string = ch
+                    i += 1
+                    continue
+
+                if ch in '([{':
+                    stack.append((ch, lineno))
+                elif ch in ')]}':
+                    expected = pairs[ch]
+                    if not stack:
+                        return (
+                            f"✗ Syntax Error in '{path_str}' on line {lineno}: unexpected closing bracket '{ch}' without matching '{expected}'.\n"
+                            f"File was NOT written to disk. Please fix the delimiter mismatch and retry."
+                        )
+                    open_ch, open_line = stack.pop()
+                    if open_ch != expected:
+                        return (
+                            f"✗ Syntax Error in '{path_str}' on line {lineno}: mismatched bracket '{ch}', expected closing for '{open_ch}' opened on line {open_line}.\n"
+                            f"File was NOT written to disk. Please fix the delimiter mismatch and retry."
+                        )
+                i += 1
+            in_line_comment = False
+
+        if stack and len(lines) > 5:
+            open_ch, open_line = stack[-1]
+            return (
+                f"✗ Syntax Error in '{path_str}': unclosed '{open_ch}' opened on line {open_line}.\n"
+                f"File was NOT written to disk. Please complete all open blocks and retry."
+            )
+
+    return None
+
+
 class FileTools:
     def __init__(self, workspace_root: str = None):
         if not workspace_root:
@@ -317,6 +431,11 @@ class FileTools:
                             "If you want to modify this file, you must write the actual code content, not the unchanged reference message."
                 )
 
+            # Proactive AST Syntax Gate (SWE-agent ACI pattern)
+            syntax_err = _validate_code_syntax(relative_path, content)
+            if syntax_err:
+                return FileChangeResult(message=syntax_err)
+
             def _sync_write():
                 before = ""
                 action = "create"
@@ -408,6 +527,12 @@ class FileTools:
                                 f"Provide a larger block with 2-4 surrounding lines to uniquely identify the instance."
                     )
                 after = before.replace(target, replacement_content, 1)
+
+                # Proactive AST Syntax Gate (SWE-agent ACI pattern)
+                syntax_err = _validate_code_syntax(relative_path, after)
+                if syntax_err:
+                    return FileChangeResult(message=syntax_err)
+
                 with open(safe_path, "w", encoding="utf-8") as f:
                     f.write(after)
                 diff = self._generate_diff(relative_path, before, after)
@@ -453,10 +578,16 @@ class FileTools:
                 if safe_path.is_file():
                     with open(safe_path, "r", encoding="utf-8") as f:
                         before = f.read()
+                after = before + content
+
+                # Proactive AST Syntax Gate (SWE-agent ACI pattern)
+                syntax_err = _validate_code_syntax(relative_path, after)
+                if syntax_err:
+                    return FileChangeResult(message=syntax_err)
+
                 safe_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(safe_path, "a", encoding="utf-8") as f:
                     f.write(content)
-                after = before + content
                 diff = self._generate_diff(relative_path, before, after)
                 self._read_state.setdefault(scope, {})[norm_path] = safe_path.stat().st_mtime
                 return FileChangeResult(

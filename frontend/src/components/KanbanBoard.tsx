@@ -398,7 +398,7 @@ function KanbanSyncSchedule({ teamId, agents }: { teamId: string, agents: AgentC
           boxShadow: isEnabled ? "0 0 10px rgba(16, 185, 129, 0.12)" : "var(--shadow-clay-sm, 0 1px 3px rgba(0,0,0,0.1))",
           transition: "all 0.15s ease",
         }}
-        title="Configure automated background coordinator check on task board"
+        title="Configure automated background orchestrator check on task board"
       >
         {saving ? (
           <Loader2 size={13} className="animate-spin text-mute" />

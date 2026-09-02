@@ -79,10 +79,20 @@ class LanceDBClient:
     # Private sync helpers (run inside to_thread)
     # ------------------------------------------------------------------
 
+    def _has_table(self, db) -> bool:
+        try:
+            if hasattr(db, "list_tables"):
+                res = db.list_tables()
+                tables = getattr(res, "tables", res)
+                return self.table_name in tables
+            return self.table_name in db.table_names()
+        except Exception:
+            return False
+
     def _sync_insert(self, data: List[dict]) -> None:
         try:
             db = self._get_db()
-            if self.table_name in db.table_names():
+            if self._has_table(db):
                 table = db.open_table(self.table_name)
                 table.add(data)
             else:
@@ -100,7 +110,7 @@ class LanceDBClient:
     ) -> List[Dict[str, Any]]:
         try:
             db = self._get_db()
-            if self.table_name not in db.table_names():
+            if not self._has_table(db):
                 return []
 
             table = db.open_table(self.table_name)
@@ -140,7 +150,7 @@ class LanceDBClient:
             if not safe_id:
                 return False
             db = self._get_db()
-            if self.table_name not in db.table_names():
+            if not self._has_table(db):
                 return False
             table = db.open_table(self.table_name)
             table.delete(f"id = '{safe_id}'")
@@ -156,7 +166,7 @@ class LanceDBClient:
     def _sync_update_project_id(self, learning_id: str, new_project_id: Optional[str]) -> bool:
         try:
             db = self._get_db()
-            if self.table_name not in db.table_names():
+            if not self._has_table(db):
                 return False
             table = db.open_table(self.table_name)
             

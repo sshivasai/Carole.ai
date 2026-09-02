@@ -436,12 +436,15 @@ def register_builtin_tools():
                  "safe", _wrap_send_message),
 
         # ---- Tasks ----
-        ToolSpec("create_task", "Create a task on the team board. NOTE: This ONLY adds the task to the UI board. To actually make an agent start working on it, you MUST follow up by using the `spawn_agent` tool or `send_message` tool.", "task",
+        ToolSpec("create_task", "Create a task on the team board with structured specifications. NOTE: This adds the task to the UI board. To execute immediately, follow up with `spawn_agent`.", "task",
                  {"title": {"type": "string", "required": True},
                   "description": {"type": "string", "required": False},
                   "priority": {"type": "string", "required": False},
                   "assignee": {"type": "string", "required": False},
-                  "blocked_by_task_id": {"type": "string", "required": False, "description": "ID of a task that must be completed before this task can start"}},
+                  "blocked_by_task_id": {"type": "string", "required": False, "description": "ID of a task that must be completed before this task can start"},
+                  "target_files": {"type": "array", "required": False, "description": "Optional list of files/directories scoped to this task"},
+                  "contract_spec": {"type": "string", "required": False, "description": "Optional shared interface, types, or API models to implement"},
+                  "verification_command": {"type": "string", "required": False, "description": "Optional command to verify completion (e.g. pytest tests/test_planner.py)"}},
                  "safe", _wrap_create_task),
         ToolSpec("list_tasks", "List tasks on the team board", "task",
                  {"status": {"type": "string", "required": False}},
@@ -1014,6 +1017,23 @@ class ToolExecutor:
         if not spec:
             return f"Error: Tool '{tool_name}' is not registered in the system."
 
+        # ── Orchestrator Role Gating (Zoo-Code Mode Pattern) ──
+        # Orchestrators/Coordinators are strategic managers and must NOT write or mutate project files directly.
+        agent_role = (
+            (context.agent_role if context and getattr(context, "agent_role", None) else None)
+            or (arguments.get("_agent_role") if arguments else None)
+            or ""
+        ).lower()
+        if any(r in agent_role for r in ["orchestrator", "coordinator"]) or agent_name.strip().lower() == "archer":
+            if tool_name in {"write_file", "edit_file", "create_directory", "delete_file"}:
+                logger.info("🛑 [Executor] Blocked Orchestrator '%s' from calling file mutation tool '%s'.", agent_name, tool_name)
+                return (
+                    f"✗ Execution Denied: As an Orchestrator, you must NOT write or modify project files directly.\n"
+                    f"Please delegate file operations and implementation to a specialist coder (e.g. Nova) using:\n"
+                    f'  [ACTION]spawn_agent({{"agent_name": "Nova", "task": "..."}})[/ACTION]\n'
+                    f"Or register the work on the Kanban board using [ACTION]create_task(...)[/ACTION]."
+                )
+
         # ── Pre-validation of arguments ──
         # Check for placeholder Ellipsis or empty/placeholder values
         if arguments:
@@ -1037,7 +1057,6 @@ class ToolExecutor:
                         usage_parts = [f'{k}="..."' if v.get("required", False) else f'[{k}="..."]' for k, v in spec.parameters.items()]
                         usage_str = f"{tool_name}({', '.join(usage_parts)})"
                         return f"Error: Missing required parameter '{param_name}'. Usage: {usage_str}"
-
 
         # ── Granular runtime context (always_deny / always_allow) takes top priority ──
         if permission_context:
@@ -2250,6 +2269,9 @@ async def _wrap_create_task(args: Dict[str, Any], team_id: str) -> str:
     priority = args.get("priority", "medium")
     assignee = args.get("assignee")
     blocked_by_task_id = args.get("blocked_by_task_id")
+    target_files = args.get("target_files")
+    contract_spec = args.get("contract_spec")
+    verification_command = args.get("verification_command")
     agent_name = args.get("_agent_name")
     if not title:
         return "Error: Missing 'title'."
@@ -2260,7 +2282,10 @@ async def _wrap_create_task(args: Dict[str, Any], team_id: str) -> str:
         priority=priority,
         assignee_name=assignee,
         blocked_by_task_id=blocked_by_task_id,
-        creator_agent_name=agent_name
+        creator_agent_name=agent_name,
+        target_files=target_files,
+        contract_spec=contract_spec,
+        verification_command=verification_command
     )
 
 async def _wrap_list_tasks(args: Dict[str, Any], team_id: str) -> str:

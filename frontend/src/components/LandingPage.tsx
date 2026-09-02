@@ -465,7 +465,7 @@ npm run dev
                 <span className={styles.heroAccent}>Watch the swarm execute.</span>
               </h2>
               <p className={styles.sectionDesc} style={{ margin: "0 auto" }}>
-                Send an engineering goal in the team chat. Watch the lead coordinator decompose tasks, dispatch specialist subagents, and push verified code in real-time.
+                Send an engineering goal in the team chat. Watch the lead orchestrator decompose tasks, dispatch specialist subagents, and push verified code in real-time.
               </p>
             </div>
 
@@ -695,7 +695,7 @@ npm run dev
                     </div>
                   </div>
                   <p className={styles.bentoText}>
-                    Lead coordinators spawn temporary specialists for isolated tasks with strict concurrency boundaries to prevent recursion loops.
+                    Lead orchestrators spawn temporary specialists for isolated tasks with strict concurrency boundaries to prevent recursion loops.
                   </p>
                 </div>
                 <div className={styles.bentoVisual}>

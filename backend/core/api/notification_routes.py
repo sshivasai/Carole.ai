@@ -10,7 +10,7 @@ Endpoints:
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
@@ -32,6 +32,35 @@ def _fmt(n: Notification) -> dict:
         "type": n.type,
         "is_read": n.is_read,
         "created_at": n.created_at.isoformat() if n.created_at else None,
+    }
+
+
+# ─── List Notifications ───────────────────────────────────────────────
+@router.get("")
+@router.get("/")
+async def list_notifications(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth),
+):
+    user_id = user["sub"]
+    result = await db.execute(
+        select(Notification)
+        .where(Notification.user_id == user_id)
+        .order_by(Notification.created_at.desc())
+        .limit(limit)
+    )
+    notifications = result.scalars().all()
+
+    unread_res = await db.execute(
+        select(func.count(Notification.id))
+        .where(Notification.user_id == user_id, Notification.is_read == False)
+    )
+    unread_count = unread_res.scalar_one() or 0
+
+    return {
+        "notifications": [_fmt(n) for n in notifications],
+        "unread_count": unread_count,
     }
 
 

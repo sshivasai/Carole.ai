@@ -160,6 +160,7 @@ async def test_task_workflow_and_comment_lifecycle(client: AsyncClient):
     
     from unittest.mock import AsyncMock
     with patch("core.chat.message_router.message_router._trigger_agent", new_callable=AsyncMock), \
+         patch("core.chat.message_router.message_router._enqueue_agent", new_callable=AsyncMock), \
          patch("core.chat.message_router.message_router.route_message", new_callable=AsyncMock), \
          patch("core.chat.message_router.async_session", TestSession):
         a_res = await client.post("/api/agents", json={

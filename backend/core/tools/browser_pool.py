@@ -50,9 +50,14 @@ async def _ensure_browser():
             
             if infrastructure == "browserbase" and keys.get("browserbase"):
                 key = keys["browserbase"]
-                _browser = await _playwright.chromium.connect_over_cdp(f"wss://connect.browserbase.com?apiKey={key}")
-                logger.info("🌐 [BrowserPool] Connected to Browserbase CDP.")
-            else:
+                try:
+                    _browser = await _playwright.chromium.connect_over_cdp(f"wss://connect.browserbase.com?apiKey={key}")
+                    logger.info("🌐 [BrowserPool] Connected to Browserbase CDP.")
+                except Exception as bb_err:
+                    logger.warning("⚠️ [BrowserPool] Browserbase connection failed (%s), falling back to local Chromium.", bb_err)
+                    _browser = None
+
+            if _browser is None:
                 proxy_settings = None
                 if (proxy_provider == "scraperapi" or infrastructure == "scraperapi") and keys.get("scraperapi"):
                     proxy_settings = {"server": f"http://scraperapi:{keys['scraperapi']}@proxy-server.scraperapi.com:8001"}

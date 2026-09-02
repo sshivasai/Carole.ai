@@ -8,7 +8,8 @@ real-time Kanban-style project tracking visible in both the chat and the UI.
 
 import uuid
 import logging
-from datetime import datetime
+from typing import Optional, List
+from datetime import datetime, timezone
 from sqlalchemy import select
 
 from core.memory.database import async_session
@@ -68,9 +69,26 @@ class TaskTools:
     async def create_task(
         self, team_id: str, title: str, description: str = "",
         priority: str = "medium", assignee_name: str = None,
-        blocked_by_task_id: str = None, creator_agent_name: str = None
+        blocked_by_task_id: str = None, creator_agent_name: str = None,
+        target_files: Optional[List[str]] = None,
+        contract_spec: Optional[str] = None,
+        verification_command: Optional[str] = None
     ) -> str:
         """Creates a task and optionally assigns it to an agent by name."""
+        # Structured Task Specification (MetaGPT SOP Pattern)
+        spec_parts = []
+        if target_files:
+            files_str = ", ".join([f"`{f}`" for f in target_files])
+            spec_parts.append(f"**Target Files**: {files_str}")
+        if contract_spec:
+            spec_parts.append(f"**Contract / Interfaces**: {contract_spec}")
+        if verification_command:
+            spec_parts.append(f"**Verification**: `{verification_command}`")
+
+        if spec_parts:
+            spec_block = "\n\n### Task Specification:\n" + "\n".join(f"- {p}" for p in spec_parts)
+            description = ((description or "").strip() + spec_block).strip()
+
         async with async_session() as db:
             assigned_agent_id = None
             assignee_agent = None
@@ -193,7 +211,7 @@ class TaskTools:
                     task.blocked_by_task_id = uuid.UUID(blocked_by_task_id) if blocked_by_task_id else None
                 except (ValueError, AttributeError):
                     return f"Error: Invalid blocked_by_task_id format."
-            task.updated_at = datetime.utcnow()
+            task.updated_at = datetime.now(timezone.utc)
 
             # Handle assignee change
             new_assignee_agent = None
@@ -266,25 +284,61 @@ class TaskTools:
                 unblock_stmt = select(Task).where(Task.blocked_by_task_id == task.id)
                 unblock_res = await db.execute(unblock_stmt)
                 blocked_tasks = unblock_res.scalars().all()
+                unblock_notifications = []
                 for b_task in blocked_tasks:
                     b_task.blocked_by_task_id = None
-                    b_task.updated_at = datetime.utcnow()
+                    b_task.updated_at = datetime.now(timezone.utc)
                     
                     if b_task.assigned_agent_id:
                         agent_res = await db.execute(select(Agent).where(Agent.id == b_task.assigned_agent_id))
                         b_agent = agent_res.scalar_one_or_none()
                         if b_agent:
                             unblock_text = f"[TASK_UNBLOCKED] @{b_agent.name} the task you were waiting on ('{task.title}') is done. You are now unblocked and can begin work on your task: '{b_task.title}'."
-                            await message_router.route_message(
-                                text=unblock_text,
-                                sender_id="system",
-                                team_id=team_id_str,
-                                sender_name="System",
-                                attachments=[]
-                            )
-                            await message_router._enqueue_agent(b_agent, unblock_text, db)
-                if blocked_tasks:
-                    await db.commit()
+                            unblock_notifications.append((b_agent, unblock_text))
+
+                orchestrator_notification = None
+                if not blocked_tasks:
+                    # Notify Orchestrator that task completed and no downstream tasks are waiting
+                    from sqlalchemy import func
+                    coord_stmt = select(Agent).where(
+                        Agent.team_id == task.team_id,
+                        func.lower(Agent.role).in_(["orchestrator", "coordinator"])
+                    ).limit(1)
+                    coord_res = await db.execute(coord_stmt)
+                    orchestrator = coord_res.scalar_one_or_none()
+                    if orchestrator and (not agent_name or orchestrator.name.lower() != agent_name.lower()):
+                        done_text = (
+                            f"[TASK_DONE] @{orchestrator.name} task '{task.title}' was marked 'done'"
+                            f"{f' by {agent_name}' if agent_name else ''}. "
+                            f"All blocking dependencies are resolved. Please review deliverables, "
+                            f"coordinate QA/testing if needed, or deliver the final synthesis to the user."
+                        )
+                        orchestrator_notification = (orchestrator, done_text)
+
+                # Commit all task updates first so SQLite write locks are released before message dispatch
+                await db.commit()
+
+                # Dispatch notifications after commit
+                for b_agent, unblock_text in unblock_notifications:
+                    await message_router.route_message(
+                        text=unblock_text,
+                        sender_id="system",
+                        team_id=team_id_str,
+                        sender_name="System",
+                        attachments=[]
+                    )
+                    await message_router._enqueue_agent(b_agent, unblock_text, db)
+
+                if orchestrator_notification:
+                    orch, done_text = orchestrator_notification
+                    await message_router.route_message(
+                        text=done_text,
+                        sender_id="system",
+                        team_id=team_id_str,
+                        sender_name="System",
+                        attachments=[]
+                    )
+                    await message_router._enqueue_agent(orch, done_text, db)
 
             summary = f"✓ Task '{task.title}' updated: {old_status} → {task.status}"
             if new_assignee_agent:

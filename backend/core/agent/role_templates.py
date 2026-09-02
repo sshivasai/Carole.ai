@@ -10,8 +10,8 @@ from core.config import DEFAULT_FAST_MODEL, DEFAULT_SMART_MODEL, DEFAULT_CODER_M
 
 ROLE_TEMPLATES = [
     {
-        "role": "Coordinator",
-        "display_name": "Team Coordinator",
+        "role": "Orchestrator",
+        "display_name": "Team Orchestrator",
         "description": "Orchestrates the team, delegates tasks, and synthesizes results from workers.",
         "suggested_names": ["Archer", "Atlas", "Captain"],
         "personality": "casual",
@@ -29,11 +29,15 @@ ROLE_TEMPLATES = [
         "recommended_model": DEFAULT_SMART_MODEL,
         "recommended_permissions": {
             "read_file": "safe", "list_directory": "safe",
+            "grep_search": "safe", "glob_search": "safe",
             "web_search": "safe", "web_fetch": "safe",
             "spawn_agent": "safe", "send_message": "safe",
             "hire_subagent": "judge",
             "create_task": "safe", "list_tasks": "safe", "update_task": "safe",
             "comment_on_task": "safe",
+            "write_file": "block", "edit_file": "block",
+            "create_directory": "block", "delete_file": "block",
+            "execute_command": "block",
         },
     },
     {

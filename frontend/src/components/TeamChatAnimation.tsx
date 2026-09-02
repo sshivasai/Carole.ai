@@ -757,7 +757,7 @@ export default function TeamChatAnimation() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
                             <span style={{ fontSize: 12.5, fontWeight: 700, color: "#ffffff" }}>Archer</span>
-                            <span style={{ fontSize: 10, color: "var(--color-body, #94a3b8)" }}>Lead Coordinator</span>
+                            <span style={{ fontSize: 10, color: "var(--color-body, #94a3b8)" }}>Lead Orchestrator</span>
                             <span style={{ fontSize: 10, color: "#64748b", marginLeft: "auto" }}>12:46 AM</span>
                           </div>
                           <div style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(167, 139, 250, 0.08)", borderLeft: "2px solid #a78bfa", fontSize: 11.5, color: "#cbd5e1", marginBottom: 6 }}>
