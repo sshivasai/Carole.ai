@@ -108,6 +108,71 @@ const FAQS = [
   },
 ];
 
+const TECH_STACK_ITEMS = [
+  // Core Runtimes & Frameworks
+  { name: "Python", logo: "/logos/python.svg" },
+  { name: "Next.js", logo: "/logos/nextjs.svg", invertInDark: true },
+  { name: "TypeScript", logo: "/logos/typescript.svg" },
+  { name: "React", logo: "/logos/react.svg" },
+  { name: "FastAPI", logo: "/logos/fastapi.svg" },
+
+  // Autonomous Browser Agents & Web Automation
+  { name: "Browserbase", logo: "/logos/browserbase.svg" },
+  { name: "Browser-Use", logo: "/logos/browseruse.svg" },
+  { name: "Playwright", logo: "/logos/playwright.svg" },
+  { name: "Puppeteer", logo: "/logos/puppeteer.svg" },
+
+  // AI Frontier Models & Inference
+  { name: "Anthropic", logo: "/logos/anthropic.svg" },
+  { name: "OpenAI", logo: "/logos/openai.svg" },
+  { name: "Google Gemini", logo: "/logos/googlegemini.svg" },
+  { name: "DeepSeek", logo: "/logos/deepseek.svg" },
+  { name: "Groq", logo: "/logos/groq.svg" },
+  { name: "Mistral AI", logo: "/logos/mistral.svg" },
+  { name: "Ollama", logo: "/logos/ollama.svg" },
+
+  // Storage & Vector Databases
+  { name: "LanceDB", logo: "/logos/lancedb.png" },
+  { name: "SQLite", logo: "/logos/sqlite.svg" },
+  { name: "PostgreSQL", logo: "/logos/postgres.svg" },
+  { name: "Redis", logo: "/logos/redis.svg" },
+  { name: "Supabase", logo: "/logos/supabase.svg" },
+  { name: "MongoDB", logo: "/logos/mongodb.svg" },
+
+  // Code Intelligence & Compilers
+  { name: "Tree-sitter", logo: "/logos/treesitter.png" },
+  { name: "FlashRank", logo: "/logos/flashrank.png" },
+  { name: "Model2Vec", logo: "/logos/model2vec.svg" },
+
+  // Observability & Security
+  { name: "Arize Phoenix", logo: "/logos/phoenix.png" },
+  { name: "Sentry", logo: "/logos/sentry.svg" },
+  { name: "JWT", logo: "/logos/jwt.svg" },
+
+  // Protocols & Infrastructure
+  { name: "MCP Protocol", logo: "/logos/mcp.png" },
+  { name: "WebSockets", logo: "/logos/websocket.svg" },
+  { name: "Docker", logo: "/logos/docker.svg" },
+  { name: "AWS S3", logo: "/logos/aws.svg" },
+
+  // Preconfigured Integrations
+  { name: "GitHub", logo: "/logos/github.svg", invertInDark: true },
+  { name: "GitLab", logo: "/logos/gitlab.svg" },
+  { name: "Linear", logo: "/logos/linear.svg" },
+  { name: "Notion", logo: "/logos/notion.svg", invertInDark: true },
+  { name: "Slack", logo: "/logos/slack.svg" },
+  { name: "Discord", logo: "/logos/discord.svg" },
+  { name: "Jira", logo: "/logos/jira.svg" },
+  { name: "Figma", logo: "/logos/figma.svg" },
+  { name: "Stripe", logo: "/logos/stripe.svg" },
+  { name: "HubSpot", logo: "/logos/hubspot.svg" },
+  { name: "Airtable", logo: "/logos/airtable.svg" },
+  { name: "Brave Search", logo: "/logos/brave-search.svg" },
+  { name: "Perplexity AI", logo: "/logos/perplexity.svg", invertInDark: true },
+];
+
+
+
 export default function LandingPage({
   onLaunchApp,
   onSignIn,
@@ -423,9 +488,8 @@ npm run dev
             <span className={styles.cliPrompt}>$</span>
             <span>pip install carole-ai &amp;&amp; carole run</span>
             <span
-              className={`${styles.cliCopyBtn} ${
-                copiedCli ? styles.cliCopyBtnCopied : ""
-              }`}
+              className={`${styles.cliCopyBtn} ${copiedCli ? styles.cliCopyBtnCopied : ""
+                }`}
             >
               {copiedCli ? (
                 <>
@@ -454,22 +518,27 @@ npm run dev
         </ScrollExpandWrapper>
       </section>
 
-      {/* Section 2: Live Synced Team Execution Simulator */}
-      <section id="simulator" className={`${styles.section} ${styles.sectionAlt}`} style={{ paddingTop: 64, paddingBottom: 64 }}>
+      {/* Section 2: Live Synced Team Execution Simulator (Split Layout) */}
+      <section id="simulator" className={`${styles.section} ${styles.sectionAlt}`}>
         <ScrollExpandWrapper>
           <div className={styles.container}>
-            <div style={{ textAlign: "center", marginBottom: 32 }}>
-              <div className={styles.eyebrow}>Live Execution Simulator</div>
-              <h2 className={styles.sectionTitle}>
-                Tag an agent.<br />
-                <span className={styles.heroAccent}>Watch the swarm execute.</span>
-              </h2>
-              <p className={styles.sectionDesc} style={{ margin: "0 auto" }}>
-                Send an engineering goal in the team chat. Watch the lead orchestrator decompose tasks, dispatch specialist subagents, and push verified code in real-time.
-              </p>
-            </div>
+            <div className={styles.simulatorSplitSection}>
+              <div className={styles.simulatorLeftCol}>
+                <h2 className={styles.sectionTitle} style={{ textAlign: "left" }}>
+                  Tag an @agent...<br />
+                  <span className={styles.heroAccent}>Watch the swarm execute.</span>
+                </h2>
+                <p className={styles.sectionDesc} style={{ textAlign: "left", marginBottom: 24, maxWidth: "100%" }}>
+                  Send an engineering goal in the team chat. Watch the lead orchestrator decompose tasks, dispatch specialist subagents, and push verified code in real-time.
+                </p>
 
-            <TeamChatAnimation />
+
+              </div>
+
+              <div className={styles.simulatorRightCol}>
+                <TeamChatAnimation />
+              </div>
+            </div>
           </div>
         </ScrollExpandWrapper>
       </section>
@@ -547,9 +616,8 @@ npm run dev
                     <button
                       key={idx}
                       onClick={() => setSelectedGraphQuery(idx)}
-                      className={`${styles.graphQueryBtn} ${
-                        selectedGraphQuery === idx ? styles.graphQueryBtnActive : ""
-                      }`}
+                      className={`${styles.graphQueryBtn} ${selectedGraphQuery === idx ? styles.graphQueryBtnActive : ""
+                        }`}
                     >
                       Query #{idx + 1}
                     </button>
@@ -578,10 +646,10 @@ npm run dev
                       transition={{ duration: 0.16 }}
                       className={styles.graphResultItem}
                     >
-                      <div style={{ fontWeight: 600, color: "var(--color-ink-strong, #ffffff)", marginBottom: 4 }}>
+                      <div className={styles.graphSymbolName}>
                         {graphQueries[selectedGraphQuery].astSymbol}
                       </div>
-                      <div style={{ fontSize: 12, color: "var(--color-primary-soft, #818cf8)", marginBottom: 6 }}>
+                      <div className={styles.graphFilePath}>
                         📁 {graphQueries[selectedGraphQuery].astFile}
                       </div>
                       <pre className={styles.graphCodeSnippet}>
@@ -609,18 +677,18 @@ npm run dev
                       transition={{ duration: 0.16 }}
                       className={styles.graphResultItem}
                     >
-                      <div style={{ fontWeight: 600, color: "var(--color-ink-strong, #ffffff)", marginBottom: 4 }}>
+                      <div className={styles.graphSectionSubhead}>
                         Semantic Vector Memory
                       </div>
-                      <div style={{ fontSize: 12, color: "var(--color-primary-soft, #818cf8)", marginBottom: 8 }}>
+                      <div className={styles.graphDenseScore}>
                         {graphQueries[selectedGraphQuery].denseScore}
                       </div>
-                      <div style={{ fontSize: 12.5, color: "var(--color-mute, #94a3b8)", marginBottom: 8 }}>
+                      <div className={styles.graphDenseVector}>
                         {graphQueries[selectedGraphQuery].denseVector}
                       </div>
-                      
-                      <div style={{ fontWeight: 600, color: "var(--color-ink-strong, #ffffff)", marginTop: 10, marginBottom: 4 }}>
-                        Multi-Hop Call & Dependency Pathway
+
+                      <div className={styles.graphSectionSubhead} style={{ marginTop: 10 }}>
+                        Multi-Hop Call &amp; Dependency Pathway
                       </div>
                       <div className={styles.graphPathwayBox}>
                         {graphQueries[selectedGraphQuery].graphPathway}
@@ -800,17 +868,15 @@ npm run dev
                 <div className={styles.terminalTabs}>
                   <button
                     onClick={() => setQuickstartTab("cli")}
-                    className={`${styles.terminalTabBtn} ${
-                      quickstartTab === "cli" ? styles.terminalTabBtnActive : ""
-                    }`}
+                    className={`${styles.terminalTabBtn} ${quickstartTab === "cli" ? styles.terminalTabBtnActive : ""
+                      }`}
                   >
                     Quickstart CLI (pip)
                   </button>
                   <button
                     onClick={() => setQuickstartTab("source")}
-                    className={`${styles.terminalTabBtn} ${
-                      quickstartTab === "source" ? styles.terminalTabBtnActive : ""
-                    }`}
+                    className={`${styles.terminalTabBtn} ${quickstartTab === "source" ? styles.terminalTabBtnActive : ""
+                      }`}
                   >
                     Developer &amp; Contributor Setup
                   </button>
@@ -875,9 +941,8 @@ npm run dev
                           <span>{faq.q}</span>
                           <ChevronDown
                             size={18}
-                            className={`${styles.faqChevron} ${
-                              isOpen ? styles.faqChevronOpen : ""
-                            }`}
+                            className={`${styles.faqChevron} ${isOpen ? styles.faqChevronOpen : ""
+                              }`}
                           />
                         </button>
                         {isOpen && (
@@ -996,15 +1061,42 @@ npm run dev
               <span className={styles.cliPrompt}>$</span>
               <span>pip install carole-ai &amp;&amp; carole run</span>
               <span
-                className={`${styles.cliCopyBtn} ${
-                  copiedCli ? styles.cliCopyBtnCopied : ""
-                }`}
+                className={`${styles.cliCopyBtn} ${copiedCli ? styles.cliCopyBtnCopied : ""
+                  }`}
               >
                 {copiedCli ? "Copied" : "Copy"}
               </span>
             </div>
           </div>
         </ScrollExpandWrapper>
+      </section>
+
+      {/* Built With Tech Stack Marquee */}
+      <section className={styles.builtWithSection}>
+        <div className={styles.builtWithHeader}>
+          <div className={styles.builtWithBadge}>
+            Built with Modern Open Source &amp; AI Infrastructure
+          </div>
+        </div>
+
+        <div className={styles.marqueeContainer}>
+          <div className={styles.marqueeTrack}>
+            {[...TECH_STACK_ITEMS, ...TECH_STACK_ITEMS].map((tech, idx) => (
+              <div key={`${tech.name}-${idx}`} className={styles.techPill}>
+                <div className={styles.techLogoWrapper}>
+                  <img
+                    src={tech.logo}
+                    alt={tech.name}
+                    className={`${styles.techLogo} ${tech.invertInDark ? styles.invertInDark : ""
+                      }`}
+                    loading="lazy"
+                  />
+                </div>
+                <span className={styles.techName}>{tech.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
 
       {/* Minimalist High-Craft Footer */}

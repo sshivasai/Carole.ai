@@ -153,6 +153,20 @@ class HybridCodeSearch:
         self.bm25 = BM25Index()
         self.chunks: List[ASTChunk] = []
         self.embeddings: Optional[np.ndarray] = None
+        self._ranker = None
+        self._ranker_loaded = False
+
+    def _get_ranker(self):
+        if not self._ranker_loaded:
+            try:
+                from flashrank import Ranker
+                self._ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2")
+                logger.info("⚡ [HybridSearch] FlashRank cross-encoder reranker loaded.")
+            except Exception as e:
+                logger.debug("FlashRank unavailable, falling back to pure RRF: %s", e)
+                self._ranker = None
+            self._ranker_loaded = True
+        return self._ranker
 
     def index_workspace_chunks(self, chunks: List[ASTChunk]) -> None:
         """Indexes workspace AST chunks for both BM25 and static embeddings."""
@@ -245,9 +259,34 @@ class HybridCodeSearch:
         else:
             fused = [(idx, score) for idx, score in bm25_results]
 
-        # 4. Assemble Top Snippets
+        # 4. Neural Cross-Encoder Re-ranking via FlashRank (if available)
+        ranker = self._get_ranker()
+        final_ranked: List[Tuple[int, float]] = []
+
+        if ranker is not None and fused:
+            try:
+                from flashrank import RerankRequest
+                candidate_pool = fused[: max(top_k * 3, 15)]
+                passages = [
+                    {
+                        "id": doc_idx,
+                        "text": f"{self.chunks[doc_idx].file_path} {self.chunks[doc_idx].name} ({self.chunks[doc_idx].kind}): {self.chunks[doc_idx].code[:600]}"
+                    }
+                    for doc_idx, _ in candidate_pool
+                ]
+                rerank_req = RerankRequest(query=query, passages=passages)
+                reranked = ranker.rerank(rerank_req)
+                for item in reranked:
+                    final_ranked.append((item["id"], float(item["score"])))
+            except Exception as e:
+                logger.debug("FlashRank rerank error, using RRF: %s", e)
+                final_ranked = fused[:top_k]
+        else:
+            final_ranked = fused[:top_k]
+
+        # 5. Assemble Top Snippets
         results = []
-        for doc_idx, score in fused[:top_k]:
+        for doc_idx, score in final_ranked[:top_k]:
             chunk = self.chunks[doc_idx]
             results.append({
                 "file_path": chunk.file_path,

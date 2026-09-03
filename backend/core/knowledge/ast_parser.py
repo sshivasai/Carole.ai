@@ -22,15 +22,17 @@ import importlib
 # Dynamic Tree-sitter imports with safe fallback
 _TREE_SITTER_AVAILABLE = False
 _TS_PARSERS: Dict[str, Any] = {}
+_TS_QUERIES: Dict[str, Any] = {}
 
 
 def _init_tree_sitter_parsers() -> None:
-    """Dynamically initializes Tree-sitter parsers without triggering static analysis errors."""
-    global _TREE_SITTER_AVAILABLE, _TS_PARSERS
+    """Dynamically initializes Tree-sitter parsers and S-expression queries without static analysis errors."""
+    global _TREE_SITTER_AVAILABLE, _TS_PARSERS, _TS_QUERIES
     try:
         ts = importlib.import_module("tree_sitter")
         Parser = getattr(ts, "Parser")
         Language = getattr(ts, "Language")
+        Query = getattr(ts, "Query", None)
 
         lang_modules = {
             "python": ("tree_sitter_python", "language"),
@@ -45,17 +47,36 @@ def _init_tree_sitter_parsers() -> None:
             "c_sharp": ("tree_sitter_c_sharp", "language"),
         }
 
+        scm_queries = {
+            "python": "[(function_definition name: (identifier) @name) @def (class_definition name: (identifier) @name) @def]",
+            "javascript": "[(function_declaration name: (identifier) @name) @def (method_definition name: (property_identifier) @name) @def (class_declaration name: (identifier) @name) @def]",
+            "typescript": "[(function_declaration name: (identifier) @name) @def (method_definition name: (property_identifier) @name) @def (class_declaration name: (type_identifier) @name) @def (interface_declaration name: (type_identifier) @name) @def]",
+            "tsx": "[(function_declaration name: (identifier) @name) @def (method_definition name: (property_identifier) @name) @def (class_declaration name: (type_identifier) @name) @def (interface_declaration name: (type_identifier) @name) @def]",
+            "rust": "[(function_item name: (identifier) @name) @def (struct_item name: (type_identifier) @name) @def (trait_item name: (type_identifier) @name) @def]",
+            "go": "[(function_declaration name: (identifier) @name) @def (method_declaration name: (field_identifier) @name) @def]",
+            "java": "[(method_declaration name: (identifier) @name) @def (class_declaration name: (identifier) @name) @def (interface_declaration name: (identifier) @name) @def]",
+            "c": "[(function_definition declarator: (function_declarator declarator: (identifier) @name)) @def (struct_specifier name: (type_identifier) @name) @def]",
+            "cpp": "[(function_definition declarator: (function_declarator declarator: (identifier) @name)) @def (class_specifier name: (type_identifier) @name) @def]",
+            "c_sharp": "[(method_declaration name: (identifier) @name) @def (class_declaration name: (identifier) @name) @def (interface_declaration name: (identifier) @name) @def]",
+        }
+
         for lang_key, (mod_name, func_name) in lang_modules.items():
             try:
                 mod = importlib.import_module(mod_name)
                 func = getattr(mod, func_name)
-                _TS_PARSERS[lang_key] = Parser(Language(func()))
+                lang_obj = Language(func())
+                _TS_PARSERS[lang_key] = Parser(lang_obj)
+                if Query and lang_key in scm_queries:
+                    try:
+                        _TS_QUERIES[lang_key] = Query(lang_obj, scm_queries[lang_key])
+                    except Exception as qex:
+                        logger.debug("Tree-sitter SCM query compilation failed for '%s': %s", lang_key, qex)
             except Exception as ex:
                 logger.debug("Tree-sitter grammar for '%s' could not be loaded: %s", lang_key, ex)
 
         if _TS_PARSERS:
             _TREE_SITTER_AVAILABLE = True
-            logger.info("🌳 [ASTParser] Tree-sitter initialized for: %s", list(_TS_PARSERS.keys()))
+            logger.info("🌳 [ASTParser] Tree-sitter initialized for: %s (SCM queries compiled: %d)", list(_TS_PARSERS.keys()), len(_TS_QUERIES))
     except Exception as e:
         logger.warning("Tree-sitter native grammars unavailable, falling back to compiler AST: %s", e)
 

@@ -309,7 +309,7 @@ export default function SwarmTeamShowcase() {
           border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
           borderRadius: 12,
           padding: "28px",
-          minHeight: 260,
+          minHeight: 310,
           position: "relative",
           overflow: "hidden",
         }}

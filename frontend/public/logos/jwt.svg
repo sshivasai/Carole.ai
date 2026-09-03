@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%">
+  <rect width="128" height="128" rx="24" fill="#000000"/>
+  <circle cx="64" cy="64" r="44" fill="none" stroke="#D63AFF" stroke-width="12"/>
+  <circle cx="64" cy="64" r="44" fill="none" stroke="#00B9F1" stroke-width="12" stroke-dasharray="92 184" stroke-dashoffset="46"/>
+  <circle cx="64" cy="64" r="44" fill="none" stroke="#FB015B" stroke-width="12" stroke-dasharray="92 184" stroke-dashoffset="-46"/>
+  <text x="64" y="71" fill="#FFFFFF" font-family="system-ui, sans-serif" font-weight="900" font-size="22" text-anchor="middle" letter-spacing="1">JWT</text>
+</svg>

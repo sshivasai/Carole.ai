@@ -280,17 +280,23 @@ export default function TeamChatAnimation() {
             <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
             <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
             <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
-            <span
-              style={{
-                marginLeft: 10,
-                fontSize: 12,
-                fontFamily: "var(--font-mono, monospace)",
-                color: "var(--color-body, #94a3b8)",
-                fontWeight: 600,
-              }}
-            >
-              Carole.ai Console: {currentSceneMeta.badge}
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: 10 }}>
+              <img
+                src="/branding/logo-mark.png"
+                alt="Carole"
+                style={{ width: 14, height: 14, objectFit: "contain", borderRadius: 3 }}
+              />
+              <span
+                style={{
+                  fontSize: 12,
+                  fontFamily: "var(--font-mono, monospace)",
+                  color: "var(--color-body, #94a3b8)",
+                  fontWeight: 600,
+                }}
+              >
+                Carole.ai Console: {currentSceneMeta.badge}
+              </span>
+            </div>
           </div>
 
           {/* Minimal Play / Pause Toggle Button */}
@@ -328,7 +334,7 @@ export default function TeamChatAnimation() {
               alignItems: "center",
               justifyContent: "center",
               textAlign: "center",
-              padding: "40px 32px",
+              padding: "24px 24px",
               background: "radial-gradient(circle at center, rgba(167, 139, 250, 0.14) 0%, #030315 75%)",
               position: "relative",
               overflow: "hidden",
@@ -339,11 +345,11 @@ export default function TeamChatAnimation() {
             <div
               style={{
                 position: "absolute",
-                width: 320,
-                height: 320,
+                width: 240,
+                height: 240,
                 borderRadius: "50%",
                 background: currentSceneMeta.color,
-                filter: "blur(110px)",
+                filter: "blur(90px)",
                 opacity: 0.15,
                 pointerEvents: "none",
               }}
@@ -352,20 +358,20 @@ export default function TeamChatAnimation() {
             {/* Glowing Icon Badge */}
             <div
               style={{
-                width: 52,
-                height: 52,
-                borderRadius: 14,
+                width: 44,
+                height: 44,
+                borderRadius: 12,
                 background: `${currentSceneMeta.color}20`,
                 border: `1px solid ${currentSceneMeta.color}50`,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 color: currentSceneMeta.color,
-                boxShadow: `0 0 24px ${currentSceneMeta.color}35`,
-                marginBottom: 16,
+                boxShadow: `0 0 20px ${currentSceneMeta.color}35`,
+                marginBottom: 10,
               }}
             >
-              <SceneIcon size={26} />
+              <SceneIcon size={22} />
             </div>
 
             {/* Scene Badge */}
@@ -373,34 +379,35 @@ export default function TeamChatAnimation() {
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 6,
-                padding: "3px 12px",
+                gap: 5,
+                padding: "2px 10px",
                 borderRadius: 9999,
                 background: `${currentSceneMeta.color}15`,
                 border: `1px solid ${currentSceneMeta.color}35`,
-                fontSize: 11,
+                fontSize: 10,
                 fontWeight: 800,
                 color: currentSceneMeta.color,
                 letterSpacing: 0.8,
-                marginBottom: 12,
+                marginBottom: 8,
                 textTransform: "uppercase",
               }}
             >
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: currentSceneMeta.color }} />
+              <span style={{ width: 5, height: 5, borderRadius: "50%", background: currentSceneMeta.color }} />
               <span>{currentSceneMeta.badge}</span>
             </div>
 
             {/* Main Headline with Live Typing Animation & Glowing Cursor */}
             <h2
               style={{
-                fontSize: "clamp(26px, 3.8vw, 38px)",
-                fontWeight: 900,
+                fontFamily: "var(--font-display, var(--font-sans, sans-serif))",
+                fontSize: "clamp(20px, 2.8vw, 30px)",
+                fontWeight: 800,
                 color: "#ffffff",
                 letterSpacing: "-0.03em",
-                marginBottom: 10,
-                maxWidth: 740,
+                marginBottom: 6,
+                maxWidth: 680,
                 lineHeight: 1.15,
-                minHeight: 46,
+                minHeight: 36,
               }}
             >
               <span>{titleTypedText}</span>
@@ -423,11 +430,11 @@ export default function TeamChatAnimation() {
             {/* Sub-headline */}
             <div
               style={{
-                fontSize: 15,
+                fontSize: 13.5,
                 fontWeight: 600,
                 color: currentSceneMeta.color,
-                marginBottom: 12,
-                maxWidth: 680,
+                marginBottom: 8,
+                maxWidth: 620,
                 animation: "fadeIn 0.3s ease-out",
               }}
             >
@@ -437,10 +444,10 @@ export default function TeamChatAnimation() {
             {/* Description Paragraph */}
             <p
               style={{
-                fontSize: 13.5,
+                fontSize: 12.5,
                 color: "var(--color-body, #94a3b8)",
-                maxWidth: 600,
-                lineHeight: 1.55,
+                maxWidth: 560,
+                lineHeight: 1.45,
                 margin: 0,
                 animation: "fadeIn 0.4s ease-out",
               }}
@@ -471,7 +478,7 @@ export default function TeamChatAnimation() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "220px 1fr",
+              gridTemplateColumns: "195px 1fr",
               flex: 1,
               minHeight: 0,
               background: "#030315",
@@ -485,49 +492,66 @@ export default function TeamChatAnimation() {
                 borderRight: "1px solid var(--color-hairline, #2a2a3f)",
                 display: "flex",
                 flexDirection: "column",
-                padding: "16px 12px",
+                padding: "12px 10px",
                 justifyContent: "space-between",
                 userSelect: "none",
               }}
             >
               <div>
-                {/* Brand Logo */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18, padding: "0 4px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ width: 26, height: 26, borderRadius: 8, background: "linear-gradient(135deg, #a855f7, #6366f1)", display: "flex", alignItems: "center", justifyContent: "center", color: "#ffffff" }}>
-                      <Sparkles size={14} />
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 800, color: "#ffffff", letterSpacing: -0.2 }}>carole ai</div>
-                      <div style={{ fontSize: 7, fontWeight: 700, color: "#64748b", letterSpacing: 0.8, textTransform: "uppercase" }}><del style={{ opacity: 0.6 }}>AI AGENTS.</del> <span style={{ color: "#a78bfa" }}>AI TEAMMATES.</span> REAL WORK.</div>
-                    </div>
+                {/* Brand Logo - Official Carole.ai Asset */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, padding: "0 2px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
+                    <img
+                      src="/branding/logo-mark-animated.webp"
+                      alt="Carole.ai"
+                      style={{
+                        width: 26,
+                        height: 26,
+                        objectFit: "contain",
+                        flexShrink: 0,
+                        filter: "drop-shadow(0 0 8px rgba(167, 139, 250, 0.45))",
+                      }}
+                    />
+                    <img
+                      src="/branding/logo-wordmark-dark.png"
+                      alt="Carole.ai: AI Agents. Real Work."
+                      style={{
+                        height: 22,
+                        maxWidth: 130,
+                        width: "auto",
+                        objectFit: "contain",
+                        objectPosition: "left center",
+                        filter: "drop-shadow(0 1px 4px rgba(167, 139, 250, 0.15))",
+                        flexShrink: 1,
+                      }}
+                    />
                   </div>
-                  <ChevronLeft size={14} color="#64748b" />
+                  <ChevronLeft size={14} color="#64748b" style={{ flexShrink: 0 }} />
                 </div>
 
                 {/* Project Section */}
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 9.5, fontWeight: 800, color: "var(--color-mute, #64748b)", letterSpacing: 0.6, marginBottom: 5, textTransform: "uppercase" }}>PROJECT</div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: "rgba(255, 255, 255, 0.04)", borderRadius: 6, border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 12, fontWeight: 600, color: "#f1f5f9" }}>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: "var(--color-mute, #64748b)", letterSpacing: 0.6, marginBottom: 4, textTransform: "uppercase" }}>PROJECT</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", background: "rgba(255, 255, 255, 0.04)", borderRadius: 6, border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 11.5, fontWeight: 600, color: "#f1f5f9" }}>
                     <span>Project1</span>
                     <ChevronDown size={12} color="#64748b" />
                   </div>
-                  <div style={{ fontSize: 10.5, color: "#64748b", paddingLeft: 4, marginTop: 2 }}>+ New project</div>
+                  <div style={{ fontSize: 10, color: "#64748b", paddingLeft: 4, marginTop: 2 }}>+ New project</div>
                 </div>
 
                 {/* Team Room Section */}
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 9.5, fontWeight: 800, color: "var(--color-mute, #64748b)", letterSpacing: 0.6, marginBottom: 5, textTransform: "uppercase" }}>TEAM ROOM</div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: "rgba(255, 255, 255, 0.04)", borderRadius: 6, border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 12, fontWeight: 600, color: "#f1f5f9" }}>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: "var(--color-mute, #64748b)", letterSpacing: 0.6, marginBottom: 4, textTransform: "uppercase" }}>TEAM ROOM</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", background: "rgba(255, 255, 255, 0.04)", borderRadius: 6, border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 11.5, fontWeight: 600, color: "#f1f5f9" }}>
                     <span>Team1</span>
                     <ChevronDown size={12} color="#64748b" />
                   </div>
-                  <div style={{ fontSize: 10.5, color: "#64748b", paddingLeft: 4, marginTop: 2 }}>+ New team</div>
+                  <div style={{ fontSize: 10, color: "#64748b", paddingLeft: 4, marginTop: 2 }}>+ New team</div>
                 </div>
 
                 {/* Workspace Nav Items (Highlighting the active scene tab) */}
                 <div>
-                  <div style={{ fontSize: 9.5, fontWeight: 800, color: "var(--color-mute, #64748b)", letterSpacing: 0.6, marginBottom: 6, textTransform: "uppercase" }}>WORKSPACE</div>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: "var(--color-mute, #64748b)", letterSpacing: 0.6, marginBottom: 4, textTransform: "uppercase" }}>WORKSPACE</div>
 
                   {/* Chat Room */}
                   <div
@@ -676,10 +700,10 @@ export default function TeamChatAnimation() {
               </div>
 
               {/* Sidebar Bottom Profile Card: Admin */}
-              <div style={{ borderTop: "1px solid var(--color-hairline, #2a2a3f)", paddingTop: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, paddingLeft: 2 }}>
+              <div style={{ borderTop: "1px solid var(--color-hairline, #2a2a3f)", paddingTop: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, paddingLeft: 2 }}>
                   <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#10b981" }} />
-                  <span style={{ fontSize: 11, color: "#10b981", fontWeight: 600 }}>Connected</span>
+                  <span style={{ fontSize: 10.5, color: "#10b981", fontWeight: 600 }}>Connected</span>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1099,48 +1123,48 @@ export default function TeamChatAnimation() {
 
               {/* VIEW 5: JUDGE AI SECURITY GATE */}
               {activeScene === "security" && (
-                <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "16px 18px", background: "#030315" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "12px 14px", background: "#030315" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                     <div>
-                      <div style={{ fontSize: 14.5, fontWeight: 800, color: "#ffffff", display: "flex", alignItems: "center", gap: 8 }}>
-                        <ShieldCheck size={16} color="#fbbf24" />
+                      <div style={{ fontSize: 13.5, fontWeight: 800, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
+                        <ShieldCheck size={15} color="#fbbf24" />
                         <span>Judge AI Real-Time Security Interceptor</span>
-                        <span style={{ fontSize: 9.5, padding: "2px 6px", borderRadius: 9999, background: "rgba(251, 191, 36, 0.2)", border: "1px solid rgba(251, 191, 36, 0.4)", color: "#fbbf24", fontWeight: 700 }}>
+                        <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 9999, background: "rgba(251, 191, 36, 0.2)", border: "1px solid rgba(251, 191, 36, 0.4)", color: "#fbbf24", fontWeight: 700 }}>
                           MULTI-TIER POLICY MATRIX
                         </span>
                       </div>
-                      <div style={{ fontSize: 11, color: "var(--color-body, #94a3b8)" }}>Automated risk scoring intercepts destructive shell commands, git operations, and DB mutations.</div>
+                      <div style={{ fontSize: 10.5, color: "var(--color-body, #94a3b8)" }}>Automated risk scoring intercepts destructive shell commands, git operations, and DB mutations.</div>
                     </div>
                   </div>
 
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                    <div style={{ padding: "12px", borderRadius: 8, background: "rgba(16, 185, 129, 0.05)", border: "1px solid rgba(16, 185, 129, 0.25)" }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: "#34d399" }}>Tier 1: Safe (Auto-Execute)</span>
-                        <span style={{ fontSize: 9, padding: "1px 5px", background: "rgba(16,185,129,0.2)", color: "#34d399", borderRadius: 4 }}>Score &lt; 0.2</span>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div style={{ padding: "10px", borderRadius: 8, background: "rgba(16, 185, 129, 0.05)", border: "1px solid rgba(16, 185, 129, 0.25)" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 11.5, fontWeight: 700, color: "#34d399" }}>Tier 1: Safe (Auto-Execute)</span>
+                        <span style={{ fontSize: 8.5, padding: "1px 5px", background: "rgba(16,185,129,0.2)", color: "#34d399", borderRadius: 4 }}>Score &lt; 0.2</span>
                       </div>
-                      <div style={{ fontSize: 11, color: "#cbd5e1", lineHeight: 1.4 }}>
+                      <div style={{ fontSize: 10.5, color: "#cbd5e1", lineHeight: 1.35 }}>
                         Read-only file I/O, unit test executions (<code>pytest</code>), code search queries, and memory vector recall.
                       </div>
                     </div>
 
-                    <div style={{ padding: "12px", borderRadius: 8, background: "rgba(239, 68, 68, 0.05)", border: "1px solid rgba(239, 68, 68, 0.25)" }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: "#f87171" }}>Tier 2: Gated (Human Card)</span>
-                        <span style={{ fontSize: 9, padding: "1px 5px", background: "rgba(239,68,68,0.2)", color: "#f87171", borderRadius: 4 }}>Score &ge; 0.7</span>
+                    <div style={{ padding: "10px", borderRadius: 8, background: "rgba(239, 68, 68, 0.05)", border: "1px solid rgba(239, 68, 68, 0.25)" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 11.5, fontWeight: 700, color: "#f87171" }}>Tier 2: Gated (Human Card)</span>
+                        <span style={{ fontSize: 8.5, padding: "1px 5px", background: "rgba(239,68,68,0.2)", color: "#f87171", borderRadius: 4 }}>Score &ge; 0.7</span>
                       </div>
-                      <div style={{ fontSize: 11, color: "#cbd5e1", lineHeight: 1.4 }}>
+                      <div style={{ fontSize: 10.5, color: "#cbd5e1", lineHeight: 1.35 }}>
                         Destructive git push force, file deletions (<code>rm -rf</code>), production DB migrations, and external API webhook triggers.
                       </div>
                     </div>
                   </div>
 
-                  <div style={{ marginTop: 12, padding: "12px 14px", borderRadius: 8, background: "#0a0a1a", border: "1px solid rgba(251, 191, 36, 0.3)" }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "#fbbf24", marginBottom: 4 }}>LIVE AUDIT STREAM:</div>
-                    <div style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "#f1f5f9" }}>
+                  <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, background: "#0a0a1a", border: "1px solid rgba(251, 191, 36, 0.3)" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#fbbf24", marginBottom: 3 }}>LIVE AUDIT STREAM:</div>
+                    <div style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 10.5, color: "#f1f5f9" }}>
                       Tool Call: <code>execute_command(command=&quot;pytest tests/test_jwt_auth.py&quot;)</code>
                     </div>
-                    <div style={{ fontSize: 10.5, color: "#34d399", marginTop: 4 }}>
+                    <div style={{ fontSize: 10, color: "#34d399", marginTop: 3 }}>
                       ✓ Evaluated: Risk score 0.04 (SAFE). Auto-approved with zero human intervention required.
                     </div>
                   </div>

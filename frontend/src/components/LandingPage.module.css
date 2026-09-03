@@ -473,6 +473,102 @@
   margin: 0 0 40px;
 }
 
+.container {
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ==========================================================================
+   Section: Live Synced Team Execution Simulator (Split Layout)
+   ========================================================================== */
+.simulatorSplitSection {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 44px;
+  align-items: center;
+}
+
+@media (max-width: 1100px) {
+  .simulatorSplitSection {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+}
+
+.simulatorLeftCol {
+  display: flex;
+  flex-direction: column;
+}
+
+.simulatorRightCol {
+  min-width: 0;
+  width: 100%;
+}
+
+.simulatorFeatureList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.simulatorFeatureItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.06));
+  transition: all 0.2s ease;
+}
+
+.simulatorFeatureItem:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(167, 139, 250, 0.25);
+  transform: translateY(-1px);
+}
+
+:global(.theme-light) .simulatorFeatureItem {
+  background: rgba(0, 0, 0, 0.02);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+:global(.theme-light) .simulatorFeatureItem:hover {
+  background: rgba(0, 0, 0, 0.035);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.simulatorFeatureIcon {
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.simulatorFeatureTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--color-ink-strong, #ffffff);
+  margin-bottom: 2px;
+}
+
+:global(.theme-light) .simulatorFeatureTitle {
+  color: #0f172a;
+}
+
+.simulatorFeatureDesc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-mute, #a1a1aa);
+}
+
+:global(.theme-light) .simulatorFeatureDesc {
+  color: #64748b;
+}
+
 /* ==========================================================================
    Section: GraphRAG Code Search Explorer
    ========================================================================== */
@@ -638,9 +734,135 @@
   letter-spacing: 0.04em;
 }
 
-.graphMetricVal {
+.graphSymbolName {
   font-weight: 600;
   color: var(--color-ink-strong, #ffffff);
+  margin-bottom: 4px;
+}
+
+.graphFilePath {
+  font-size: 12px;
+  color: var(--color-primary-soft, #818cf8);
+  margin-bottom: 6px;
+}
+
+.graphSectionSubhead {
+  font-weight: 600;
+  color: var(--color-ink-strong, #ffffff);
+  margin-bottom: 4px;
+}
+
+.graphDenseScore {
+  font-size: 12px;
+  color: var(--color-primary-soft, #818cf8);
+  margin-bottom: 8px;
+}
+
+.graphDenseVector {
+  font-size: 12.5px;
+  color: var(--color-mute, #94a3b8);
+  margin-bottom: 8px;
+}
+
+/* Light Theme Styling for GraphRAG & AST Semantic Chunk Showcase */
+:global(.theme-light) .graphragContainer {
+  background: #ffffff;
+  border-color: #e4e4e7;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+:global(.theme-light) .graphQueryBar {
+  background: #f4f4f5;
+  border-color: #e4e4e7;
+}
+
+:global(.theme-light) .graphQueryInput {
+  color: #0f172a;
+}
+
+:global(.theme-light) .graphQueryBtn {
+  background: #ffffff;
+  border-color: #d1d5db;
+  color: #4b5563;
+}
+
+:global(.theme-light) .graphQueryBtn:hover {
+  color: #111827;
+  border-color: #9ca3af;
+}
+
+:global(.theme-light) .graphQueryBtnActive {
+  background: #ede9fe;
+  border-color: #6366f1;
+  color: #4338ca;
+}
+
+:global(.theme-light) .graphPane {
+  background: #ffffff;
+  border-color: #e4e4e7;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+:global(.theme-light) .graphPaneHeader {
+  border-bottom-color: #f1f5f9;
+}
+
+:global(.theme-light) .graphPaneTitle {
+  color: #0f172a;
+}
+
+:global(.theme-light) .graphTag {
+  background: #ede9fe;
+  color: #4338ca;
+  font-weight: 600;
+}
+
+:global(.theme-light) .graphSymbolName,
+:global(.theme-light) .graphSectionSubhead {
+  color: #0f172a;
+}
+
+:global(.theme-light) .graphFilePath {
+  color: #4f46e5;
+  font-weight: 500;
+}
+
+:global(.theme-light) .graphDenseScore {
+  color: #4338ca;
+  font-weight: 600;
+}
+
+:global(.theme-light) .graphDenseVector {
+  color: #475569;
+}
+
+:global(.theme-light) .graphCodeSnippet {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #0f172a;
+  font-weight: 500;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+:global(.theme-light) .graphPathwayBox {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e1b4b;
+  font-weight: 500;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+:global(.theme-light) .graphMetricChip {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+:global(.theme-light) .graphMetricLabel {
+  color: #64748b;
+}
+
+:global(.theme-light) .graphMetricVal {
+  color: #0f172a;
 }
 
 /* ==========================================================================
@@ -1043,4 +1265,167 @@
   100% {
     stroke-dashoffset: -132;
   }
+}
+
+/* Built With Marquee Section */
+.builtWithSection {
+  width: 100%;
+  padding: 40px 0 24px;
+  position: relative;
+  overflow: hidden;
+  border-top: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.06));
+  background: transparent;
+}
+
+.builtWithHeader {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.builtWithBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.08));
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-mute, #a1a1aa);
+}
+
+.marqueeContainer {
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 6%,
+    black 94%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 6%,
+    black 94%,
+    transparent 100%
+  );
+}
+
+.marqueeTrack {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  width: max-content;
+  gap: 12px;
+  animation: scrollMarquee 75s linear infinite;
+}
+
+.marqueeTrack:hover {
+  animation-play-state: paused;
+}
+
+@keyframes scrollMarquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.techPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 38px;
+  min-height: 38px;
+  max-height: 38px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  border-radius: 9999px;
+  background: var(--color-canvas-raised, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.08));
+  backdrop-filter: blur(8px);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  white-space: nowrap;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.techPill:hover {
+  background: var(--color-canvas-soft, rgba(255, 255, 255, 0.06));
+  border-color: var(--color-primary-soft, rgba(255, 255, 255, 0.2));
+  transform: translateY(-1px);
+}
+
+.techLogoWrapper {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  max-width: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.techLogo {
+  width: 100%;
+  height: 100%;
+  max-width: 18px;
+  max-height: 18px;
+  object-fit: contain;
+  display: block;
+}
+
+.techName {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--color-fg, #f8fafc);
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+/* Light Theme Styling: high-contrast grey text and clean white/grey pills */
+:global(.theme-light) .builtWithSection {
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+
+:global(.theme-light) .builtWithBadge {
+  color: #4b5563;
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+:global(.theme-light) .techPill {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+:global(.theme-light) .techPill:hover {
+  background: #f9fafb;
+  border-color: rgba(0, 0, 0, 0.22);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+:global(.theme-light) .techName {
+  color: #374151;
+  font-weight: 600;
+}
+
+/* Monochrome logos that need inverting in dark mode (Perplexity, Next.js, Notion, GitHub) */
+.invertInDark {
+  transition: filter 0.2s ease;
+  filter: brightness(0) invert(1);
+}
+
+:global(.theme-light) .invertInDark {
+  filter: none !important;
 }

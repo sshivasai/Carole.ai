@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%">
+  <defs>
+    <linearGradient id="sqlite-g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#003B57"/>
+      <stop offset="100%" stop-color="#0080B0"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="#F8FAFC"/>
+  <path fill="url(#sqlite-g)" d="M64 22c-23.2 0-42 6.3-42 14v56c0 7.7 18.8 14 42 14s42-6.3 42-14V36c0-7.7-18.8-14-42-14zm0 6c19.9 0 36 5.1 36 8s-16.1 8-36 8-36-5.1-36-8 16.1-8 36-8zm0 28c19.9 0 36 5.1 36 8s-16.1 8-36 8-36-5.1-36-8 16.1-8 36-8zm0 28c19.9 0 36 5.1 36 8s-16.1 8-36 8-36-5.1-36-8 16.1-8 36-8z"/>
+  <path fill="#0284C7" d="M22 64c0 7.7 18.8 14 42 14s42-6.3 42-14v10c0 7.7-18.8 14-42 14s-42-6.3-42-14V64z"/>
+</svg>
