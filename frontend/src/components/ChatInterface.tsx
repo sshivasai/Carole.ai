@@ -144,8 +144,10 @@ function ApprovalCard({ msg }: { msg: ChatMessage }) {
     setLoading(true);
     try {
       await api.approveToolExecution(txId, approved);
-    } catch (e) {
-      console.error("Failed to submit approval decision:", e);
+    } catch (e: any) {
+      if (!e?.message?.includes("already resolved") && !e?.message?.includes("not found") && e?.status !== 404) {
+        console.error("Failed to submit approval decision:", e);
+      }
     } finally {
       setLoading(false);
     }
@@ -468,6 +470,28 @@ const VALID_TOOL_NAMES = new Set([
   "inspect_code_definition", "find_references", "fetch_web_page", "get_tools"
 ]);
 
+function splitThoughtsAndObservations(rawText: string): Array<{ type: "thought"; text: string }> {
+  if (!rawText || !rawText.trim()) return [];
+  const obsRegex = /(?:\[OBSERVATION\][\s\S]*?\[\/OBSERVATION\]|💭\s*\*\*(?:Observation|System Note):\*\*[\s\S]*?(?=\n\n💭|\n\n🛠️|$))/g;
+  const parts: Array<{ type: "thought"; text: string }> = [];
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = obsRegex.exec(rawText)) !== null) {
+    if (m.index > lastIdx) {
+      const leading = rawText.slice(lastIdx, m.index).trim();
+      if (leading) parts.push({ type: "thought", text: leading });
+    }
+    const obsText = m[0].trim();
+    if (obsText) parts.push({ type: "thought", text: obsText });
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < rawText.length) {
+    const trailing = rawText.slice(lastIdx).trim();
+    if (trailing) parts.push({ type: "thought", text: trailing });
+  }
+  return parts.length > 0 ? parts : [{ type: "thought", text: rawText.trim() }];
+}
+
 function parseReasoningIntoSections(raw: string): Array<{
   type: "thought" | "tool";
   text?: string;
@@ -503,13 +527,13 @@ function parseReasoningIntoSections(raw: string): Array<{
   }
 
   if (matches.length === 0) {
-    return [{ type: "thought", text: raw.trim() }];
+    return splitThoughtsAndObservations(raw);
   }
 
   if (matches[0].index > 0) {
     const pre = raw.slice(0, matches[0].index).trim();
     if (pre) {
-      sections.push({ type: "thought", text: pre });
+      sections.push(...splitThoughtsAndObservations(pre));
     }
   }
 
@@ -553,7 +577,7 @@ function parseReasoningIntoSections(raw: string): Array<{
     });
 
     if (afterResultText) {
-      sections.push({ type: "thought", text: afterResultText });
+      sections.push(...splitThoughtsAndObservations(afterResultText));
     }
   }
 
@@ -1036,8 +1060,11 @@ export default function ChatInterface({
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
 
-  const childMessagesByParent = useMemo(() => {
+  const { childMessagesByParent, orphanIntermediateIds } = useMemo(() => {
     const groups: Record<string, ChatMessage[]> = {};
+    const orphanIds = new Set<string>();
+
+    // 1. Explicit parent_message attachments
     for (const msg of messages) {
       const parentAttachment = msg.attachments?.find((a: any) => a.type === "parent_message");
       if (parentAttachment?.id) {
@@ -1046,7 +1073,33 @@ export default function ChatInterface({
         groups[pid].push(msg);
       }
     }
-    return groups;
+
+    // 2. Link orphan intermediate messages (is_intermediate / tool_trace) without explicit parentAttachment
+    // to the assistant message in the same conversation turn
+    let pendingIntermediates: ChatMessage[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      const isExplicitChild = msg.attachments?.some((a: any) => a.type === "parent_message");
+      const isInter = msg.is_intermediate === true || msg.type === "tool_trace";
+
+      if (isInter && !isExplicitChild) {
+        pendingIntermediates.push(msg);
+      } else if (!isInter && msg.sender_id !== "human" && msg.sender_id !== "system") {
+        // Assistant message in this turn
+        if (pendingIntermediates.length > 0) {
+          if (!groups[msg.id]) groups[msg.id] = [];
+          for (const orphan of pendingIntermediates) {
+            groups[msg.id].push(orphan);
+            orphanIds.add(orphan.id);
+          }
+          pendingIntermediates = [];
+        }
+      } else if (msg.sender_id === "human") {
+        pendingIntermediates = [];
+      }
+    }
+
+    return { childMessagesByParent: groups, orphanIntermediateIds: orphanIds };
   }, [messages]);
 
   const markdownComponents = useMemo(() => ({
@@ -1714,8 +1767,8 @@ export default function ChatInterface({
               }
 
               const msg = item.msg;
-              // Hide child subagent/teammate messages from top-level chat flow
-              const isChild = msg.attachments?.some((a: any) => a.type === "parent_message");
+              // Hide child subagent/teammate messages and linked intermediate messages from top-level chat flow
+              const isChild = msg.attachments?.some((a: any) => a.type === "parent_message") || orphanIntermediateIds.has(msg.id);
               if (isChild && !searchMode) {
                 return null;
               }
@@ -2033,7 +2086,23 @@ export default function ChatInterface({
               rawReasoning = rawReasoning.replace(/<function_calls>|<\/function_calls>/g, "");
               rawReasoning = rawReasoning.trim();
 
-              const finalReasoning = rawReasoning ? (rawReasoning + "\n\n" + embeddedReasoning).trim() : embeddedReasoning.trim();
+              const linkedChildIntermediates = childMessagesByParent[msg.id] || [];
+              let combinedChildReasoning = "";
+              for (const child of linkedChildIntermediates) {
+                if ((child.is_intermediate || child.type === "tool_trace") && child.text) {
+                  const t = child.text.trim();
+                  if (t && !rawReasoning.includes(t)) {
+                    if (t.startsWith("[OBSERVATION]")) {
+                      combinedChildReasoning += `\n\n💭 **Observation:**\n${t}\n\n`;
+                    } else {
+                      combinedChildReasoning += `\n\n${t}\n\n`;
+                    }
+                  }
+                }
+              }
+
+              const allReasoning = (rawReasoning + (combinedChildReasoning ? "\n\n" + combinedChildReasoning : "") + "\n\n" + embeddedReasoning).trim();
+              const finalReasoning = allReasoning;
               let markdownText = cleanText;
 
               if (onOpenFile) {
@@ -2219,77 +2288,37 @@ export default function ChatInterface({
                         )}
 
                         {/* Subagent Activities / Worker reports enqueued for this message */}
-                        {!isHuman && !isThinking && childMessagesByParent[msg.id]?.length > 0 && (
+                        {!isHuman && !isThinking && (childMessagesByParent[msg.id] || []).some(c => !c.is_intermediate && c.type !== "tool_trace") && (
                           <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px", borderTop: "1px solid var(--border-glass)", paddingTop: "12px", width: "100%" }}>
-                            {childMessagesByParent[msg.id].map(child => {
-                              const isChildTaskNotification = Boolean(child.text?.includes("<task-notification>"));
-                              const isChildIntermediate = child.is_intermediate === true || child.type === "tool_trace";
+                            {(childMessagesByParent[msg.id] || [])
+                              .filter(c => !c.is_intermediate && c.type !== "tool_trace")
+                              .map(child => {
+                                const isChildTaskNotification = Boolean(child.text?.includes("<task-notification>"));
 
-                              if (isChildTaskNotification) {
-                                const childReasoning = child.reasoning || "";
-                                return (
-                                  <div key={child.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
-                                    <AgentAvatar name={child.sender_name || "Agent"} id={child.sender_id} role={child.role || "subagent"} size={26} />
-                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
-                                        <span className="body-sm-strong" style={{ fontSize: 12 }}>{child.sender_name}</span>
-                                        <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>WORKER REPORT</span>
-                                        {child.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(child.timestamp)}</span>}
-                                      </div>
-                                      <TaskNotificationCard text={child.text || ""} />
-                                      {childReasoning && (
-                                        <div style={{ marginTop: "8px", borderTop: "1px solid var(--border-glass)", paddingTop: "8px" }}>
-                                          <ThoughtsPanel reasoning={childReasoning} isStreaming={false} components={markdownComponents} />
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              }
-
-                              if (isChildIntermediate) {
-                                const sections = parseReasoningIntoSections(child.text || "");
-                                const hasTools = sections.some(s => s.type === "tool");
-                                if (hasTools || sections.some(s => s.type === "thought")) {
+                                if (isChildTaskNotification) {
+                                  const childReasoning = child.reasoning || "";
                                   return (
-                                    <div key={child.id} style={{ maxWidth: "100%", display: "flex", flexDirection: "column", gap: 4 }}>
-                                      {sections.map((sec, idx) => (
-                                        sec.type === "tool" ? (
-                                          <TraceToolCard
-                                            key={idx}
-                                            toolName={sec.toolName!}
-                                            argsObj={sec.argsObj}
-                                            argsRaw={sec.argsJson}
-                                            result={sec.result}
-                                            isError={sec.isError}
-                                            agentName={child.sender_name}
-                                            timestamp={child.timestamp}
-                                            defaultOpen={false}
-                                          />
-                                        ) : (
-                                          <div key={idx} style={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: "8px",
-                                            padding: "6px 12px",
-                                            color: "var(--text-secondary)",
-                                            fontSize: "12px",
-                                            fontStyle: "italic",
-                                            opacity: 0.85
-                                          }}>
-                                            <Sparkles size={12} style={{ color: "var(--color-primary)", flexShrink: 0 }} />
-                                            <span>{sec.text}</span>
+                                    <div key={child.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                                      <AgentAvatar name={child.sender_name || "Agent"} id={child.sender_id} role={child.role || "subagent"} size={26} />
+                                      <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                                          <span className="body-sm-strong" style={{ fontSize: 12 }}>{child.sender_name}</span>
+                                          <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>WORKER REPORT</span>
+                                          {child.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(child.timestamp)}</span>}
+                                        </div>
+                                        <TaskNotificationCard text={child.text || ""} />
+                                        {childReasoning && (
+                                          <div style={{ marginTop: "8px", borderTop: "1px solid var(--border-glass)", paddingTop: "8px" }}>
+                                            <ThoughtsPanel reasoning={childReasoning} isStreaming={false} components={markdownComponents} />
                                           </div>
-                                        )
-                                      ))}
+                                        )}
+                                      </div>
                                     </div>
                                   );
                                 }
-                                return null;
-                              }
 
-                              // Fallback for standard child text messages (e.g. permanent teammate outputs)
-                              return (
+                                // Fallback for standard child text messages (e.g. permanent teammate outputs)
+                                return (
                                 <div key={child.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
                                   <AgentAvatar name={child.sender_name || "Agent"} id={child.sender_id} role={child.role} size={26} />
                                   <div style={{ flex: 1, minWidth: 0 }}>

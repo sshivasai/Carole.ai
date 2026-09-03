@@ -27,9 +27,24 @@ interface AgentActivityStreamProps {
   elapsedSecs?: number;
 }
 
-function getStepIcon(toolName?: string) {
-  if (!toolName) return { icon: BrainCircuit, color: "#a78bfa" };
-  const name = toolName.toLowerCase();
+function isObservationStep(text?: string): boolean {
+  if (!text) return false;
+  return (
+    text.includes("[OBSERVATION]") ||
+    text.includes("💭 **Observation:**") ||
+    text.includes("💭 **System Note:**") ||
+    text.includes("Plan Without Execution") ||
+    text.includes("Unexecuted Promise") ||
+    text.includes("Incomplete Response")
+  );
+}
+
+function getStepIcon(step: ActivityStep) {
+  if (step.type === "thought" && isObservationStep(step.text)) {
+    return { icon: AlertTriangle, color: "#f59e0b" };
+  }
+  if (!step.toolName) return { icon: BrainCircuit, color: "#a78bfa" };
+  const name = step.toolName.toLowerCase();
   if (name.includes("write") || name.includes("edit")) return { icon: FileCode, color: "#38bdf8" };
   if (name.includes("read") || name.includes("list") || name.includes("view")) return { icon: Eye, color: "#94a3b8" };
   if (name.includes("command") || name.includes("bash") || name.includes("exec") || name.includes("terminal")) return { icon: Terminal, color: "#34d399" };
@@ -41,11 +56,14 @@ function getStepIcon(toolName?: string) {
 function cleanThoughtText(raw?: string): string {
   if (!raw) return "";
   let text = raw;
+  // Clean observation and system note wrappers without destroying content
+  text = text.replace(/\[OBSERVATION\]/g, "");
+  text = text.replace(/\[\/OBSERVATION\]/g, "");
+  text = text.replace(/💭\s*\*\*(?:Observation|System Note):\*\*/g, "");
   // Clean raw trace markers and tool artifacts if present in text
   text = text.replace(/🛠️\s*\*\*[^\*]+\*\*[\s\S]*?(?=📄|🛠️|$)/g, "");
   text = text.replace(/📄\s*(?:\*\*)?Result:(?:\*\*)?[\s\S]*?(?=🛠️|$)/g, "");
-  text = text.replace(/\[ACTION\][\s\S]*?\[\/ACTION\]/g, "");
-  text = text.replace(/\[OBSERVATION\][\s\S]*?\[\/OBSERVATION\]/g, "");
+  text = text.replace(/\[ACTION\]([\s\S]*?)\[\/ACTION\]/g, "\n```json\n$1\n```\n");
   text = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "");
   text = text.replace(/```(?:json)?\s*\{[\s\S]*?\}\s*```/g, "");
   return text.trim();
@@ -53,6 +71,16 @@ function cleanThoughtText(raw?: string): string {
 
 function getStepTitle(step: ActivityStep) {
   if (step.type === "thought") {
+    const raw = step.text || "";
+    if (raw.includes("Plan Without Execution")) {
+      return "Self-Correction: Plan Execution Protocol";
+    }
+    if (raw.includes("Incomplete Response") || raw.includes("Unexecuted Promise")) {
+      return "Self-Correction: Action Execution Check";
+    }
+    if (isObservationStep(raw)) {
+      return "System Guidance: Execution Check";
+    }
     const cleaned = cleanThoughtText(step.text);
     const firstLine = (cleaned || step.text || "")
       .split("\n")
@@ -153,11 +181,11 @@ export default function AgentActivityStream({ steps, isStreaming = false, elapse
         className="hover:bg-[rgba(255,255,255,0.08)]"
       >
         <span style={{ color: "var(--color-primary-soft, #a78bfa)" }}>
-          Worked for {elapsedSecs > 0 ? `${elapsedSecs}s` : `${Math.max(1, totalActions * 4)}s`}
+          Worked for {elapsedSecs > 0 ? `${elapsedSecs}s` : `${Math.max(1, validSteps.length * 4)}s`}
         </span>
-        {totalActions > 0 && (
+        {validSteps.length > 0 && (
           <span style={{ fontSize: "10px", color: "var(--color-mute, #64748b)", fontWeight: 500 }}>
-            • {totalActions} {totalActions === 1 ? "step" : "steps"}
+            • {validSteps.length} {validSteps.length === 1 ? "step" : "steps"}
           </span>
         )}
         <span style={{ color: "var(--color-mute, #64748b)", display: "flex", alignItems: "center" }}>
@@ -185,7 +213,8 @@ export default function AgentActivityStream({ steps, isStreaming = false, elapse
           }}
         >
           {validSteps.map((step, idx) => {
-            const { icon: StepIcon, color: iconColor } = getStepIcon(step.toolName);
+            const isObs = step.type === "thought" && isObservationStep(step.text);
+            const { icon: StepIcon, color: iconColor } = getStepIcon(step);
             const title = getStepTitle(step);
             const isOpen = openStepIdx === idx;
             const cleanedText = cleanThoughtText(step.text);
@@ -224,7 +253,7 @@ export default function AgentActivityStream({ steps, isStreaming = false, elapse
                     <span 
                       style={{ 
                         fontSize: "11.5px", 
-                        color: step.isError ? "#f87171" : "#cbd5e1", 
+                        color: isObs ? "#fbbf24" : step.isError ? "#f87171" : "#cbd5e1", 
                         overflow: "hidden", 
                         textOverflow: "ellipsis", 
                         whiteSpace: "nowrap",
@@ -236,6 +265,11 @@ export default function AgentActivityStream({ steps, isStreaming = false, elapse
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                    {isObs && (
+                      <span style={{ fontSize: "9px", color: "#f59e0b", background: "rgba(245, 158, 11, 0.12)", border: "1px solid rgba(245, 158, 11, 0.25)", padding: "1px 5px", borderRadius: "3px", fontWeight: 500 }}>
+                        Guidance
+                      </span>
+                    )}
                     {step.isError && (
                       <span style={{ fontSize: "9px", color: "#f87171", background: "rgba(239, 68, 68, 0.1)", padding: "1px 5px", borderRadius: "3px" }}>
                         Error
@@ -298,7 +332,42 @@ export default function AgentActivityStream({ steps, isStreaming = false, elapse
                       </div>
                     )}
 
-                    {(cleanedText || (step.text && !step.result)) && (
+                    {isObs ? (
+                      <div 
+                        style={{ 
+                          background: "rgba(245, 158, 11, 0.04)", 
+                          border: "1px solid rgba(245, 158, 11, 0.2)", 
+                          borderRadius: "6px", 
+                          padding: "10px 12px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "6px"
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#fbbf24", fontSize: "11px", fontWeight: 600 }}>
+                            <AlertTriangle size={13} />
+                            <span>System Guidance & Correction</span>
+                          </div>
+                          <span style={{ fontSize: "9px", color: "#f59e0b", background: "rgba(245, 158, 11, 0.1)", padding: "1px 5px", borderRadius: "3px" }}>
+                            Protocol Check
+                          </span>
+                        </div>
+                        <div style={{ color: "#cbd5e1", fontSize: "11px", lineHeight: 1.55 }}>
+                          <ReactMarkdown 
+                            skipHtml={true} 
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              p: ({ children }) => <p style={{ margin: "2px 0 6px 0", lineHeight: 1.55 }}>{children}</p>,
+                              pre: ({ children }) => <pre style={{ margin: "4px 0", padding: "6px 8px", background: "#0c0c10", borderRadius: 4, overflowX: "auto", border: "1px solid rgba(255,255,255,0.06)" }}>{children}</pre>,
+                              code: ({ children, className }) => className ? <code>{children}</code> : <code style={{ padding: "1px 4px", background: "rgba(255,255,255,0.08)", borderRadius: 3, color: "#38bdf8" }}>{children}</code>
+                            }}
+                          >
+                            {cleanedText}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    ) : (cleanedText || (step.text && !step.result)) && (
                       <div 
                         style={{ 
                           color: "#cbd5e1", 

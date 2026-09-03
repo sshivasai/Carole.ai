@@ -573,11 +573,25 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision, user: d
     """
     Resolves a pending human-in-the-loop approval request.
     Called by the frontend when the user clicks Approve or Deny.
+    Idempotent: if already resolved, returns status 'already_resolved' with 200 OK.
     """
-    from core.tools.tool_executor import pending_approvals, approval_results
+    from core.tools.tool_executor import pending_approvals, approval_results, resolved_approvals
 
     if tx_id not in pending_approvals:
-        raise HTTPException(status_code=404, detail=f"Transaction '{tx_id}' not found or already resolved.")
+        res_info = resolved_approvals.get(tx_id)
+        if res_info:
+            return {
+                "status": "already_resolved",
+                "tx_id": tx_id,
+                "action": res_info.get("action", "APPROVED"),
+                "message": f"Transaction '{tx_id}' was already resolved."
+            }
+        return {
+            "status": "already_resolved",
+            "tx_id": tx_id,
+            "action": "APPROVED" if decision.approved else "DENIED",
+            "message": f"Transaction '{tx_id}' not found or already resolved."
+        }
 
     # Store the decision and signal the waiting agent coroutine
     approval_results[tx_id] = decision.approved
@@ -586,6 +600,21 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision, user: d
     action = "APPROVED" if decision.approved else "DENIED"
     logger.info("Human %s approval '%s' for tx_id=%s", action.lower(), tx_id, user.get("email", "unknown"))
     return {"status": "ok", "tx_id": tx_id, "action": action}
+
+
+@app.get("/api/tools/approvals/pending/{team_id}")
+async def list_pending_approvals(team_id: str, user: dict = Depends(require_auth)):
+    """
+    Returns active in-memory pending approvals for the specified team.
+    Enables the frontend to verify whether a cached approval is still waiting.
+    """
+    from core.tools.tool_executor import pending_approval_details
+
+    active = [
+        details for details in pending_approval_details.values()
+        if details.get("team_id") == team_id
+    ]
+    return active
 
 
 # ============================================================

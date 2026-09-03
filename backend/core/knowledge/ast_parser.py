@@ -39,6 +39,10 @@ def _init_tree_sitter_parsers() -> None:
             "tsx": ("tree_sitter_typescript", "language_tsx"),
             "rust": ("tree_sitter_rust", "language"),
             "go": ("tree_sitter_go", "language"),
+            "java": ("tree_sitter_java", "language"),
+            "c": ("tree_sitter_c", "language"),
+            "cpp": ("tree_sitter_cpp", "language"),
+            "c_sharp": ("tree_sitter_c_sharp", "language"),
         }
 
         for lang_key, (mod_name, func_name) in lang_modules.items():
@@ -103,17 +107,21 @@ def parse_tree_sitter(content: str, rel_path: str, lang_key: str) -> Tuple[List[
     # Node types mapping across languages
     FUNC_TYPES = {
         "function_definition", "function_declaration", "method_definition",
-        "arrow_function", "function_item", "method_declaration"
+        "arrow_function", "function_item", "method_declaration",
+        "constructor_declaration"
     }
     CLASS_TYPES = {
         "class_definition", "class_declaration", "struct_item", "impl_item",
-        "trait_item", "type_declaration"
+        "trait_item", "type_declaration", "class_specifier", "struct_specifier",
+        "record_declaration", "namespace_definition"
     }
     TYPE_TYPES = {
-        "interface_declaration", "type_alias_declaration", "enum_declaration", "enum_item"
+        "interface_declaration", "type_alias_declaration", "enum_declaration",
+        "enum_item", "enum_specifier", "struct_declaration"
     }
     IMPORT_TYPES = {
-        "import_statement", "import_from_statement", "use_declaration"
+        "import_statement", "import_from_statement", "use_declaration",
+        "import_declaration", "using_directive", "preproc_include"
     }
 
     def walk(node: Any, current_parent: Optional[str] = None):
@@ -124,7 +132,7 @@ def parse_tree_sitter(content: str, rel_path: str, lang_key: str) -> Tuple[List[
             raw_imp = _get_node_text(node, content_bytes).strip()
             imports.append(raw_imp)
             for mod in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", raw_imp):
-                if mod not in ("import", "from", "as", "use", "pub", "crate"):
+                if mod not in ("import", "from", "as", "use", "pub", "crate", "using", "include"):
                     imports.append(mod)
             return
 
@@ -135,9 +143,17 @@ def parse_tree_sitter(content: str, rel_path: str, lang_key: str) -> Tuple[List[
             calls = []
 
             for child in node.children:
-                if child.type in ("identifier", "name", "property_identifier"):
+                if child.type in ("identifier", "name", "property_identifier", "field_identifier"):
                     if not name:
                         name = _get_node_text(child, content_bytes)
+                elif child.type == "function_declarator":
+                    for sub in child.children:
+                        if sub.type in ("identifier", "field_identifier"):
+                            if not name:
+                                name = _get_node_text(sub, content_bytes)
+                        elif sub.type in ("parameter_list", "parameters"):
+                            raw_params = _get_node_text(sub, content_bytes)
+                            params = [p.strip().split(":")[0].strip() for p in raw_params.strip("()").split(",") if p.strip()]
                 elif child.type in ("parameters", "formal_parameters", "parameter_list"):
                     raw_params = _get_node_text(child, content_bytes)
                     params = [p.strip().split(":")[0].strip() for p in raw_params.strip("()").split(",") if p.strip()]
@@ -375,6 +391,15 @@ def parse_file_ast(content: str, rel_path: str) -> Tuple[List[ASTChunk], List[st
             ".cjs": "javascript",
             ".rs": "rust",
             ".go": "go",
+            ".java": "java",
+            ".c": "c",
+            ".h": "c",
+            ".cpp": "cpp",
+            ".cc": "cpp",
+            ".cxx": "cpp",
+            ".hpp": "cpp",
+            ".hxx": "cpp",
+            ".cs": "c_sharp",
         }
         lang_key = lang_map.get(ext)
         if lang_key and lang_key in _TS_PARSERS:

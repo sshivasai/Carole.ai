@@ -37,6 +37,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     localStorage.removeItem("carole_token");
     localStorage.removeItem("carole_user");
+    try {
+      Object.keys(localStorage).forEach(k => {
+        if (k.startsWith("carole_pending_approvals_")) {
+          localStorage.removeItem(k);
+        }
+      });
+    } catch {}
     setUser(null);
     setToken(null);
   }, []);

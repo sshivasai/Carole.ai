@@ -17,13 +17,16 @@ class IntentEngine:
 
     # Pure informational query prefixes that should NOT be forced to call a tool
     _PURE_QUESTION_PREFIXES = (
-        "what is", "what are", "what does", "what do",
+        "what is", "what are", "what does", "what do", "what can", "what will",
         "why is", "why are", "why did", "why does", "why do",
-        "how does", "how do", "how come",
+        "how does", "how do", "how come", "how can", "how would",
         "who is", "who are", "who was",
         "explain how", "explain what", "explain why", "can you explain",
         "tell me about", "tell me what", "describe what", "describe how",
         "is it possible to", "difference between",
+        "do you have", "do you", "do we have", "can you tell me",
+        "are you able to", "is there", "are there", "have you", "has anyone",
+        "which tools", "what tools", "what capabilities", "what permissions",
     )
 
     # Imperative action verbs
@@ -47,7 +50,7 @@ class IntentEngine:
 
     # Patterns indicating unexecuted promises ("I will open the file", "Let me search for that")
     _UNEXECUTED_PROMISE_PATTERNS = [
-        re.compile(r"\b(?:i'll|i\s+will|let\s+me|let's|i\s+am\s+going\s+to|working\s+on\s+it|just\s+a\s+moment|one\s+moment)\b", re.IGNORECASE),
+        re.compile(r"\b(?:i'll|i\s+will|let\s+me(?!\s+know)|let's|i\s+am\s+going\s+to|working\s+on\s+it|just\s+a\s+moment|one\s+moment)\b", re.IGNORECASE),
         re.compile(r"\b(?:i'll\s+hire|i\s+will\s+hire|i'll\s+spawn|i\s+will\s+spawn|i'll\s+delegate|hiring\s+a|spawning\s+a)\b", re.IGNORECASE),
     ]
 
@@ -63,17 +66,46 @@ class IntentEngine:
     )
 
     @classmethod
+    def classify_intent(cls, prompt: str) -> Tuple[str, float]:
+        """
+        Classifies user prompt using semantic router (vector cosine similarity).
+        Returns (route_name, score). Falls back to ('unknown', 0.0).
+        """
+        try:
+            from core.agent.semantic_router import semantic_router
+            match = semantic_router.route(prompt)
+            if match:
+                return match.name, match.score
+        except Exception:
+            pass
+        return "unknown", 0.0
+
+    @classmethod
     def is_action_request(cls, prompt: str) -> bool:
         """
         Determines if a user prompt is an actionable request that mandates
         a tool execution on Turn 1.
+        Uses SemanticRouter first, then falls back to grammar/regex rules.
         """
         if not prompt or not prompt.strip():
             return False
 
+        # Phase 1: Semantic Intent Routing (Vector Similarity)
+        route_name, score = cls.classify_intent(prompt)
+        if route_name in ("capability_inquiry", "chitchat_greeting", "informational_question"):
+            return False
+        if route_name == "imperative_action":
+            return True
+
+        # Phase 2: Grammar & Rule-based Fallback
         p = prompt.strip().lower()
 
-        # 1. If it starts with an informational question prefix, it's not an action mandate
+        # Check for capability / access inquiries (e.g. "do you have access to write something into memory tool?")
+        if re.search(r"^(?:do\s+you\s+have|are\s+you\s+able\s+to|can\s+you\s+access|what\s+tools?\s+do\s+you\s+have|which\s+tools?\s+do\s+you\s+have)\b", p):
+            if any(term in p for term in ["access", "tool", "tools", "permission", "permissions", "capability", "capabilities", "memory"]):
+                return False
+
+        # If it starts with an informational question prefix, it's not an action mandate
         # UNLESS it also contains an explicit compound action directive (e.g. "How does auth work? Find the auth file")
         for q_pre in cls._PURE_QUESTION_PREFIXES:
             if p.startswith(q_pre):
@@ -150,6 +182,12 @@ class IntentEngine:
 
         text_lower = response_text.lower()
 
+        # Ignore conversational phrases like "let me know" or "let me see if"
+        if "let me know" in text_lower or "let me see if" in text_lower:
+            cleaned_check = re.sub(r"\blet\s+me\s+(?:know|see\s+if)\b", "", text_lower)
+            if not any(pat.search(cleaned_check) for pat in cls._UNEXECUTED_PROMISE_PATTERNS):
+                return None
+
         # Check for delegation promise without action
         if any(p in text_lower for p in ["i'll hire", "i will hire", "i'll spawn", "i will spawn", "i'll delegate", "spawning a"]):
             return (
@@ -166,9 +204,9 @@ class IntentEngine:
                 return (
                     "[OBSERVATION] Incomplete Response / Unexecuted Promise.\n"
                     "You stated you would take an action, but did not actually call a tool.\n"
-                    "Saying you will do something is not doing it. You MUST immediately execute the tool using:\n"
-                    "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                    "Otherwise, if you have finished all work, deliver your complete final answer immediately.[/OBSERVATION]"
+                    "Saying you will do something is not doing it. If an action is required, call the real tool (e.g. [ACTION]read_file(...)[/ACTION]).\n"
+                    "Do NOT use placeholder names like 'tool_name'.\n"
+                    "Otherwise, if you have answered the user's question or no tool is needed, deliver your final direct answer without an [ACTION] tag.[/OBSERVATION]"
                 )
 
         return None

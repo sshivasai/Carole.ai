@@ -129,6 +129,15 @@ async def test_human_in_the_loop_approval_resolution(client: AsyncClient):
     pending_approvals.pop(tx_id_2, None)
     approval_results.pop(tx_id_2, None)
 
+    # 3. Test idempotency — approving already-resolved tx_id returns 200 with status: already_resolved
+    idempotent_res = await client.post(
+        f"/api/tools/approve/{tx_id_2}",
+        json={"approved": True},
+        headers=headers
+    )
+    assert idempotent_res.status_code == 200
+    assert idempotent_res.json()["status"] == "already_resolved"
+
 
 @pytest.mark.asyncio
 async def test_interactive_ask_user_resolution(client: AsyncClient):

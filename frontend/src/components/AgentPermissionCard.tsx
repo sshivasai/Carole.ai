@@ -124,8 +124,13 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
     setLocalDecision(approved ? "approved" : "denied");
     try {
       await onDecide(approved);
-    } catch {
-      setLocalDecision(null);
+    } catch (e: any) {
+      // If already resolved or 404, keep decision as approved/denied
+      if (e?.message?.includes("already resolved") || e?.message?.includes("not found") || e?.status === 404) {
+        setLocalDecision(approved ? "approved" : "denied");
+      } else {
+        setLocalDecision(null);
+      }
     }
   };
 
@@ -226,6 +231,12 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
 
         {/* Decision Buttons (Bright Blue Approve vs Dark Slate Deny) */}
         {status === "pending" ? (
+          timeLeft <= 0 ? (
+            <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "8px", padding: "8px 12px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid rgba(255, 255, 255, 0.08)", fontSize: "12px", color: "#94a3b8" }}>
+              <Scale size={14} color="#a78bfa" />
+              <span>Approval window elapsed • Action evaluated by Judge AI / settled</span>
+            </div>
+          ) : (
           <div style={{ marginTop: "14px" }}>
             <div style={{
               display: "flex", 
@@ -299,6 +310,7 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
               </button>
             </div>
           </div>
+          )
         ) : (
           <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "6px", fontSize: "11.5px", color: status === "approved" ? "#34d399" : "#f87171" }}>
             {status === "approved" ? <Check size={13} /> : <X size={13} />}

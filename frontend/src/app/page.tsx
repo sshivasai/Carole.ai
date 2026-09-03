@@ -134,9 +134,8 @@ function applyWSEvent(prev: ChatMessage[], evt: any, user: any): ChatMessage[] {
       });
     }
     case "approval_resolved": {
-      const sid = `streaming-${evt.agent_id || evt.sender_id}`;
       return prev.map(m => {
-        if (m.id === sid && m.pending_approval && m.pending_approval.tx_id === evt.tx_id) {
+        if (m.pending_approval && m.pending_approval.tx_id === evt.tx_id) {
           return { ...m, pending_approval: { ...m.pending_approval, status: evt.status } };
         }
         if (m.type === "approval_request" && m.tx_id === evt.tx_id) {
@@ -473,12 +472,18 @@ function AppShell() {
       setMessages(prev => {
         const updated = applyWSEvent(prev, evt, user);
         
-        if (evt.type.startsWith("approval_") && teamId) {
+        if ((evt.type.startsWith("approval_") || evt.type === "message" || (evt.type === "agent_status" && evt.status === "idle")) && teamId) {
           const pending = updated.filter(m => 
             (m.type === "approval_request" && m.status !== "approved" && m.status !== "denied") ||
             (m.pending_approval && m.pending_approval.status !== "approved" && m.pending_approval.status !== "denied")
           ).map(m => m.pending_approval ? { id: makeId(), sender_id: m.sender_id, sender_name: m.sender_name, text: m.pending_approval.text || "", type: "approval_request", tx_id: m.pending_approval.tx_id, tool_name: m.pending_approval.tool_name, arguments: m.pending_approval.arguments, timestamp: m.timestamp } : m);
-          try { localStorage.setItem(`carole_pending_approvals_${teamId}`, JSON.stringify(pending)); } catch {}
+          try {
+            if (pending.length === 0) {
+              localStorage.removeItem(`carole_pending_approvals_${teamId}`);
+            } else {
+              localStorage.setItem(`carole_pending_approvals_${teamId}`, JSON.stringify(pending));
+            }
+          } catch {}
         }
         
         return updated.length > 150 ? updated.slice(-150) : updated;
@@ -626,13 +631,55 @@ function AppShell() {
            return m;
         });
         
-        let hydratedApprovals = [];
+        let hydratedApprovals: any[] = [];
         try {
           const saved = localStorage.getItem(`carole_pending_approvals_${teamId}`);
-          if (saved) hydratedApprovals = JSON.parse(saved);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            const now = Date.now();
+            hydratedApprovals = (Array.isArray(parsed) ? parsed : []).filter((item: any) => {
+              const ts = typeof item.timestamp === "number" ? item.timestamp : new Date(item.timestamp || 0).getTime();
+              return !isNaN(ts) && (now - ts) < 60_000 && item.status !== "approved" && item.status !== "denied";
+            });
+            if (hydratedApprovals.length === 0) {
+              localStorage.removeItem(`carole_pending_approvals_${teamId}`);
+            } else {
+              localStorage.setItem(`carole_pending_approvals_${teamId}`, JSON.stringify(hydratedApprovals));
+            }
+          }
         } catch {}
         
         setMessages([...finalMsgs, ...hydratedApprovals]);
+
+        // Reconcile with active in-memory pending approvals on backend
+        if (teamId) {
+          api.listPendingApprovals(teamId).then((activeList: any[]) => {
+            const activeTxIds = new Set((activeList || []).map((a: any) => a.tx_id));
+            setMessages(prev => {
+              const hasStale = prev.some(m => {
+                const tx = m.pending_approval?.tx_id || (m.type === "approval_request" ? m.tx_id : null);
+                return tx && !activeTxIds.has(tx);
+              });
+              if (!hasStale) return prev;
+              const filtered = prev.filter(m => {
+                const tx = m.tx_id;
+                if (m.type === "approval_request" && tx && !activeTxIds.has(tx)) return false;
+                return true;
+              }).map(m => {
+                if (m.pending_approval && !activeTxIds.has(m.pending_approval.tx_id)) {
+                  return { ...m, pending_approval: undefined };
+                }
+                return m;
+              });
+              try {
+                if (!activeList || activeList.length === 0) {
+                  localStorage.removeItem(`carole_pending_approvals_${teamId}`);
+                }
+              } catch {}
+              return filtered;
+            });
+          }).catch(() => {});
+        }
         setCompactionEvents((cpEvents as any[]).map((e: any) => ({
           id: e.id,
           triggered_by: e.triggered_by ?? "auto",

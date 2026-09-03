@@ -279,6 +279,7 @@ export const api = {
 
   // ── Tools & Plugins ──
   listTools: () => apiFetch<any[]>("/api/tools"),
+  listPendingApprovals: (teamId: string) => apiFetch<any[]>(`/api/tools/approvals/pending/${teamId}`),
   approveToolExecution: (txId: string, approved: boolean) =>
     apiFetch<any>(`/api/tools/approve/${txId}`, { method: "POST", body: JSON.stringify({ approved }) }),
   registerTool: (data: { name: string; description: string; parameters: any; endpoint_url: string }) =>

@@ -1413,24 +1413,20 @@ class ReACTAgent:
                             correction = (
                                 "[OBSERVATION] Action Required — No Tool Call Executed.\n"
                                 f"The user gave an actionable task: \"{initial_prompt[:120]}\".\n"
-                                "You responded conversationally without executing any tool. You MUST execute the required tool immediately.\n"
-                                "Use the required format:\n"
-                                "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                                "Execute your tool call NOW.[/OBSERVATION]"
+                                "If the user requested an action, you MUST execute the required tool immediately (e.g. [ACTION]read_file(...)[/ACTION]).\n"
+                                "NOTE: If the user only asked a capability question, greeting, or informational query, deliver your direct conversational response without an [ACTION] tag.[/OBSERVATION]"
                             )
                     elif has_thought_without_action:
                         if _is_orchestrator:
                             correction = (
-                                "[OBSERVATION] You have completed your reasoning. Now execute your orchestration action immediately using the required format:\n"
-                                "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
+                                "[OBSERVATION] You have completed your reasoning. Now execute your orchestration action immediately:\n"
                                 "For example: [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION] or [ACTION]create_task({\"title\": \"...\"})[/ACTION]\n"
                                 "Execute your delegation tool call NOW.[/OBSERVATION]"
                             )
                         else:
                             correction = (
-                                "[OBSERVATION] You have completed your reasoning. Now execute your planned tool action immediately using the required format:\n"
-                                "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                                "For example: [ACTION]write_file({\"relative_path\": \"hello_subagent.txt\", \"content\": \"Hello from subagent!\"})[/ACTION]\n"
+                                "[OBSERVATION] You have completed your reasoning. Now execute your planned tool action immediately:\n"
+                                "For example: [ACTION]write_file({\"relative_path\": \"...\", \"content\": \"...\"})[/ACTION] or [ACTION]read_file({\"relative_path\": \"...\"})[/ACTION]\n"
                                 "Execute your tool call NOW.[/OBSERVATION]"
                             )
                     elif is_code_in_chat and not looks_like_tool_call:
@@ -1461,13 +1457,13 @@ class ReACTAgent:
                             )
                     elif unexecuted_promise_msg:
                         correction = unexecuted_promise_msg
-                    elif any(sig in _lower for sig in ["let me", "i'll", "i will", "let's", "working on it", "just a moment", "one moment"]):
+                    elif "let me know" not in _lower and "let me see if" not in _lower and any(sig in _lower for sig in ["let me", "i'll", "i will", "let's", "working on it", "just a moment", "one moment"]):
                         correction = (
                             "[OBSERVATION] Incomplete Response / Unexecuted Promise.\n"
                             "You stated you would take an action or check something, but did not actually call a tool.\n"
-                            "Saying you will do something is not doing it. You MUST immediately call the tool using:\n"
-                            "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                            "Otherwise, if you have finished all work, deliver your complete final answer to the user immediately.[/OBSERVATION]"
+                            "Saying you will do something is not doing it. If an action is required, call the real tool (e.g. [ACTION]read_file(...)[/ACTION]).\n"
+                            "Do NOT use placeholder names like 'tool_name'.\n"
+                            "Otherwise, if you have finished all work or answered the user's question, deliver your complete final answer to the user immediately without an [ACTION] tag.[/OBSERVATION]"
                         )
                     else:
                         # Check if it was a delegation promise specifically
@@ -1491,10 +1487,10 @@ class ReACTAgent:
                         else:
                             correction = (
                                 "[OBSERVATION] Error — Missing Tool Call Tag.\n"
-                                "You indicated an action but did not include an [ACTION] tag. Use this exact format:\n"
-                                "  [ACTION]tool_name({\"param\": \"value\"})[/ACTION]\n"
-                                "For example: [ACTION]read_file({\"relative_path\": \"backend/main.py\"})[/ACTION]\n"
-                                "Execute the tool call now.[/OBSERVATION]"
+                                "You indicated an action but did not include an [ACTION] tag.\n"
+                                "Use the required format with a real tool from your tools list (e.g. [ACTION]read_file({\"relative_path\": \"backend/main.py\"})[/ACTION]).\n"
+                                "Do NOT use placeholder names like 'tool_name'.\n"
+                                "If no tool is needed, deliver your direct final answer.[/OBSERVATION]"
                             )
                     # FIX L2: Alternating-turn constraint.
                     # The messages list may end with a `user` message (the last observation).
@@ -1509,13 +1505,21 @@ class ReACTAgent:
                             "content": "[Acknowledged — executing correction]"
                         })
                     messages.append({"role": "user", "content": correction})
+                    self._current_reasoning_buffer += f"\n\n💭 **Observation:**\n{correction}\n\n"
                     try:
+                        attachments_list = []
+                        if self.parent_message_id:
+                            attachments_list.append({
+                                "type": "parent_message",
+                                "id": self.parent_message_id
+                            })
                         db_msg = Message(
                             team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
                             sender_id="system",
                             sender_name="System",
                             text=correction,
                             is_intermediate=True,
+                            attachments=attachments_list,
                         )
                         db_session.add(db_msg)
                         await db_session.commit()
@@ -2101,6 +2105,9 @@ class ReACTAgent:
         )
         if tagged_match:
             tool_name = tagged_match.group(1)
+            # Guard against dummy placeholder invocations (e.g. model literally copying [ACTION]tool_name(...)[/ACTION])
+            if tool_name.lower() in ("tool_name", "toolname", "placeholder", "example_tool", "your_tool", "some_tool"):
+                return None
             scan_start = tagged_match.end()
         else:
             # 2. Untagged match: Only match genuine registered tool names
