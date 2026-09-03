@@ -48,6 +48,7 @@ from core.api.scratchpad_routes import router as scratchpad_router
 from core.api.cron_routes import router as cron_router
 from core.api.notification_routes import router as notification_router
 from core.api.browser_routes import router as browser_router
+from core.api.observability_routes import router as observability_router
 
 import logging
 import importlib
@@ -189,6 +190,13 @@ async def lifespan(app: FastAPI):
 
     sweeper_task = asyncio.create_task(_topic_sweeper(), name="topic_sweeper")
 
+    # Initialize OpenLLMetry Observability & Tracing
+    try:
+        from core.observability.openllmetry_tracer import init_openllmetry
+        init_openllmetry()
+    except Exception as e:
+        logger.warning("OpenLLMetry initialization warning: %s", e)
+
     # Store all background task references in app.state
     app.state.background_tasks = [dream_task, sweeper_task, cron_task]
 
@@ -298,6 +306,7 @@ app.include_router(model_router)
 app.include_router(cron_router)
 app.include_router(notification_router)
 app.include_router(browser_router)
+app.include_router(observability_router)
 
 
 # ============================================================

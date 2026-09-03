@@ -145,7 +145,7 @@ const TECH_STACK_ITEMS = [
   { name: "Model2Vec", logo: "/logos/model2vec.svg" },
 
   // Observability & Security
-  { name: "Arize Phoenix", logo: "/logos/phoenix.png" },
+  { name: "OpenLLMetry", logo: "/logos/openllmetry.png" },
   { name: "Sentry", logo: "/logos/sentry.svg" },
   { name: "JWT", logo: "/logos/jwt.svg" },
 

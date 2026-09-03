@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Sliders,
   Sparkles,
+  Activity,
 } from "lucide-react";
 import type { AgentConfig } from "@/lib/types";
 import { api } from "@/hooks/useApi";
@@ -29,6 +30,7 @@ import RuntimeSafetySettings from "./settings/RuntimeSafetySettings";
 import BrowserSettings from "./settings/BrowserSettings";
 import PromptsSettings from "./settings/PromptsSettings";
 import ProjectCostSettings from "./settings/ProjectCostSettings";
+import ObservabilitySettings from "./settings/ObservabilitySettings";
 
 interface Props {
   teamId: string | null;
@@ -39,7 +41,7 @@ interface Props {
   onProjectDeleted: () => void;
 }
 
-type TabKey = "general" | "providers" | "models" | "runtime" | "prompts" | "browser" | "project";
+type TabKey = "general" | "providers" | "models" | "observability" | "runtime" | "prompts" | "browser" | "project";
 
 interface TabDefinition {
   id: TabKey;
@@ -73,6 +75,14 @@ const SETTINGS_TABS: TabDefinition[] = [
     icon: Cpu,
     description: "Global fallback models (Fast, Smart, Coder, Judge) and provider model catalog.",
     keywords: ["models", "defaults", "catalog", "fast", "smart", "coder", "judge", "gpt", "claude", "gemini", "llama", "temperature"],
+    group: "AI & Capabilities",
+  },
+  {
+    id: "observability",
+    label: "OpenLLMetry Tracing",
+    icon: Activity,
+    description: "Native OpenTelemetry distributed traces, multi-agent swarm spans, latency, and token metrics.",
+    keywords: ["openllmetry", "observability", "tracing", "spans", "telemetry", "opentelemetry", "tokens", "latency", "flamegraph", "metrics"],
     group: "AI & Capabilities",
   },
   {
@@ -367,6 +377,7 @@ export default function SettingsPanel({
             {activeTab === "general" && <GeneralSettings teamId={teamId} onToast={onToast} />}
             {activeTab === "providers" && <ProvidersSettings onToast={onToast} />}
             {activeTab === "models" && <ModelsSettings onToast={onToast} />}
+            {activeTab === "observability" && <ObservabilitySettings onToast={onToast} />}
             {activeTab === "runtime" && <RuntimeSafetySettings onToast={onToast} />}
             {activeTab === "prompts" && <PromptsSettings onToast={onToast} />}
             {activeTab === "browser" && <BrowserSettings onToast={onToast} />}
