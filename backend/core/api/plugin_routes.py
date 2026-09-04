@@ -40,6 +40,34 @@ import ast
 _SAFE_PLUGIN_FILENAME_RE = re.compile(r'^[a-zA-Z0-9_-]+\.py$')
 
 
+class PluginSecurityChecker(ast.NodeVisitor):
+    FORBIDDEN_MODULES = {"subprocess", "shutil", "socket", "pty", "winpty", "ctypes"}
+    FORBIDDEN_CALLS = {"eval", "exec", "__import__", "compile"}
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            base_mod = alias.name.split(".")[0]
+            if base_mod in self.FORBIDDEN_MODULES:
+                raise ValueError(f"Importing '{base_mod}' is forbidden in custom plugins for security.")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        if node.module:
+            base_mod = node.module.split(".")[0]
+            if base_mod in self.FORBIDDEN_MODULES:
+                raise ValueError(f"Importing from '{base_mod}' is forbidden in custom plugins for security.")
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name) and node.func.id in self.FORBIDDEN_CALLS:
+            raise ValueError(f"Calling '{node.func.id}()' is forbidden in custom plugins for security.")
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "os":
+                if node.func.attr in {"system", "popen", "spawn", "kill", "remove", "unlink", "rmdir"}:
+                    raise ValueError(f"Calling 'os.{node.func.attr}()' is forbidden in custom plugins.")
+        self.generic_visit(node)
+
+
 def _validate_plugin_filename(filename: str) -> None:
     """Validate plugin filename is safe (no path traversal, no dangerous chars)."""
     if not _SAFE_PLUGIN_FILENAME_RE.match(filename):
@@ -60,11 +88,14 @@ async def save_plugin(filename: str, body: PluginCode, user: dict = Depends(requ
     """Save a plugin file and hot-reload the tool registry. Requires authentication."""
     _validate_plugin_filename(filename)
     
-    # Pre-validate Python syntax before saving
+    # Pre-validate Python syntax and AST security before saving
     try:
-        ast.parse(body.code, filename=filename)
+        tree = ast.parse(body.code, filename=filename)
+        PluginSecurityChecker().visit(tree)
     except SyntaxError as e:
         raise HTTPException(400, f"Python syntax error on line {e.lineno}: {e.msg}")
+    except ValueError as e:
+        raise HTTPException(400, f"Security screening rejected plugin: {e}")
 
     file_path = PLUGINS_DIR / filename
     

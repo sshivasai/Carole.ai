@@ -61,6 +61,7 @@ def validate_auth_config():
 # PBKDF2 config — 100k iterations is OWASP-recommended minimum for SHA-256.
 _PBKDF2_ITERATIONS = 100_000
 _PBKDF2_PREFIX = "pbkdf2$"
+_DUMMY_PBKDF2_HASH = "pbkdf2$YWFhYWFhYWFhYWFhYWFhYQ==$YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="
 
 
 def _hash_password(password: str) -> str:
@@ -193,10 +194,11 @@ class AuthService:
         result = await db.execute(stmt)
         user = result.scalar_one_or_none()
 
-        if not user:
-            return {"error": "Invalid email or password."}
+        # Constant-time verification to prevent user enumeration timing attacks
+        target_hash = user.hashed_password if user and user.hashed_password else _DUMMY_PBKDF2_HASH
+        valid_password = _verify_password(password, target_hash)
 
-        if not _verify_password(password, user.hashed_password):
+        if not user or not valid_password:
             return {"error": "Invalid email or password."}
 
         if not user.is_active:

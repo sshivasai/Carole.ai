@@ -12,6 +12,7 @@ Permission Levels:
 """
 
 import re
+import time
 import uuid
 import asyncio
 import logging
@@ -116,9 +117,10 @@ def register_builtin_tools():
                  "safe", _wrap_glob_search),
 
         # ---- Shell (Strict Exclusivity) ----
-        ToolSpec("execute_command", "Execute a shell command in the workspace. Reserved for test runners (pytest/npm test), build tools, and scripts. STRICT POLICY: Do NOT use to read files (use read_file), edit files (use edit_file), create files (use write_file), or search (use grep_search). Use 'cwd' to run in subdirectories.", "shell",
+        ToolSpec("execute_command", "Execute a shell command in the workspace. Reserved for test runners (pytest/npm test), build tools, and scripts. STRICT POLICY: Do NOT use to read files (use read_file), edit files (use edit_file), create files (use write_file), or search (use grep_search). Use 'cwd' to run in subdirectories. Use 'background: true' for long-running processes or servers.", "shell",
                  {"command": {"type": "string", "required": True, "description": "Shell command to run (e.g., pytest, npm test, python main.py)"},
                   "timeout": {"type": "number", "required": False, "description": "Max seconds to wait (default 60)"},
+                  "background": {"type": "boolean", "required": False, "description": "Run in background and return PID immediately (ideal for dev servers, pip install, or background workers)"},
                   "cwd": {"type": "string", "required": False, "description": "Subdirectory to run the command in, relative to workspace root (e.g. 'frontend', 'backend')"}},
                  "judge", _wrap_execute_command),
 
@@ -1019,21 +1021,24 @@ class ToolExecutor:
         if not spec:
             return f"Error: Tool '{tool_name}' is not registered in the system."
 
-        # ── Orchestrator Role Gating (Zoo-Code Mode Pattern) ──
-        # Orchestrators/Coordinators are strategic managers and must NOT write or mutate project files directly.
-        agent_role = (
-            (context.agent_role if context and getattr(context, "agent_role", None) else None)
-            or (arguments.get("_agent_role") if arguments else None)
-            or ""
-        ).lower()
-        if any(r in agent_role for r in ["orchestrator", "coordinator"]) or agent_name.strip().lower() == "archer":
-            if tool_name in {"write_file", "edit_file", "create_directory", "delete_file"}:
-                logger.info("🛑 [Executor] Blocked Orchestrator '%s' from calling file mutation tool '%s'.", agent_name, tool_name)
+        # ── Orchestrator Role Guard ──
+        # Orchestrators/Coordinators are hard-blocked from modifying project source code files directly,
+        # but ARE permitted to author planning/documentation Markdown files (*.md, *.markdown).
+        if context and getattr(context, "agent_role", None) in ("Orchestrator", "Coordinator"):
+            if tool_name in ("write_file", "edit_file", "append_file"):
+                rel = str(arguments.get("relative_path") or arguments.get("path") or arguments.get("filename") or "").strip()
+                is_md = rel.lower().endswith((".md", ".markdown"))
+                if not is_md:
+                    return (
+                        "Execution Denied: As an Orchestrator, you must NOT write or modify project files directly. "
+                        "Break the task down, create a task and assign it to the respective member of your team roster "
+                        "(e.g. create_task with assignee_name), or delegate using spawn_agent."
+                    )
+            elif tool_name in ("create_directory", "delete_file"):
                 return (
-                    f"✗ Execution Denied: As an Orchestrator, you must NOT write or modify project files directly.\n"
-                    f"Please delegate file operations and implementation to a specialist coder (e.g. Nova) using:\n"
-                    f'  [ACTION]spawn_agent({{"agent_name": "Nova", "task": "..."}})[/ACTION]\n'
-                    f"Or register the work on the Kanban board using [ACTION]create_task(...)[/ACTION]."
+                    "Execution Denied: As an Orchestrator, you must NOT write or modify project files directly. "
+                    "Break the task down, create a task and assign it to the respective member of your team roster "
+                    "(e.g. create_task with assignee_name), or delegate using spawn_agent."
                 )
 
         # ── Pre-validation of arguments ──
@@ -1075,9 +1080,13 @@ class ToolExecutor:
 
         # 1. Block — hard deny, no override, no evaluation
         if gate_level == "block":
-            logger.info("🛑 [Executor] Tool '%s' blocked by access control policy.", tool_name)
-            return (f"✗ Execution Blocked: '{tool_name}' is disabled by your Access Control policy. "
-                    "Update permissions in Agent Settings → Access Control.")
+            # Allow Orchestrator/Coordinator to write .md documentation even if the role default had write_file blocked
+            if context and getattr(context, "agent_role", None) in ("Orchestrator", "Coordinator") and _is_doc_write(tool_name, arguments):
+                pass
+            else:
+                logger.info("🛑 [Executor] Tool '%s' blocked by access control policy.", tool_name)
+                return (f"✗ Execution Blocked: '{tool_name}' is disabled by your Access Control policy. "
+                        "Update permissions in Agent Settings → Access Control.")
 
         # 2. Skip-judge whitelist fast-path
         if gate_level == "judge" and _matches_skip_judge(tool_name, arguments, effective_permissions):
@@ -1779,6 +1788,7 @@ async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
             )
 
     timeout = float(args.get("timeout", 60.0))
+    background = bool(args.get("background", False) or args.get("is_daemon", False))
     context = args.get("_context")
     base_cwd = await _team_cwd(team_id)
     # Allow agent to specify a subdirectory relative to workspace root
@@ -1793,7 +1803,7 @@ async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
             return f"Error: cwd '{sub_cwd}' escapes the workspace root."
     else:
         cwd = base_cwd
-    return await shell_tools.execute_command(command, team_id, timeout, context=context, cwd=cwd)
+    return await shell_tools.execute_command(command, team_id, timeout, context=context, cwd=cwd, background=background)
 
 
 async def _wrap_git_status(args: Dict[str, Any], team_id: str) -> str:

@@ -506,4 +506,11 @@ export const api = {
     apiFetch<{ id: string; triggered_by: string; message_count_before?: number; summary_preview?: string; created_at?: string }[]>(
       `/api/teams/${teamId}/compactions`
     ),
+
+  // ── Observability & OpenLLMetry ──
+  getObservabilityStats: () => apiFetch<any>("/api/observability/stats"),
+  getObservabilityTraces: (agent?: string) =>
+    apiFetch<any>(`/api/observability/traces${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`),
+  emitSampleTrace: () => apiFetch<any>("/api/observability/emit-sample", { method: "POST" }),
+  clearObservability: () => apiFetch<any>("/api/observability/clear", { method: "POST" }),
 };

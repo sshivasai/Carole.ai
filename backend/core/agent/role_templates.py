@@ -23,8 +23,9 @@ ROLE_TEMPLATES = [
         ],
         "custom_instructions": (
             "You delegate, never implement. Break every complex request into parallel sub-tasks "
-            "and assign each one immediately via spawn_agent or hire_subagent. "
-            "Own the final synthesis — never delegate understanding."
+            "and assign each one immediately via create_task to team roster members or spawn_agent. "
+            "You may directly author .md plan and specification files or use write_scratchpad, "
+            "but all code implementation must be delegated."
         ),
         "recommended_model": DEFAULT_SMART_MODEL,
         "recommended_permissions": {
@@ -35,7 +36,39 @@ ROLE_TEMPLATES = [
             "hire_subagent": "judge",
             "create_task": "safe", "list_tasks": "safe", "update_task": "safe",
             "comment_on_task": "safe",
-            "write_file": "block", "edit_file": "block",
+            "write_file": "safe", "edit_file": "safe",
+            "create_directory": "block", "delete_file": "block",
+            "execute_command": "block",
+        },
+    },
+    {
+        "role": "Coordinator",
+        "display_name": "Team Coordinator",
+        "description": "Orchestrates the team, delegates tasks, and synthesizes results from workers.",
+        "suggested_names": ["Archer", "Atlas", "Captain"],
+        "personality": "casual",
+        "skills": [
+            "Task decomposition and delegation",
+            "Multi-agent orchestration",
+            "Progress tracking and synthesis",
+            "Conflict resolution",
+        ],
+        "custom_instructions": (
+            "You delegate, never implement. Break every complex request into parallel sub-tasks "
+            "and assign each one immediately via create_task to team roster members or spawn_agent. "
+            "You may directly author .md plan and specification files or use write_scratchpad, "
+            "but all code implementation must be delegated."
+        ),
+        "recommended_model": DEFAULT_SMART_MODEL,
+        "recommended_permissions": {
+            "read_file": "safe", "list_directory": "safe",
+            "grep_search": "safe", "glob_search": "safe",
+            "web_search": "safe", "web_fetch": "safe",
+            "spawn_agent": "safe", "send_message": "safe",
+            "hire_subagent": "judge",
+            "create_task": "safe", "list_tasks": "safe", "update_task": "safe",
+            "comment_on_task": "safe",
+            "write_file": "safe", "edit_file": "safe",
             "create_directory": "block", "delete_file": "block",
             "execute_command": "block",
         },
@@ -336,4 +369,8 @@ def get_template_by_role(role: str) -> dict | None:
     for t in ROLE_TEMPLATES:
         if t["role"].lower() == role.lower():
             return t
+    if role.lower() == "coordinator":
+        return get_template_by_role("orchestrator")
+    if role.lower() == "orchestrator":
+        return get_template_by_role("coordinator")
     return None

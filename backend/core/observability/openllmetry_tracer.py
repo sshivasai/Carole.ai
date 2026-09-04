@@ -163,3 +163,26 @@ def get_observability_stats() -> Dict[str, Any]:
 def clear_traces():
     """Clears the in-memory telemetry buffer."""
     _TRACE_BUFFER.clear()
+
+
+# =====================================================================
+# Official OpenLLMetry Decorators for Agentic Workflows
+# =====================================================================
+try:
+    from traceloop.sdk.decorators import workflow, agent, task, tool
+except ImportError:
+    def workflow(name=None, **kwargs):
+        def decorator(fn): return fn
+        return decorator
+
+    def agent(name=None, **kwargs):
+        def decorator(fn): return fn
+        return decorator
+
+    def task(name=None, **kwargs):
+        def decorator(fn): return fn
+        return decorator
+
+    def tool(name=None, **kwargs):
+        def decorator(fn): return fn
+        return decorator

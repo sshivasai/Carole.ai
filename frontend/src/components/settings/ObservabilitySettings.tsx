@@ -8,16 +8,17 @@ import {
   Cpu,
   RefreshCw,
   Trash2,
-  Play,
   CheckCircle2,
   AlertCircle,
   ChevronDown,
   ChevronUp,
   Filter,
-  ShieldCheck,
-  Terminal,
   Layers,
+  Info,
+  HelpCircle,
 } from "lucide-react";
+import { api } from "@/hooks/useApi";
+import SettingTooltip from "./SettingTooltip";
 
 interface SpanRecord {
   trace_id: string;
@@ -28,7 +29,7 @@ interface SpanRecord {
   start_time: string | null;
   end_time: string | null;
   duration_ms: number;
-  attributes: Record<string, string>;
+  attributes: Record<string, any>;
   agent_name?: string;
   agent_role?: string;
   model?: string;
@@ -55,24 +56,22 @@ export default function ObservabilitySettings({ onToast }: Props) {
   const [stats, setStats] = useState<ObservabilityStats | null>(null);
   const [traces, setTraces] = useState<SpanRecord[]>([]);
   const [loading, setLoading] = useState(false);
-  const [emitting, setEmitting] = useState(false);
   const [expandedSpanId, setExpandedSpanId] = useState<string | null>(null);
   const [filterAgent, setFilterAgent] = useState<string>("");
+  const [showGuide, setShowGuide] = useState(false);
 
   const fetchTelemetry = useCallback(async () => {
     setLoading(true);
     try {
-      const [statsRes, tracesRes] = await Promise.all([
-        fetch("/api/observability/stats").catch(() => null),
-        fetch(`/api/observability/traces${filterAgent ? `?agent=${encodeURIComponent(filterAgent)}` : ""}`).catch(() => null),
+      const [statsData, tracesData] = await Promise.all([
+        api.getObservabilityStats().catch(() => null),
+        api.getObservabilityTraces(filterAgent || undefined).catch(() => null),
       ]);
 
-      if (statsRes && statsRes.ok) {
-        const statsData = await statsRes.json();
+      if (statsData) {
         setStats(statsData);
       }
-      if (tracesRes && tracesRes.ok) {
-        const tracesData = await tracesRes.json();
+      if (tracesData) {
         setTraces(tracesData.traces || []);
       }
     } catch (e) {
@@ -86,62 +85,43 @@ export default function ObservabilitySettings({ onToast }: Props) {
     fetchTelemetry();
   }, [fetchTelemetry]);
 
-  const handleEmitSample = async () => {
-    setEmitting(true);
-    try {
-      const res = await fetch("/api/observability/emit-sample", { method: "POST" });
-      if (res.ok) {
-        onToast("Sample OpenLLMetry swarm trace emitted!", "success");
-        await fetchTelemetry();
-      } else {
-        onToast("Failed to emit sample trace", "error");
-      }
-    } catch {
-      onToast("Network error emitting trace", "error");
-    } finally {
-      setEmitting(false);
-    }
-  };
-
   const handleClear = async () => {
     try {
-      const res = await fetch("/api/observability/clear", { method: "POST" });
-      if (res.ok) {
-        setTraces([]);
-        setStats((prev) =>
-          prev
-            ? {
-                ...prev,
-                total_spans: 0,
-                total_prompt_tokens: 0,
-                total_completion_tokens: 0,
-                avg_latency_ms: 0,
-                error_count: 0,
-                models_used: [],
-              }
-            : null
-        );
-        onToast("Telemetry buffer cleared", "info");
-      }
+      await api.clearObservability();
+      setTraces([]);
+      setStats((prev) =>
+        prev
+          ? {
+              ...prev,
+              total_spans: 0,
+              total_prompt_tokens: 0,
+              total_completion_tokens: 0,
+              avg_latency_ms: 0,
+              error_count: 0,
+              models_used: [],
+            }
+          : null
+      );
+      onToast("Telemetry buffer cleared", "info");
     } catch {
       onToast("Failed to clear telemetry buffer", "error");
     }
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {/* Brand Header Banner */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* ── Brand Header Banner ── */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           padding: "16px 20px",
-          background: "linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(168, 85, 247, 0.05) 100%)",
-          border: "1px solid rgba(168, 85, 247, 0.2)",
-          borderRadius: 12,
+          background: "linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(168, 85, 247, 0.08) 100%)",
+          border: "1px solid rgba(99, 102, 241, 0.25)",
+          borderRadius: "var(--radius-md, 10px)",
           flexWrap: "wrap",
-          gap: 12,
+          gap: 14,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -149,66 +129,88 @@ export default function ObservabilitySettings({ onToast }: Props) {
             src="/logos/openllmetry.png"
             alt="OpenLLMetry"
             style={{
-              width: 38,
-              height: 38,
-              borderRadius: 10,
+              width: 42,
+              height: 42,
+              borderRadius: "var(--radius-sm, 8px)",
               objectFit: "contain",
               background: "#0a0a1a",
-              padding: 4,
-              border: "1px solid rgba(255, 255, 255, 0.1)",
+              padding: 5,
+              border: "1px solid rgba(0, 0, 0, 0.1)",
+              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.08)",
             }}
           />
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "var(--color-heading, #ffffff)" }}>
-                OpenLLMetry Observability
+              <h3
+                style={{
+                  margin: 0,
+                  fontSize: 16,
+                  fontWeight: 700,
+                  color: "var(--color-fg-strong, #18181b)",
+                  fontFamily: "var(--font-family-display, sans-serif)",
+                }}
+              >
+                OpenLLMetry Live Observability
               </h3>
               <span
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: 4,
+                  gap: 5,
                   fontSize: 10.5,
                   fontWeight: 600,
                   padding: "2px 8px",
                   borderRadius: 12,
                   background: "rgba(16, 185, 129, 0.15)",
-                  color: "#34d399",
-                  border: "1px solid rgba(16, 185, 129, 0.3)",
+                  color: "#059669",
+                  border: "1px solid rgba(16, 185, 129, 0.35)",
                 }}
               >
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10b981", animation: "pulse 2s infinite" }} />
-                Native Tracing Active
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: "#10b981",
+                    display: "inline-block",
+                  }}
+                />
+                100% Realtime Active
               </span>
             </div>
-            <p style={{ margin: "3px 0 0 0", fontSize: 12, color: "var(--color-body, #94a3b8)" }}>
-              OpenTelemetry-native span collection for LLM calls, multi-agent swarms, tool executions, and tokens.
+            <p
+              style={{
+                margin: "4px 0 0 0",
+                fontSize: 12,
+                color: "var(--color-body, #52525b)",
+                lineHeight: 1.4,
+              }}
+            >
+              Real OpenTelemetry traces, token usage, and latency captured automatically during live agent execution.
             </p>
           </div>
         </div>
 
-        {/* Quick Actions */}
+        {/* Action Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
-            onClick={handleEmitSample}
-            disabled={emitting}
+            onClick={() => setShowGuide(!showGuide)}
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 6,
-              padding: "6px 12px",
-              background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
-              color: "#ffffff",
-              border: "none",
-              borderRadius: 8,
+              gap: 5,
+              padding: "7px 12px",
+              background: showGuide ? "rgba(99, 102, 241, 0.15)" : "var(--color-canvas-raised, #ffffff)",
+              color: showGuide ? "#4f46e5" : "var(--color-fg-strong, #18181b)",
+              border: "1px solid var(--color-hairline, #d1d5db)",
+              borderRadius: "var(--radius-sm, 6px)",
               fontSize: 12,
               fontWeight: 600,
-              cursor: emitting ? "not-allowed" : "pointer",
-              opacity: emitting ? 0.7 : 1,
+              cursor: "pointer",
             }}
           >
-            <Play size={13} />
-            {emitting ? "Emitting..." : "Emit Swarm Trace"}
+            <HelpCircle size={13} />
+            {showGuide ? "Hide Guide" : "Metrics Guide"}
           </button>
           <button
             onClick={fetchTelemetry}
@@ -217,17 +219,17 @@ export default function ObservabilitySettings({ onToast }: Props) {
               display: "inline-flex",
               alignItems: "center",
               gap: 5,
-              padding: "6px 12px",
-              background: "rgba(255, 255, 255, 0.05)",
-              color: "var(--color-heading, #ffffff)",
-              border: "1px solid var(--color-hairline, #2a2a3f)",
-              borderRadius: 8,
+              padding: "7px 12px",
+              background: "var(--color-canvas-raised, #ffffff)",
+              color: "var(--color-fg-strong, #18181b)",
+              border: "1px solid var(--color-hairline, #d1d5db)",
+              borderRadius: "var(--radius-sm, 6px)",
               fontSize: 12,
-              fontWeight: 500,
+              fontWeight: 600,
               cursor: "pointer",
             }}
           >
-            <RefreshCw size={12} className={loading ? "spin" : ""} />
+            <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
             Refresh
           </button>
           <button
@@ -236,155 +238,233 @@ export default function ObservabilitySettings({ onToast }: Props) {
               display: "inline-flex",
               alignItems: "center",
               gap: 5,
-              padding: "6px 10px",
-              background: "rgba(239, 68, 68, 0.1)",
-              color: "#f87171",
+              padding: "7px 12px",
+              background: "rgba(239, 68, 68, 0.08)",
+              color: "var(--color-danger, #dc2626)",
               border: "1px solid rgba(239, 68, 68, 0.25)",
-              borderRadius: 8,
+              borderRadius: "var(--radius-sm, 6px)",
               fontSize: 12,
+              fontWeight: 600,
               cursor: "pointer",
             }}
-            title="Clear in-memory buffer"
+            title="Clear all recorded traces in buffer"
           >
             <Trash2 size={12} />
+            Clear Traces
           </button>
         </div>
       </div>
 
-      {/* Metrics Cards Grid */}
+      {/* ── Collapsible Explainer Guide ── */}
+      {showGuide && (
+        <div
+          style={{
+            padding: "16px 18px",
+            background: "var(--color-canvas-soft, #f4f4f5)",
+            border: "1px solid var(--color-hairline, #d1d5db)",
+            borderRadius: "var(--radius-md, 10px)",
+            fontSize: 12,
+            lineHeight: 1.6,
+          }}
+        >
+          <div style={{ fontWeight: 700, color: "var(--color-fg-strong, #18181b)", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            <Info size={14} color="#4f46e5" />
+            How OpenLLMetry Observability Works in Carole.ai
+          </div>
+          <p style={{ margin: "0 0 10px 0", color: "var(--color-body, #52525b)" }}>
+            OpenLLMetry is built on top of the <strong>OpenTelemetry (OTel)</strong> standard. When you chat with an agent, decompose a task with Archer, or run a tool, the OpenLLMetry SDK intercepts the requests in-process and tracks:
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+            <div style={{ padding: "8px 12px", background: "var(--color-canvas-raised, #ffffff)", borderRadius: 6, border: "1px solid var(--color-hairline, #d1d5db)" }}>
+              <strong style={{ color: "var(--color-fg-strong, #18181b)" }}>1. Spans</strong>: Each distinct operation (agent goal, planning step, code generation, tool invocation) is tracked with exact start/end times and error statuses.
+            </div>
+            <div style={{ padding: "8px 12px", background: "var(--color-canvas-raised, #ffffff)", borderRadius: 6, border: "1px solid var(--color-hairline, #d1d5db)" }}>
+              <strong style={{ color: "var(--color-fg-strong, #18181b)" }}>2. Tokens</strong>: Input (prompt) and output (completion) tokens are extracted directly from the actual API response headers of OpenAI, Anthropic, Gemini, and Ollama.
+            </div>
+            <div style={{ padding: "8px 12px", background: "var(--color-canvas-raised, #ffffff)", borderRadius: 6, border: "1px solid var(--color-hairline, #d1d5db)" }}>
+              <strong style={{ color: "var(--color-fg-strong, #18181b)" }}>3. Latency</strong>: Exact roundtrip durations in milliseconds so you can easily identify slow models, timeout issues, or sluggish tool operations.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Metrics Cards Grid with Explanatory Tooltips ── */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
           gap: 12,
         }}
       >
+        {/* Card 1: Spans */}
         <div
           style={{
-            padding: "14px 16px",
-            background: "rgba(255, 255, 255, 0.02)",
-            border: "1px solid var(--color-hairline, #2a2a3f)",
-            borderRadius: 10,
+            padding: "16px 18px",
+            background: "var(--color-canvas-raised, #ffffff)",
+            border: "1px solid var(--color-hairline, #d1d5db)",
+            borderRadius: "var(--radius-md, 10px)",
+            boxShadow: "var(--shadow-clay-sm, 0 1px 3px rgba(0,0,0,0.05))",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute, #64748b)", fontSize: 11.5 }}>
-            <Activity size={13} color="#6366f1" />
-            Total Recorded Spans
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute, #71717a)", fontSize: 11.5, fontWeight: 600 }}>
+              <Activity size={14} color="#4f46e5" />
+              Total Recorded Spans
+            </div>
+            <SettingTooltip
+              title="OpenTelemetry Spans"
+              why="Measures every discrete execution step executed by your multi-agent swarm."
+              how="Each LLM reasoning loop, tool execution (read_file, git_status), and agent step is recorded as an individual OpenTelemetry span."
+            />
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "var(--color-heading, #ffffff)", marginTop: 6 }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: "var(--color-fg-strong, #18181b)", marginTop: 6, fontFamily: "var(--font-family-mono, monospace)" }}>
             {stats?.total_spans ?? traces.length}
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--color-mute, #71717a)", marginTop: 2 }}>
+            Execution units captured in memory
           </div>
         </div>
 
+        {/* Card 2: Tokens */}
         <div
           style={{
-            padding: "14px 16px",
-            background: "rgba(255, 255, 255, 0.02)",
-            border: "1px solid var(--color-hairline, #2a2a3f)",
-            borderRadius: 10,
+            padding: "16px 18px",
+            background: "var(--color-canvas-raised, #ffffff)",
+            border: "1px solid var(--color-hairline, #d1d5db)",
+            borderRadius: "var(--radius-md, 10px)",
+            boxShadow: "var(--shadow-clay-sm, 0 1px 3px rgba(0,0,0,0.05))",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute, #64748b)", fontSize: 11.5 }}>
-            <Coins size={13} color="#f59e0b" />
-            Total Tokens Tracked
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute, #71717a)", fontSize: 11.5, fontWeight: 600 }}>
+              <Coins size={14} color="#d97706" />
+              Total Tokens Tracked
+            </div>
+            <SettingTooltip
+              title="LLM Token Consumption"
+              why="Tracks cumulative prompt and completion tokens to measure API burn and model usage."
+              how="Auto-instruments model responses to record prompt tokens (input context) and completion tokens (model output)."
+            />
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "var(--color-heading, #ffffff)", marginTop: 6 }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: "var(--color-fg-strong, #18181b)", marginTop: 6, fontFamily: "var(--font-family-mono, monospace)" }}>
             {stats ? (stats.total_prompt_tokens + stats.total_completion_tokens).toLocaleString() : 0}
           </div>
-          <div style={{ fontSize: 10.5, color: "var(--color-mute, #64748b)", marginTop: 2 }}>
+          <div style={{ fontSize: 11, color: "var(--color-mute, #71717a)", marginTop: 2, fontFamily: "var(--font-family-mono, monospace)" }}>
             {stats?.total_prompt_tokens.toLocaleString() ?? 0} in / {stats?.total_completion_tokens.toLocaleString() ?? 0} out
           </div>
         </div>
 
+        {/* Card 3: Latency */}
         <div
           style={{
-            padding: "14px 16px",
-            background: "rgba(255, 255, 255, 0.02)",
-            border: "1px solid var(--color-hairline, #2a2a3f)",
-            borderRadius: 10,
+            padding: "16px 18px",
+            background: "var(--color-canvas-raised, #ffffff)",
+            border: "1px solid var(--color-hairline, #d1d5db)",
+            borderRadius: "var(--radius-md, 10px)",
+            boxShadow: "var(--shadow-clay-sm, 0 1px 3px rgba(0,0,0,0.05))",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute, #64748b)", fontSize: 11.5 }}>
-            <Clock size={13} color="#10b981" />
-            Avg Latency
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute, #71717a)", fontSize: 11.5, fontWeight: 600 }}>
+              <Clock size={14} color="#059669" />
+              Avg Latency
+            </div>
+            <SettingTooltip
+              title="Average Roundtrip Duration"
+              why="Highlights whether agents, models, or tool executions are encountering performance lag."
+              how="Calculates the mean duration (end_time - start_time) in milliseconds across all completed spans in the active session."
+            />
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "var(--color-heading, #ffffff)", marginTop: 6 }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: "var(--color-fg-strong, #18181b)", marginTop: 6, fontFamily: "var(--font-family-mono, monospace)" }}>
             {stats?.avg_latency_ms ? `${stats.avg_latency_ms} ms` : "—"}
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--color-mute, #71717a)", marginTop: 2 }}>
+            Per-operation response time
           </div>
         </div>
 
+        {/* Card 4: Active Models */}
         <div
           style={{
-            padding: "14px 16px",
-            background: "rgba(255, 255, 255, 0.02)",
-            border: "1px solid var(--color-hairline, #2a2a3f)",
-            borderRadius: 10,
+            padding: "16px 18px",
+            background: "var(--color-canvas-raised, #ffffff)",
+            border: "1px solid var(--color-hairline, #d1d5db)",
+            borderRadius: "var(--radius-md, 10px)",
+            boxShadow: "var(--shadow-clay-sm, 0 1px 3px rgba(0,0,0,0.05))",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute, #64748b)", fontSize: 11.5 }}>
-            <Cpu size={13} color="#a855f7" />
-            Active Swarm Models
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-mute, #71717a)", fontSize: 11.5, fontWeight: 600 }}>
+              <Cpu size={14} color="#7c3aed" />
+              Active Swarm Models
+            </div>
+            <SettingTooltip
+              title="Discovered Foundation Models"
+              why="Confirms which AI models are actively receiving prompts from your orchestrator and subagents."
+              how="Extracted from the 'llm.model' attribute of incoming OpenTelemetry spans during real agent invocations."
+            />
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 8 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
             {stats?.models_used && stats.models_used.length > 0 ? (
               stats.models_used.map((m) => (
                 <span
                   key={m}
                   style={{
                     fontSize: 10,
-                    fontWeight: 600,
-                    padding: "2px 6px",
+                    fontWeight: 700,
+                    padding: "2px 7px",
                     borderRadius: 4,
-                    background: "rgba(168, 85, 247, 0.12)",
-                    color: "#c084fc",
-                    border: "1px solid rgba(168, 85, 247, 0.25)",
+                    background: "rgba(124, 58, 237, 0.12)",
+                    color: "#7c3aed",
+                    border: "1px solid rgba(124, 58, 237, 0.25)",
+                    fontFamily: "var(--font-family-mono, monospace)",
                   }}
                 >
                   {m}
                 </span>
               ))
             ) : (
-              <span style={{ fontSize: 12, color: "var(--color-mute, #64748b)" }}>None recorded yet</span>
+              <span style={{ fontSize: 12, color: "var(--color-mute, #71717a)" }}>None recorded yet</span>
             )}
           </div>
         </div>
       </div>
 
-      {/* Filter Toolbar */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, color: "var(--color-heading, #ffffff)" }}>
-          <Layers size={14} color="#6366f1" />
+      {/* ── Filter Toolbar ── */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginTop: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 700, color: "var(--color-fg-strong, #18181b)" }}>
+          <Layers size={15} color="#4f46e5" />
           Live Trace Streams ({traces.length})
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Filter size={12} color="var(--color-mute, #64748b)" />
+          <Filter size={13} color="var(--color-mute, #71717a)" />
           <input
             type="text"
             placeholder="Filter by agent..."
             value={filterAgent}
             onChange={(e) => setFilterAgent(e.target.value)}
             style={{
-              padding: "4px 10px",
-              background: "rgba(255, 255, 255, 0.04)",
-              border: "1px solid var(--color-hairline, #2a2a3f)",
-              borderRadius: 6,
-              color: "var(--color-heading, #ffffff)",
-              fontSize: 11.5,
+              padding: "5px 12px",
+              background: "var(--color-canvas-raised, #ffffff)",
+              border: "1px solid var(--color-hairline, #d1d5db)",
+              borderRadius: "var(--radius-sm, 6px)",
+              color: "var(--color-fg-strong, #18181b)",
+              fontSize: 12,
               outline: "none",
-              width: 160,
+              width: 170,
             }}
           />
         </div>
       </div>
 
-      {/* Trace Waterfall List */}
+      {/* ── Trace Waterfall List ── */}
       <div
         style={{
           display: "flex",
           flexDirection: "column",
           gap: 8,
-          maxHeight: 480,
+          maxHeight: 520,
           overflowY: "auto",
           paddingRight: 4,
         }}
@@ -393,18 +473,20 @@ export default function ObservabilitySettings({ onToast }: Props) {
           <div
             style={{
               textAlign: "center",
-              padding: "36px 16px",
-              background: "rgba(255, 255, 255, 0.01)",
-              border: "1px dashed var(--color-hairline, #2a2a3f)",
-              borderRadius: 10,
-              color: "var(--color-mute, #64748b)",
+              padding: "44px 20px",
+              background: "var(--color-canvas-raised, #ffffff)",
+              border: "1px dashed var(--color-hairline, #d1d5db)",
+              borderRadius: "var(--radius-md, 10px)",
+              color: "var(--color-mute, #71717a)",
               fontSize: 13,
             }}
           >
-            <Activity size={24} style={{ margin: "0 auto 8px", opacity: 0.4 }} />
-            No traces recorded in this session yet.
-            <div style={{ fontSize: 11.5, marginTop: 4 }}>
-              Click <strong>&quot;Emit Swarm Trace&quot;</strong> above or chat with an agent to see real-time OpenLLMetry telemetry.
+            <Activity size={28} style={{ margin: "0 auto 10px", opacity: 0.45, color: "var(--color-primary)" }} />
+            <div style={{ fontWeight: 700, color: "var(--color-fg-strong, #18181b)", marginBottom: 4, fontSize: 14 }}>
+              Ready &amp; Listening for Agent Activity
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-body, #52525b)", maxWidth: 440, margin: "0 auto" }}>
+              Send an engineering goal to an agent in the <strong>Team Chat</strong> (e.g. <code>@archer solve issue</code>). OpenLLMetry will automatically stream real-time traces, token metrics, and tool execution spans here.
             </div>
           </div>
         ) : (
@@ -417,19 +499,22 @@ export default function ObservabilitySettings({ onToast }: Props) {
                 key={trace.span_id}
                 style={{
                   marginLeft: isChild ? 16 : 0,
-                  padding: "10px 14px",
-                  background: isExpanded ? "rgba(255, 255, 255, 0.04)" : "rgba(255, 255, 255, 0.02)",
+                  padding: "11px 16px",
+                  background: isExpanded
+                    ? "var(--color-canvas-soft, rgba(0,0,0,0.03))"
+                    : "var(--color-canvas-raised, #ffffff)",
                   border: isChild
-                    ? "1px solid rgba(99, 102, 241, 0.15)"
-                    : "1px solid var(--color-hairline, #2a2a3f)",
+                    ? "1px solid rgba(79, 70, 229, 0.25)"
+                    : "1px solid var(--color-hairline, #d1d5db)",
                   borderLeft: isChild
-                    ? "3px solid #6366f1"
-                    : "3px solid #10b981",
-                  borderRadius: 8,
+                    ? "3.5px solid #4f46e5"
+                    : "3.5px solid #10b981",
+                  borderRadius: "var(--radius-sm, 8px)",
+                  boxShadow: "var(--shadow-clay-sm, 0 1px 2px rgba(0,0,0,0.04))",
                   transition: "background 0.15s ease",
                 }}
               >
-                {/* Span Header Line */}
+                {/* Span Header Row */}
                 <div
                   onClick={() => setExpandedSpanId(isExpanded ? null : trace.span_id)}
                   style={{
@@ -437,21 +522,21 @@ export default function ObservabilitySettings({ onToast }: Props) {
                     alignItems: "center",
                     justifyContent: "space-between",
                     cursor: "pointer",
-                    gap: 10,
+                    gap: 12,
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                     {trace.status === "ERROR" ? (
-                      <AlertCircle size={14} color="#f87171" style={{ flexShrink: 0 }} />
+                      <AlertCircle size={15} color="#dc2626" style={{ flexShrink: 0 }} />
                     ) : (
-                      <CheckCircle2 size={14} color="#10b981" style={{ flexShrink: 0 }} />
+                      <CheckCircle2 size={15} color="#059669" style={{ flexShrink: 0 }} />
                     )}
                     <span
                       style={{
-                        fontFamily: "var(--font-mono, monospace)",
+                        fontFamily: "var(--font-family-mono, monospace)",
                         fontSize: 12.5,
-                        fontWeight: 600,
-                        color: "var(--color-heading, #ffffff)",
+                        fontWeight: 700,
+                        color: "var(--color-fg-strong, #18181b)",
                         whiteSpace: "nowrap",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
@@ -464,11 +549,12 @@ export default function ObservabilitySettings({ onToast }: Props) {
                       <span
                         style={{
                           fontSize: 10,
-                          fontWeight: 600,
-                          padding: "1px 6px",
+                          fontWeight: 700,
+                          padding: "2px 7px",
                           borderRadius: 4,
-                          background: "rgba(99, 102, 241, 0.12)",
-                          color: "#818cf8",
+                          background: "rgba(79, 70, 229, 0.1)",
+                          color: "#4f46e5",
+                          border: "1px solid rgba(79, 70, 229, 0.2)",
                           whiteSpace: "nowrap",
                         }}
                       >
@@ -480,12 +566,14 @@ export default function ObservabilitySettings({ onToast }: Props) {
                       <span
                         style={{
                           fontSize: 10,
-                          fontWeight: 600,
-                          padding: "1px 6px",
+                          fontWeight: 700,
+                          padding: "2px 7px",
                           borderRadius: 4,
-                          background: "rgba(168, 85, 247, 0.12)",
-                          color: "#c084fc",
+                          background: "rgba(124, 58, 237, 0.1)",
+                          color: "#7c3aed",
+                          border: "1px solid rgba(124, 58, 237, 0.2)",
                           whiteSpace: "nowrap",
+                          fontFamily: "var(--font-family-mono, monospace)",
                         }}
                       >
                         {trace.model}
@@ -493,14 +581,15 @@ export default function ObservabilitySettings({ onToast }: Props) {
                     )}
                   </div>
 
-                  {/* Right Meta (Tokens, Duration, Toggle) */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                  {/* Right Metadata */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
                     {Boolean(trace.prompt_tokens || trace.completion_tokens) && (
                       <span
                         style={{
                           fontSize: 11,
-                          fontFamily: "var(--font-mono, monospace)",
-                          color: "var(--color-mute, #64748b)",
+                          fontFamily: "var(--font-family-mono, monospace)",
+                          fontWeight: 600,
+                          color: "var(--color-mute, #71717a)",
                         }}
                       >
                         {trace.prompt_tokens ?? 0} / {trace.completion_tokens ?? 0} tok
@@ -508,58 +597,71 @@ export default function ObservabilitySettings({ onToast }: Props) {
                     )}
                     <span
                       style={{
-                        fontSize: 11,
-                        fontFamily: "var(--font-mono, monospace)",
-                        fontWeight: 600,
-                        color: trace.duration_ms > 1000 ? "#f59e0b" : "#34d399",
+                        fontSize: 11.5,
+                        fontFamily: "var(--font-family-mono, monospace)",
+                        fontWeight: 700,
+                        color: trace.duration_ms > 1000 ? "#d97706" : "#059669",
                       }}
                     >
                       {trace.duration_ms} ms
                     </span>
-                    {isExpanded ? <ChevronUp size={13} color="#64748b" /> : <ChevronDown size={13} color="#64748b" />}
+                    {isExpanded ? (
+                      <ChevronUp size={14} color="var(--color-mute, #71717a)" />
+                    ) : (
+                      <ChevronDown size={14} color="var(--color-mute, #71717a)" />
+                    )}
                   </div>
                 </div>
 
-                {/* Expanded Details Drawer */}
+                {/* Expanded Details View */}
                 {isExpanded && (
                   <div
                     style={{
-                      marginTop: 10,
-                      paddingTop: 10,
-                      borderTop: "1px solid var(--color-hairline, #2a2a3f)",
-                      fontSize: 11,
+                      marginTop: 12,
+                      paddingTop: 12,
+                      borderTop: "1px solid var(--color-hairline, #d1d5db)",
+                      fontSize: 11.5,
                     }}
                   >
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                        gap: 8,
+                        marginBottom: 10,
+                      }}
+                    >
                       <div>
-                        <span style={{ color: "var(--color-mute, #64748b)" }}>Trace ID:</span>{" "}
-                        <code style={{ fontFamily: "var(--font-mono, monospace)", color: "#a78bfa" }}>
+                        <span style={{ color: "var(--color-mute, #71717a)", fontWeight: 600 }}>Trace ID:</span>{" "}
+                        <code style={{ fontFamily: "var(--font-family-mono, monospace)", color: "#4f46e5", fontWeight: 600 }}>
                           {trace.trace_id || "local"}
                         </code>
                       </div>
                       <div>
-                        <span style={{ color: "var(--color-mute, #64748b)" }}>Span ID:</span>{" "}
-                        <code style={{ fontFamily: "var(--font-mono, monospace)", color: "#a78bfa" }}>
+                        <span style={{ color: "var(--color-mute, #71717a)", fontWeight: 600 }}>Span ID:</span>{" "}
+                        <code style={{ fontFamily: "var(--font-family-mono, monospace)", color: "#7c3aed", fontWeight: 600 }}>
                           {trace.span_id}
                         </code>
                       </div>
                     </div>
 
                     {/* Raw OpenTelemetry Attributes */}
-                    <div style={{ color: "var(--color-mute, #64748b)", marginBottom: 4, fontWeight: 600 }}>
-                      OpenTelemetry Attributes:
+                    <div style={{ color: "var(--color-mute, #71717a)", marginBottom: 4, fontWeight: 700, fontSize: 11 }}>
+                      OpenTelemetry Span Attributes:
                     </div>
                     <pre
                       style={{
                         margin: 0,
-                        padding: "8px 10px",
-                        background: "rgba(0, 0, 0, 0.35)",
+                        padding: "10px 12px",
+                        background: "var(--color-canvas-soft, #f4f4f5)",
+                        border: "1px solid var(--color-hairline, #e4e4e7)",
                         borderRadius: 6,
-                        fontFamily: "var(--font-mono, monospace)",
-                        fontSize: 10.5,
-                        color: "#94a3b8",
+                        fontFamily: "var(--font-family-mono, monospace)",
+                        fontSize: 11,
+                        color: "var(--color-ink, #27272a)",
                         overflowX: "auto",
-                        maxHeight: 140,
+                        maxHeight: 160,
+                        lineHeight: 1.45,
                       }}
                     >
                       {JSON.stringify(trace.attributes, null, 2)}

@@ -84,3 +84,33 @@ async def test_coder_not_blocked_by_orchestrator_rule():
 def test_orchestrator_agent_alias():
     """Verify OrchestratorAgent is alias of CoordinatorAgent."""
     assert OrchestratorAgent is CoordinatorAgent
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_can_write_markdown_files():
+    """Verify that an Orchestrator IS allowed to author markdown planning files."""
+    from unittest.mock import patch, AsyncMock
+    exec_context = ToolExecutionContext(
+        agent_id="test-orch-id",
+        agent_name="Archer",
+        team_id="test-team-id",
+        cancellation_token=CancellationToken(),
+        agent_role="Orchestrator"
+    )
+
+    with patch("core.tools.file_tools.file_tools.write_file", new_callable=AsyncMock) as mock_write:
+        mock_write.return_value = "✓ File 'plan.md' written successfully."
+        result = await tool_executor.execute(
+            tool_name="write_file",
+            arguments={"relative_path": "plan.md", "content": "# Implementation Plan"},
+            agent_id="test-orch-id",
+            agent_name="Archer",
+            team_id="test-team-id",
+            permissions={"write_file": "block"},  # even with block permission, doc write fast-paths
+            context=exec_context
+        )
+
+        assert "Execution Denied" not in result
+        assert "Execution Blocked" not in result
+        assert "written successfully" in result
+

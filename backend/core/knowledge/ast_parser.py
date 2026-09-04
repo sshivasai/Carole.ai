@@ -145,7 +145,9 @@ def parse_tree_sitter(content: str, rel_path: str, lang_key: str) -> Tuple[List[
         "import_declaration", "using_directive", "preproc_include"
     }
 
-    def walk(node: Any, current_parent: Optional[str] = None):
+    def walk(node: Any, current_parent: Optional[str] = None, depth: int = 0):
+        if depth > 60:
+            return
         ntype = node.type
 
         # Extract Imports
@@ -242,13 +244,13 @@ def parse_tree_sitter(content: str, rel_path: str, lang_key: str) -> Tuple[List[
 
                 # Recurse inside class body with updated parent
                 for child in node.children:
-                    walk(child, current_parent=name)
+                    walk(child, current_parent=name, depth=depth + 1)
                 return
 
         for child in node.children:
-            walk(child, current_parent=current_parent)
+            walk(child, current_parent=current_parent, depth=depth + 1)
 
-    walk(root)
+    walk(root, depth=0)
     return chunks, imports
 
 

@@ -510,12 +510,23 @@ class FileTools:
                     before = f.read()
                 target = target_content
                 if target not in before:
-                    # Fallback to quote-normalized matching (handles LLM unicode curly quotes)
+                    # Fallback 1: Line-ending normalization (\r\n vs \n)
+                    if "\r\n" in before and "\r\n" not in target:
+                        crlf_target = target.replace("\n", "\r\n")
+                        if crlf_target in before:
+                            target = crlf_target
+                    elif "\r\n" in target and "\r\n" not in before:
+                        lf_target = target.replace("\r\n", "\n")
+                        if lf_target in before:
+                            target = lf_target
+
+                if target not in before:
+                    # Fallback 2: quote-normalized matching (handles LLM unicode curly quotes)
                     norm_before = _normalize_quotes(before)
-                    norm_target = _normalize_quotes(target_content)
+                    norm_target = _normalize_quotes(target)
                     if norm_target in norm_before:
                         idx = norm_before.find(norm_target)
-                        target = before[idx:idx + len(target_content)]
+                        target = before[idx:idx + len(target)]
                     else:
                         return FileChangeResult(
                             message="Error: Target block not found in file. Ensure exact character-for-character match including indentation."
@@ -526,7 +537,13 @@ class FileTools:
                         message=f"Error: Found {occurrences} occurrences of target block in '{relative_path}'. "
                                 f"Provide a larger block with 2-4 surrounding lines to uniquely identify the instance."
                     )
-                after = before.replace(target, replacement_content, 1)
+                # Match newline convention of target in replacement
+                rep = replacement_content
+                if "\r\n" in target and "\r\n" not in rep:
+                    rep = rep.replace("\n", "\r\n")
+                elif "\r\n" not in target and "\r\n" in rep:
+                    rep = rep.replace("\r\n", "\n")
+                after = before.replace(target, rep, 1)
 
                 # Proactive AST Syntax Gate (SWE-agent ACI pattern)
                 syntax_err = _validate_code_syntax(relative_path, after)

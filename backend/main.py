@@ -16,6 +16,23 @@ import json
 import asyncio
 import sys
 
+# Suppress benign Windows asyncio WinError 10054 connection reset noise
+# caused by client browser refresh or abrupt WebSocket disconnection
+if sys.platform == "win32":
+    try:
+        from asyncio.proactor_events import _ProactorBasePipeTransport
+        _orig_call_connection_lost = _ProactorBasePipeTransport._call_connection_lost
+
+        def _silenced_call_connection_lost(self, exc):
+            try:
+                _orig_call_connection_lost(self, exc)
+            except (ConnectionResetError, OSError):
+                pass
+
+        _ProactorBasePipeTransport._call_connection_lost = _silenced_call_connection_lost
+    except Exception:
+        pass
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware

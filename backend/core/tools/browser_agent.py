@@ -278,7 +278,11 @@ class BrowserAgent:
             if kind in ("scroll_down", "scroll_up"):
                 return await browser_tool.act(kind, agent_id, agent_name, team_id)
             if kind in ("click", "type", "clear", "hover", "select", "check", "uncheck"):
-                ref = action.get("ref")
+                raw_ref = action.get("ref")
+                ref = None
+                if raw_ref is not None:
+                    cleaned_ref = str(raw_ref).strip("[] \t\r\n")
+                    ref = int(cleaned_ref) if cleaned_ref.isdigit() else cleaned_ref
                 return await browser_tool.act(
                     kind,
                     agent_id,

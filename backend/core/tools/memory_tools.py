@@ -276,12 +276,14 @@ class MemoryTools:
                 t_uuid = uuid.UUID(team_id) if team_id else None
                 p_uuid = uuid.UUID(project_id) if project_id else None
 
-                # Upsert: check if key already exists for this scope
+                # Upsert: check if key already exists for this exact scope
                 stmt = select(EntityMemory).where(EntityMemory.key == key)
                 if t_uuid:
                     stmt = stmt.where(EntityMemory.team_id == t_uuid)
                 elif p_uuid:
                     stmt = stmt.where(EntityMemory.project_id == p_uuid)
+                else:
+                    stmt = stmt.where(EntityMemory.team_id.is_(None), EntityMemory.project_id.is_(None))
 
                 existing = (await db.execute(stmt)).scalar_one_or_none()
 
@@ -331,10 +333,11 @@ class MemoryTools:
 
         async with async_session() as db:
             try:
-                t_uuid = uuid.UUID(team_id) if team_id else None
                 stmt = delete(EntityMemory).where(EntityMemory.key == key)
                 if t_uuid:
                     stmt = stmt.where(EntityMemory.team_id == t_uuid)
+                else:
+                    stmt = stmt.where(EntityMemory.team_id.is_(None))
 
                 result = await db.execute(stmt)
                 await db.commit()

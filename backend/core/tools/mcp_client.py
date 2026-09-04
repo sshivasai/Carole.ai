@@ -305,7 +305,8 @@ class MCPManager:
                         args_to_send.pop("context", None)
                         args_to_send.pop("team_id", None)
                     
-                        result = await _session.call_tool(_name, arguments=args_to_send)
+                        # Bounded 60s execution timeout prevents indefinite agent hangs
+                        result = await asyncio.wait_for(_session.call_tool(_name, arguments=args_to_send), timeout=60.0)
                         if hasattr(result, "content") and result.content:
                             # Extract text from content blocks and intercept images
                             text_results = []

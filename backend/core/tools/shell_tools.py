@@ -27,6 +27,84 @@ from core.tools.context import ToolExecutionContext
 logger = logging.getLogger("carole.shell_tools")
 
 
+class ProcessRegistry:
+    """
+    Centralized registry of all processes launched by agents and users.
+    Enables PID tracking, status inspection, and UI-driven aborts.
+    """
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._processes: dict = {}
+
+    def register(self, proc: subprocess.Popen, command: str, team_id: str, cwd: str, background: bool = False):
+        with self._lock:
+            import datetime
+            self._processes[proc.pid] = {
+                "pid": proc.pid,
+                "command": command,
+                "team_id": team_id,
+                "cwd": cwd,
+                "background": background,
+                "status": "running",
+                "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "proc": proc,
+                "returncode": None,
+            }
+
+    def update_status(self, pid: int, status: str, returncode: Optional[int] = None):
+        with self._lock:
+            if pid in self._processes:
+                self._processes[pid]["status"] = status
+                self._processes[pid]["returncode"] = returncode
+
+    def list_processes(self, team_id: Optional[str] = None) -> list:
+        with self._lock:
+            procs = []
+            for p_info in self._processes.values():
+                if team_id and str(p_info.get("team_id")) != str(team_id):
+                    continue
+                procs.append({
+                    "pid": p_info["pid"],
+                    "command": p_info["command"],
+                    "team_id": p_info["team_id"],
+                    "cwd": p_info["cwd"],
+                    "background": p_info["background"],
+                    "status": p_info["status"],
+                    "started_at": p_info["started_at"],
+                    "returncode": p_info["returncode"],
+                })
+            return procs
+
+    def kill_process(self, pid: int) -> bool:
+        with self._lock:
+            info = self._processes.get(pid)
+            if not info:
+                return False
+            proc = info.get("proc")
+            if not proc or proc.poll() is not None:
+                info["status"] = "terminated"
+                return False
+            
+            try:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+                    proc.kill()
+                else:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        proc.kill()
+                info["status"] = "aborted"
+                info["returncode"] = -9
+                return True
+            except Exception as e:
+                logger.warning("Failed to kill process %s: %s", pid, e)
+                return False
+
+
+process_registry = ProcessRegistry()
+
+
 class ShellTools:
     def __init__(self, workspace_root: str = None):
         if not workspace_root:
@@ -75,12 +153,14 @@ class ShellTools:
         team_id: str,
         timeout: float = 900.0,
         context: Optional[ToolExecutionContext] = None,
-        cwd: Optional[str] = None
+        cwd: Optional[str] = None,
+        background: bool = False,
     ) -> str:
         """
         Executes a shell command inside the workspace directory asynchronously.
         Streams standard output and standard error line-by-line to the EventBus.
         Respects CancellationToken for aborts. Works robustly across all platforms.
+        Supports background=True for long-running daemon processes (e.g. dev servers, pip install).
         """
         # Strict tool exclusivity check
         policy_violation = self._validate_strict_command_policy(command)
@@ -91,20 +171,20 @@ class ShellTools:
         try:
             sanitized_cmd = re.sub(r'(Bearer\s+|api[_-]?key[=:\s]+|token[=:\s]+|password[=:\s]+)([\w\-.~]+)', r'\1***REDACTED***', command, flags=re.IGNORECASE)
             sanitized_cmd = re.sub(r'sk-[a-zA-Z0-9_\-]{16,}', 'sk-***REDACTED***', sanitized_cmd)
-            logger.info("[Shell] Executing in %s: '%s' (Timeout: %ss)", workdir, sanitized_cmd, timeout)
+            logger.info("[Shell] Executing in %s: '%s' (Timeout: %ss, Background: %s)", workdir, sanitized_cmd, timeout, background)
         except Exception:
-            pass
+            sanitized_cmd = command
 
         loop = asyncio.get_running_loop()
         topic = f"team:{team_id}"
 
-        def _execute_sync():
-            kwargs = {}
-            if os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            else:
-                kwargs["preexec_fn"] = os.setpgrp
+        kwargs = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["preexec_fn"] = os.setpgrp
 
+        try:
             proc = subprocess.Popen(
                 command,
                 shell=True,
@@ -117,64 +197,104 @@ class ShellTools:
                 cwd=workdir,
                 **kwargs
             )
-            
-            def kill_proc_tree(p):
-                try:
-                    if os.name == "nt":
-                        os.kill(p.pid, signal.CTRL_BREAK_EVENT)
-                        p.kill()
-                    else:
-                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except Exception:
-                    pass
+        except Exception as e:
+            return f"✗ Subprocess Launch Error: {str(e)}"
 
-            stdout_chunks = []
-            stderr_chunks = []
+        pid = proc.pid
+        process_registry.register(proc, sanitized_cmd, team_id, workdir, background=background)
 
-            def read_stream(stream, is_stderr: bool):
-                for line in iter(stream.readline, ''):
-                    if not line:
-                        break
-                    if context and context.cancellation_token and context.cancellation_token.is_cancelled:
-                        kill_proc_tree(proc)
-                        break
+        # Broadcast process start event to EventBus
+        try:
+            from core.chat.event_bus import event_bus
+            await event_bus.publish(topic, {
+                "type": "process_started",
+                "pid": pid,
+                "command": sanitized_cmd,
+                "background": background,
+            })
+        except Exception:
+            pass
 
-                    if is_stderr:
-                        stderr_chunks.append(line)
-                    else:
-                        stdout_chunks.append(line)
+        def kill_proc_tree(p):
+            process_registry.kill_process(p.pid)
 
-                    # Emit to progress
-                    if context and context.emit_progress:
-                        try:
-                            asyncio.run_coroutine_threadsafe(
-                                context.emit_progress(f"[{'stderr' if is_stderr else 'stdout'}] {line.strip()}"),
-                                loop
-                            )
-                        except Exception:
-                            pass
+        stdout_chunks = []
+        stderr_chunks = []
 
-                    # Broadcast to live eventbus for frontend terminal
+        def read_stream(stream, is_stderr: bool):
+            for line in iter(stream.readline, ''):
+                if not line:
+                    break
+                if context and context.cancellation_token and context.cancellation_token.is_cancelled:
+                    kill_proc_tree(proc)
+                    break
+
+                if is_stderr:
+                    stderr_chunks.append(line)
+                else:
+                    stdout_chunks.append(line)
+
+                # Emit to progress
+                if context and context.emit_progress:
                     try:
-                        from core.chat.event_bus import event_bus
                         asyncio.run_coroutine_threadsafe(
-                            event_bus.publish(topic, {
-                                "type": "shell_output",
-                                "stream": "stderr" if is_stderr else "stdout",
-                                "text": line
-                            }),
+                            context.emit_progress(f"[{'stderr' if is_stderr else 'stdout'}] {line.strip()}"),
                             loop
                         )
                     except Exception:
                         pass
-                stream.close()
 
-            t_out = threading.Thread(target=read_stream, args=(proc.stdout, False), daemon=True)
-            t_err = threading.Thread(target=read_stream, args=(proc.stderr, True), daemon=True)
-            t_out.start()
-            t_err.start()
+                # Broadcast to live eventbus for frontend terminal with PID
+                try:
+                    from core.chat.event_bus import event_bus
+                    asyncio.run_coroutine_threadsafe(
+                        event_bus.publish(topic, {
+                            "type": "shell_output",
+                            "pid": pid,
+                            "stream": "stderr" if is_stderr else "stdout",
+                            "text": line
+                        }),
+                        loop
+                    )
+                except Exception:
+                    pass
+            stream.close()
 
-            # Poll for completion with timeout and cancellation check
+        t_out = threading.Thread(target=read_stream, args=(proc.stdout, False), daemon=True)
+        t_err = threading.Thread(target=read_stream, args=(proc.stderr, True), daemon=True)
+        t_out.start()
+        t_err.start()
+
+        # If running in background mode (e.g. dev server, background pip install)
+        if background:
+            def _watch_background_process():
+                proc.wait()
+                process_registry.update_status(pid, "completed" if proc.returncode == 0 else "failed", proc.returncode)
+                try:
+                    from core.chat.event_bus import event_bus
+                    asyncio.run_coroutine_threadsafe(
+                        event_bus.publish(topic, {
+                            "type": "process_completed",
+                            "pid": pid,
+                            "command": sanitized_cmd,
+                            "returncode": proc.returncode,
+                            "status": "completed" if proc.returncode == 0 else "failed",
+                        }),
+                        loop
+                    )
+                except Exception:
+                    pass
+
+            threading.Thread(target=_watch_background_process, daemon=True).start()
+
+            return (
+                f"✓ Command launched in background with PID {pid}.\n"
+                f"Command: '{sanitized_cmd}'\n"
+                f"Logs are streaming to the terminal widget. You can monitor or terminate this PID from the UI or via terminal tools."
+            )
+
+        # Foreground mode: wait for completion synchronously
+        def _execute_wait():
             timed_out = False
             cancelled = False
             interval = 0.2
@@ -198,18 +318,21 @@ class ShellTools:
             t_out.join(timeout=2.0)
             t_err.join(timeout=2.0)
 
+            status = "cancelled" if cancelled else ("timed_out" if timed_out else ("completed" if proc.returncode == 0 else "failed"))
+            process_registry.update_status(pid, status, proc.returncode)
+
             return proc.returncode, "".join(stdout_chunks), "".join(stderr_chunks), timed_out, cancelled
 
         try:
-            returncode, full_stdout, full_stderr, timed_out, cancelled = await asyncio.to_thread(_execute_sync)
+            returncode, full_stdout, full_stderr, timed_out, cancelled = await asyncio.to_thread(_execute_wait)
         except Exception as e:
             return f"✗ Subprocess Execution Error: {str(e)}"
 
         if cancelled:
-            return "✗ Command Cancelled: Process was aborted by user request."
+            return f"✗ Command Cancelled: Process (PID: {pid}) was aborted by user request."
 
         if timed_out:
-            return f"✗ Subprocess Error: Command exceeded time constraint of {timeout} seconds and was killed."
+            return f"✗ Subprocess Error: Command (PID: {pid}) exceeded time constraint of {timeout} seconds and was killed."
 
         # Truncate to prevent context window overflow from verbose commands while preserving stack traces at the tail
         def _truncate_output(text: str, max_chars: int = 8000) -> str:
@@ -229,12 +352,12 @@ class ShellTools:
 
         if returncode != 0:
             return (
-                f"✗ Command failed with exit code {returncode}.\n"
+                f"✗ Command failed with exit code {returncode} (PID: {pid}).\n"
                 f"--- Standard Error ---\n{full_stderr}\n"
                 f"--- Standard Output ---\n{full_stdout}"
             )
 
-        return full_stdout or full_stderr or "Command executed successfully (no output)."
+        return full_stdout or full_stderr or f"Command executed successfully with exit code 0 (PID: {pid})."
 
 
 # Singleton shell tools instance

@@ -1,7 +1,7 @@
 """
 # backend/core/agent/context_condenser.py
 
-Intelligent Context Condenser (Zoo-Code Pattern).
+Intelligent Context Condenser.
 Monitors token budget, generates structured Working State Checkpoints,
 sanitizes orphan tags, and performs surgical sliding window pruning.
 """
@@ -221,7 +221,15 @@ class ContextCondenser:
             return messages
 
         first_msg = messages[0]
-        recent_messages = messages[-keep_recent_turns:]
+        # Align boundary so we don't start on an orphaned tool or observation message
+        start_idx = max(1, len(messages) - keep_recent_turns)
+        while start_idx < len(messages) - 1 and (
+            messages[start_idx].get("role") == "tool" or
+            "[OBSERVATION]" in str(messages[start_idx].get("content", ""))[:40]
+        ):
+            start_idx += 1
+
+        recent_messages = messages[start_idx:]
 
         checkpoint_msg = {
             "role": "user",

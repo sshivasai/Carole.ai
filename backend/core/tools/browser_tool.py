@@ -187,14 +187,18 @@ class BrowserTool:
     # -- Dialog handling setup --------------------------------------------------
     def _resolve_selector(self, selector: str, page) -> str:
         # If the selector is just digits (or surrounded by brackets like [5]), resolve it
-        clean_sel = selector.strip("[] ")
+        clean_sel = selector.strip("[] \t\r\n")
         if clean_sel.isdigit():
-            refs = self._last_selector_maps.get(page.context, {})
-            if clean_sel in refs:
-                xpath = refs[clean_sel]["selector"]
-                if not xpath.startswith("xpath="):
-                    xpath = "xpath=" + xpath
-                return xpath
+            page_map = getattr(page, "_carole_selector_map", None)
+            refs = page_map if isinstance(page_map, dict) else self._last_selector_maps.get(getattr(page, "context", None), {})
+            if not isinstance(refs, dict):
+                refs = {}
+            if clean_sel in refs and isinstance(refs[clean_sel], dict):
+                xpath = refs[clean_sel].get("selector")
+                if xpath:
+                    if not xpath.startswith("xpath="):
+                        xpath = "xpath=" + xpath
+                    return xpath
         return selector
 
 
@@ -244,6 +248,23 @@ class BrowserTool:
         try:
             page = await _get_page(agent_id)
             self._setup_dialog_handler(page, agent_id)
+
+            # SSRF Protection: Intercept outgoing requests and validate redirects
+            if not getattr(page, "_carole_ssrf_route_attached", False):
+                async def _ssrf_route_filter(route):
+                    req_url = route.request.url
+                    try:
+                        assert_safe_public_url(req_url, allow_local=True)
+                        await route.continue_()
+                    except Exception as err:
+                        logger.warning("[SSRF Guard] Blocked request/redirect to %s: %s", req_url, err)
+                        await route.abort("blockedbyclient")
+
+                try:
+                    await page.route("**/*", _ssrf_route_filter)
+                    setattr(page, "_carole_ssrf_route_attached", True)
+                except Exception:
+                    pass
 
             response = await page.goto(url, wait_until=wait_until, timeout=30_000)
             status = response.status if response else "unknown"
@@ -305,13 +326,14 @@ class BrowserTool:
             if not dom_map or root_id is None:
                 return "Error: Could not extract DOM tree."
 
-            # Save the refs for act() using xpath
+            # Save the refs for act() using xpath both on page and context
             refs = {}
             for index, node in dom_map.items():
                 if node.get("highlightIndex") is not None:
                     # Map the highlight index to the xpath so act() can click it
                     refs[str(node["highlightIndex"])] = {"selector": node.get("xpath")}
             
+            setattr(page, "_carole_selector_map", refs)
             self._last_selector_maps[page.context] = refs
             
             # Build the text tree
@@ -422,14 +444,23 @@ class BrowserTool:
             # treats it as an XPath selector rather than (invalid) CSS.
             css_selector = None
             if ref is not None:
-                refs = self._last_selector_maps.get(page.context, {})
-                xpath = (refs.get(str(ref)) or {}).get("selector")
+                clean_ref = str(ref).strip("[] \t\r\n")
+                page_map = getattr(page, "_carole_selector_map", None)
+                refs = page_map if isinstance(page_map, dict) else self._last_selector_maps.get(getattr(page, "context", None), {})
+                if not isinstance(refs, dict):
+                    refs = {}
+                ref_info = refs.get(clean_ref) if isinstance(refs, dict) else None
+                xpath = ref_info.get("selector") if isinstance(ref_info, dict) else None
                 if not xpath:
                     # Ref may be stale — rebuild the snapshot to refresh the map.
                     try:
                         await self._build_snapshot_text(page)
-                        refs = self._last_selector_maps.get(page.context, {})
-                        xpath = (refs.get(str(ref)) or {}).get("selector")
+                        page_map = getattr(page, "_carole_selector_map", None)
+                        refs = page_map if isinstance(page_map, dict) else self._last_selector_maps.get(getattr(page, "context", None), {})
+                        if not isinstance(refs, dict):
+                            refs = {}
+                        ref_info = refs.get(clean_ref) if isinstance(refs, dict) else None
+                        xpath = ref_info.get("selector") if isinstance(ref_info, dict) else None
                     except Exception as e:
                         logger.warning("Failed to refresh snapshot for ref %s: %s", ref, e)
                 if not xpath:

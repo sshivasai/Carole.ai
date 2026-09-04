@@ -107,7 +107,10 @@ class AutoDreamWorker:
         async def _bounded_consolidate(team):
             async with _CONSOLIDATION_SEMAPHORE:
                 async with async_session() as db:
-                    await self._consolidate_team(db, team)
+                    try:
+                        await self._consolidate_team(db, team)
+                    except Exception as e:
+                        logger.error("💤 [Dream] Error consolidating team '%s' (%s): %s", team.name, team.id, e)
 
         await asyncio.gather(*[_bounded_consolidate(team) for team in teams])
 
