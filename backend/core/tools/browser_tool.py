@@ -317,7 +317,7 @@ class BrowserTool:
 
     async def _build_snapshot_text(self, page) -> str:
         try:
-            arg = {"doHighlightElements": True, "focusHighlightIndex": -1, "viewportExpansion": 0, "debugMode": False}
+            arg = {"doHighlightElements": True, "focusHighlightIndex": -1, "viewportExpansion": 1500, "debugMode": False}
             result = await page.evaluate(_SNAPSHOT_JS, arg)
             
             dom_map = result.get("map", {})

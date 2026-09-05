@@ -1170,6 +1170,16 @@
       for (const name of attributeNames) {
         nodeData.attributes[name] = node.getAttribute(name);
       }
+      if (node.value !== undefined && typeof node.value === 'string' && node.value) {
+        nodeData.attributes['value'] = node.value;
+      }
+      if (node.checked !== undefined) {
+        if (node.checked) {
+          nodeData.attributes['checked'] = 'true';
+        } else {
+          delete nodeData.attributes['checked'];
+        }
+      }
     }
 
     let nodeWasHighlighted = false;

@@ -188,6 +188,7 @@ class BrowserAgent:
                     )
                     decision = _extract_json(raw)
                     if decision is not None:
+                        logger.info("🤖 [BrowserAgent] Step %d decision: %s", step, decision)
                         break
                     # Retry once with a nudge if JSON parsing failed.
                     messages.append({

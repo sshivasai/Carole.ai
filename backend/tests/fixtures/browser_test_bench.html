@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Carole.ai Browser Automation Test Bench</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #131b2e;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --border: #232f48;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 20px;
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+    h1, h2, h3 {
+      color: #fff;
+      margin-top: 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 800px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .form-group {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 500;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    input[type="text"],
+    input[type="email"],
+    select {
+      width: 100%;
+      padding: 9px 12px;
+      background: #080c14;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 14px;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    button {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 9px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    button:hover {
+      background: var(--primary-hover);
+    }
+    button.secondary {
+      background: #232f48;
+    }
+    button.secondary:hover {
+      background: #334366;
+    }
+    button.danger {
+      background: var(--danger);
+    }
+    button.warning {
+      background: var(--warning);
+      color: #000;
+    }
+    .alert {
+      padding: 10px 14px;
+      border-radius: 6px;
+      margin-top: 10px;
+      font-weight: 600;
+      font-size: 13px;
+      display: none;
+    }
+    .alert.success {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid var(--success);
+      color: var(--success);
+    }
+    .alert.error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+    }
+    .modal {
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal-content {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      padding: 24px;
+      border-radius: 12px;
+      max-width: 440px;
+      width: 100%;
+    }
+    .coord-canvas {
+      position: relative;
+      width: 100%;
+      height: 90px;
+      background: #080c14;
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      margin-top: 8px;
+    }
+    #coord_target_btn {
+      position: absolute;
+      left: 30px;
+      top: 22px;
+      width: 140px;
+      height: 40px;
+    }
+    .log-panel {
+      font-family: monospace;
+      font-size: 12px;
+      background: #06090f;
+      padding: 10px;
+      border-radius: 6px;
+      max-height: 140px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      color: #38bdf8;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h1>Carole.ai Real-Time Browser Test Bench</h1>
+      <p style="color: var(--text-muted); margin: 4px 0 0 0;">High-fidelity interactive single-page application for real-time browser automation testing, Ref resolution, HIL verification, and dynamic edge cases.</p>
+    </header>
+
+    <div class="grid">
+      <!-- Left Column: Form & Activity Log -->
+      <div class="col-left">
+        <!-- Section 1: Form Filling -->
+        <div class="card" id="section_form">
+          <h2>1. User Registration Form</h2>
+          <form id="registration_form" onsubmit="handleFormSubmit(event)">
+            <div class="form-group">
+              <label for="full_name">Full Name</label>
+              <input type="text" id="full_name" name="full_name" placeholder="e.g. Alice Smith" required>
+            </div>
+
+            <div class="form-group">
+              <label for="email_address">Email Address</label>
+              <input type="email" id="email_address" name="email_address" placeholder="alice@example.com" required>
+            </div>
+
+            <div class="form-group">
+              <label for="user_role">Role / Specialization</label>
+              <select id="user_role" name="user_role" required>
+                <option value="">Select a role...</option>
+                <option value="Developer">Developer</option>
+                <option value="Architect">Architect</option>
+                <option value="Debugger">Debugger</option>
+                <option value="Tester">Tester</option>
+              </select>
+            </div>
+
+            <div class="checkbox-group">
+              <input type="checkbox" id="terms_checkbox" name="terms" required>
+              <label for="terms_checkbox" style="margin-bottom:0">I agree to terms and conditions</label>
+            </div>
+
+            <div class="checkbox-group">
+              <input type="checkbox" id="newsletter_checkbox" name="newsletter">
+              <label for="newsletter_checkbox" style="margin-bottom:0">Subscribe to newsletter</label>
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-top: 12px;">
+              <button type="submit" id="submit_registration_btn">Register User</button>
+              <button type="button" class="secondary" id="clear_form_btn" onclick="clearForm()">Clear Fields</button>
+            </div>
+          </form>
+
+          <div id="form_success_alert" class="alert success">
+            ✓ Form Submitted Successfully! User ID: <span id="registered_user_id">USER-84920</span>
+          </div>
+        </div>
+
+        <!-- Activity Log -->
+        <div class="card">
+          <h3>Live Activity Log</h3>
+          <div id="event_log" class="log-panel">Ready. Awaiting browser automation commands...</div>
+        </div>
+      </div>
+
+      <!-- Right Column: Async, Dialogs, HIL, Questions, Downloads, Coords -->
+      <div class="col-right">
+        <!-- Section 2: Async Data Loading -->
+        <div class="card" id="section_async">
+          <h2>2. Dynamic Async Content Loader</h2>
+          <p style="color: var(--text-muted); font-size: 13px;">Simulates AJAX network delay and delayed element appearance.</p>
+          <button id="load_async_btn" onclick="loadAsyncData()">Fetch Secret Token</button>
+          <div id="async_spinner" style="display:none; color: var(--primary); margin-top: 10px; font-size: 13px;">⏳ Loading secret token from simulated API...</div>
+          <div id="async_result" class="alert success" style="margin-top: 10px;">
+            Secret Token: <strong id="token_val">SECRET_TOKEN_ALPHA_77</strong>
+          </div>
+        </div>
+
+        <!-- Section 3: Dialogs -->
+        <div class="card" id="section_dialogs">
+          <h2>3. JavaScript Dialogs</h2>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button id="trigger_alert_btn" class="secondary" onclick="alert('Carole Alert Triggered!')">Trigger Alert</button>
+            <button id="trigger_confirm_btn" class="secondary" onclick="triggerConfirm()">Trigger Confirm</button>
+            <span id="confirm_result_text" style="font-size: 13px; color: var(--text-muted)"></span>
+          </div>
+        </div>
+
+        <!-- Section 4: Security Challenge / CAPTCHA (HIL) -->
+        <div class="card" id="section_challenge">
+          <h2>4. Security Verification (Simulated CAPTCHA / HIL)</h2>
+          <p style="color: var(--text-muted); font-size: 13px;">Simulates bot challenge wall requiring human takeover.</p>
+          <button id="open_challenge_btn" class="danger" onclick="openChallengeModal()">Trigger Bot Challenge Modal</button>
+          <div id="challenge_completed_alert" class="alert success">
+            ✓ Security challenge resolved by human! Session authenticated.
+          </div>
+        </div>
+
+        <!-- Section 5: Question Clarification -->
+        <div class="card" id="section_question">
+          <h2>5. Agent-to-Human Question Prompt</h2>
+          <p style="color: var(--text-muted); font-size: 13px;">Simulates agent asking for user input or preference before executing action.</p>
+          <div style="display: flex; gap: 8px;">
+            <button id="ask_clarification_btn" class="warning" onclick="askClarification()">Ask Question</button>
+            <button id="answer_qa_btn" class="secondary" onclick="answerQuestion('Production')">Answer: Production</button>
+          </div>
+          <div id="qa_result_alert" class="alert success">
+            User Answer: <strong id="qa_answer_text">Production</strong>
+          </div>
+        </div>
+
+        <!-- Section 6: File Download -->
+        <div class="card" id="section_download">
+          <h2>6. File Download Interception</h2>
+          <button id="download_file_btn" class="secondary" onclick="triggerDownload()">Download Test Export (.json)</button>
+          <span id="download_status" style="font-size: 12px; color: var(--text-muted); margin-left: 8px;"></span>
+        </div>
+
+        <!-- Section 7: Coordinate Clicking Canvas -->
+        <div class="card" id="section_coords">
+          <h2>7. Coordinate Click Canvas Target</h2>
+          <p style="color: var(--text-muted); font-size: 13px;">Button positioned inside isolated canvas for exact pixel coordinate clicks.</p>
+          <div class="coord-canvas" id="canvas_box">
+            <button id="coord_target_btn" onclick="handleCoordClick()">Coord Target</button>
+          </div>
+          <div id="coords_result" class="alert success">✓ Clicked at exact coordinates!</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Security Challenge Modal -->
+  <div id="challenge_modal" class="modal">
+    <div class="modal-content">
+      <h3 style="color: var(--danger)">⚠️ Human Verification Required</h3>
+      <p style="font-size: 14px;">Please enter the security verification code: <strong>849201</strong></p>
+      <input type="text" id="challenge_input" placeholder="Enter 849201">
+      <div style="margin-top: 16px; display: flex; gap: 8px;">
+        <button id="verify_challenge_btn" onclick="verifyChallenge()">Verify &amp; Continue</button>
+        <button class="secondary" onclick="closeChallengeModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function logEvent(msg) {
+      const panel = document.getElementById("event_log");
+      if (!panel) return;
+      const timestamp = new Date().toLocaleTimeString();
+      panel.innerHTML += "<br>[" + timestamp + "] " + msg;
+      panel.scrollTop = panel.scrollHeight;
+    }
+
+    function handleFormSubmit(e) {
+      e.preventDefault();
+      const name = document.getElementById("full_name").value;
+      const email = document.getElementById("email_address").value;
+      const role = document.getElementById("user_role").value;
+      const terms = document.getElementById("terms_checkbox").checked;
+
+      if (!name || !email || !role || !terms) {
+        alert("Please fill all required fields!");
+        return;
+      }
+
+      const alertEl = document.getElementById("form_success_alert");
+      alertEl.style.display = "block";
+      logEvent("Form submitted: " + name + " (" + email + "), Role: " + role);
+    }
+
+    function clearForm() {
+      document.getElementById("registration_form").reset();
+      document.getElementById("form_success_alert").style.display = "none";
+      logEvent("Form fields cleared.");
+    }
+
+    function loadAsyncData() {
+      const btn = document.getElementById("load_async_btn");
+      const spinner = document.getElementById("async_spinner");
+      const res = document.getElementById("async_result");
+      
+      btn.disabled = true;
+      spinner.style.display = "block";
+      res.style.display = "none";
+      logEvent("Starting async fetch...");
+
+      setTimeout(() => {
+        spinner.style.display = "none";
+        res.style.display = "block";
+        btn.disabled = false;
+        logEvent("Async data loaded: SECRET_TOKEN_ALPHA_77");
+      }, 700);
+    }
+
+    function triggerConfirm() {
+      const ok = confirm("Do you want to proceed with Carole Browser Test?");
+      const span = document.getElementById("confirm_result_text");
+      span.innerText = ok ? "✓ User Confirmed" : "✗ User Dismissed";
+      logEvent("Confirm dialog result: " + (ok ? "true" : "false"));
+    }
+
+    function openChallengeModal() {
+      document.getElementById("challenge_modal").style.display = "flex";
+      logEvent("Bot Challenge Modal opened.");
+    }
+
+    function closeChallengeModal() {
+      document.getElementById("challenge_modal").style.display = "none";
+    }
+
+    function verifyChallenge() {
+      const val = document.getElementById("challenge_input").value.trim();
+      if (val === "849201") {
+        closeChallengeModal();
+        document.getElementById("challenge_completed_alert").style.display = "block";
+        logEvent("✓ Challenge verified successfully.");
+      } else {
+        alert("Incorrect challenge code! Expected 849201.");
+      }
+    }
+
+    function askClarification() {
+      logEvent("Agent Question: What target environment?");
+      const alertEl = document.getElementById("qa_result_alert");
+      alertEl.style.display = "none";
+    }
+
+    function answerQuestion(val) {
+      document.getElementById("qa_answer_text").innerText = val;
+      document.getElementById("qa_result_alert").style.display = "block";
+      logEvent("Question answered by human: " + val);
+    }
+
+    function handleCoordClick() {
+      document.getElementById("coords_result").style.display = "block";
+      logEvent("✓ Coordinate target clicked at exact position!");
+    }
+
+    function triggerDownload() {
+      const data = JSON.stringify({ project: "Carole.ai", timestamp: Date.now(), status: "verified" }, null, 2);
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "carole_test_export.json";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      document.getElementById("download_status").innerText = "✓ Download triggered: carole_test_export.json";
+      logEvent("Triggered file download: carole_test_export.json");
+    }
+  </script>
+</body>
+</html>

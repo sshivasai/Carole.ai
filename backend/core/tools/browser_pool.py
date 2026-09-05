@@ -14,31 +14,88 @@ Key design decisions:
 
 import asyncio
 import logging
-from typing import Dict
+from typing import Dict, Optional, Any
 
 logger = logging.getLogger("carole.browser_pool")
 
 _playwright = None          # Playwright instance
 _browser = None             # Single shared Chromium browser
+_browser_loop = None        # The event loop in which _browser was started
 _contexts: Dict[str, any] = {}   # agent_id → BrowserContext
-_lock = asyncio.Lock()
+_lock = None
+_lock_loop = None
+_headless_override: Optional[bool] = None
+
+
+def set_headless_mode(headless: Optional[bool]):
+    """
+    Dynamically set headless mode (True for headless, False for windowed/headed).
+    Resetting clears the current browser instance so the next request adopts the new mode.
+    """
+    global _headless_override, _browser, _playwright
+    if _headless_override != headless:
+        _headless_override = headless
+        _browser = None
+        _playwright = None
+        _contexts.clear()
+        logger.info("🌐 [BrowserPool] Headless mode updated to: %s", headless)
+
+
+def _get_lock() -> asyncio.Lock:
+    """Returns an asyncio.Lock bound to the current running event loop."""
+    global _lock, _lock_loop
+    current_loop = asyncio.get_running_loop()
+    if _lock is None or _lock_loop != current_loop:
+        _lock = asyncio.Lock()
+        _lock_loop = current_loop
+    return _lock
+
+
+def _is_browser_usable(b, loop) -> bool:
+    if b is None:
+        return False
+    # If mock object (unittest.mock.MagicMock, etc.), accept without event loop check
+    if not hasattr(b, "_impl_obj"):
+        return True
+    channel = getattr(getattr(b, "_impl_obj", None), "_channel", None)
+    if channel is None:
+        return False
+    try:
+        return b.is_connected()
+    except Exception:
+        return False
 
 
 async def _ensure_browser():
     """Launch the shared Playwright browser if not already running."""
-    global _playwright, _browser
-    if _browser is not None and _browser.is_connected():
+    global _playwright, _browser, _browser_loop
+    current_loop = asyncio.get_running_loop()
+
+    if _is_browser_usable(_browser, current_loop):
+        _browser_loop = current_loop
         return _browser
 
-    async with _lock:
+    lock = _get_lock()
+    async with lock:
         # Double-check inside lock
-        if _browser is not None and _browser.is_connected():
+        if _is_browser_usable(_browser, current_loop):
+            _browser_loop = current_loop
             return _browser
+
+        # If browser was created in a dead event loop or disconnected, reset cleanly
+        if _browser is not None or _playwright is not None:
+            logger.info("🌐 [BrowserPool] Stale browser or disconnected channel. Resetting pool.")
+            _contexts.clear()
+            _browser = None
+            _playwright = None
+
         try:
+            import os
             from playwright.async_api import async_playwright
             from core.llm.config_manager import load_config
             
             _playwright = await async_playwright().start()
+            _browser_loop = current_loop
             
             cfg = load_config()
             ba_cfg = cfg.get("browser_automation", {})
@@ -46,7 +103,14 @@ async def _ensure_browser():
             proxy_provider = ba_cfg.get("proxy_provider", "none")
             keys = ba_cfg.get("api_keys", {})
             display_mode = ba_cfg.get("display_mode", "headless")
-            is_headless = display_mode != "windowed" and ba_cfg.get("headless", True)
+            
+            env_headless = os.environ.get("HEADLESS") or os.environ.get("BROWSER_HEADLESS")
+            if _headless_override is not None:
+                is_headless = _headless_override
+            elif env_headless is not None:
+                is_headless = env_headless.strip().lower() not in ("0", "false", "no", "headed", "windowed")
+            else:
+                is_headless = display_mode != "windowed" and ba_cfg.get("headless", True)
             
             if infrastructure == "browserbase" and keys.get("browserbase"):
                 key = keys["browserbase"]
@@ -99,7 +163,8 @@ async def get_page(agent_id: str):
     """
     browser = await _ensure_browser()
 
-    async with _lock:
+    lock = _get_lock()
+    async with lock:
         if agent_id in _contexts:
             # If the underlying browser reconnected (e.g. BrowserBase timeout),
             # the old context is stale. Evict it so we create a new one.
@@ -109,7 +174,7 @@ async def get_page(agent_id: str):
                     await _contexts[agent_id].close()
                 except Exception:
                     pass
-                _contexts.pop(agent_id)
+                _contexts.pop(agent_id, None)
 
         if agent_id not in _contexts:
             # Enforce max context cap with LRU eviction
@@ -123,23 +188,36 @@ async def get_page(agent_id: str):
                     except Exception as e:
                         logger.warning("Browser context eviction error: %s", e)
 
-            ctx = await browser.new_context(
-                viewport={"width": 1280, "height": 900},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-                timezone_id="America/Chicago",
-                # Accept most common permission types so sites don't block
-                permissions=["notifications"],
-                # ── Anti-detection context options ──
-                device_scale_factor=1,
-                has_touch=False,
-                is_mobile=False,
-                java_script_enabled=True,
-            )
+            async def _create_context_with(target_browser):
+                return await target_browser.new_context(
+                    viewport={"width": 1280, "height": 900},
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    locale="en-US",
+                    timezone_id="America/Chicago",
+                    # Accept most common permission types so sites don't block
+                    permissions=["notifications"],
+                    # ── Anti-detection context options ──
+                    device_scale_factor=1,
+                    has_touch=False,
+                    is_mobile=False,
+                    java_script_enabled=True,
+                )
+
+            try:
+                ctx = await _create_context_with(browser)
+            except Exception as e:
+                logger.warning("🌐 [BrowserPool] new_context failed on current browser (%s). Recreating browser...", e)
+                global _browser, _playwright
+                _browser = None
+                _playwright = None
+                _contexts.clear()
+                browser = await _ensure_browser()
+                ctx = await _create_context_with(browser)
+
             # Inject stealth script to remove `navigator.webdriver` flag
             # This is the #1 way Google / Cloudflare detect Playwright
             await ctx.add_init_script("""
@@ -173,7 +251,8 @@ async def get_page(agent_id: str):
         return page
     except Exception as e:
         logger.warning("🌐 [BrowserPool] Failed to get page from context (possibly closed): %s. Recreating context.", e)
-        async with _lock:
+        lock = _get_lock()
+        async with lock:
             _contexts.pop(agent_id, None)
         return await get_page(agent_id)
 
@@ -194,7 +273,8 @@ async def get_new_page(agent_id: str):
 
 async def close_agent_browser(agent_id: str) -> bool:
     """Close and remove the browser context for a specific agent."""
-    async with _lock:
+    lock = _get_lock()
+    async with lock:
         ctx = _contexts.pop(agent_id, None)
     if ctx:
         try:
@@ -213,14 +293,15 @@ async def get_active_agents() -> list:
 
 async def close_all():
     """Closes all browser contexts and the browser itself. Called on server shutdown."""
-    global _browser, _playwright
-    async with _lock:
+    global _browser, _playwright, _browser_loop
+    lock = _get_lock()
+    async with lock:
         agent_ids = list(_contexts.keys())
 
     for agent_id in agent_ids:
         await close_agent_browser(agent_id)
 
-    async with _lock:
+    async with lock:
         if _browser:
             try:
                 await _browser.close()
@@ -234,6 +315,7 @@ async def close_all():
             except Exception:
                 pass
             _playwright = None
+        _browser_loop = None
 
     logger.info("🌐 [BrowserPool] All browser resources released.")
 
