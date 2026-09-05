@@ -68,48 +68,105 @@ Rules:
 6. Only set done=true when the goal is truly finished (you have the answer / completed the action). If you cannot complete it, set done=true with success=false and a clear explanation.
 7. Prefer the most specific, visible element. Ignore hidden/duplicate refs.
 8. If you encounter a CAPTCHA (Cloudflare, reCAPTCHA), 2FA/OTP prompt, OAuth SSO login (Google/GitHub), or a stuck blocking modal you cannot bypass, call `browser_human_takeover` with a clear reason for the user.
+9. Checkboxes & Radios: If an input element has `checked='false'`, it is currently unchecked. If the goal requires selecting/agreeing to terms or opting in, you MUST use action `{"type": "check", "ref": <ref>}` to check it before submitting the form. Never assume a checkbox is checked unless `checked='true'` is explicitly shown.
+10. Dropdowns & Selects: For <select> elements, do NOT use 'click' to open them (headless browsers cannot open native OS dropdown menus). You MUST directly use the 'select' action: {"type": "select", "ref": <ref>, "value": "<option_value_or_label>"}. The available options are listed directly on the <select> tag in the snapshot.
 """
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-    """Pull the first balanced JSON object out of an LLM response."""
+    """Pull the first valid JSON object out of an LLM response."""
     if not text:
         return None
     text = text.strip()
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if fence:
-        text = fence.group(1).strip()
 
-    start = text.find("{")
-    if start == -1:
+    def _try_parse(s: str) -> Optional[Dict[str, Any]]:
+        s = s.strip()
+        # 1. Direct JSON
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        # 2. Strip trailing commas before closing braces/brackets
+        try:
+            cleaned = re.sub(r",\s*([\]}])", r"\1", s)
+            obj = json.loads(cleaned)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        # 3. Clean control characters / fix newlines in strings via ReACTAgent
+        try:
+            from core.agent.react_agent import ReACTAgent
+            repaired = ReACTAgent._repair_json(s)
+            obj = json.loads(repaired)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        # 4. AST literal_eval fallback (handles single quotes, True/False/None)
+        try:
+            import ast
+            obj = ast.literal_eval(s)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
         return None
 
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(text)):
-        c = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
+    # Step A: Check code blocks (```json ... ``` or ``` ... ```)
+    fences = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
+    for fence in fences:
+        parsed = _try_parse(fence)
+        if parsed:
+            return parsed
+
+    # Step B: Scan all balanced top-level { ... } blocks in the text
+    i = 0
+    while i < len(text):
+        start = text.find("{", i)
+        if start == -1:
+            break
+
+        depth = 0
+        in_str = False
+        esc = False
+        end = -1
+        for j in range(start, len(text)):
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            else:
+                if c == '"':
+                    in_str = True
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = j
+                        break
+        if end != -1:
+            candidate = text[start : end + 1]
+            parsed = _try_parse(candidate)
+            if parsed and any(k in parsed for k in ("thought", "action", "done", "type", "success")):
+                return parsed
+            i = start + 1
         else:
-            if c == '"':
-                in_str = True
-            elif c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start : i + 1]
-                    try:
-                        return json.loads(candidate)
-                    except (json.JSONDecodeError, ValueError):
-                        return None
-    return None
+            break
+
+    # Step C: Fallback to _try_parse on whole text
+    return _try_parse(text)
 
 
 class BrowserAgent:
@@ -190,6 +247,7 @@ class BrowserAgent:
                     if decision is not None:
                         logger.info("🤖 [BrowserAgent] Step %d decision: %s", step, decision)
                         break
+                    logger.warning("🤖 [BrowserAgent] Step %d attempt %d failed to parse JSON from raw: %r", step, attempt, raw)
                     # Retry once with a nudge if JSON parsing failed.
                     messages.append({
                         "role": "user",

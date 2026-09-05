@@ -935,18 +935,13 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
         keys = ba_cfg.get("api_keys", {})
         
         try:
-            from browser_use import Browser, BrowserConfig
-            if provider == "browserbase" and keys.get("browserbase"):
-                browser_config = BrowserConfig(cdp_url=f"wss://connect.browserbase.com?apiKey={keys['browserbase']}")
-            else:
-                browser_config = BrowserConfig(headless=True)
-            browser_instance = Browser(config=browser_config)
-        except (ImportError, AttributeError):
             from browser_use import Browser
             if provider == "browserbase" and keys.get("browserbase"):
                 browser_instance = Browser(cdp_url=f"wss://connect.browserbase.com?apiKey={keys['browserbase']}")
             else:
-                browser_instance = Browser(headless=True)
+                browser_instance = Browser()
+        except Exception:
+            browser_instance = None
         
         keys = cfg.get("api_keys", {})
         

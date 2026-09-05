@@ -3,7 +3,7 @@ import uuid
 import json
 import pytest
 from pathlib import Path
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.api.crud_routes import seed_demo
@@ -14,6 +14,13 @@ from core.knowledge.code_graph import code_graph
 
 @pytest.mark.asyncio
 async def test_database_seeding(db_session: AsyncSession):
+    # Ensure a clean database state so seed_demo populates demo entities
+    await db_session.execute(delete(Agent))
+    await db_session.execute(delete(Team))
+    await db_session.execute(delete(Project))
+    await db_session.execute(delete(User))
+    await db_session.commit()
+
     res = await seed_demo(db_session)
     assert res is not None
 

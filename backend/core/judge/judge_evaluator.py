@@ -19,7 +19,7 @@ import re
 logger = logging.getLogger("carole.judge")
 
 class JudgeEvaluator:
-    async def evaluate(self, tool_name: str, arguments: dict, agent_name: str, team_id: str = None) -> tuple[bool, str]:
+    async def evaluate(self, tool_name: str, arguments: dict, agent_name: str, team_id: str = None, model: str = None) -> tuple[bool, str]:
         """
         Calls a cheap LLM to assess whether a tool execution request is safe.
         Returns (approved: bool, reasoning: str).
@@ -59,8 +59,9 @@ class JudgeEvaluator:
             f"Then, conclude with exactly <VERDICT>APPROVED</VERDICT> or <VERDICT>DENIED</VERDICT>."
         )
 
+        target_model = model or DEFAULT_JUDGE_MODEL
         response = await llm_router.generate_completion(
-            model=DEFAULT_JUDGE_MODEL,
+            model=target_model,
             system_prompt=JUDGE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,

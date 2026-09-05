@@ -60,3 +60,25 @@ async def test_router_usage_logging(db_session: AsyncSession):
     assert usage is not None
     assert usage.model == "gpt-4o-mini"
     assert int(usage.total_tokens) > 0
+
+
+@pytest.mark.asyncio
+async def test_realtime_router_openrouter_free():
+    """Verify live real-time LLM completion using openrouter/free model."""
+    import os
+    if not os.getenv("OPENROUTER_API_KEY"):
+        pytest.skip("OPENROUTER_API_KEY is not configured")
+
+    router = MultiModelRouter()
+    resp = await router.generate_completion(
+        model="openrouter/free",
+        system_prompt="You are a helpful and concise assistant.",
+        messages=[{"role": "user", "content": "Respond with the word 'HELLO' and nothing else."}],
+        temperature=0.0,
+        max_tokens=20,
+    )
+    assert resp is not None
+    assert isinstance(resp, str)
+    assert len(resp.strip()) > 0
+    assert "HELLO" in resp.upper()
+

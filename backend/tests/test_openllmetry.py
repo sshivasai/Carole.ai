@@ -89,6 +89,13 @@ def main():
     print("🎉 OpenLLMetry is functioning with 100% in-process trace capture!")
     print("   Traces will stream directly into Carole's native custom UI.")
     print("=" * 65)
+    assert len(traces) > 0, "Expected in-memory spans to be captured by OpenLLMetry"
+    assert stats["total_prompt_tokens"] > 0
+
+
+def test_openllmetry_swarm_tracing():
+    """Pytest test case for OpenLLMetry in-process tracing."""
+    main()
 
 
 if __name__ == "__main__":

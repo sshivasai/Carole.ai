@@ -55,10 +55,29 @@ def _is_browser_usable(b, loop) -> bool:
     if b is None:
         return False
     # If mock object (unittest.mock.MagicMock, etc.), accept without event loop check
+    from unittest.mock import Mock
+    if isinstance(b, Mock):
+        return True
     if not hasattr(b, "_impl_obj"):
         return True
-    channel = getattr(getattr(b, "_impl_obj", None), "_channel", None)
+    global _browser_loop
+    if _browser_loop is not None and (_browser_loop != loop or _browser_loop.is_closed()):
+        return False
+    if loop is not None and loop.is_closed():
+        return False
+    impl = getattr(b, "_impl_obj", None)
+    if impl is None:
+        return False
+    channel = getattr(impl, "_channel", None)
     if channel is None:
+        return False
+    conn = getattr(channel, "_connection", None)
+    if conn is None:
+        return False
+    # Check transport connection status to avoid 'NoneType' object has no attribute 'send'
+    if getattr(conn, "_transport", None) is None:
+        return False
+    if getattr(conn, "_is_closed", False):
         return False
     try:
         return b.is_connected()
@@ -66,9 +85,88 @@ def _is_browser_usable(b, loop) -> bool:
         return False
 
 
+async def _launch_browser_locked(current_loop):
+    """Launches browser assuming lock is already acquired by caller."""
+    global _playwright, _browser, _browser_loop
+    if _browser is not None:
+        try:
+            await _browser.close()
+        except Exception:
+            pass
+        _browser = None
+    if _playwright is not None:
+        try:
+            await _playwright.stop()
+        except Exception:
+            pass
+        _playwright = None
+    _contexts.clear()
+
+    try:
+        import os
+        from playwright.async_api import async_playwright
+        from core.llm.config_manager import load_config
+        
+        _playwright = await async_playwright().start()
+        _browser_loop = current_loop
+        
+        cfg = load_config()
+        ba_cfg = cfg.get("browser_automation", {})
+        infrastructure = ba_cfg.get("infrastructure") or ba_cfg.get("provider", "local")
+        proxy_provider = ba_cfg.get("proxy_provider", "none")
+        keys = ba_cfg.get("api_keys", {})
+        display_mode = ba_cfg.get("display_mode", "headless")
+        
+        env_headless = os.environ.get("HEADLESS") or os.environ.get("BROWSER_HEADLESS")
+        if _headless_override is not None:
+            is_headless = _headless_override
+        elif env_headless is not None:
+            is_headless = env_headless.strip().lower() not in ("0", "false", "no", "headed", "windowed")
+        else:
+            is_headless = display_mode != "windowed" and ba_cfg.get("headless", True)
+        
+        if infrastructure == "browserbase" and keys.get("browserbase"):
+            key = keys["browserbase"]
+            try:
+                _browser = await _playwright.chromium.connect_over_cdp(f"wss://connect.browserbase.com?apiKey={key}")
+                logger.info("🌐 [BrowserPool] Connected to Browserbase CDP.")
+            except Exception as bb_err:
+                logger.warning("⚠️ [BrowserPool] Browserbase connection failed (%s), falling back to local Chromium.", bb_err)
+                _browser = None
+
+        if _browser is None:
+            proxy_settings = None
+            if (proxy_provider == "scraperapi" or infrastructure == "scraperapi") and keys.get("scraperapi"):
+                proxy_settings = {"server": f"http://scraperapi:{keys['scraperapi']}@proxy-server.scraperapi.com:8001"}
+            elif (proxy_provider == "zenrows" or infrastructure == "zenrows") and keys.get("zenrows"):
+                proxy_settings = {"server": f"http://{keys['zenrows']}:@proxy.zenrows.com:8001"}
+            
+            _browser = await _playwright.chromium.launch(
+                headless=is_headless,
+                proxy=proxy_settings,
+                args=[
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
+                    # ── Anti-detection / Stealth ──
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--window-size=1280,900",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ],
+            )
+            logger.info(f"🌐 [BrowserPool] Chromium launched (infra={infrastructure}, headless={is_headless}, proxy={'yes' if proxy_settings else 'no'}).")
+    except Exception as e:
+        logger.error("✗ [BrowserPool] Failed to launch browser: %s", e)
+        raise
+    return _browser
+
+
 async def _ensure_browser():
     """Launch the shared Playwright browser if not already running."""
-    global _playwright, _browser, _browser_loop
+    global _browser_loop
     current_loop = asyncio.get_running_loop()
 
     if _is_browser_usable(_browser, current_loop):
@@ -81,74 +179,7 @@ async def _ensure_browser():
         if _is_browser_usable(_browser, current_loop):
             _browser_loop = current_loop
             return _browser
-
-        # If browser was created in a dead event loop or disconnected, reset cleanly
-        if _browser is not None or _playwright is not None:
-            logger.info("🌐 [BrowserPool] Stale browser or disconnected channel. Resetting pool.")
-            _contexts.clear()
-            _browser = None
-            _playwright = None
-
-        try:
-            import os
-            from playwright.async_api import async_playwright
-            from core.llm.config_manager import load_config
-            
-            _playwright = await async_playwright().start()
-            _browser_loop = current_loop
-            
-            cfg = load_config()
-            ba_cfg = cfg.get("browser_automation", {})
-            infrastructure = ba_cfg.get("infrastructure") or ba_cfg.get("provider", "local")
-            proxy_provider = ba_cfg.get("proxy_provider", "none")
-            keys = ba_cfg.get("api_keys", {})
-            display_mode = ba_cfg.get("display_mode", "headless")
-            
-            env_headless = os.environ.get("HEADLESS") or os.environ.get("BROWSER_HEADLESS")
-            if _headless_override is not None:
-                is_headless = _headless_override
-            elif env_headless is not None:
-                is_headless = env_headless.strip().lower() not in ("0", "false", "no", "headed", "windowed")
-            else:
-                is_headless = display_mode != "windowed" and ba_cfg.get("headless", True)
-            
-            if infrastructure == "browserbase" and keys.get("browserbase"):
-                key = keys["browserbase"]
-                try:
-                    _browser = await _playwright.chromium.connect_over_cdp(f"wss://connect.browserbase.com?apiKey={key}")
-                    logger.info("🌐 [BrowserPool] Connected to Browserbase CDP.")
-                except Exception as bb_err:
-                    logger.warning("⚠️ [BrowserPool] Browserbase connection failed (%s), falling back to local Chromium.", bb_err)
-                    _browser = None
-
-            if _browser is None:
-                proxy_settings = None
-                if (proxy_provider == "scraperapi" or infrastructure == "scraperapi") and keys.get("scraperapi"):
-                    proxy_settings = {"server": f"http://scraperapi:{keys['scraperapi']}@proxy-server.scraperapi.com:8001"}
-                elif (proxy_provider == "zenrows" or infrastructure == "zenrows") and keys.get("zenrows"):
-                    proxy_settings = {"server": f"http://{keys['zenrows']}:@proxy.zenrows.com:8001"}
-                
-                _browser = await _playwright.chromium.launch(
-                    headless=is_headless,
-                    proxy=proxy_settings,
-                    args=[
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--disable-extensions",
-                        # ── Anti-detection / Stealth ──
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-infobars",
-                        "--window-size=1280,900",
-                        "--disable-background-timer-throttling",
-                        "--disable-backgrounding-occluded-windows",
-                        "--disable-renderer-backgrounding",
-                    ],
-                )
-                logger.info(f"🌐 [BrowserPool] Chromium launched (infra={infrastructure}, headless={is_headless}, proxy={'yes' if proxy_settings else 'no'}).")
-        except Exception as e:
-            logger.error("✗ [BrowserPool] Failed to launch browser: %s", e)
-            raise
-    return _browser
+        return await _launch_browser_locked(current_loop)
 
 
 MAX_BROWSER_CONTEXTS = 5
@@ -162,6 +193,7 @@ async def get_page(agent_id: str):
     Limits active contexts to MAX_BROWSER_CONTEXTS to prevent RAM bloat.
     """
     browser = await _ensure_browser()
+    current_loop = asyncio.get_running_loop()
 
     lock = _get_lock()
     async with lock:
@@ -211,11 +243,7 @@ async def get_page(agent_id: str):
                 ctx = await _create_context_with(browser)
             except Exception as e:
                 logger.warning("🌐 [BrowserPool] new_context failed on current browser (%s). Recreating browser...", e)
-                global _browser, _playwright
-                _browser = None
-                _playwright = None
-                _contexts.clear()
-                browser = await _ensure_browser()
+                browser = await _launch_browser_locked(current_loop)
                 ctx = await _create_context_with(browser)
 
             # Inject stealth script to remove `navigator.webdriver` flag

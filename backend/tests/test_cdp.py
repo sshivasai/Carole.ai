@@ -25,3 +25,15 @@ async def main():
         await session.close()
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+import pytest
+
+@pytest.mark.asyncio
+async def test_cdp_remote_debugging_port():
+    """Verify Chromium launches and connects with CDP port."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--remote-debugging-port=0"])
+        assert browser.is_connected()
+        await browser.close()
+

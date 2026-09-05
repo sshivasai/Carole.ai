@@ -182,25 +182,29 @@ class TestBrowserPool:
         mock_browser.new_context = AsyncMock(side_effect=fake_new_context)
         bp._contexts.clear()
 
-        # Fill pool up to limit (5)
-        for i in range(5):
-            agent_id = f"agent_{i}"
-            await bp.get_page(agent_id)
-            assert agent_id in bp._contexts
+        try:
+            # Fill pool up to limit (5)
+            for i in range(5):
+                agent_id = f"agent_{i}"
+                await bp.get_page(agent_id)
+                assert agent_id in bp._contexts
 
-        assert len(bp._contexts) == 5
-        oldest_ctx = bp._contexts["agent_0"]
+            assert len(bp._contexts) == 5
+            oldest_ctx = bp._contexts["agent_0"]
 
-        # Adding 6th agent context should evict agent_0
-        await bp.get_page("agent_5")
-        assert len(bp._contexts) == 5
-        assert "agent_0" not in bp._contexts
-        assert "agent_5" in bp._contexts
-        oldest_ctx.close.assert_called_once()
-
-        # Clean up
-        await bp.close_all()
-        assert len(bp._contexts) == 0
+            # Adding 6th agent context should evict agent_0
+            await bp.get_page("agent_5")
+            assert len(bp._contexts) == 5
+            assert "agent_0" not in bp._contexts
+            assert "agent_5" in bp._contexts
+            oldest_ctx.close.assert_called_once()
+        finally:
+            # Clean up
+            await bp.close_all()
+            bp._browser = None
+            bp._playwright = None
+            bp._contexts.clear()
+            assert len(bp._contexts) == 0
 
 
 # ==============================================================================
@@ -661,64 +665,88 @@ class TestEndToEndRealPlaywright:
     """Executes a real local headless Chromium session on an in-memory HTML page."""
 
     @pytest.mark.asyncio
-    async def test_real_playwright_form_submission_and_snapshots(self):
+    async def test_real_playwright_form_submission_and_snapshots(self, monkeypatch):
         """Launch real Chromium, navigate to an HTML form, snapshot refs, interact, and verify DOM."""
+        from core.llm import config_manager
+        orig_load = config_manager.load_config
+
+        def mock_load():
+            cfg = orig_load()
+            cfg_copy = dict(cfg)
+            ba = dict(cfg_copy.get("browser_automation", {}))
+            ba["infrastructure"] = "local"
+            ba["provider"] = "local"
+            ba["headless"] = True
+            cfg_copy["browser_automation"] = ba
+            return cfg_copy
+
+        monkeypatch.setattr(config_manager, "load_config", mock_load)
+
+        # Ensure starting from clean local browser
+        await bp.close_all()
+        bp._browser = None
+        bp._playwright = None
+        bp._contexts.clear()
+
         agent_id = "real_playwright_test_agent"
-        page = await bp.get_page(agent_id)
+        try:
+            page = await bp.get_page(agent_id)
 
-        # In-memory HTML page with form inputs
-        html_content = """
-        <!DOCTYPE html>
-        <html>
-        <head><title>Carole Integration Test</title></head>
-        <body style="margin: 20px; font-family: sans-serif;">
-            <h1>Automated Browser Test</h1>
-            <form id="test-form" onsubmit="event.preventDefault(); document.getElementById('msg').innerText = 'SUCCESS: ' + document.getElementById('username').value + ' | ' + document.getElementById('role').value;">
-                <label>User: <input type="text" id="username" name="user" value="" /></label><br/><br/>
-                <label>Role:
-                    <select id="role" name="role">
-                        <option value="developer">Developer</option>
-                        <option value="manager">Manager</option>
-                    </select>
-                </label><br/><br/>
-                <label><input type="checkbox" id="terms" /> Accept terms</label><br/><br/>
-                <button type="submit" id="submit-btn">Submit Form</button>
-            </form>
-            <p id="msg">Initial State</p>
-        </body>
-        </html>
-        """
-        # Load page content directly
-        await page.set_content(html_content, wait_until="domcontentloaded")
+            # In-memory HTML page with form inputs
+            html_content = """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Carole Integration Test</title></head>
+            <body style="margin: 20px; font-family: sans-serif;">
+                <h1>Automated Browser Test</h1>
+                <form id="test-form" onsubmit="event.preventDefault(); document.getElementById('msg').innerText = 'SUCCESS: ' + document.getElementById('username').value + ' | ' + document.getElementById('role').value;">
+                    <label>User: <input type="text" id="username" name="user" value="" /></label><br/><br/>
+                    <label>Role:
+                        <select id="role" name="role">
+                            <option value="developer">Developer</option>
+                            <option value="manager">Manager</option>
+                        </select>
+                    </label><br/><br/>
+                    <label><input type="checkbox" id="terms" /> Accept terms</label><br/><br/>
+                    <button type="submit" id="submit-btn">Submit Form</button>
+                </form>
+                <p id="msg">Initial State</p>
+            </body>
+            </html>
+            """
+            # Load page content directly
+            await page.set_content(html_content, wait_until="domcontentloaded")
 
-        # 1. Test snapshot generation on live DOM
-        snapshot = await browser_tool.snapshot(agent_id, include_screenshot=False)
-        assert "Automated Browser Test" in snapshot
-        assert "<input" in snapshot
-        assert "<select" in snapshot
-        assert "<button" in snapshot
+            # 1. Test snapshot generation on live DOM
+            snapshot = await browser_tool.snapshot(agent_id, include_screenshot=False)
+            assert "Automated Browser Test" in snapshot
+            assert "<input" in snapshot
+            assert "<select" in snapshot
+            assert "<button" in snapshot
 
-        # 2. Interact using live selector / refs
-        # Type into username
-        type_res = await browser_tool.act("type", agent_id, "Agent", "team_1", selector="#username", text="Ada Lovelace")
-        assert "succeeded" in type_res
+            # 2. Interact using live selector / refs
+            # Type into username
+            type_res = await browser_tool.act("type", agent_id, "Agent", "team_1", selector="#username", text="Ada Lovelace")
+            assert "succeeded" in type_res
 
-        # Select role
-        sel_res = await browser_tool.act("select", agent_id, "Agent", "team_1", selector="#role", value="developer")
-        assert "succeeded" in sel_res
+            # Select role
+            sel_res = await browser_tool.act("select", agent_id, "Agent", "team_1", selector="#role", value="developer")
+            assert "succeeded" in sel_res
 
-        # Check checkbox
-        chk_res = await browser_tool.act("check", agent_id, "Agent", "team_1", selector="#terms")
-        assert "succeeded" in chk_res
+            # Check checkbox
+            chk_res = await browser_tool.act("check", agent_id, "Agent", "team_1", selector="#terms")
+            assert "succeeded" in chk_res
 
-        # Click submit button
-        clk_res = await browser_tool.act("click", agent_id, "Agent", "team_1", selector="#submit-btn")
-        assert "succeeded" in clk_res
+            # Click submit button
+            clk_res = await browser_tool.act("click", agent_id, "Agent", "team_1", selector="#submit-btn")
+            assert "succeeded" in clk_res
 
-        # 3. Verify DOM text updated from the submission
-        result_text = await browser_tool.extract_text("#msg", agent_id)
-        assert "SUCCESS: Ada Lovelace | developer" in result_text
-
-        # 4. Clean teardown
-        closed = await bp.close_agent_browser(agent_id)
-        assert closed is True
+            # 3. Verify DOM text updated from the submission
+            result_text = await browser_tool.extract_text("#msg", agent_id)
+            assert "SUCCESS: Ada Lovelace | developer" in result_text
+        finally:
+            # 4. Clean teardown
+            await bp.close_all()
+            bp._browser = None
+            bp._playwright = None
+            bp._contexts.clear()

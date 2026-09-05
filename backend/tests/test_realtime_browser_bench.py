@@ -32,6 +32,7 @@ FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 def force_local_browser(monkeypatch):
     """Ensure tests run against local Chromium since 127.0.0.1 is not reachable from remote cloud CDP."""
     from core.llm import config_manager
+    from unittest.mock import Mock
     orig_load = config_manager.load_config
 
     def mock_load():
@@ -46,25 +47,35 @@ def force_local_browser(monkeypatch):
 
     monkeypatch.setattr(config_manager, "load_config", mock_load)
 
+    # Clean any Mock browser left behind by unit tests
+    if isinstance(bp._browser, Mock):
+        bp._browser = None
+        bp._playwright = None
+        bp._contexts.clear()
+
 
 @pytest.fixture(scope="module")
 def local_bench_server():
     """Starts a background HTTP server serving the interactive test bench."""
-    # Find free port
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-
+    import time
     handler = partial(http.server.SimpleHTTPRequestHandler, directory=FIXTURES_DIR)
-    httpd = http.server.HTTPServer(("127.0.0.1", port), handler)
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    port = httpd.server_port
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
 
     url = f"http://127.0.0.1:{port}/browser_test_bench.html"
+    for _ in range(50):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                break
+        except OSError:
+            time.sleep(0.05)
+
     yield url
 
     httpd.shutdown()
+    httpd.server_close()
 
 
 @pytest.mark.asyncio

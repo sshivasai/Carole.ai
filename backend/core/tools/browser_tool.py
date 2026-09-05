@@ -354,10 +354,44 @@ class BrowserTool:
                 idx = node.get("highlightIndex")
                 if idx is not None:
                     tag = node.get("tagName", "").lower()
+                    node_attrs = node.get("attributes", {})
+                    input_type = str(node_attrs.get("type", "")).lower()
+
                     attrs = []
-                    for k, v in node.get("attributes", {}).items():
-                        if k in ["name", "type", "value", "placeholder", "aria-label", "checked", "href"]:
+                    for k, v in node_attrs.items():
+                        if k in ["name", "type", "placeholder", "aria-label", "href"]:
                             attrs.append(f"{k}='{v}'")
+                        elif k == "value":
+                            # Omit default HTML value='on' for checkboxes/radios so LLMs do not confuse it with checked state
+                            if input_type in ["checkbox", "radio"] and str(v).lower() == "on":
+                                continue
+                            attrs.append(f"{k}='{v}'")
+
+                    if input_type in ["checkbox", "radio"]:
+                        is_checked = node_attrs.get("checked") or node.get("checked")
+                        if is_checked and str(is_checked).lower() not in ["false", "0", "null", "undefined"]:
+                            attrs.append("checked='true'")
+                        else:
+                            attrs.append("checked='false'")
+                    elif "checked" in node_attrs:
+                        attrs.append(f"checked='{node_attrs['checked']}'")
+
+                    if tag == "select":
+                        options = []
+                        for child_id in node.get("children", []):
+                            child = dom_map.get(str(child_id))
+                            if child and child.get("tagName", "").lower() == "option":
+                                opt_text = ""
+                                for opt_child_id in child.get("children", []):
+                                    opt_child = dom_map.get(str(opt_child_id))
+                                    if opt_child and opt_child.get("type") == "TEXT_NODE":
+                                        opt_text += opt_child.get("text", "").strip()
+                                opt_val = child.get("attributes", {}).get("value") or opt_text
+                                if opt_text or opt_val:
+                                    options.append(opt_text or opt_val)
+                        if options:
+                            attrs.append(f"options='{', '.join(options[:8])}'")
+
                     attr_str = " " + " ".join(attrs) if attrs else ""
                     
                     text = ""

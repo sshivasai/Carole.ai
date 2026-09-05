@@ -33,3 +33,17 @@ async def main():
         await browser.close()
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+import pytest
+
+@pytest.mark.asyncio
+async def test_cdp_session_connection():
+    """Verify Chromium context and page creation with remote debugging flags."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--remote-debugging-port=0"])
+        context = await browser.new_context()
+        page = await context.new_page()
+        assert page is not None
+        await browser.close()
+

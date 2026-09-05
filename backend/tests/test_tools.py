@@ -129,4 +129,25 @@ async def test_judge_evaluator_verdict_parsing():
         assert approved is True
 
 
+@pytest.mark.asyncio
+async def test_realtime_judge_evaluator_openrouter_free():
+    """Verify Judge AI safety evaluation in real-time using openrouter/free model."""
+    import os
+    if not os.getenv("OPENROUTER_API_KEY"):
+        pytest.skip("OPENROUTER_API_KEY is not configured")
+
+    from core.judge.judge_evaluator import judge_evaluator
+    # Evaluate a benign read request
+    approved, reasoning = await judge_evaluator.evaluate(
+        tool_name="read_file",
+        arguments={"relative_path": "docs/architecture.md"},
+        agent_name="Nova",
+        model="openrouter/free"
+    )
+    assert isinstance(approved, bool)
+    assert isinstance(reasoning, str)
+    assert len(reasoning) > 0
+
+
+
 
