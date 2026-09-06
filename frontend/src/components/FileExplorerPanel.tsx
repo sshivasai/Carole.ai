@@ -42,6 +42,7 @@ import TerminalPanel from "./TerminalPanel";
 import GitPanel from "./GitPanel";
 import SearchPanel from "./SearchPanel";
 import ActivityLogPanel from "./ActivityLogPanel";
+import { TaskManagerPanel } from "./TaskManagerPanel";
 import Modal from "./Modal";
 import { useToast } from "@/hooks/useToast";
 
@@ -161,6 +162,8 @@ interface FileExplorerPanelProps {
   } | null;
   pendingOpenFile?: string | null;
   onPendingOpenConsumed?: () => void;
+  pendingOpenDiffFile?: { path: string; originalContent: string } | null;
+  onPendingOpenDiffConsumed?: () => void;
   onAppendToChat?: (text: string) => void;
 }
 
@@ -354,6 +357,8 @@ export default function FileExplorerPanel({
   lastFileChange,
   pendingOpenFile,
   onPendingOpenConsumed,
+  pendingOpenDiffFile,
+  onPendingOpenDiffConsumed,
   onAppendToChat,
 }: FileExplorerPanelProps) {
   const { addToast } = useToast();
@@ -387,7 +392,7 @@ export default function FileExplorerPanel({
     return "text";
   }, []);
 
-  const [activeLeftTab, setActiveLeftTab] = useState<"explorer" | "search" | "git" | "activity" | "history">("explorer");
+  const [activeLeftTab, setActiveLeftTab] = useState<"explorer" | "search" | "git" | "activity" | "history" | "tasks">("explorer");
   const [isLeftSidebarCollapsed, setIsLeftSidebarCollapsed] = useState(false);
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
@@ -522,6 +527,13 @@ export default function FileExplorerPanel({
     void openFile(pendingOpenFile);
     onPendingOpenConsumed?.();
   }, [pendingOpenFile]);
+
+  // Open diff file requested externally
+  useEffect(() => {
+    if (!pendingOpenDiffFile) return;
+    void openDiffFile(pendingOpenDiffFile.path, pendingOpenDiffFile.originalContent);
+    onPendingOpenDiffConsumed?.();
+  }, [pendingOpenDiffFile]);
 
   // Dirty file unload protection
   useEffect(() => {
@@ -947,6 +959,7 @@ export default function FileExplorerPanel({
     { key: "explorer", icon: <LayoutList size={18} />, title: "Explorer" },
     { key: "search", icon: <Search size={18} />, title: "Search" },
     { key: "git", icon: <GitBranch size={18} />, title: "Source Control" },
+    { key: "tasks", icon: <TerminalIcon size={18} />, title: "Tasks" },
     { key: "activity", icon: <Activity size={18} />, title: "Activity Log" },
     { key: "history", icon: <History size={18} />, title: "File History" },
   ];
@@ -1055,6 +1068,8 @@ export default function FileExplorerPanel({
                 ? "Search"
                 : activeLeftTab === "git"
                 ? "Source Control"
+                : activeLeftTab === "tasks"
+                ? "Task Manager"
                 : activeLeftTab === "activity"
                 ? "Activity Log"
                 : "File History"}
@@ -1347,6 +1362,9 @@ export default function FileExplorerPanel({
               onOpenDiffFile={openDiffFile}
               lastFileChange={lastFileChange} 
             />
+          )}
+          {activeLeftTab === "tasks" && (
+            <TaskManagerPanel teamId={teamId || null} />
           )}
           {activeLeftTab === "activity" && (
             teamId ? (

@@ -75,7 +75,7 @@ async def test_realtime_router_openrouter_free():
         system_prompt="You are a helpful and concise assistant.",
         messages=[{"role": "user", "content": "Respond with the word 'HELLO' and nothing else."}],
         temperature=0.0,
-        max_tokens=20,
+        max_tokens=100,
     )
     assert resp is not None
     assert isinstance(resp, str)

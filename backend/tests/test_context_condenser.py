@@ -20,35 +20,31 @@ def test_token_pressure_detection():
 
 
 def test_orphan_tag_sanitizer():
-    # Unclosed ACTION tag
-    corrupted_1 = "I will edit the file: [ACTION]edit_file({'path': 'main.py'})"
-    sanitized_1 = ContextCondenser.sanitize_orphan_tags(corrupted_1)
-    assert sanitized_1.endswith("[/ACTION]")
-    assert sanitized_1.count("[ACTION]") == sanitized_1.count("[/ACTION]")
+    # Preserves literal text without inventing tags
+    text_1 = "I will edit the file: [ACTION]edit_file({'path': 'main.py'})"
+    assert ContextCondenser.sanitize_orphan_tags(text_1) == text_1
 
-    # Unclosed OBSERVATION tag
-    corrupted_2 = "[OBSERVATION] Output: build passed successfully"
-    sanitized_2 = ContextCondenser.sanitize_orphan_tags(corrupted_2)
-    assert sanitized_2.endswith("[/OBSERVATION]")
-    assert sanitized_2.count("[OBSERVATION]") == sanitized_2.count("[/OBSERVATION]")
+    text_2 = "[OBSERVATION] Output: build passed successfully"
+    assert ContextCondenser.sanitize_orphan_tags(text_2) == text_2
 
-    # Dangling closing tag without open
-    corrupted_3 = "All finished.[/ACTION] Next step ready."
-    sanitized_3 = ContextCondenser.sanitize_orphan_tags(corrupted_3)
-    assert "[/ACTION]" not in sanitized_3
+    text_3 = "All finished.[/ACTION] Next step ready."
+    assert ContextCondenser.sanitize_orphan_tags(text_3) == text_3
+
+    with pytest.raises(TypeError):
+        ContextCondenser.sanitize_orphan_tags(123)  # type: ignore
 
 
 def test_extract_pinned_identifiers():
     messages = [
         {"role": "user", "content": "Please inspect backend/core/agent/react_agent.py and frontend/src/App.tsx"},
-        {"role": "assistant", "content": "[ACTION]read_file({'path': 'backend/core/memory/models.py'})[/ACTION]"},
+        {"role": "assistant", "content": '[ACTION]read_file({"path": "backend/core/memory/models.py"})[/ACTION]'},
         {"role": "user", "content": "[OBSERVATION] File read complete [/OBSERVATION]"},
     ]
     pinned = ContextCondenser.extract_pinned_identifiers(messages)
     assert "backend/core/agent/react_agent.py" in pinned
     assert "frontend/src/App.tsx" in pinned
     assert "backend/core/memory/models.py" in pinned
-    assert "[PINNED CONTEXT: ACTIVE WORKSPACE IDENTIFIERS]" in pinned
+    assert "[PINNED CONTEXT: WORKSPACE PATH REFERENCES]" in pinned
 
 
 def test_sliding_window_pruning():

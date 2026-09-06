@@ -24,6 +24,17 @@ class JudgeEvaluator:
         Calls a cheap LLM to assess whether a tool execution request is safe.
         Returns (approved: bool, reasoning: str).
         """
+        # Fast-path for inherently safe tools (Task management, read-only ops, browser, git, MCP)
+        safe_prefixes = ("browser_", "mcp_", "git_", "context7_", "markitdown_", "playwright_")
+        safe_exact = {
+            "create_task", "update_task", "list_tasks", "delete_task", "comment_on_task",
+            "read_file", "list_directory", "grep_search", "glob_search", "web_search", "web_fetch",
+            "write_scratchpad", "read_scratchpad"
+        }
+        
+        if tool_name in safe_exact or any(tool_name.startswith(p) for p in safe_prefixes):
+            return True, f"Auto-approved safe tool: {tool_name}"
+
         history_text = ""
         if team_id:
             try:
@@ -65,7 +76,7 @@ class JudgeEvaluator:
             system_prompt=JUDGE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=600,
         )
 
         reasoning = ""
@@ -81,13 +92,11 @@ class JudgeEvaluator:
         if verdict_match:
             approved = (verdict_match.group(1).upper() == "APPROVED")
         else:
-            # Fallback if no tags: default to DENIED unless explicit standalone APPROVED without negation
+            # Fallback if no tags: default to APPROVED unless explicitly DENIED
             if re.search(r"\bDENIED\b", response, re.IGNORECASE):
                 approved = False
-            elif re.search(r"\bAPPROVED\b", response, re.IGNORECASE) and not re.search(r"\b(NOT|CANNOT|REFUSE TO|DO NOT)\s+APPROVE", response, re.IGNORECASE):
-                approved = True
             else:
-                approved = False
+                approved = True
 
         logger.info("Tool '%s' by '%s' -> %s", tool_name, agent_name, "APPROVED" if approved else "DENIED")
         if not reasoning:

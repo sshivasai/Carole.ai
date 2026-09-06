@@ -34,6 +34,7 @@ interface Props {
   projectId?: string | null;
   onToggleExplorer?: () => void;
   onOpenFile?: (path: string) => void;
+  onOpenDiffFile?: (path: string, originalContent: string) => void;
   lastTokenEvent?: any;
   contextUsage?: any;
   pendingChatInputAppend?: string | null;
@@ -500,6 +501,7 @@ function parseReasoningIntoSections(raw: string): Array<{
   argsObj?: any;
   result?: string;
   isError?: boolean;
+  pid?: number | null;
 }> {
   if (!raw || !raw.trim()) return [];
 
@@ -511,6 +513,7 @@ function parseReasoningIntoSections(raw: string): Array<{
     argsObj?: any;
     result?: string;
     isError?: boolean;
+    pid?: number | null;
   }> = [];
 
   // Match only genuine tool headers formatted by backend: 🛠️ **tool_name**
@@ -566,6 +569,12 @@ function parseReasoningIntoSections(raw: string): Array<{
     }
 
     const isError = /error|failed|exception|not implemented/i.test(result);
+    
+    let pid: number | null = null;
+    const pidMatch = result.match(/launched in background with PID (\d+)/i);
+    if (pidMatch) {
+      pid = parseInt(pidMatch[1], 10);
+    }
 
     sections.push({
       type: "tool",
@@ -574,6 +583,7 @@ function parseReasoningIntoSections(raw: string): Array<{
       argsObj,
       result,
       isError,
+      pid
     });
 
     if (afterResultText) {
@@ -634,6 +644,7 @@ function TraceToolCard({
   argsRaw,
   result,
   isError,
+  pid,
   defaultOpen = false,
   agentName,
   timestamp
@@ -643,6 +654,7 @@ function TraceToolCard({
   argsRaw?: string;
   result?: string;
   isError?: boolean;
+  pid?: number | null;
   defaultOpen?: boolean;
   agentName?: string;
   timestamp?: string | number;
@@ -908,7 +920,8 @@ function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: str
     argsObj: sec.argsObj,
     result: sec.result,
     isError: sec.isError,
-    text: sec.text
+    text: sec.text,
+    pid: sec.pid
   }));
 
   return (
@@ -1014,6 +1027,7 @@ export default function ChatInterface({
   projectId,
   onToggleExplorer,
   onOpenFile,
+  onOpenDiffFile,
   lastTokenEvent,
   contextUsage,
   pendingChatInputAppend,
@@ -1802,6 +1816,7 @@ export default function ChatInterface({
                             argsRaw={sec.argsJson}
                             result={sec.result}
                             isError={sec.isError}
+                            pid={sec.pid}
                             agentName={msg.sender_name}
                             timestamp={msg.timestamp}
                             defaultOpen={false}
@@ -1914,6 +1929,7 @@ export default function ChatInterface({
                       action={msg.action || "modified"}
                       timestamp={msg.timestamp}
                       onOpenFile={onOpenFile}
+                      onOpenDiffFile={onOpenDiffFile ? (p: string) => onOpenDiffFile(p, msg.diff || "") : undefined}
                     />
                   </div>
                 );
@@ -2277,6 +2293,7 @@ export default function ChatInterface({
                                 senderName={msg.sender_name}
                                 timestamp={msg.timestamp}
                                 onOpenFile={onOpenFile}
+                                onOpenDiffFile={onOpenDiffFile ? (p: string) => onOpenDiffFile(p, msg.diff || "") : undefined}
                               />
                             </div>
                           );

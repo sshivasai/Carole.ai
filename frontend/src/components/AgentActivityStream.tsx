@@ -19,6 +19,7 @@ export interface ActivityStep {
   isError?: boolean;
   text?: string;
   duration?: string;
+  pid?: number | null;
 }
 
 interface AgentActivityStreamProps {
@@ -149,6 +150,21 @@ export default function AgentActivityStream({ steps, isStreaming = false, elapse
     setTimeout(() => setCopied(null), 1500);
   };
 
+  const killTask = async (pid: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const token = localStorage.getItem("carole_token");
+      const base = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+      await fetch(`${base}/api/tasks/${pid}/kill`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert(`Sent kill signal for PID ${pid}`);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const totalActions = validSteps.filter(s => s.type === "tool").length;
 
   return (
@@ -265,6 +281,11 @@ export default function AgentActivityStream({ steps, isStreaming = false, elapse
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                    {step.pid && (
+                      <span style={{ fontSize: "9px", color: "#38bdf8", background: "rgba(56, 189, 248, 0.12)", border: "1px solid rgba(56, 189, 248, 0.25)", padding: "1px 5px", borderRadius: "3px", fontWeight: 500 }}>
+                        PID: {step.pid}
+                      </span>
+                    )}
                     {isObs && (
                       <span style={{ fontSize: "9px", color: "#f59e0b", background: "rgba(245, 158, 11, 0.12)", border: "1px solid rgba(245, 158, 11, 0.25)", padding: "1px 5px", borderRadius: "3px", fontWeight: 500 }}>
                         Guidance

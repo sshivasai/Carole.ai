@@ -136,10 +136,10 @@ function applyWSEvent(prev: ChatMessage[], evt: any, user: any): ChatMessage[] {
     case "approval_resolved": {
       return prev.map(m => {
         if (m.pending_approval && m.pending_approval.tx_id === evt.tx_id) {
-          return { ...m, pending_approval: { ...m.pending_approval, status: evt.status } };
+          return { ...m, pending_approval: { ...m.pending_approval, status: evt.status, reason: evt.reason } };
         }
         if (m.type === "approval_request" && m.tx_id === evt.tx_id) {
-          return { ...m, status: evt.status };
+          return { ...m, status: evt.status, reason: evt.reason };
         }
         return m;
       });
@@ -442,6 +442,7 @@ function AppShell() {
   // A file path the explorer should open automatically (set when the user
   // clicks a file-change card in chat).
   const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null);
+  const [pendingOpenDiffFile, setPendingOpenDiffFile] = useState<{path: string, originalContent: string} | null>(null);
   const [agentQueues, setAgentQueues] = useState<Record<string, number>>({});
   const [scratchpads, setScratchpads] = useState<ScratchpadItem[]>([]);
   const [lastTokenEvent, setLastTokenEvent] = useState<any | null>(null);
@@ -607,26 +608,34 @@ function AppShell() {
         setAgents(ags);
         setTasks(tks);
         setScratchpads(pads);
-        const fetchedMsgs = msgs.map((m: any) => ({
-          ...m,
-          id: m.id || makeId(),
-          type: m.is_intermediate ? "tool_trace" : (m.type || "message"),
-          timestamp: m.created_at,
-          reasoning: m.reasoning ?? undefined,
-          is_intermediate: m.is_intermediate ?? false,
-        }));
+        const fetchedMsgs = msgs.map((m: any) => {
+          const attachmentType = (m.attachments && m.attachments.length > 0 && m.attachments[0].type) ? m.attachments[0].type : undefined;
+          const msgType = attachmentType || (m.is_intermediate ? "tool_trace" : (m.type || "message"));
+          
+          return {
+            ...m,
+            id: m.id || makeId(),
+            type: msgType,
+            // If it's an approval request or custom event, we spread the attachment payload
+            ...(attachmentType ? m.attachments[0].payload : {}),
+            timestamp: m.created_at,
+            reasoning: m.reasoning ?? undefined,
+            is_intermediate: m.is_intermediate ?? false,
+          };
+        });
         
         // Fold approval_resolved events into their corresponding approval_request messages
         const resolvedMap = new Map();
         fetchedMsgs.forEach((m: any) => {
            if (m.type === "approval_resolved" && m.tx_id) {
-               resolvedMap.set(m.tx_id, m.status || m.action || "resolved");
+               resolvedMap.set(m.tx_id, { status: m.status || m.action || "resolved", reason: m.reason });
            }
         });
         
         const finalMsgs = fetchedMsgs.map((m: any) => {
            if (m.type === "approval_request" && m.tx_id && resolvedMap.has(m.tx_id)) {
-               return { ...m, status: resolvedMap.get(m.tx_id) };
+               const resolved = resolvedMap.get(m.tx_id);
+               return { ...m, status: resolved.status, reason: resolved.reason };
            }
            return m;
         });
@@ -884,6 +893,20 @@ function AppShell() {
                       setExplorerOpen(true);
                       setPendingOpenFile(path);
                     }}
+                    onOpenDiffFile={async (path: string, originalContent: string) => {
+                      let actualOriginal = originalContent;
+                      // if the parameter is a diff or empty, fetch the real original content
+                      if ((!actualOriginal || actualOriginal.startsWith("---") || actualOriginal.startsWith("@@")) && projectId) {
+                        try {
+                          const res = await api.getGitFileContent(path, projectId);
+                          if (res?.content) actualOriginal = res.content;
+                        } catch (e) {
+                          console.error("Failed to fetch original content", e);
+                        }
+                      }
+                      setExplorerOpen(true);
+                      setPendingOpenDiffFile({ path, originalContent: actualOriginal });
+                    }}
                   />
                 </div>
               </Panel>
@@ -898,6 +921,8 @@ function AppShell() {
                       lastFileChange={lastFileChange}
                       pendingOpenFile={pendingOpenFile}
                       onPendingOpenConsumed={() => setPendingOpenFile(null)}
+                      pendingOpenDiffFile={pendingOpenDiffFile}
+                      onPendingOpenDiffConsumed={() => setPendingOpenDiffFile(null)}
                       onAppendToChat={handleAppendToChat}
                     />
                   </Panel>

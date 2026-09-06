@@ -13,6 +13,7 @@ Key features:
 
 import uuid
 import json
+import html
 import re
 import asyncio
 import logging
@@ -125,18 +126,19 @@ class ReACTAgent:
             cp_result = await db_session.execute(cp_stmt)
             last_compaction = cp_result.scalar_one_or_none()
             if last_compaction:
-                compaction_after_dt = last_compaction.created_at
+                # Use explicit coverage boundary if recorded, else fallback to created_at
+                compaction_after_dt = getattr(last_compaction, "covered_through_timestamp", None) or last_compaction.created_at
                 compaction_summary_msg = {
                     "role": "user",
                     "content": (
-                        f"[COMPACTED HISTORY — Context from before {last_compaction.created_at.strftime('%Y-%m-%d %H:%M UTC')}]\n"
+                        f"[COMPACTED HISTORY — Context from before {compaction_after_dt.strftime('%Y-%m-%d %H:%M UTC')}]\n"
                         f"{last_compaction.summary}\n"
                         f"[/COMPACTED HISTORY]"
                     )
                 }
                 self._log.info(
-                    "Compaction checkpoint found (created %s). Loading only post-compaction messages.",
-                    last_compaction.created_at.isoformat()
+                    "Compaction checkpoint found (covered through %s). Loading only post-compaction messages.",
+                    compaction_after_dt.isoformat()
                 )
         except Exception as cp_err:
             self._log.warning("Could not check CompactionEvent table: %s", cp_err)
@@ -159,7 +161,7 @@ class ReACTAgent:
             # consumed and acted on those results in the same run they were created.
             .where(Message.is_intermediate == False)
         )
-        # If there's a compaction checkpoint, only load messages after it
+        # If there's a compaction checkpoint, only load messages after its coverage boundary
         if compaction_after_dt is not None:
             stmt = stmt.where(Message.created_at > compaction_after_dt)
 
@@ -210,7 +212,9 @@ class ReACTAgent:
 
             history.append({
                 "role": "assistant" if is_self else "user",
-                "content": final_content
+                "content": final_content,
+                "id": str(msg.id),
+                "created_at": msg.created_at,
             })
         return history
 
@@ -460,7 +464,7 @@ class ReACTAgent:
         listener_task = asyncio.create_task(self._listen_for_notifications())
         
         try:
-            await self._run_loop_inner(db_session, initial_prompt, attachments, token, trigger_message_id=trigger_message_id)
+            await self._run_loop_native(db_session, initial_prompt, attachments, token, trigger_message_id=trigger_message_id)
         except asyncio.CancelledError:
             # User clicked "Stop Generating" — persist whatever was partially generated
             partial = getattr(self, "_current_thought_buffer", "").strip()
@@ -520,6 +524,17 @@ class ReACTAgent:
                 await listener_task
             except asyncio.CancelledError:
                 pass
+            # Guarantee terminal status publication so UI never remains stuck in "thinking"
+            try:
+                await event_bus.publish(self.topic, {
+                    "type": "agent_status",
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "status": "idle",
+                })
+            except Exception as idle_err:
+                self._log.debug("Notice: failed to emit idle in finally: %s", idle_err)
 
     def _get_compaction_config(self) -> dict:
         """Load compaction settings from the user's config.json with model-aware defaults."""
@@ -536,46 +551,73 @@ class ReACTAgent:
         user_compaction = cfg.get("compaction", {})
         return {**defaults, **user_compaction}
 
-    def _estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
-        """Exact token counting via tiktoken (cl100k_base / o200k_base) with
-        graceful fallback to role-aware character estimation.
+    def _estimate_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
+        """Token counting via tiktoken (cl100k_base) with native tool support
+        and role-aware fallback. Accounts for system instructions, tool schemas,
+        tool_use inputs, and tool_results.
         """
+        def _extract_text(content: Any) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for p in content:
+                    if not isinstance(p, dict):
+                        parts.append(str(p))
+                        continue
+                    p_type = p.get("type")
+                    if p_type == "text":
+                        parts.append(p.get("text", ""))
+                    elif p_type == "tool_use":
+                        parts.append(f"{p.get('name', '')} {json.dumps(p.get('input', {}))}")
+                    elif p_type == "tool_result":
+                        parts.append(str(p.get("content", "")))
+                    elif p_type == "image":
+                        parts.append("[IMAGE_TOKEN_ESTIMATE_1600]")
+                    else:
+                        parts.append(str(p))
+                return " ".join(parts)
+            return str(content)
+
         try:
             import tiktoken
             enc = tiktoken.get_encoding("cl100k_base")
             total = 0
+            if system_prompt:
+                total += len(enc.encode(system_prompt, disallowed_special=())) + 4
+            if tools:
+                tools_json = json.dumps(tools)
+                total += len(enc.encode(tools_json, disallowed_special=())) + 8
+
             for m in messages:
-                content = m.get("content", "")
-                if isinstance(content, list):
-                    text_parts = " ".join(
-                        p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
-                    )
-                    total += len(enc.encode(text_parts, disallowed_special=()))
-                else:
-                    total += len(enc.encode(str(content), disallowed_special=()))
-                total += 4  # overhead per message
-            return total + 2  # priming tokens
+                text = _extract_text(m.get("content", ""))
+                total += len(enc.encode(text, disallowed_special=())) + 4
+            return total + 2
         except Exception:
             pass
 
         # Fallback heuristic: role-aware estimation
         total = 0
+        if system_prompt:
+            total += len(system_prompt) // 4 + 4
+        if tools:
+            total += len(json.dumps(tools)) // 4 + 8
+
         for m in messages:
-            content = m.get("content", "")
-            if isinstance(content, list):
-                text_parts = " ".join(
-                    p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
-                )
-                total += len(text_parts) // 4
+            text = _extract_text(m.get("content", ""))
+            if "tool_result" in text or "[OBSERVATION]" in text or "```" in text:
+                total += len(text) // 3
+            elif "[COMPACTED HISTORY" in text:
+                total += len(text) // 3
             else:
-                content_str = str(content)
-                if "[OBSERVATION]" in content_str or "```" in content_str:
-                    total += len(content_str) // 3
-                elif "[COMPACTED HISTORY" in content_str:
-                    total += len(content_str) // 3
-                else:
-                    total += len(content_str) // 4
-        return int(total * 1.05)
+                total += len(text) // 4
+            total += 4
+        return int(total * 1.05) + 2
 
     @staticmethod
     def _truncate_observation(content: str, max_chars: int) -> str:
@@ -597,21 +639,71 @@ class ReACTAgent:
 
         new_msgs = []
         for idx, msg in enumerate(messages):
+            role = msg.get("role")
             content = msg.get("content", "")
-            if msg.get("role") != "user" or not isinstance(content, str):
+
+            if role != "user":
                 new_msgs.append(msg)
                 continue
 
             changed = False
+            is_historical = (num_msgs - idx) > 4
 
+            if isinstance(content, list):
+                new_blocks = []
+                for b in content:
+                    if not isinstance(b, dict):
+                        new_blocks.append(b)
+                        continue
+                    b_type = b.get("type")
+                    if b_type == "tool_result":
+                        res_str = str(b.get("content", ""))
+                        if is_historical and len(res_str) > 300:
+                            lines = res_str.splitlines()
+                            first_line = lines[0][:100] if lines else "Result"
+                            b_copy = dict(b)
+                            b_copy["content"] = f"{first_line} ...[{len(lines)} lines / {len(res_str)} chars compacted]"
+                            new_blocks.append(b_copy)
+                            changed = True
+                        elif len(res_str) > max_chars:
+                            half = max_chars // 2
+                            dropped = len(res_str) - max_chars
+                            b_copy = dict(b)
+                            b_copy["content"] = f"{res_str[:half]}\n...[{dropped} chars truncated]...\n{res_str[-half:]}"
+                            new_blocks.append(b_copy)
+                            changed = True
+                        else:
+                            new_blocks.append(b)
+                    elif b_type == "image" and is_historical:
+                        # Strip base64 data payloads in older turns
+                        lp = b.get("local_path")
+                        if lp:
+                            new_blocks.append({"type": "text", "text": f"[Image attached: {lp}]"})
+                            changed = True
+                        else:
+                            new_blocks.append(b)
+                    else:
+                        new_blocks.append(b)
+
+                if changed:
+                    new_msg = dict(msg)
+                    new_msg["content"] = new_blocks
+                    new_msgs.append(new_msg)
+                else:
+                    new_msgs.append(msg)
+                continue
+
+            if not isinstance(content, str):
+                new_msgs.append(msg)
+                continue
+
+            # String content processing
             # Strip base64 image payloads
             if "data:image" in content:
                 content = re.sub(r'data:image/[^;]+;base64,[a-zA-Z0-9+/=]+', '[IMAGE_STRIPPED]', content)
                 changed = True
 
-            # Historical tool result micro-compaction: for turns older than the 2 most recent turns (> 4 messages ago),
-            # aggressively condense bulky tool outputs (> 300 chars) into concise summary tags to save tokens.
-            is_historical = (num_msgs - idx) > 4
+            # Historical tool result micro-compaction
             if is_historical and "[OBSERVATION]" in content and len(content) > 300:
                 def _condense_historical(m):
                     inner = m.group(1).strip()
@@ -702,16 +794,21 @@ class ReACTAgent:
         cc = self._get_compaction_config()
         keep_recent = cc["recent_messages_to_keep"]
 
-        # Guard: not enough messages to compact
-        if len(messages) <= keep_recent + 1:
-            self._log.info("Rolling compact skipped — only %d messages, need > %d.", len(messages), keep_recent + 1)
+        from core.agent.context_condenser import ContextCondenser, WORKING_STATE_SYSTEM_PROMPT
+
+        prefix_end, start = ContextCondenser.compute_pruning_bounds(messages, keep_recent)
+        if start <= prefix_end:
+            self._log.info("Rolling compact skipped — insufficient pruning range (%d <= %d).", start, prefix_end)
             return messages
 
-        to_compact = messages[1:-keep_recent]
+        to_compact = messages[prefix_end:start]
         if not to_compact:
             return messages
 
-        from core.agent.context_condenser import ContextCondenser, WORKING_STATE_SYSTEM_PROMPT
+        # Explicit coverage watermark: extract newest message being compacted
+        last_compacted = to_compact[-1]
+        covered_msg_id = last_compacted.get("id")
+        covered_ts = last_compacted.get("created_at")
 
         # High-Density Identifier Preservation Pass
         pinned_block = ContextCondenser.extract_pinned_identifiers(to_compact)
@@ -721,20 +818,21 @@ class ReACTAgent:
             touched_files = list(self._modified_files) if hasattr(self, "_modified_files") and self._modified_files else []
             from core.tools.file_tools import file_tools
             workspace_root = await file_tools.get_workspace_root(self.project_id)
-            folded_block = ContextCondenser.generate_folded_signatures(touched_files, workspace_root=workspace_root)
+            folded_block = await ContextCondenser.generate_folded_signatures_async(touched_files, workspace_root=workspace_root)
             if folded_block:
                 pinned_block = f"{pinned_block}{folded_block}" if pinned_block else folded_block
         except Exception as f_err:
             self._log.debug("Folded signatures pass notice: %s", f_err)
 
-        # OpenClaw Pre-Compaction Memory Flush: extract facts & graph triples before truncation
-        if db_session is not None:
+        # Pre-Compaction Memory Flush: extract facts & graph triples before truncation (team public only)
+        if db_session is not None and not getattr(self, "is_private_response", False):
             try:
                 await self._pre_compaction_memory_flush(to_compact, db_session)
             except Exception as flush_err:
+                await db_session.rollback()
                 self._log.warning("Pre-compaction memory flush error: %s", flush_err)
 
-        self._log.info("Rolling compaction: summarizing %d messages (keeping first + last %d).", len(to_compact), keep_recent)
+        self._log.info("Rolling compaction: summarizing %d messages (indices %d..%d).", len(to_compact), prefix_end, start)
         summary_prompt = COMPACTION_USER_PROMPT.format(context=json.dumps(to_compact, default=str))
         try:
             summary = await llm_router.generate_completion(
@@ -752,25 +850,25 @@ class ReACTAgent:
             )
             self._log.info("Rolling compaction complete. %d → %d messages.", len(messages), len(compacted))
 
-            # --- Persist CompactionEvent to DB ---
-            # This checkpoint makes compaction survive across server restarts.
-            # On next load, _load_conversation_history reads this event and starts
-            # from the summary instead of reloading the full verbose history.
-            if db_session is not None:
+            # Persist CompactionEvent only for shared team chats (never leak private chats into team context)
+            if db_session is not None and not getattr(self, "is_private_response", False):
                 try:
                     team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+                    cov_uuid = uuid.UUID(str(covered_msg_id)) if covered_msg_id else None
                     cp_event = CompactionEvent(
                         team_id=team_uuid,
                         summary=full_summary,
                         message_count_before=len(messages),
                         triggered_by=triggered_by,
+                        covered_through_message_id=cov_uuid,
+                        covered_through_timestamp=covered_ts,
                     )
                     db_session.add(cp_event)
                     await db_session.commit()
                     cp_event_id = str(cp_event.id)
                     self._log.info("Compaction checkpoint persisted (id=%s, triggered_by=%s).", cp_event_id, triggered_by)
 
-                    # --- Emit SSE so the UI renders a visible compaction divider ---
+                    # Emit SSE so the UI renders a visible compaction divider
                     await event_bus.publish(self.topic, {
                         "type": "compaction_event",
                         "id": cp_event_id,
@@ -779,8 +877,10 @@ class ReACTAgent:
                         "triggered_by": triggered_by,
                         "message_count_before": len(messages),
                         "summary_preview": full_summary[:300] + "..." if len(full_summary) > 300 else full_summary,
+                        "is_private": False,
                     })
                 except Exception as persist_err:
+                    await db_session.rollback()
                     self._log.warning("Could not persist CompactionEvent: %s", persist_err)
 
             return compacted
@@ -790,12 +890,12 @@ class ReACTAgent:
 
     async def _pre_compaction_memory_flush(self, messages_to_flush: list, db_session: AsyncSession):
         """
-        OpenClaw Pre-Compaction Memory Flush:
-        Extracts durable facts, user preferences, API keys, ports, and graph triples
-        from raw messages before compaction replaces them with a high-level summary.
-        Saves extracted facts directly into EntityMemory and GraphTriple tables.
+        Pre-Compaction Memory Flush:
+        Extracts durable facts, user preferences, and graph triples from raw messages
+        before compaction replaces them with a high-level summary.
+        Saves extracted facts into EntityMemory and GraphTriple tables.
         """
-        if not messages_to_flush or db_session is None:
+        if not messages_to_flush or db_session is None or getattr(self, "is_private_response", False):
             return
 
         try:
@@ -803,7 +903,8 @@ class ReACTAgent:
                 "You are an expert knowledge extraction system. Analyze the following conversation turns "
                 "that are about to be compacted and truncated.\n\n"
                 "Extract any durable facts, permanent user preferences, environment constants, ports, "
-                "passwords/keys (if non-ephemeral), or architectural dependencies.\n"
+                "or architectural dependencies.\n"
+                "CRITICAL: Never extract passwords, API keys, authentication tokens, credentials, or secrets.\n"
                 "Format your response strictly as a JSON object with two arrays:\n"
                 "{\n"
                 '  "facts": [{"key": "short_snake_case_key", "value": "detailed fact description"}],\n'
@@ -821,7 +922,6 @@ class ReACTAgent:
                 max_tokens=600,
             )
 
-            # Clean JSON
             json_str = res.strip()
             if "```json" in json_str:
                 json_str = json_str.split("```json", 1)[1].split("```", 1)[0].strip()
@@ -832,7 +932,6 @@ class ReACTAgent:
             team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
             proj_uuid = uuid.UUID(str(self.project_id)) if self.project_id else None
 
-            # 1. Save EntityMemory facts
             saved_facts = 0
             for item in parsed.get("facts", []):
                 k = item.get("key", "").strip()
@@ -847,7 +946,6 @@ class ReACTAgent:
                     db_session.add(entity)
                     saved_facts += 1
 
-            # 2. Save GraphTriples
             saved_triples = 0
             for t in parsed.get("triples", []):
                 s = t.get("subject", "").strip()
@@ -872,24 +970,55 @@ class ReACTAgent:
                     saved_facts, saved_triples
                 )
         except Exception as flush_err:
-            self._log.warning("Pre-compaction memory flush extraction error: %s", flush_err)
+            if db_session is not None:
+                await db_session.rollback()
+            self._log.warning("Pre-compaction memory flush error: %s", flush_err)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Native Tool-Calling Loop (replaces _run_loop_inner)
+    # ──────────────────────────────────────────────────────────────────────
 
-    async def _run_loop_inner(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None, trigger_message_id: Optional[str] = None):
-        # Reset all per-session caches at the start of each new run.
-        # This ensures a fresh agent session doesn't carry stale state from a
-        # previous invocation (e.g. if the agent object were somehow reused).
+    async def _run_loop_native(
+        self,
+        db_session: AsyncSession,
+        initial_prompt: str,
+        attachments: Optional[List[Dict]] = None,
+        token: Optional["CancellationToken"] = None,
+        trigger_message_id: Optional[str] = None,
+    ):
+        """
+        Production-grade ReAct loop using native JSON tool calling.
+
+        Key features:
+        - Tools are passed as JSON schemas to the API.
+        - Strict turn alternation and atomic tool-result batches via MessageHistory.
+        - Sequential tool execution preserving causal order and file consistency.
+        - Privacy propagation across traces, events, and compaction checkpoints.
+        - Stuck-loop detection with argument and error fingerprinting.
+        - Observation cache preventing context explosion.
+        - Single clean termination without double-finalization on max_loops.
+        """
+        import hashlib as _hs
+        from core.agent.message_history import MessageHistory
+        from core.agent.observation_cache import cache_observation
+        from core.agent.context_condenser import ContextCondenser
+
+        # ── Reset per-session state ───────────────────────────────────────────
         self._cached_system_prompt = None
         self._last_observation = ""
         self._no_progress_count = 0
+        self._consecutive_tool_errors = 0
+        self._modified_files = set()
         self.is_private_response = False
         self.reply_recipient_id = None
+        self._current_thought_buffer = ""
+        self._current_reasoning_buffer = ""
+
         if trigger_message_id:
             self.active_message_id = trigger_message_id
             try:
                 t_uuid = uuid.UUID(trigger_message_id) if isinstance(trigger_message_id, str) else trigger_message_id
-                t_stmt = select(Message).where(Message.id == t_uuid)
-                t_res = await db_session.execute(t_stmt)
+                t_res = await db_session.execute(select(Message).where(Message.id == t_uuid))
                 trigger_msg = t_res.scalar_one_or_none()
                 if trigger_msg and trigger_msg.is_private:
                     self.is_private_response = True
@@ -897,109 +1026,82 @@ class ReACTAgent:
             except Exception as e:
                 self._log.warning("Could not check trigger message privacy: %s", e)
 
-        # Fetch agent config
+        # ── Fetch agent config & permissions ─────────────────────────────────
         agent_uuid = uuid.UUID(self.agent_id) if isinstance(self.agent_id, str) else self.agent_id
-        stmt = select(Agent).where(Agent.id == agent_uuid)
-        res = await db_session.execute(stmt)
+        res = await db_session.execute(select(Agent).where(Agent.id == agent_uuid))
         db_agent = res.scalar_one_or_none()
-
-        # Safety guard: if agent was deleted mid-run, deny all non-safe tool access
         if db_agent is None:
             self._log.warning(
-                "Agent record not found in DB during run_loop — may have been deleted. "
-                "Restricting all tools to safe-only mode."
+                "Agent record not found in DB during _run_loop_native — restricting to safe-only mode."
             )
             permissions = {"__deny_non_safe__": True}
         else:
             permissions = db_agent.tool_permissions or {}
 
+        # ── Build system prompt & tool schemas ───────────────────────────────
         system_prompt = await self.assemble_system_prompt(db_session, initial_prompt)
 
-        # Dynamic history limit: scale to actual model context window token budget.
-        # Larger-context models can safely load more history without truncation.
+        # Select the right tool schema format for this model/provider
+        model = self.model
+        if model.startswith("gemini"):
+            tools = ToolRegistry.to_gemini_tools(team_id=self.team_id, agent_id=self.agent_id)
+        else:
+            tools = ToolRegistry.to_anthropic_tools(team_id=self.team_id, agent_id=self.agent_id)
+
+        # ── Load conversation history into MessageHistory ─────────────────────
         from core.llm.multi_model_router import get_model_context_window
-        model_ctx = get_model_context_window(self.model)
-        if model_ctx >= 500000:
+        model_ctx = get_model_context_window(model)
+        if model_ctx >= 500_000:
             history_limit = 50
-        elif model_ctx >= 120000:
+        elif model_ctx >= 120_000:
             history_limit = 35
-        elif model_ctx >= 32000:
+        elif model_ctx >= 32_000:
             history_limit = 20
-        elif model_ctx >= 16000:
+        elif model_ctx >= 16_000:
             history_limit = 10
         else:
             history_limit = 4
 
-        # Load conversation history for context continuity (excluding the current trigger message to prevent duplication)
-        history = await self._load_conversation_history(db_session, limit=history_limit, exclude_msg_id=trigger_message_id)
+        raw_history = await self._load_conversation_history(
+            db_session, limit=history_limit, exclude_msg_id=trigger_message_id
+        )
+        history = MessageHistory(seed=raw_history)
 
-        # Build messages: history + new prompt
-        content = [{"type": "text", "text": initial_prompt}]
+        # Build the initial user message (with attachments if present)
+        content: Any = initial_prompt
         if attachments:
+            content_list = [{"type": "text", "text": initial_prompt}]
             for att in attachments:
-                if att.get("type", "").startswith("image/"):
-                    content.append({
+                att_type = att.get("type", "")
+                if att_type.startswith("image/"):
+                    content_list.append({
                         "type": "image",
                         "local_path": att.get("local_path"),
-                        "mime_type": att.get("type")
+                        "mime_type": att_type,
                     })
-                elif att.get("type") == "file_ref":
-                    # An @file:path mention from the chat. Read the referenced
-                    # file's contents *sandboxed to this agent's project* and
-                    # inject them into context so the agent can reason about
-                    # the file without a separate read_file tool call. The path
-                    # is validated/sandboxed by file_tools._resolve_safe_path,
-                    # so an agent can only pull in files from its own project
-                    # workspace — never another project's, or anything outside.
+                elif att_type == "file_ref":
                     ref_path = att.get("path") or att.get("relative_path")
                     if ref_path:
                         try:
-                            from core.tools.file_tools import file_tools as _file_tools
-                            file_content = await _file_tools.read_file(ref_path, self.project_id)
-                            if file_content.startswith("Error"):
-                                content.append({"type": "text", "text": f"\n\n[Referenced file '{ref_path}' could not be read: {file_content}]"})
+                            from core.tools.file_tools import file_tools as _ft
+                            fc = await _ft.read_file(ref_path, self.project_id)
+                            if fc.startswith("Error"):
+                                content_list.append({"type": "text", "text": f"\n\n[Referenced file '{ref_path}' could not be read: {fc}]"})
                             else:
-                                snippet = file_content if len(file_content) <= 8000 else file_content[:8000] + "\n...[truncated]"
-                                content.append({"type": "text", "text": f"\n\n--- Referenced file: {ref_path} ---\n{snippet}\n--- end {ref_path} ---"})
+                                snippet = fc if len(fc) <= 8000 else fc[:8000] + "\n...[truncated]"
+                                content_list.append({"type": "text", "text": f"\n\n--- Referenced file: {ref_path} ---\n{snippet}\n--- end ---"})
                         except Exception as ref_err:
                             self._log.warning("file_ref read failed for %s: %s", ref_path, ref_err)
-                            content.append({"type": "text", "text": f"\n\n[Referenced file '{ref_path}' unreadable: {ref_err}]"})
-                else:
-                    # Generic attachment (PDF, CSV, TXT, etc)
-                    att_path = att.get("local_path")
-                    att_name = att.get("name")
-                    if att_path:
-                        try:
-                            from core.tools.file_tools import file_tools as _file_tools
-                            from pathlib import Path
-                            workspace_root = await _file_tools.get_workspace_root(self.project_id)
-                            try:
-                                rel_path = str(Path(att_path).relative_to(workspace_root)).replace("\\", "/")
-                            except ValueError:
-                                rel_path = att_path
-                                
-                            mime_type = att.get("type", "")
-                            is_text = mime_type.startswith("text/") or mime_type in ["application/json", "application/javascript"]
-                            
-                            if is_text:
-                                file_content = await _file_tools.read_file(rel_path, self.project_id)
-                                if not file_content.startswith("Error"):
-                                    snippet = file_content if len(file_content) <= 8000 else file_content[:8000] + "\n...[truncated]"
-                                    content.append({"type": "text", "text": f"\n\n--- Attached file: {att_name} ({rel_path}) ---\n{snippet}\n--- end ---"})
-                                else:
-                                    content.append({"type": "text", "text": f"\n\n[User attached file '{att_name}'. Located at '{rel_path}'. Could not read contents automatically: {file_content}]"})
-                            else:
-                                content.append({"type": "text", "text": f"\n\n[User attached file '{att_name}'. Located at '{rel_path}'. Use the appropriate tool to read or analyze it if needed.]"})
-                        except Exception as e:
-                            self._log.warning("Failed to process attachment %s: %s", att_name, e)
-                            content.append({"type": "text", "text": f"\n\n[User attached file '{att_name}']"})
+                            content_list.append({"type": "text", "text": f"\n\n[Referenced file '{ref_path}' error: {ref_err}]"})
+                elif att.get("content"):
+                    fname = att.get("name") or att.get("filename") or "attachment"
+                    c_snip = str(att["content"])[:8000]
+                    content_list.append({"type": "text", "text": f"\n\n--- Attached file: {fname} ---\n{c_snip}\n--- end ---"})
+            content = content_list
 
-        messages = history + [{"role": "user", "content": content if attachments else initial_prompt}]
+        history.add_user(content)
 
-        loop_count = 0
-        max_loops = getattr(core.config, "MAX_LOOPS", 10)
-
-        # Emit agent status: active
+        # ── Emit active status ────────────────────────────────────────────────
         await event_bus.publish(self.topic, {
             "type": "agent_status",
             "sender_id": self.agent_id,
@@ -1008,78 +1110,86 @@ class ReACTAgent:
             "status": "active",
         })
 
-        self._current_thought_buffer = ""
-        self._current_reasoning_buffer = ""
-        self._consecutive_tool_errors = 0
-        action_call = None
+        loop_count = 0
+        max_loops = getattr(core.config, "MAX_LOOPS", 25)
+        terminated = False
 
+        # Helper to redact sensitive credentials before broadcasting
+        def _sanitize_tool_args(args: Dict[str, Any]) -> Dict[str, Any]:
+            if not isinstance(args, dict):
+                return {}
+            sanitized = {}
+            for k, v in args.items():
+                if re.search(r"password|token|secret|credential|authorization|api[_-]?key", str(k), re.I):
+                    sanitized[k] = "[REDACTED]"
+                elif isinstance(v, dict):
+                    sanitized[k] = _sanitize_tool_args(v)
+                else:
+                    sanitized[k] = v
+            return sanitized
+
+        # ── Main ReAct loop ───────────────────────────────────────────────────
         while loop_count < max_loops:
             loop_count += 1
+
+            # Invalidate/refresh system prompt if worker results arrived
+            if self._cached_system_prompt is None:
+                system_prompt = await self.assemble_system_prompt(db_session, initial_prompt)
 
             await event_bus.publish(self.topic, {
                 "type": "typing",
                 "sender_id": self.agent_id,
                 "sender_name": self.name,
                 "role": self.role,
-                "status": "thinking"
+                "status": "thinking",
             })
 
-            # STAGE 1 & 2: Micro-Compaction & Snipping
-            messages = self._micro_compact(messages)
+            # Apply compaction to the message list snapshot
+            messages = self._micro_compact(history.get_messages())
             messages = self._snip_dead_ends(messages)
 
-            # STAGE 3: Token Budget Check & Rolling Compaction
             cc = self._get_compaction_config()
             window_size = cc["context_window_size"]
             trigger_ratio = cc["token_trigger_ratio"]
-            trigger_tokens = window_size * trigger_ratio
+            estimated_tokens = self._estimate_tokens(messages, system_prompt=system_prompt, tools=tools)
 
-            estimated_tokens = self._estimate_tokens(messages)
-            
-            # Broadcast real-time context token usage
             await event_bus.publish(self.topic, {
                 "type": "context_usage",
                 "sender_id": self.agent_id,
                 "sender_name": self.name,
-                "model": self.model,
+                "model": model,
                 "estimated_tokens": estimated_tokens,
                 "context_window": window_size,
                 "usage_percent": round((estimated_tokens / window_size) * 100, 1) if window_size > 0 else 0,
                 "loop_count": loop_count,
                 "max_loops": max_loops,
             })
-            
-            if estimated_tokens > trigger_tokens:
-                self._log.warning("Context window reached %.0f%% capacity (%d tokens). Triggering rolling compaction...", (estimated_tokens / window_size) * 100, estimated_tokens)
+
+            if ContextCondenser.is_under_context_pressure(estimated_tokens, window_size, trigger_ratio):
+                self._log.warning(
+                    "Context at %.0f%%. Triggering rolling compaction...",
+                    (estimated_tokens / window_size) * 100,
+                )
                 messages = await self._rolling_compact(messages, db_session=db_session, triggered_by="auto")
+                history = MessageHistory(seed=messages)
+                messages = history.get_messages()
 
-            # Graceful Degradation Check — trigger 2 loops before max to give
-            # the agent time to reflect AND execute the memory-save tool call.
+            # Graceful degradation at loop_count == max_loops - 2
             if loop_count == max_loops - 2:
-                self._log.warning("Agent is approaching its loop limit (%d/%d). Injecting Graceful Degradation reflection prompt.", loop_count, max_loops)
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "[SYSTEM INSTRUCTION — GRACEFUL DEGRADATION]\n"
-                        "You are running low on execution loops. You have 2 loops remaining.\n"
-                        "STOP attempting your current approach. Do NOT retry the same failing action.\n\n"
-                        "Produce a structured degradation report using this exact format:\n"
-                        "<degradation-report>\n"
-                        "  <what-was-attempted>One sentence describing the task and approach tried</what-was-attempted>\n"
-                        "  <errors-encountered>Specific error messages or failure symptoms observed</errors-encountered>\n"
-                        "  <partial-progress>Any files created, steps completed, or useful findings (or 'None')</partial-progress>\n"
-                        "  <lesson>One actionable rule for next time — what to do differently</lesson>\n"
-                        "  <user-message>A brief, honest explanation for the user of what happened and what they can try</user-message>\n"
-                        "</degradation-report>\n\n"
-                        "After producing the report, use write_scratchpad to persist the lesson to your personal pad."
-                    )
-                })
+                self._log.warning(
+                    "Approaching loop limit (%d/%d). Injecting graceful degradation note.",
+                    loop_count, max_loops,
+                )
+                history.add_context_note(
+                    "[SYSTEM INSTRUCTION — GRACEFUL DEGRADATION]\n"
+                    "You are running low on execution loops. You have 2 loops remaining.\n"
+                    "If you cannot complete the task, produce a structured summary of:\n"
+                    "  1. What you attempted  2. What errors you encountered  3. What partial progress was made\n"
+                    "Then deliver your best possible answer to the user right now."
+                )
+                messages = history.get_messages()
 
-            # Stream completion with retry
-            self._log.info("Thinking... (loop %d/%d)", loop_count, max_loops)
-
-            # Emit explicit "thinking" status so the UI can show the indicator
-            # before the first streamed chunk arrives.
+            # ── LLM call — stream text & collect tool calls ───────────────────
             await event_bus.publish(self.topic, {
                 "type": "agent_status",
                 "sender_id": self.agent_id,
@@ -1088,121 +1198,134 @@ class ReACTAgent:
                 "status": "thinking",
             })
 
-            thought_buffer = ""
-            # Mirror buffers onto self so CancelledError handler can persist partial output
-            # We save the reasoning trace accumulated so far (from previous loops) to restore it on retries
-            saved_reasoning_buffer = self._current_reasoning_buffer
+            self._log.info("[native] Thinking... (loop %d/%d)", loop_count, max_loops)
+
+            assistant_text = ""
+            tool_uses: List[Dict[str, Any]] = []
+            stop_reason: Optional[str] = None
             had_error = False
 
             for attempt in range(3):
-                try:
-                    thought_buffer = ""
-                    self._current_thought_buffer = ""
-                    self._current_reasoning_buffer = saved_reasoning_buffer
-                    
-                    if attempt > 0:
-                        await event_bus.publish(self.topic, {
-                            "type": "thought_reset",
-                            "sender_id": self.agent_id,
-                        })
+                assistant_text = ""
+                tool_uses = []
+                stop_reason = None
+                self._current_thought_buffer = ""
 
-                    async for chunk in llm_router.generate_stream_with_reasoning(
-                        model=self.model,
+                if attempt > 0:
+                    await event_bus.publish(self.topic, {
+                        "type": "thought_reset",
+                        "sender_id": self.agent_id,
+                    })
+
+                try:
+                    async for event in llm_router.generate_with_tools(
+                        model=model,
                         system_prompt=system_prompt,
                         messages=messages,
+                        tools=tools,
                         temperature=0.4,
-                        project_id=self.project_id,
+                        max_tokens=8192,
+                        tool_choice="auto",
                         team_id=self.team_id,
                         agent_id=self.agent_id,
                         agent_name=self.name,
+                        project_id=self.project_id,
                         fallback_model=self.fallback_model,
-                        reasoning_effort=self.reasoning_effort,
+                        reasoning_effort=self.reasoning_effort if self.reasoning_effort != "none" else None,
                     ):
-                        content_chunk = chunk.get("content", "")
-                        reasoning_chunk = chunk.get("reasoning", "")
+                        etype = event.get("type", "")
 
-                        if reasoning_chunk:
-                            # Hard cap reasoning buffer to prevent unbounded memory/payload growth across loops
-                            if len(self._current_reasoning_buffer) < 35000:
-                                self._current_reasoning_buffer += reasoning_chunk
-                            elif not self._current_reasoning_buffer.endswith("...[Reasoning trace truncated]"):
-                                self._current_reasoning_buffer += "\n...[Reasoning trace truncated]"
-                            await event_bus.publish(self.topic, {
-                                "type": "stream_reasoning",
-                                "sender_id": self.agent_id,
-                                "sender_name": self.name,
-                                "role": self.role,
-                                "chunk": reasoning_chunk,
-                            })
-
-                        if content_chunk:
-                            thought_buffer += content_chunk
-                            self._current_thought_buffer = thought_buffer
+                        if etype == "text_delta":
+                            chunk = event["delta"]
+                            assistant_text += chunk
+                            self._current_thought_buffer = assistant_text
                             await event_bus.publish(self.topic, {
                                 "type": "thought_delta",
                                 "sender_id": self.agent_id,
                                 "sender_name": self.name,
                                 "role": self.role,
-                                "delta": content_chunk
+                                "delta": chunk,
                             })
-                    break  # Success
+
+                        elif etype == "reasoning_delta":
+                            r_chunk = event.get("delta", "")
+                            if r_chunk:
+                                if len(self._current_reasoning_buffer) < 35000:
+                                    self._current_reasoning_buffer += r_chunk
+                                elif not self._current_reasoning_buffer.endswith("...[Reasoning trace truncated]"):
+                                    self._current_reasoning_buffer += "\n...[Reasoning trace truncated]"
+                                await event_bus.publish(self.topic, {
+                                    "type": "stream_reasoning",
+                                    "sender_id": self.agent_id,
+                                    "sender_name": self.name,
+                                    "role": self.role,
+                                    "chunk": r_chunk,
+                                })
+
+                        elif etype == "tool_use":
+                            tool_uses.append(event)
+
+                        elif etype == "message_stop":
+                            stop_reason = event.get("stop_reason")
+
+                    break  # Success — exit retry loop
+
                 except Exception as e:
                     from core.llm.multi_model_router import LLMProviderError
                     if isinstance(e, LLMProviderError):
                         had_error = True
                         error_msg = f"⚠️ {e.message}"
-                        self._log.error("LLM Provider Error: %s", e.message)
-                        
-                        # Broadcast structured error event to trigger BYOK UI Warning Card
+                        self._log.error("[native] LLM Provider Error: %s", e.message)
                         await event_bus.publish(self.topic, {
                             "type": "llm_error",
                             "sender_id": self.agent_id,
-                            "error": e.to_dict()
+                            "error": e.to_dict(),
                         })
-
                         db_msg = Message(
                             team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
                             sender_id=self.agent_id,
                             sender_name=self.name,
                             text=error_msg,
-                            reasoning_text=self._current_reasoning_buffer or None,
                             is_private=self.is_private_response,
                             recipient_id=self.reply_recipient_id,
                         )
                         db_session.add(db_msg)
-                        await db_session.commit()
-                        break # Break retry loop on structural provider errors
-                    
+                        try:
+                            await db_session.commit()
+                        except Exception:
+                            await db_session.rollback()
+                        break
+
                     error_str = str(e).lower()
                     is_context_limit = ("413" in error_str or "too long" in error_str or "context_length" in error_str)
                     if is_context_limit:
-                        # STAGE 5: Reactive Error Escalation — compact and break
-                        # back to the outer while loop for a fresh retry set.
-                        self._log.error("API hit context limit! Forcing emergency rolling compaction (attempt %d)." , attempt + 1)
+                        self._log.error("[native] API hit context limit! Forcing emergency rolling compaction (attempt %d).", attempt + 1)
                         messages = await self._rolling_compact(messages, db_session=db_session, triggered_by="emergency")
-                        break  # break out of retry loop; outer while loop retries
+                        history = MessageHistory(seed=messages)
+                        messages = history.get_messages()
+                        continue
+
                     if attempt < 2:
-                            
                         wait = (2 ** attempt) * 2
-                        self._log.warning("LLM error (attempt %d): %s. Retrying in %ds...", attempt + 1, e, wait)
+                        self._log.warning("[native] LLM error (attempt %d): %s. Retrying in %ds...", attempt + 1, e, wait)
                         await asyncio.sleep(wait)
                     else:
                         had_error = True
                         error_msg = f"⚠️ LLM API error after 3 retries: {str(e)}"
-                        self._log.error("LLM error after 3 retries: %s", e)
-                        
+                        self._log.error("[native] %s", error_msg)
                         db_msg = Message(
                             team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
                             sender_id=self.agent_id,
                             sender_name=self.name,
                             text=error_msg,
-                            reasoning_text=self._current_reasoning_buffer or None,
                             is_private=self.is_private_response,
                             recipient_id=self.reply_recipient_id,
                         )
                         db_session.add(db_msg)
-                        await db_session.commit()
-
+                        try:
+                            await db_session.commit()
+                        except Exception:
+                            await db_session.rollback()
                         await event_bus.publish(self.topic, {
                             "type": "message",
                             "id": str(db_msg.id),
@@ -1210,393 +1333,9 @@ class ReACTAgent:
                             "sender_name": self.name,
                             "role": self.role,
                             "text": error_msg,
-                            "is_private": self.is_private_response,
-                            "recipient_id": self.reply_recipient_id,
-                            "has_reasoning": bool(self._current_reasoning_buffer)
                         })
 
             if had_error:
-                # The post-loop max_loops block is skipped (loop_count < max_loops),
-                # so we must publish idle here or the UI's typing indicator never clears.
-                try:
-                    await event_bus.publish(self.topic, {
-                        "type": "agent_status",
-                        "sender_id": self.agent_id,
-                        "sender_name": self.name,
-                        "role": self.role,
-                        "status": "idle",
-                    })
-                except Exception as e:
-                    self._log.debug("Idle status broadcast notice: %s", e)
-                break
-
-            messages.append({"role": "assistant", "content": thought_buffer})
-
-            # Strip any accidental "[Name]: " prefix the model may have
-            # hallucinated at the start of its response.
-            thought_buffer = re.sub(r'^\[[^\]]+\]:\s*', '', thought_buffer, count=1)
-
-            action_call = self._parse_action(thought_buffer)
-            if not action_call and self._current_reasoning_buffer:
-                action_call = self._parse_action(self._current_reasoning_buffer)
-
-            if not action_call:
-                # ── Early-exit: agent explicitly signalled completion ──────────────
-                # If the output ends with a "Status: COMPLETE" or "Status: BLOCKED"
-                # sentinel (coordinator pattern), treat it as a genuine final answer
-                # and break immediately — never inject a correction into a completed message.
-                _completion_sentinels = ["status: complete", "status: blocked"]
-                _lower_preview = thought_buffer.lower().strip()[-200:]
-                if any(s in _lower_preview for s in _completion_sentinels):
-                    self._log.info("Agent signalled completion (Status: COMPLETE/BLOCKED). Breaking loop cleanly.")
-                    db_msg = Message(
-                        team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
-                        sender_id=self.agent_id,
-                        sender_name=self.name, text=thought_buffer,
-                        reasoning_text=self._current_reasoning_buffer or None,
-                        is_private=self.is_private_response,
-                        recipient_id=self.reply_recipient_id,
-                    )
-                    db_session.add(db_msg)
-                    await db_session.commit()
-                    self.active_message_id = str(db_msg.id)
-                    await event_bus.publish(self.topic, {
-                        "type": "message",
-                        "id": str(db_msg.id),
-                        "sender_id": self.agent_id,
-                        "sender_name": self.name,
-                        "role": self.role,
-                        "text": thought_buffer,
-                        "is_private": self.is_private_response,
-                        "recipient_id": self.reply_recipient_id,
-                        "has_reasoning": bool(self._current_reasoning_buffer),
-                    })
-                    await event_bus.publish(self.topic, {
-                        "type": "agent_status",
-                        "sender_id": self.agent_id,
-                        "sender_name": self.name,
-                        "role": self.role,
-                        "status": "idle",
-                    })
-                    break
-
-                # --- Grammar-Based Intent & Refusal Engine ---
-                # Rather than maintaining brittle, infinite keyword lists, we match
-                # linguistic structures: [Intent Subject + Modal/Helper] + [Action Verb / Tool Target]
-                _curr_text = (thought_buffer or "").strip()
-                _lower = _curr_text.lower()
-
-                # 1. Structural Action Intent Regex: matches infinite variations of "I will X", "Let me X", "Proceeding to X", etc.
-                _PROMISE_PATTERN = re.compile(
-                    r"\b(?:"
-                    r"i\s*(?:will|'ll|shall|am\s+going\s+to|'m\s+going\s+to|'m\s+about\s+to|plan\s+to|aim\s+to|intend\s+to)"
-                    r"|let\s*(?:me|'s|us)"
-                    r"|allow\s+me\s+to"
-                    r"|going\s+to"
-                    r"|about\s+to"
-                    r"|proceeding\s+to"
-                    r"|starting\s+(?:to|by|with)"
-                    r"|commencing"
-                    r"|initiating"
-                    r")\s+(?:now\s+|first\s+|ahead\s+and\s+|just\s+|quickly\s+|directly\s+)?"
-                    r"([a-z_]{3,25})",
-                    re.IGNORECASE
-                )
-
-                # 2. Structural Capability Refusal Regex: matches "I can't X", "outside my capabilities", "you'll have to do it manually"
-                _REFUSAL_PATTERN = re.compile(
-                    r"\b(?:"
-                    r"i\s*(?:can(?:'t|not)|am\s+not\s+able\s+to|don(?:'t|t)\s+have\s+(?:the\s+)?(?:ability|access|capability|tools?))"
-                    r"|(?:outside|beyond)\s+my\s+capabilit(?:y|ies)"
-                    r"|not\s+(?:within|in)\s+my\s+capabilities"
-                    r"|you\s*(?:(?:'ll|will)\s+(?:have|need)\s+to|must)\s+(?:do|handle|solve|open|run|perform)\s+(?:this|it|that)\s+manually"
-                    r"|open\s+your\s+browser\s*(?:,|\band\b)"
-                    r")",
-                    re.IGNORECASE
-                )
-
-                # Dynamic Action Verb Dictionary (base mutating/execution verbs only)
-                _ACTION_VERBS = {
-                    'write', 'create', 'edit', 'append', 'modify', 'delete', 'remove', 'save',
-                    'search', 'find', 'lookup', 'query', 'fetch', 'open', 'browse', 'navigate',
-                    'extract', 'click', 'type', 'snapshot', 'screenshot', 'scrape', 'execute',
-                    'run', 'start', 'launch', 'build', 'compile', 'test', 'lint', 'install',
-                    'deploy', 'hire', 'spawn', 'delegate', 'assign', 'dispatch'
-                }
-                _CONVERSATIONAL_EXCLUSIONS = {
-                    'explain', 'describe', 'summarize', 'clarify', 'answer', 'discuss', 'review',
-                    'outline', 'provide', 'show', 'help', 'list', 'give', 'note', 'share',
-                    'walk', 'break', 'tell', 'talk', 'think', 'consider', 'suggest', 'detail'
-                }
-                # Derive additional verbs dynamically from registered tools, ignoring conversational terms
-                try:
-                    for _tname in ToolRegistry.list_names():
-                        for _part in _tname.split("_"):
-                            if len(_part) >= 3 and _part.lower() not in _CONVERSATIONAL_EXCLUSIONS:
-                                _ACTION_VERBS.add(_part.lower())
-                except Exception as e:
-                    self._log.debug("Tool verb extraction notice: %s", e)
-
-                # Match explicit pseudo tool calls (e.g. read_file({...}) or execute_command("..."))
-                has_pseudo_call = bool(re.search(r"\b[a-z]+(?:_[a-z]+)+\s*\(\s*\{", _curr_text)) or "[action" in _lower or "<tool" in _lower
-                
-                # Check for structural promise match (only if output is brief or ends in a promise)
-                has_structural_promise = False
-                _is_long_complete_response = len(_curr_text.split()) >= 80 and not _curr_text.endswith(("...", ":", "now", "here"))
-                _match = _PROMISE_PATTERN.search(_curr_text)
-                if _match and not _is_long_complete_response:
-                    _verb = _match.group(1).lower()
-                    # Clean trailing 'ing' / 's' for basic stemming
-                    _stem = _verb.rstrip('s')
-                    if _stem.endswith('ing') and len(_stem) > 4:
-                        _stem = _stem[:-3]
-                    if (_verb in _ACTION_VERBS or _stem in _ACTION_VERBS) and _verb not in _CONVERSATIONAL_EXCLUSIONS and _stem not in _CONVERSATIONAL_EXCLUSIONS:
-                        has_structural_promise = True
-
-                looks_like_tool_call = has_structural_promise or has_pseudo_call
-                has_browser_refusal = bool(_REFUSAL_PATTERN.search(_curr_text))
-
-                # Detect reasoning without content: model generated thoughts into reasoning but left content empty
-                has_thought_without_action = not _curr_text and bool(self._current_reasoning_buffer)
-
-                # Detect plan-only responses: model outputs a numbered plan/steps
-                # list AND contains intent language but no ACTION tag was found.
-                # Only trigger on the very first loop to avoid flagging long multi-step final answers.
-                has_numbered_plan = bool(re.search(r"^\s*\d+[\.\)]\s+\S", _curr_text, re.MULTILINE)) and loop_count <= 1
-                has_plan_header = any(p in _lower for p in ["plan:", "here's my plan", "here is my plan", "my plan is", "the plan is"]) and loop_count <= 1
-
-                # Detect code-in-chat: model pastes ``` code blocks instead of using write_file.
-                has_code_block = bool(re.search(r"```[\w\-]*\n[\s\S]{50,}", _curr_text))
-
-                is_plan_without_action = (has_numbered_plan or has_plan_header)
-                is_code_in_chat = has_code_block and loop_count <= max_loops - 1
-
-                # Phase 1: Action-Gated Turn-1 Enforcement & Grammar Intent Engine
-                from core.agent.intent_engine import IntentEngine
-                is_action_request_without_tool = False
-                if loop_count == 1 and initial_prompt:
-                    if IntentEngine.is_action_request(initial_prompt) and not has_code_block:
-                        is_action_request_without_tool = True
-
-                false_refusal_msg = IntentEngine.detect_false_refusal(_curr_text)
-                unexecuted_promise_msg = IntentEngine.detect_unexecuted_promise(_curr_text, bool(looks_like_tool_call))
-
-                _is_orchestrator = (getattr(self, 'role', '') or '').lower() in ("orchestrator", "coordinator") or "orchestrator" in (getattr(self, 'role', '') or '').lower()
-
-                if (looks_like_tool_call or has_browser_refusal or false_refusal_msg or is_action_request_without_tool or is_plan_without_action or is_code_in_chat or has_thought_without_action or unexecuted_promise_msg) and loop_count < max_loops - 1:
-                    if false_refusal_msg:
-                        correction = false_refusal_msg
-                    elif has_browser_refusal:
-                        correction = (
-                            "[OBSERVATION] CRITICAL ERROR — False Refusal / Missing Browser Tool Call.\n"
-                            "You have full access to real Chromium browser automation tools (browser_navigate, browser_task, browser_act, browser_snapshot, browser_screenshot, browser_human_takeover).\n"
-                            "NEVER tell the user you cannot open a browser, browse the web, or tell them to do it manually in their browser.\n"
-                            "Execute the browser tool IMMEDIATELY NOW using this exact format:\n"
-                            "  [ACTION]browser_navigate({\"url\": \"https://www.google.com\"})[/ACTION]\n"
-                            "Or for autonomous goal execution:\n"
-                            "  [ACTION]browser_task({\"task\": \"search for the latest news and summarize\"})[/ACTION]\n"
-                            "Execute the browser action NOW.[/OBSERVATION]"
-                        )
-                    elif is_action_request_without_tool and not (looks_like_tool_call or is_code_in_chat or is_plan_without_action):
-                        if _is_orchestrator:
-                            correction = (
-                                "[OBSERVATION] Action Required — No Delegation Executed.\n"
-                                f"The user gave an actionable project request: \"{initial_prompt[:120]}\".\n"
-                                "As Orchestrator, you must break down the request and delegate to your specialists or create Kanban task items.\n"
-                                "You must NOT write code or project files yourself.\n"
-                                "Use the required format:\n"
-                                "  [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION]\n"
-                                "  [ACTION]create_task({\"title\": \"...\", \"description\": \"...\"})[/ACTION]\n"
-                                "Execute your delegation tool call NOW.[/OBSERVATION]"
-                            )
-                        else:
-                            correction = (
-                                "[OBSERVATION] Action Required — No Tool Call Executed.\n"
-                                f"The user gave an actionable task: \"{initial_prompt[:120]}\".\n"
-                                "If the user requested an action, you MUST execute the required tool immediately (e.g. [ACTION]read_file(...)[/ACTION]).\n"
-                                "NOTE: If the user only asked a capability question, greeting, or informational query, deliver your direct conversational response without an [ACTION] tag.[/OBSERVATION]"
-                            )
-                    elif has_thought_without_action:
-                        if _is_orchestrator:
-                            correction = (
-                                "[OBSERVATION] You have completed your reasoning. Now execute your orchestration action immediately:\n"
-                                "For example: [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION] or [ACTION]create_task({\"title\": \"...\"})[/ACTION]\n"
-                                "Execute your delegation tool call NOW.[/OBSERVATION]"
-                            )
-                        else:
-                            correction = (
-                                "[OBSERVATION] You have completed your reasoning. Now execute your planned tool action immediately:\n"
-                                "For example: [ACTION]write_file({\"relative_path\": \"...\", \"content\": \"...\"})[/ACTION] or [ACTION]read_file({\"relative_path\": \"...\"})[/ACTION]\n"
-                                "Execute your tool call NOW.[/OBSERVATION]"
-                            )
-                    elif is_code_in_chat and not looks_like_tool_call:
-                        correction = (
-                            "[OBSERVATION] CRITICAL ERROR — Code in Chat Detected.\n"
-                            "You pasted a code block into chat instead of writing it to a file. This is strictly forbidden.\n"
-                            "You MUST write code to disk using the tool. Exact format required:\n"
-                            "  [ACTION]write_file({\"path\": \"backend/auth.py\", \"content\": \"# your code here\"})[/ACTION]\n"
-                            "Execute write_file NOW with the code you just showed in chat.[/OBSERVATION]"
-                        )
-                    elif is_plan_without_action and not looks_like_tool_call:
-                        if _is_orchestrator:
-                            correction = (
-                                "[OBSERVATION] You are the ORCHESTRATOR. You described a plan but have not delegated work.\n"
-                                "An Orchestrator MUST NOT write source code or create project files directly.\n"
-                                "You MUST immediately delegate tasks to your teammates or register work on the Kanban board:\n"
-                                "  [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION]\n"
-                                "  [ACTION]create_task({\"title\": \"...\", \"description\": \"...\"})[/ACTION]\n"
-                                "Execute your delegation tool call NOW.[/OBSERVATION]"
-                            )
-                        else:
-                            correction = (
-                                "[OBSERVATION] CRITICAL ERROR — Plan Without Execution Detected.\n"
-                                "You described a plan but did not execute any of it. A plan is NOT progress.\n"
-                                "You MUST immediately execute your first step using a tool call. Exact format:\n"
-                                "  [ACTION]write_file({\"path\": \"index.html\", \"content\": \"<!DOCTYPE html>...\"})[/ACTION]\n"
-                                "Start executing your first planned step RIGHT NOW. Do not stop until ALL steps are done.[/OBSERVATION]"
-                            )
-                    elif unexecuted_promise_msg:
-                        correction = unexecuted_promise_msg
-                    elif "let me know" not in _lower and "let me see if" not in _lower and any(sig in _lower for sig in ["let me", "i'll", "i will", "let's", "working on it", "just a moment", "one moment"]):
-                        correction = (
-                            "[OBSERVATION] Incomplete Response / Unexecuted Promise.\n"
-                            "You stated you would take an action or check something, but did not actually call a tool.\n"
-                            "Saying you will do something is not doing it. If an action is required, call the real tool (e.g. [ACTION]read_file(...)[/ACTION]).\n"
-                            "Do NOT use placeholder names like 'tool_name'.\n"
-                            "Otherwise, if you have finished all work or answered the user's question, deliver your complete final answer to the user immediately without an [ACTION] tag.[/OBSERVATION]"
-                        )
-                    else:
-                        # Check if it was a delegation promise specifically
-                        _is_delegation_promise = any(
-                            phrase in _lower for phrase in [
-                                "i'll hire", "i will hire", "i'll spawn", "i will spawn",
-                                "i'll delegate", "i will delegate", "hiring a", "spawning a",
-                                "i'll kick off", "i will kick off",
-                            ]
-                        )
-                        if _is_delegation_promise:
-                            correction = (
-                                "[OBSERVATION] CRITICAL ERROR — Delegation Promise Without Execution.\n"
-                                "You said you would hire/spawn an agent but did NOT include the [ACTION] tag. Saying you will do something is NOT doing it.\n"
-                                "You MUST immediately call the tool. Exact format required:\n"
-                                "  [ACTION]hire_subagent({\"role\": \"Python Developer\", \"expertise\": \"file I/O\", \"task\": \"Create a file named hello.txt with content Hello\"})[/ACTION]\n"
-                                "Or to spawn an existing teammate:\n"
-                                "  [ACTION]spawn_agent({\"agent_name\": \"Nova\", \"task\": \"...\"})[/ACTION]\n"
-                                "Execute the delegation tool call NOW.[/OBSERVATION]"
-                            )
-                        else:
-                            correction = (
-                                "[OBSERVATION] Error — Missing Tool Call Tag.\n"
-                                "You indicated an action but did not include an [ACTION] tag.\n"
-                                "Use the required format with a real tool from your tools list (e.g. [ACTION]read_file({\"relative_path\": \"backend/main.py\"})[/ACTION]).\n"
-                                "Do NOT use placeholder names like 'tool_name'.\n"
-                                "If no tool is needed, deliver your direct final answer.[/OBSERVATION]"
-                            )
-                    # FIX L2: Alternating-turn constraint.
-                    # The messages list may end with a `user` message (the last observation).
-                    # Injecting another `user` message back-to-back violates the
-                    # strict alternating-turn requirement of Anthropic & Gemini APIs.
-                    # Solution: prepend a minimal assistant acknowledgment stub so the
-                    # sequence is always: ...user → assistant → user (correction).
-                    last_role = messages[-1]["role"] if messages else "user"
-                    if last_role == "user":
-                        messages.append({
-                            "role": "assistant",
-                            "content": "[Acknowledged — executing correction]"
-                        })
-                    messages.append({"role": "user", "content": correction})
-                    self._current_reasoning_buffer += f"\n\n💭 **Observation:**\n{correction}\n\n"
-                    try:
-                        attachments_list = []
-                        if self.parent_message_id:
-                            attachments_list.append({
-                                "type": "parent_message",
-                                "id": self.parent_message_id
-                            })
-                        db_msg = Message(
-                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
-                            sender_id="system",
-                            sender_name="System",
-                            text=correction,
-                            is_intermediate=True,
-                            attachments=attachments_list,
-                        )
-                        db_session.add(db_msg)
-                        await db_session.commit()
-                    except Exception as corr_err:
-                        self._log.warning("Could not persist correction observation: %s", corr_err)
-                    continue
-
-
-                # Agent is done — persist and broadcast
-                self._log.info("Task finished after %d loops.", loop_count)
-                
-                # Differentiate subagent vs teammate
-                is_temporary_subagent = self.name.startswith("Sub-")
-
-                # If this agent was spawned by a coordinator, build the task notification
-                coordinator_notification = None
-                if self.parent_coordinator_id:
-                    coordinator_notification = self._build_task_notification(thought_buffer, "completed")
-                    # Only temporary subagents wrap their public chat message in XML report card
-                    if is_temporary_subagent:
-                        thought_buffer = coordinator_notification
-
-                attachments_list = []
-                if self.parent_message_id:
-                    attachments_list.append({
-                        "type": "parent_message",
-                        "id": self.parent_message_id
-                    })
-
-                db_msg = Message(
-                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
-                    sender_id=self.agent_id,
-                    sender_name=self.name, text=thought_buffer,
-                    reasoning_text=self._current_reasoning_buffer or None,
-                    is_private=self.is_private_response,
-                    recipient_id=self.reply_recipient_id,
-                    attachments=attachments_list,
-                )
-                db_session.add(db_msg)
-                await db_session.commit()
-                # Track the persisted message id for future file snapshots in this loop
-                self.active_message_id = str(db_msg.id)
-
-                # Wake up the parent coordinator if present (using the XML block in the background)
-                if self.parent_coordinator_id and coordinator_notification:
-                    try:
-                        from core.chat.message_router import message_router
-                        # Look up parent coordinator details
-                        stmt = select(Agent).where(Agent.id == uuid.UUID(self.parent_coordinator_id) if isinstance(self.parent_coordinator_id, str) else self.parent_coordinator_id)
-                        res = await db_session.execute(stmt)
-                        parent_agent = res.scalar_one_or_none()
-                        if parent_agent:
-                            # Route the task-notification text directly to the coordinator's queue
-                            await message_router._enqueue_agent(
-                                agent=parent_agent,
-                                prompt_text=coordinator_notification,
-                                db_session=db_session,
-                                attachments=[],
-                                trigger_message_id=str(db_msg.id)
-                            )
-                    except Exception as e:
-                        self._log.exception("Failed to notify parent coordinator %s: %s", self.parent_coordinator_id, e)
-
-                await event_bus.publish(self.topic, {
-                    "type": "message",
-                    "id": str(db_msg.id),
-                    "sender_id": self.agent_id,
-                    "sender_name": self.name,
-                    "role": self.role,
-                    "text": thought_buffer,
-                    "is_private": self.is_private_response,
-                    "recipient_id": self.reply_recipient_id,
-                    "has_reasoning": bool(self._current_reasoning_buffer),
-                    "is_task_notification": bool(self.parent_coordinator_id) if is_temporary_subagent else False,
-                    "attachments": attachments_list,
-                })
-
                 await event_bus.publish(self.topic, {
                     "type": "agent_status",
                     "sender_id": self.agent_id,
@@ -1604,33 +1343,132 @@ class ReACTAgent:
                     "role": self.role,
                     "status": "idle",
                 })
+                terminated = True
                 break
 
-            else:
-                tool_name, tool_args = action_call
-                self._log.info("Executing tool: %s", tool_name)
+            # Strip any name prefix hallucination from assistant text
+            assistant_text = re.sub(r'^\[[^\]]+\]:\s*', '', assistant_text, count=1)
 
-                # Move intermediate text to the reasoning trace.
-                # Strip the raw [ACTION]...[/ACTION] block so the DB-persisted
-                # reasoning_text only contains the agent's natural-language text
-                # (e.g. "Let me write this now.") — the formatted 🛠️ block below
-                # provides the structured tool call details. This way on refresh
-                # the Thoughts panel looks identical to the live-streaming view.
-                # NOTE: This non-greedy regex stops at the FIRST `[/ACTION]`.
-                # If a tool argument's string value contains the literal
-                # `[/ACTION]`, the strip truncates early. A proper fix requires
-                # a state-machine parser (out of scope here).
-                text_before_action = re.sub(r'\[ACTION\][\s\S]*?\[/ACTION\]', '', thought_buffer).strip()
-                # Strip leftover empty markdown codeblocks if the model wrapped the ACTION tag
-                text_before_action = re.sub(r'^\s*```[a-z]*\s*```\s*$', '', text_before_action, flags=re.MULTILINE).strip()
+            # Accumulate assistant text into reasoning trace (for UI display)
+            if assistant_text:
+                self._current_reasoning_buffer += f"\n{assistant_text}"
 
-                if text_before_action:
-                    self._current_reasoning_buffer += f"\n\n{text_before_action}\n"
+            # Record this turn in MessageHistory
+            tool_use_blocks = [
+                {"type": "tool_use", "id": t["id"], "name": t["name"], "input": t["input"]}
+                for t in tool_uses
+            ]
 
+            # ── Termination check: no tool calls = model is done ─────────────
+            if not tool_uses:
+                if stop_reason in ("max_tokens", "length"):
+                    self._log.warning("[native] Model stopped due to length/max_tokens truncation.")
+
+                if not assistant_text.strip():
+                    if loop_count < max_loops - 1:
+                        self._log.warning("[native] Empty assistant text received without tool calls; requesting output.")
+                        history.add_context_note(
+                            "[SYSTEM NOTE: Your response was completely empty. Please provide your answer or next action.]"
+                        )
+                        continue
+                    else:
+                        assistant_text = "Task processing completed."
+
+                history.add_assistant_text(text=assistant_text, tool_uses=None)
+                self._log.info("[native] No tool calls in response — agent finished after %d loop(s).", loop_count)
+
+                # Collapse streaming thought to reasoning panel
                 await event_bus.publish(self.topic, {
                     "type": "collapse_to_reasoning",
                     "sender_id": self.agent_id,
                 })
+
+                # Subagent notification wrapping
+                is_temporary_subagent = self.name.startswith("Sub-")
+                coordinator_notification = None
+                if self.parent_coordinator_id:
+                    coordinator_notification = self._build_task_notification(assistant_text, "completed")
+                    if is_temporary_subagent:
+                        assistant_text = coordinator_notification
+
+                attachments_list = []
+                if self.parent_message_id:
+                    attachments_list.append({"type": "parent_message", "id": self.parent_message_id})
+
+                db_msg = Message(
+                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                    sender_id=self.agent_id,
+                    sender_name=self.name,
+                    text=assistant_text,
+                    reasoning_text=self._current_reasoning_buffer or None,
+                    is_private=self.is_private_response,
+                    recipient_id=self.reply_recipient_id,
+                    attachments=attachments_list,
+                )
+                db_session.add(db_msg)
+                try:
+                    await db_session.commit()
+                except Exception as commit_err:
+                    await db_session.rollback()
+                    self._log.warning("[native] Could not commit final message: %s", commit_err)
+                self.active_message_id = str(db_msg.id)
+
+                # Wake up parent coordinator if present
+                if self.parent_coordinator_id and coordinator_notification:
+                    try:
+                        from core.chat.message_router import message_router
+                        parent_uuid = uuid.UUID(str(self.parent_coordinator_id))
+                        stmt = select(Agent).where(Agent.id == parent_uuid)
+                        p_res = await db_session.execute(stmt)
+                        parent_agent = p_res.scalar_one_or_none()
+                        if parent_agent:
+                            await message_router._enqueue_agent(
+                                agent=parent_agent,
+                                prompt_text=coordinator_notification,
+                                db_session=db_session,
+                                attachments=[],
+                                trigger_message_id=str(db_msg.id),
+                            )
+                    except Exception as notify_err:
+                        self._log.exception("Failed to notify parent coordinator: %s", notify_err)
+
+                await event_bus.publish(self.topic, {
+                    "type": "message",
+                    "id": str(db_msg.id),
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "text": assistant_text,
+                    "is_private": self.is_private_response,
+                    "recipient_id": self.reply_recipient_id,
+                    "has_reasoning": bool(self._current_reasoning_buffer),
+                    "is_task_notification": bool(self.parent_coordinator_id) if is_temporary_subagent else False,
+                    "attachments": attachments_list,
+                })
+                await event_bus.publish(self.topic, {
+                    "type": "agent_status",
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "status": "idle",
+                })
+                terminated = True
+                break
+
+            history.add_assistant_text(text=assistant_text, tool_uses=tool_use_blocks)
+
+            # ── Execute tools SEQUENTIALLY to preserve causality ──────────────
+            await event_bus.publish(self.topic, {
+                "type": "collapse_to_reasoning",
+                "sender_id": self.agent_id,
+            })
+
+            async def _exec_single_tool(tc: Dict[str, Any]):
+                """Execute a single tool call and return (id, name, observation, is_error)."""
+                tool_id = tc["id"]
+                tool_name = tc["name"]
+                tool_args = tc.get("input", {})
+                is_error = False
 
                 await event_bus.publish(self.topic, {
                     "type": "agent_status",
@@ -1640,77 +1478,116 @@ class ReACTAgent:
                     "status": "executing_tool",
                     "tool_name": tool_name,
                 })
-
                 await event_bus.publish(self.topic, {
                     "type": "tool_start",
                     "sender_id": self.agent_id,
                     "sender_name": self.name,
                     "tool_name": tool_name,
-                    "arguments": tool_args
+                    "arguments": _sanitize_tool_args(tool_args),
+                    "is_private": self.is_private_response,
+                    "recipient_id": self.reply_recipient_id,
                 })
 
                 try:
-                    args_str = json.dumps(tool_args, indent=2)
-                except Exception:
-                    args_str = str(tool_args)
-                self._current_reasoning_buffer += f"\n🛠️ **{tool_name}**\n```json\n{args_str}\n```\n"
-
-                try:
                     observation = await self._execute_tool(
-                        name=tool_name, args=tool_args, permissions=permissions, token=token
+                        name=tool_name, args=tool_args,
+                        permissions=permissions, token=token,
                     )
-                    if tool_name in ("write_file", "edit_file", "append_file", "delete_file") and not str(observation).startswith("✗"):
-                        fpath = tool_args.get("path") or tool_args.get("relative_path") or tool_args.get("file_path")
-                        if fpath:
-                            self._modified_files.add(str(fpath))
+                    if str(observation).startswith("✗") or "Error" in str(observation):
+                        is_error = True
+                    else:
+                        if tool_name in ("write_file", "edit_file", "append_file", "delete_file"):
+                            fpath = tool_args.get("path") or tool_args.get("relative_path") or tool_args.get("file_path")
+                            if fpath:
+                                self._modified_files.add(str(fpath))
                 except Exception as e:
                     observation = f"✗ Tool Error: {str(e)}"
-                    self._log.error("Tool '%s' raised exception: %s", tool_name, e)
+                    is_error = True
+                    self._log.error("[native] Tool '%s' raised exception: %s", tool_name, e)
 
-                MAX_TRACE_OBS = 4000
-                display_obs = observation if len(observation) <= MAX_TRACE_OBS else (observation[:MAX_TRACE_OBS] + "\n... [output truncated]")
+                if is_error:
+                    self._consecutive_tool_errors += 1
+                    obs_lower = str(observation).lower()
+                    hint = ""
+                    if "modulenotfounderror" in obs_lower or "importerror" in obs_lower:
+                        hint = "\n\n💡 Hint: A Python module is missing. Try installing it with execute_command({\"command\": \"pip install <module_name>\"})."
+                    elif "command not found" in obs_lower or "not recognized" in obs_lower:
+                        hint = "\n\n💡 Hint: Command not found. Check installation or use the full path."
+                    elif "permission denied" in obs_lower:
+                        hint = "\n\n💡 Hint: Permission denied. The file may be read-only."
+                    elif "no such file or directory" in obs_lower or "filenotfounderror" in obs_lower:
+                        hint = "\n\n💡 Hint: File or directory not found. Use list_directory to verify the path."
+                    elif "target_content not found" in obs_lower or "no match found" in obs_lower:
+                        hint = "\n\n💡 Hint: edit_file target_content didn't match. Use read_file to see exact current content."
+                    if hint:
+                        observation = str(observation) + hint
+
+                    if self._consecutive_tool_errors >= 3:
+                        observation = str(observation) + (
+                            f"\n\n🛑 [SYSTEM WARNING: {self._consecutive_tool_errors} consecutive tool failures. "
+                            "STOP repeating the same action. Diagnose the root cause and try a completely different approach.]"
+                        )
+                else:
+                    self._consecutive_tool_errors = 0
+
+                observation = cache_observation(tool_name, str(observation))
+                return tool_id, tool_name, observation, is_error
+
+            results = []
+            for tc in tool_uses:
+                res = await _exec_single_tool(tc)
+                results.append(res)
+
+            # Persist and broadcast tool traces
+            for tool_id, tool_name, observation, is_err in results:
+                display_obs = observation if len(observation) <= 4000 else observation[:4000] + "\n... [output truncated]"
 
                 await event_bus.publish(self.topic, {
                     "type": "tool_end",
                     "sender_id": self.agent_id,
                     "sender_name": self.name,
                     "tool_name": tool_name,
-                    "observation": display_obs
+                    "observation": display_obs,
+                    "is_private": self.is_private_response,
+                    "recipient_id": self.reply_recipient_id,
                 })
-                
-                self._current_reasoning_buffer += f"\n📄 **Result:**\n```\n{display_obs}\n```\n"
 
-                # Broadcast the intermediate trace row (and persist to DB if spawned by a coordinator)
-                # is_intermediate=True so the UI renders it as a compact trace row
+                try:
+                    args_str = json.dumps(
+                        next((t["input"] for t in tool_uses if t["id"] == tool_id), {}),
+                        indent=2,
+                    )
+                except Exception:
+                    args_str = "{}"
+
                 intermediate_trace = (
-                    f"🛠️ **{tool_name}**\n"
-                    f"```json\n{args_str}\n```\n"
+                    f"🛠️ **{tool_name}**\n```json\n{args_str}\n```\n"
                     f"📄 **Result:**\n```\n{display_obs}\n```"
                 )
-                
-                db_trace_msg_id = None
+                self._current_reasoning_buffer += f"\n{intermediate_trace}\n"
+
                 attachments_list = []
-                if self.parent_coordinator_id:
-                    try:
-                        if self.parent_message_id:
-                            attachments_list.append({
-                                "type": "parent_message",
-                                "id": self.parent_message_id
-                            })
-                        
-                        db_trace_msg = Message(
-                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
-                            sender_id=self.agent_id,
-                            sender_name=self.name,
-                            text=intermediate_trace,
-                            is_intermediate=True,
-                            attachments=attachments_list
-                        )
-                        db_session.add(db_trace_msg)
-                        await db_session.commit()
-                        db_trace_msg_id = str(db_trace_msg.id)
-                    except Exception as persist_err:
-                        self._log.warning("Failed to persist intermediate tool trace: %s", persist_err)
+                if self.parent_message_id:
+                    attachments_list.append({"type": "parent_message", "id": self.parent_message_id})
+
+                db_trace_msg_id = None
+                try:
+                    db_trace = Message(
+                        team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                        sender_id=self.agent_id,
+                        sender_name=self.name,
+                        text=intermediate_trace,
+                        is_intermediate=True,
+                        is_private=self.is_private_response,
+                        recipient_id=self.reply_recipient_id,
+                        attachments=attachments_list,
+                    )
+                    db_session.add(db_trace)
+                    await db_session.commit()
+                    db_trace_msg_id = str(db_trace.id)
+                except Exception as persist_err:
+                    await db_session.rollback()
+                    self._log.warning("[native] Failed to persist tool trace: %s", persist_err)
 
                 await event_bus.publish(self.topic, {
                     "type": "tool_trace",
@@ -1720,177 +1597,120 @@ class ReACTAgent:
                     "role": self.role,
                     "text": intermediate_trace,
                     "is_intermediate": True,
-                    "attachments": attachments_list
+                    "is_private": self.is_private_response,
+                    "recipient_id": self.reply_recipient_id,
+                    "attachments": attachments_list,
                 })
-                # --- Error recovery & consecutive failure breaker ---
-                is_error = observation.startswith("✗") or "Error:" in observation or "Error " in observation or "error:" in observation or "Exception:" in observation
-                if is_error:
-                    self._consecutive_tool_errors += 1
-                else:
-                    self._consecutive_tool_errors = 0
 
-                # Inject lightweight hints for common error patterns
-                if is_error:
-                    hint = ""
-                    obs_lower = observation.lower()
-                    if "modulenotfounderror" in obs_lower or "importerror" in obs_lower:
-                        hint = "\n\n💡 Hint: A Python module is missing. Try installing it with execute_command({\"command\": \"pip install <module_name>\"})."
-                    elif "command not found" in obs_lower or "not recognized" in obs_lower:
-                        hint = "\n\n💡 Hint: The command was not found. Check if the tool is installed, or use the full path."
-                    elif "permission denied" in obs_lower:
-                        hint = "\n\n💡 Hint: Permission denied. The file may be read-only or owned by another user."
-                    elif "no such file or directory" in obs_lower or "filenotfounderror" in obs_lower:
-                        hint = "\n\n💡 Hint: File or directory not found. Use list_directory to verify the path exists."
-                    elif "target_content not found" in obs_lower or "no match found" in obs_lower:
-                        hint = "\n\n💡 Hint: The target_content for edit_file didn't match. Use read_file to see the exact current content, then copy the exact text."
-                    elif "timeout" in obs_lower and "browser" in tool_name.lower():
-                        hint = "\n\n💡 Hint: Browser selector timed out. Call browser_get_interactive_elements to discover the correct selectors on the page."
-                    elif "missing required parameter" in obs_lower and tool_name == "write_file":
-                        hint = (
-                            "\n\n💡 Hint: write_file requires TWO separate parameters — not a nested JSON value. "
-                            "Exact format:\n"
-                            "  [ACTION]write_file({\"relative_path\": \"path/to/file.py\", \"content\": \"# your code here\"})[/ACTION]\n"
-                            "Do NOT wrap both inside a \"value\" key. Use relative_path and content as top-level keys."
-                        )
-                    if hint:
-                        observation += hint
+            # Atomic commit of tool results batch to history
+            history.add_tool_results([
+                {
+                    "tool_use_id": r_id,
+                    "content": r_obs,
+                    "tool_name": r_name,
+                    "is_error": r_err,
+                }
+                for r_id, r_name, r_obs, r_err in results
+            ])
 
-                    # Step-Back Mechanism: Inject breaker warning on 3+ consecutive failures
-                    if self._consecutive_tool_errors >= 3:
-                        observation += (
-                            f"\n\n🛑 [SYSTEM WARNING: CONSECUTIVE FAILURE BREAKER]\n"
-                            f"You have encountered {self._consecutive_tool_errors} consecutive tool failures. "
-                            "STOP repeating the same action. "
-                            "Step back, diagnose why this approach is failing, verify your assumptions (using read_file or checking logs), "
-                            "and formulate a completely different strategy before executing another tool."
-                        )
+            # ── No-progress guard ─────────────────────────────────────────────
+            fp_parts = []
+            any_mutations = False
+            for r_id, r_name, r_obs, r_err in results:
+                if not r_err and r_name in ("write_file", "edit_file", "append_file", "delete_file", "write_scratchpad"):
+                    any_mutations = True
+                tc_input = next((t["input"] for t in tool_uses if t["id"] == r_id), {})
+                sorted_args = json.dumps(tc_input, sort_keys=True, default=str)
+                norm_obs = re.sub(r'\s+', ' ', re.sub(
+                    r'\b(\d{4}-\d{2}-\d{2}|0x[0-9a-f]+|\d+\.\d+\s*(?:ms|s|sec))\b', '', str(r_obs)
+                )).strip()[:400]
+                fp_parts.append(f"{r_name}:{sorted_args}:{norm_obs}:{r_err}")
 
-                # Check if the tool returned a structured binary file response
-                is_file_obs = False
-                try:
-                    import json
-                    obs_dict = json.loads(observation)
-                    if isinstance(obs_dict, dict) and obs_dict.get("_is_file"):
-                        is_file_obs = True
-                        file_path = obs_dict.get("local_path")
-                        mime = obs_dict.get("mime_type", "application/octet-stream")
-                        source = obs_dict.get("source_url", "unknown source")
-                        messages.append({
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": f"[OBSERVATION] Tool extracted a file from {source}:\nPath: {file_path}\nMIME: {mime}\n[/OBSERVATION]"},
-                                {"type": "document", "local_path": file_path, "mime_type": mime}
-                            ]
-                        })
-                except (json.JSONDecodeError, ValueError, TypeError, KeyError):
-                    pass
-                except Exception as e:
-                    self._log.debug("File observation check notice: %s", e)
-
-                if not is_file_obs:
-                    safe_obs = observation.replace("[/OBSERVATION]", "[\\/OBSERVATION]").replace("[ACTION]", "[\\ACTION]")
-                    observation_text = f"[OBSERVATION] Tool output:\n{safe_obs}\n[/OBSERVATION]"
-                    messages.append({
-                        "role": "user",
-                        "content": observation_text
-                    })
-
-                # --- No-progress guard ---
-                # Normalize observation text by stripping volatile elements (timestamps, hex memory pointers, elapsed durations)
-                # so identical errors with changing timestamps correctly trigger the loop guard.
-                norm_obs = re.sub(r'\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\b', '', observation)
-                norm_obs = re.sub(r'\b0x[0-9a-fA-F]+\b', '', norm_obs)
-                norm_obs = re.sub(r'\b\d+(?:\.\d+)?\s*(?:ms|seconds|s|sec)\b', '', norm_obs)
-                norm_obs = re.sub(r'\s+', ' ', norm_obs).strip()
-
-                import hashlib
-                obs_fingerprint = hashlib.md5(norm_obs.encode('utf-8')).hexdigest()
-                if obs_fingerprint and obs_fingerprint == self._last_observation:
-                    self._no_progress_count += 1
-                    if self._no_progress_count >= 2:  # bail out after 2 identical results, not 3
-                        self._log.warning(
-                            "No-progress guard triggered after %d identical observations. Breaking loop.",
-                            self._no_progress_count,
-                        )
-                        stuck_note = (
-                            "\n\n*[System: Agent loop stopped — the last 3 tool calls returned identical results. "
-                            "This usually means the tool is stuck or the target resource is unavailable. "
-                            "Please review the tool output above and try a different approach.]*"
-                        )
-                        thought_buffer = (self._current_thought_buffer or "") + stuck_note
-                        db_msg = Message(
-                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
-                            sender_id=self.agent_id,
-                            sender_name=self.name,
-                            text=thought_buffer,
-                            reasoning_text=self._current_reasoning_buffer or None,
-                            is_private=self.is_private_response,
-                            recipient_id=self.reply_recipient_id,
-                        )
-                        db_session.add(db_msg)
+            obs_fp = _hs.md5("|".join(fp_parts).encode("utf-8")).hexdigest()
+            if obs_fp == self._last_observation and not any_mutations:
+                self._no_progress_count += 1
+                if self._no_progress_count >= 2:
+                    self._log.warning("[native] No-progress guard triggered after %d identical observations.", self._no_progress_count)
+                    stuck_note = (
+                        "\n\n*[System: Agent loop stopped — the last 3 tool calls returned identical results. "
+                        "This usually means the tool is stuck or the target resource is unavailable. "
+                        "Please review the tool output above and try a different approach.]*"
+                    )
+                    final_text = (assistant_text or "") + stuck_note
+                    db_msg = Message(
+                        team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                        sender_id=self.agent_id,
+                        sender_name=self.name,
+                        text=final_text,
+                        reasoning_text=self._current_reasoning_buffer or None,
+                        is_private=self.is_private_response,
+                        recipient_id=self.reply_recipient_id,
+                    )
+                    db_session.add(db_msg)
+                    try:
                         await db_session.commit()
-                        await event_bus.publish(self.topic, {
-                            "type": "message",
-                            "id": str(db_msg.id),
-                            "sender_id": self.agent_id,
-                            "sender_name": self.name,
-                            "role": self.role,
-                            "text": thought_buffer,
-                            "is_private": self.is_private_response,
-                            "recipient_id": self.reply_recipient_id,
-                            "has_reasoning": bool(self._current_reasoning_buffer),
-                        })
-                        await event_bus.publish(self.topic, {
-                            "type": "agent_status",
-                            "sender_id": self.agent_id,
-                            "sender_name": self.name,
-                            "role": self.role,
-                            "status": "idle",
-                        })
-                        # ── SERVER-SIDE FAILSAFE: save lesson on stuck-loop too ──
-                        await self._auto_save_failure_lesson(
-                            initial_prompt=initial_prompt,
-                            messages=messages,
-                            reason="no-progress (3 identical observations)",
-                        )
-                        return
-                else:
-                    self._no_progress_count = 0
-                self._last_observation = obs_fingerprint
+                    except Exception:
+                        await db_session.rollback()
+                    await event_bus.publish(self.topic, {
+                        "type": "message",
+                        "id": str(db_msg.id),
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "text": final_text,
+                        "is_private": self.is_private_response,
+                        "recipient_id": self.reply_recipient_id,
+                    })
+                    await event_bus.publish(self.topic, {
+                        "type": "agent_status",
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "status": "idle",
+                    })
+                    await self._auto_save_failure_lesson(
+                        initial_prompt=initial_prompt,
+                        messages=history.get_messages(),
+                        reason="no-progress (identical observations without mutation)",
+                    )
+                    terminated = True
+                    return
+            else:
+                self._no_progress_count = 0
+            self._last_observation = obs_fp
 
-                # If worker results arrived mid-loop, invalidate the cached system
-                # prompt so they appear in context on the next assemble call.
-                if self._worker_results:
-                    self._invalidate_system_prompt_cache()
+            # Invalidate cached system prompt if new worker results arrived
+            if self._worker_results:
+                self._invalidate_system_prompt_cache()
 
-        # If we exited the loop by hitting max_loops, we still need to publish a final message
-        if loop_count >= max_loops and action_call:
-            self._log.warning("Agent hit max loop limit (%d). Terminating.", max_loops)
+        # ── Hit max_loops (only if not cleanly terminated) ───────────────────
+        if not terminated and loop_count >= max_loops:
+            self._log.warning("[native] Agent hit max loop limit (%d). Terminating.", max_loops)
             final_note = f"\n\n*[System: Agent reached maximum loop limit of {max_loops}.]*"
-            thought_buffer = self._current_thought_buffer + final_note
-            
+            final_text = (self._current_thought_buffer or "") + final_note
             db_msg = Message(
                 team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
                 sender_id=self.agent_id,
                 sender_name=self.name,
-                text=thought_buffer,
+                text=final_text,
                 reasoning_text=self._current_reasoning_buffer or None,
                 is_private=self.is_private_response,
                 recipient_id=self.reply_recipient_id,
             )
             db_session.add(db_msg)
-            await db_session.commit()
-            
+            try:
+                await db_session.commit()
+            except Exception:
+                await db_session.rollback()
             await event_bus.publish(self.topic, {
                 "type": "message",
                 "id": str(db_msg.id),
                 "sender_id": self.agent_id,
                 "sender_name": self.name,
                 "role": self.role,
-                "text": thought_buffer,
+                "text": final_text,
                 "is_private": self.is_private_response,
                 "recipient_id": self.reply_recipient_id,
-                "has_reasoning": bool(self._current_reasoning_buffer),
             })
             await event_bus.publish(self.topic, {
                 "type": "agent_status",
@@ -1899,20 +1719,13 @@ class ReACTAgent:
                 "role": self.role,
                 "status": "idle",
             })
-
-            # ── SERVER-SIDE FAILSAFE: Auto-extract and save a lesson ──
-            # The graceful degradation prompt ASKS the LLM to save a lesson,
-            # but it may ignore it. This block guarantees a lesson is ALWAYS
-            # written when the agent hits max_loops, by using a cheap LLM call
-            # to extract the lesson directly from the conversation context.
             await self._auto_save_failure_lesson(
                 initial_prompt=initial_prompt,
-                messages=messages,
+                messages=history.get_messages(),
                 reason=f"max_loops ({max_loops})",
             )
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Server-side Failsafe: Auto-extract & persist a lesson on termination
+        # Server-side Failsafe: Auto-extract & persist a lesson on termination
     # ──────────────────────────────────────────────────────────────────────
 
     async def _auto_save_failure_lesson(
@@ -1934,15 +1747,24 @@ class ReACTAgent:
             summary_lines = []
             for msg in recent:
                 role = msg.get("role", "?")
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    content = " ".join(
-                        c.get("text", "") for c in content if isinstance(c, dict)
-                    )
-                # Truncate each message to keep token cost low
-                if len(content) > 500:
-                    content = content[:500] + "..."
-                summary_lines.append(f"[{role}]: {content}")
+                raw_c = msg.get("content", "")
+                if isinstance(raw_c, list):
+                    block_texts = []
+                    for c in raw_c:
+                        if isinstance(c, dict):
+                            btype = c.get("type")
+                            if btype == "text":
+                                block_texts.append(c.get("text", ""))
+                            elif btype == "tool_use":
+                                block_texts.append(f"[Tool Call: {c.get('name')}({json.dumps(c.get('input', {}), default=str)[:150]})]")
+                            elif btype == "tool_result":
+                                block_texts.append(f"[Tool Result: {str(c.get('content', ''))[:200]}]")
+                    c_text = " ".join(block_texts)
+                else:
+                    c_text = str(raw_c)
+                if len(c_text) > 500:
+                    c_text = c_text[:500] + "..."
+                summary_lines.append(f"[{role}]: {c_text}")
             context_block = "\n".join(summary_lines)
 
             extraction_prompt = (
@@ -2289,18 +2111,22 @@ class ReACTAgent:
         return tool_name, {"value": raw_args}
 
     def _build_task_notification(self, result_text: str, status: str) -> str:
-        task_id = self.task_id or "unknown"
+        import html
+        task_id = html.escape(str(self.task_id or "unknown"))
+        agent_name = html.escape(str(self.name))
+        status_esc = html.escape(str(status))
         result_summary = result_text[:1500] if len(result_text) > 1500 else result_text
+        result_esc = html.escape(result_summary)
         files_block = ""
         if hasattr(self, "_modified_files") and self._modified_files:
-            files_block = "  <files_modified>\n" + "\n".join(f"    <file>{f}</file>" for f in sorted(self._modified_files)) + "\n  </files_modified>\n"
+            files_block = "  <files_modified>\n" + "\n".join(f"    <file>{html.escape(str(f))}</file>" for f in sorted(self._modified_files)) + "\n  </files_modified>\n"
         return (
             f"<task-notification>\n"
             f"  <task_id>{task_id}</task_id>\n"
-            f"  <agent>{self.name}</agent>\n"
-            f"  <status>{status}</status>\n"
+            f"  <agent>{agent_name}</agent>\n"
+            f"  <status>{status_esc}</status>\n"
             f"{files_block}"
-            f"  <result>{result_summary}</result>\n"
+            f"  <result>{result_esc}</result>\n"
             f"</task-notification>"
         )
 
@@ -2328,6 +2154,7 @@ class ReACTAgent:
                         for notif in notifications:
                             notif["agent"] = event.get("sender_name", "unknown")
                             self._worker_results.append(notif)
+                            self._invalidate_system_prompt_cache()
                             self._log.info(
                                 "Collected notification from %s: task_id=%s status=%s",
                                 notif.get("agent", "?"),
@@ -2367,6 +2194,7 @@ class ReACTAgent:
 
     def parse_task_notifications(self, text: str) -> List[Dict[str, str]]:
         """Parses <task-notification> XML blocks from worker messages."""
+        import html
         notifications = []
         pattern = r"<task-notification>(.*?)</task-notification>"
         matches = re.findall(pattern, text, re.DOTALL)
@@ -2376,7 +2204,7 @@ class ReACTAgent:
             for field in ["task_id", "agent", "status", "result", "tokens_used"]:
                 field_match = re.search(f"<{field}>(.*?)</{field}>", match, re.DOTALL)
                 if field_match:
-                    notification[field] = field_match.group(1).strip()
+                    notification[field] = html.unescape(field_match.group(1).strip())
             if notification:
                 notifications.append(notification)
 

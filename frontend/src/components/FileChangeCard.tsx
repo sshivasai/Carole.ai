@@ -25,6 +25,7 @@ interface FileChangeCardProps {
   action?: string;
   timestamp?: string | number;
   onOpenFile?: (path: string) => void;
+  onOpenDiffFile?: (path: string) => void;
 }
 
 function getFileExtensionIcon(path: string) {
@@ -57,7 +58,8 @@ export default function FileChangeCard({
   content,
   action = "modified",
   timestamp,
-  onOpenFile
+  onOpenFile,
+  onOpenDiffFile
 }: FileChangeCardProps) {
   // Normalize input into an array of file change items
   const fileList: ChangedFileItem[] = React.useMemo(() => {
@@ -280,23 +282,32 @@ export default function FileChangeCard({
                     {isFileOpen ? "Hide" : "Review"}
                   </button>
 
-                  {onOpenFile && (
-                    <button
-                      onClick={() => onOpenFile(file.path)}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#94a3b8",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        padding: "2px"
-                      }}
-                      title="Open in editor"
-                    >
-                      <ExternalLink size={12} />
-                    </button>
-                  )}
+                  <div style={{ display: "flex", gap: "6px" }}>
+                      {(onOpenFile || onOpenDiffFile) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onOpenDiffFile) onOpenDiffFile(file.path);
+                            else if (onOpenFile) onOpenFile(file.path);
+                          }}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            background: "rgba(255,255,255,0.06)",
+                            border: "1px solid rgba(255,255,255,0.1)",
+                            borderRadius: "4px",
+                            padding: "4px",
+                            color: "#94a3b8",
+                            cursor: "pointer"
+                          }}
+                          className="hover:bg-[rgba(255,255,255,0.15)] hover:text-white"
+                          title="Open in diff editor"
+                        >
+                          <ExternalLink size={12} />
+                        </button>
+                      )}
+                    </div>
                 </div>
               </div>
 

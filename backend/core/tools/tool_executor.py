@@ -48,6 +48,30 @@ _DOC_WRITE_TOOLS = {"write_file", "edit_file", "append_file"}
 _DOC_EXTENSIONS = (".md", ".markdown", ".txt")
 
 
+async def _publish_approval(topic: str, payload: dict):
+    await event_bus.publish(topic, payload)
+    team_id = topic.split(":")[-1] if ":" in topic else ""
+    await _persist_approval_event(team_id, payload.get("agent_id", ""), payload.get("agent_name", ""), payload)
+
+async def _persist_approval_event(team_id: str, agent_id: str, agent_name: str, payload: dict):
+    from core.memory.database import async_session
+    from core.memory.models import Message
+    
+    try:
+        async with async_session() as db:
+            msg = Message(
+                team_id=uuid.UUID(team_id) if isinstance(team_id, str) else team_id,
+                sender_id="system",
+                sender_name="System",
+                text=f"Approval Event: {payload.get('type')}",
+                is_intermediate=True,
+                attachments=[{"type": payload.get("type"), "payload": payload}]
+            )
+            db.add(msg)
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to persist approval event: {e}")
+
 def _is_doc_write(tool_name: str, arguments: Dict[str, Any]) -> bool:
     """True when a file-write tool targets a documentation path (.md/.txt).
 
@@ -1140,7 +1164,7 @@ class ToolExecutor:
             
             try:
                 # 1. Publish approval request to UI instantly
-                await event_bus.publish(topic, {
+                await _publish_approval(topic, {
                     "type": "approval_request",
                     "tx_id": tx_id,
                     "agent_id": agent_id,
@@ -1170,7 +1194,7 @@ class ToolExecutor:
                     judge_task.cancel()
                     logger.warning("[Executor] Approval for tx_id=%s timed out after %ds.", tx_id, APPROVAL_TIMEOUT_SECS)
                     resolved_status = "denied"
-                    await event_bus.publish(topic, {
+                    await _publish_approval(topic, {
                         "type": "approval_resolved",
                         "tx_id": tx_id,
                         "agent_id": agent_id,
@@ -1189,7 +1213,7 @@ class ToolExecutor:
                     if override_approved:
                         logger.info("✓ [Executor] tx_id=%s HUMAN APPROVED (preempted judge).", tx_id)
                         resolved_status = "approved"
-                        await event_bus.publish(topic, {
+                        await _publish_approval(topic, {
                             "type": "approval_resolved",
                             "tx_id": tx_id,
                             "agent_id": agent_id,
@@ -1202,7 +1226,7 @@ class ToolExecutor:
                     else:
                         logger.info("✗ [Executor] tx_id=%s HUMAN DENIED (preempted judge).", tx_id)
                         resolved_status = "denied"
-                        await event_bus.publish(topic, {
+                        await _publish_approval(topic, {
                             "type": "approval_resolved",
                             "tx_id": tx_id,
                             "agent_id": agent_id,
@@ -1226,7 +1250,7 @@ class ToolExecutor:
                         resolved_status = "approved"
                         
                         # Notify UI that approval is resolved so card can disappear
-                        await event_bus.publish(topic, {
+                        await _publish_approval(topic, {
                             "type": "approval_resolved",
                             "tx_id": tx_id,
                             "agent_id": agent_id,
@@ -1241,7 +1265,7 @@ class ToolExecutor:
                         logger.info("🛑 [Executor] tx_id=%s JUDGE DENIED. Awaiting human override...", tx_id)
                         
                         # Update UI to show denial reason
-                        await event_bus.publish(topic, {
+                        await _publish_approval(topic, {
                             "type": "approval_update",
                             "tx_id": tx_id,
                             "agent_id": agent_id,
@@ -1256,7 +1280,7 @@ class ToolExecutor:
                         except asyncio.TimeoutError:
                             logger.warning("[Executor] Override for tx_id=%s timed out after %ds.", tx_id, APPROVAL_TIMEOUT_SECS)
                             resolved_status = "denied"
-                            await event_bus.publish(topic, {
+                            await _publish_approval(topic, {
                                 "type": "approval_resolved",
                                 "tx_id": tx_id,
                                 "agent_id": agent_id,
@@ -1272,7 +1296,7 @@ class ToolExecutor:
                         if override_approved:
                             logger.info("✓ [Executor] tx_id=%s OVERRIDE APPROVED. Resuming...", tx_id)
                             resolved_status = "approved"
-                            await event_bus.publish(topic, {
+                            await _publish_approval(topic, {
                                 "type": "approval_resolved",
                                 "tx_id": tx_id,
                                 "agent_id": agent_id,
@@ -1285,7 +1309,7 @@ class ToolExecutor:
                         else:
                             logger.info("✗ [Executor] tx_id=%s OVERRIDE DENIED.", tx_id)
                             resolved_status = "denied"
-                            await event_bus.publish(topic, {
+                            await _publish_approval(topic, {
                                 "type": "approval_resolved",
                                 "tx_id": tx_id,
                                 "agent_id": agent_id,
@@ -1333,7 +1357,7 @@ class ToolExecutor:
             resolved_status = "denied"
 
             try:
-                await event_bus.publish(topic, {
+                await _publish_approval(topic, {
                     "type": "approval_request",
                     "tx_id": tx_id,
                     "agent_id": agent_id,
@@ -1356,7 +1380,7 @@ class ToolExecutor:
                         tx_id, APPROVAL_TIMEOUT_SECS
                     )
                     resolved_status = "denied"
-                    await event_bus.publish(topic, {
+                    await _publish_approval(topic, {
                         "type": "approval_resolved",
                         "tx_id": tx_id,
                         "agent_id": agent_id,
@@ -1372,7 +1396,7 @@ class ToolExecutor:
                 if approved:
                     logger.info("✓ [Executor] tx_id=%s APPROVED. Resuming execution...", tx_id)
                     resolved_status = "approved"
-                    await event_bus.publish(topic, {
+                    await _publish_approval(topic, {
                         "type": "approval_resolved",
                         "tx_id": tx_id,
                         "agent_id": agent_id,
@@ -1385,7 +1409,7 @@ class ToolExecutor:
                 else:
                     logger.info("✗ [Executor] tx_id=%s DENIED. Cancelling execution...", tx_id)
                     resolved_status = "denied"
-                    await event_bus.publish(topic, {
+                    await _publish_approval(topic, {
                         "type": "approval_resolved",
                         "tx_id": tx_id,
                         "agent_id": agent_id,

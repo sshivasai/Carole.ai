@@ -18,6 +18,7 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
   const [showDiff, setShowDiff] = useState(false);
   const toolName = msg.pending_approval?.tool_name || msg.tool_name || "";
   const args = msg.pending_approval?.arguments || msg.arguments || {};
+  const reason = (msg.pending_approval as any)?.reason || msg.reason || "";
   
   // status resolved below with localDecision
   const agentName = msg.sender_name || "Agent";
@@ -312,9 +313,16 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
           </div>
           )
         ) : (
-          <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "6px", fontSize: "11.5px", color: status === "approved" ? "#34d399" : "#f87171" }}>
-            {status === "approved" ? <Check size={13} /> : <X size={13} />}
-            <span style={{ fontWeight: 600 }}>{status === "approved" ? "Request Approved" : "Request Denied"}</span>
+          <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11.5px", color: status === "approved" ? "#34d399" : "#f87171" }}>
+              {status === "approved" ? <Check size={13} /> : <X size={13} />}
+              <span style={{ fontWeight: 600 }}>{status === "approved" ? "Request Approved" : "Request Denied"}</span>
+            </div>
+            {status === "denied" && reason && (
+              <div style={{ fontSize: "11px", color: "#f87171", background: "rgba(248, 113, 113, 0.1)", padding: "6px 8px", borderRadius: "4px", border: "1px solid rgba(248, 113, 113, 0.2)", wordBreak: "break-word" }}>
+                <strong>Reason:</strong> {reason}
+              </div>
+            )}
           </div>
         )}
       </div>

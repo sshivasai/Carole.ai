@@ -175,6 +175,176 @@ class ToolRegistry:
             })
         return schemas
 
+    @classmethod
+    def to_anthropic_tools(cls, team_id: str = None, agent_id: str = None) -> List[dict]:
+        """Convert ToolSpec registry to Anthropic native tool schema.
+
+        Returns a list ready to pass as the ``tools`` parameter of the
+        Anthropic Messages API.  Each entry has the shape::
+
+            {
+                "name": "tool_name",
+                "description": "...",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"arg": {"type": "string", "description": "..."}},
+                    "required": ["arg"],
+                }
+            }
+        """
+        tools = []
+        for spec in cls._tools.values():
+            if spec.team_id is not None and spec.team_id != team_id:
+                continue
+            if spec.agent_id is not None and spec.agent_id != agent_id:
+                continue
+
+            properties: dict = {}
+            required: list = []
+            for param_name, param_info in (spec.parameters or {}).items():
+                if isinstance(param_info, dict):
+                    prop: dict = {
+                        "type": param_info.get("type", "string"),
+                        "description": param_info.get("description", ""),
+                    }
+                    # Pass through enum, items, default, minimum, maximum if present
+                    for extra_key in ("enum", "items", "default", "minimum", "maximum"):
+                        if extra_key in param_info:
+                            prop[extra_key] = param_info[extra_key]
+                    properties[param_name] = prop
+                    if param_info.get("required", False):
+                        required.append(param_name)
+                else:
+                    # Legacy plain-string param description
+                    properties[param_name] = {"type": "string", "description": str(param_info)}
+                    required.append(param_name)
+
+            description = spec.description or ""
+            if spec.name == "browser_navigate":
+                try:
+                    from core.llm.config_manager import load_config
+                    provider = load_config().get("browser_automation", {}).get("provider", "local")
+                    if provider != "local":
+                        description += f" (Anti-bot/CAPTCHA bypassing ENABLED via {provider.capitalize()})."
+                except Exception:
+                    pass
+
+            tools.append({
+                "name": spec.name,
+                "description": description[:1024],
+                "input_schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            })
+        return tools
+
+    @classmethod
+    def to_openai_tools(cls, team_id: str = None, agent_id: str = None) -> List[dict]:
+        """Convert ToolSpec registry to OpenAI function-calling schema.
+
+        Wraps ``to_anthropic_tools()`` in the OpenAI ``{"type": "function", ...}``
+        envelope so you can pass the result directly as the ``tools`` parameter of
+        the OpenAI Chat Completions API.
+        """
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in cls.to_anthropic_tools(team_id=team_id, agent_id=agent_id)
+        ]
+
+    @classmethod
+    def to_gemini_tools(cls, team_id: str = None, agent_id: str = None) -> List[dict]:
+        """Convert ToolSpec registry to Gemini FunctionDeclaration format.
+
+        Returns a list with a single entry (Gemini bundles all tools under one
+        ``Tool`` object with a ``functionDeclarations`` array)::
+
+            [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": "tool_name",
+                            "description": "...",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {"arg": {"type": "STRING", "description": "..."}},
+                                "required": ["arg"],
+                            }
+                        },
+                        ...
+                    ]
+                }
+            ]
+
+        Pass this directly as ``tools=`` in a Gemini ``generateContent`` request.
+        """
+        # Gemini uses uppercase type names: STRING, INTEGER, BOOLEAN, ARRAY, OBJECT
+        _TYPE_MAP = {
+            "string": "STRING",
+            "str": "STRING",
+            "integer": "INTEGER",
+            "int": "INTEGER",
+            "number": "NUMBER",
+            "float": "NUMBER",
+            "boolean": "BOOLEAN",
+            "bool": "BOOLEAN",
+            "array": "ARRAY",
+            "list": "ARRAY",
+            "object": "OBJECT",
+            "dict": "OBJECT",
+        }
+
+        declarations = []
+        for spec in cls._tools.values():
+            if spec.team_id is not None and spec.team_id != team_id:
+                continue
+            if spec.agent_id is not None and spec.agent_id != agent_id:
+                continue
+
+            properties: dict = {}
+            required: list = []
+            for param_name, param_info in (spec.parameters or {}).items():
+                if isinstance(param_info, dict):
+                    raw_type = param_info.get("type", "string").lower()
+                    gemini_type = _TYPE_MAP.get(raw_type, "STRING")
+                    prop: dict = {
+                        "type": gemini_type,
+                        "description": param_info.get("description", ""),
+                    }
+                    if "enum" in param_info:
+                        prop["enum"] = param_info["enum"]
+                    properties[param_name] = prop
+                    if param_info.get("required", False):
+                        required.append(param_name)
+                else:
+                    properties[param_name] = {"type": "STRING", "description": str(param_info)}
+                    required.append(param_name)
+
+            decl: dict = {
+                "name": spec.name,
+                "description": (spec.description or "")[:1024],
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": properties,
+                },
+            }
+            if required:
+                decl["parameters"]["required"] = required
+
+            declarations.append(decl)
+
+        if not declarations:
+            return []
+        return [{"functionDeclarations": declarations}]
+
     # ---- plugin loading ----
 
     @classmethod

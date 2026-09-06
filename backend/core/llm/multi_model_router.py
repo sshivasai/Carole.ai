@@ -29,7 +29,10 @@ import os
 import json
 import asyncio
 import logging
+import random
 import httpx
+from contextlib import aclosing
+from urllib.parse import urlparse
 from typing import AsyncGenerator, List, Dict, Optional, Any
 from core.llm.config_manager import load_config, get_key
 
@@ -71,6 +74,23 @@ _URL_PROVIDER_MAP = {
     "generativelanguage.googleapis.com": ("google", "GOOGLE_API_KEY"),
     "api.anthropic.com":         ("anthropic",  "ANTHROPIC_API_KEY"),
 }
+
+
+def _provider_from_url(url: str) -> tuple[str, str]:
+    hostname = (urlparse(url).hostname or "").lower()
+    return _URL_PROVIDER_MAP.get(hostname, ("unknown", ""))
+
+
+def _anthropic_thinking_budget(effort: Optional[str], max_tokens: int) -> Optional[int]:
+    budgets = {"low": 1024, "medium": 4096, "high": 8192}
+    if not effort or effort == "none":
+        return None
+    if effort not in budgets:
+        raise ValueError("reasoning_effort must be none, low, medium, or high")
+    if max_tokens <= 1024:
+        raise ValueError("Anthropic extended thinking requires max_tokens > 1024")
+    # Do not silently increase the caller's output/context budget.
+    return min(budgets[effort], max_tokens - 1)
 
 
 class LLMProviderError(Exception):
@@ -189,6 +209,8 @@ def clamp_context_for_model(
     If input tokens alone exceed or approach the limit, truncates/compacts
     older messages and system prompt sections, and scales down max_tokens.
     """
+    if requested_max_tokens < 1:
+        raise ValueError("requested_max_tokens must be positive")
     ctx_limit = get_model_context_window(model)
 
     def _msg_chars(msg_list):
@@ -219,19 +241,34 @@ def clamp_context_for_model(
         current_input_chars = len(system_prompt) + _msg_chars(trimmed_messages)
         current_input_tokens = current_input_chars // 4
 
-    # 2. If system_prompt alone is still too large for this model's budget
+    # 2. Trim the system prompt, including the truncation marker in the budget.
     trimmed_system_prompt = system_prompt
     if current_input_tokens > target_input_token_limit:
         msg_chars = _msg_chars(trimmed_messages)
-        max_sys_chars = max(2000, (target_input_token_limit * 4) - msg_chars)
+        max_sys_chars = max(0, target_input_token_limit * 4 - msg_chars)
         if len(trimmed_system_prompt) > max_sys_chars:
-            trimmed_system_prompt = trimmed_system_prompt[:max_sys_chars] + "\n\n[System prompt truncated to fit model context limit]"
+            marker = "\n\n[System prompt truncated to fit model context limit]"
+            if max_sys_chars >= len(marker):
+                trimmed_system_prompt = (
+                    trimmed_system_prompt[:max_sys_chars - len(marker)] + marker
+                )
+            else:
+                trimmed_system_prompt = trimmed_system_prompt[:max_sys_chars]
             current_input_chars = len(trimmed_system_prompt) + msg_chars
-            current_input_tokens = current_input_chars // 4
+            current_input_tokens = (current_input_chars + 3) // 4
 
-    # 3. Calculate safe max_tokens
+    # A single oversized message cannot be made safe by trimming the system prompt.
+    if current_input_tokens > target_input_token_limit:
+        raise ValueError(
+            f"Input exceeds the estimated context budget for {model!r}; "
+            "split or compact the remaining message before retrying."
+        )
+
+    # This is a text-length estimate, not a tokenizer/multimodal guarantee.
     available_tokens = ctx_limit - current_input_tokens - 50
-    safe_max_tokens = max(128, min(requested_max_tokens, available_tokens))
+    if available_tokens < 1:
+        raise ValueError(f"No output-token budget remains for {model!r}")
+    safe_max_tokens = min(requested_max_tokens, available_tokens)
 
     return trimmed_system_prompt, trimmed_messages, safe_max_tokens
 
@@ -353,32 +390,35 @@ class MultiModelRouter:
             except Exception as _be:
                 logger.debug("Budget check skipped due to error: %s", _be)
 
-        error_chunk: Optional[str] = None
         primary_yielded_content = False
 
-        async for chunk in self.generate_stream(
+        primary = self.generate_stream(
             model, system_prompt, messages, temperature, max_tokens,
             project_id, team_id, agent_id, agent_name,
             reasoning_effort=reasoning_effort,
-        ):
-            is_error = chunk.startswith("[Router Error") or chunk.startswith("[API Error") or chunk.startswith("[Gemini API Error")
-            if is_error and not primary_yielded_content:
-                error_chunk = chunk
-                break
-            primary_yielded_content = True
-            yield chunk
-
-        if error_chunk is not None:
-            if fallback_model and fallback_model.strip() and fallback_model != model:
-                yield f"\n\n⚠️ Primary model `{model}` failed ({error_chunk[:80]}…). Falling back to `{fallback_model}`…\n\n"
-                async for chunk in self.generate_stream(
-                    fallback_model, system_prompt, messages, temperature, max_tokens,
-                    project_id, team_id, agent_id, agent_name,
-                    reasoning_effort=reasoning_effort,
-                ):
+        )
+        try:
+            async with aclosing(primary):
+                async for chunk in primary:
+                    if chunk:
+                        primary_yielded_content = True
                     yield chunk
-            else:
-                yield error_chunk
+            return
+        except LLMProviderError:
+            fallback = (fallback_model or "").strip()
+            if primary_yielded_content or not fallback or fallback == model:
+                raise
+            logger.warning("Primary model %s failed; falling back to %s", model, fallback)
+
+        # Keep diagnostics out of generated model content.
+        secondary = self.generate_stream(
+            fallback, system_prompt, messages, temperature, max_tokens,
+            project_id, team_id, agent_id, agent_name,
+            reasoning_effort=reasoning_effort,
+        )
+        async with aclosing(secondary):
+            async for chunk in secondary:
+                yield chunk
 
 
     async def generate_stream(
@@ -760,16 +800,13 @@ class MultiModelRouter:
             "stream": True,
         }
 
-        if reasoning_effort and reasoning_effort in _ANTHROPIC_BUDGETS:
-            # Extended thinking — temperature must be 1 (API requirement)
+        thinking_budget = _anthropic_thinking_budget(reasoning_effort, max_tokens)
+        if thinking_budget is not None:
             payload["thinking"] = {
                 "type": "enabled",
-                "budget_tokens": _ANTHROPIC_BUDGETS[reasoning_effort],
+                "budget_tokens": thinking_budget,
             }
-            payload["temperature"] = 1  # Anthropic requires temp=1 when thinking is on
-            # Ensure budget < max_tokens (API requirement)
-            if _ANTHROPIC_BUDGETS[reasoning_effort] >= max_tokens:
-                payload["max_tokens"] = _ANTHROPIC_BUDGETS[reasoning_effort] + 2048
+            payload["temperature"] = 1
         else:
             payload["temperature"] = temp
 
@@ -838,66 +875,228 @@ class MultiModelRouter:
     # Shared SSE streaming with retry
     # ================================================================
 
+    @staticmethod
+    async def _iter_sse_payloads(response: httpx.Response) -> AsyncGenerator[str, None]:
+        """Parse complete SSE events, including multiline data fields."""
+        data_lines: list[str] = []
+        event_chars = 0
+        max_event_chars = 4 * 1024 * 1024
+
+        async for line in response.aiter_lines():
+            if line == "":
+                if data_lines:
+                    yield "\n".join(data_lines)
+                data_lines = []
+                event_chars = 0
+                continue
+
+            if line.startswith(":"):
+                continue
+
+            field, separator, value = line.partition(":")
+            if field != "data":
+                continue
+
+            if separator and value.startswith(" "):
+                value = value[1:]
+
+            event_chars += len(value)
+            if event_chars > max_event_chars:
+                raise ValueError("SSE event exceeded the maximum supported size")
+            data_lines.append(value)
+
+        # Do not dispatch an incomplete final event. The caller verifies that
+        # the stream received its provider-specific terminal event.
+
+    @staticmethod
+    def _sse_error(
+        data: dict,
+        provider: str,
+        model: str,
+    ) -> Optional[LLMProviderError]:
+        error = data.get("error")
+        if error is None and data.get("type") != "error":
+            return None
+
+        if not isinstance(error, dict):
+            return LLMProviderError(ERROR_PROVIDER_DOWN, provider, model)
+
+        code = error.get("code")
+        if isinstance(code, str) and code.isdigit():
+            code = int(code)
+
+        if isinstance(code, int) and 400 <= code <= 599:
+            return LLMProviderError.classify_http_error(
+                code, json.dumps(error), provider, model
+            )
+
+        error_type = str(error.get("type") or code or "").lower()
+        classification = {
+            "authentication_error": ERROR_INVALID_KEY,
+            "invalid_api_key": ERROR_INVALID_KEY,
+            "permission_error": ERROR_INVALID_KEY,
+            "rate_limit_error": ERROR_RATE_LIMITED,
+            "rate_limit_exceeded": ERROR_RATE_LIMITED,
+            "insufficient_quota": ERROR_INSUFFICIENT,
+            "not_found_error": ERROR_MODEL_NOT_FOUND,
+            "model_not_found": ERROR_MODEL_NOT_FOUND,
+            "overloaded_error": ERROR_PROVIDER_DOWN,
+            "api_error": ERROR_PROVIDER_DOWN,
+        }.get(error_type, ERROR_PROVIDER_DOWN)
+
+        return LLMProviderError(classification, provider, model)
+
     async def _stream_with_retry(
-        self, url: str, headers: dict, payload: dict, parse_format: str,
-        max_retries: int = 3
+        self,
+        url: str,
+        headers: dict,
+        payload: dict,
+        parse_format: str,
+        max_retries: int = 3,
     ) -> AsyncGenerator[str, None]:
-        """
-        Shared SSE stream parser with retry/backoff.
-        parse_format: 'anthropic' or 'openai'
-        """
+        stream = self._stream_with_retry_rich(
+            url, headers, payload, parse_format, max_retries
+        )
+        async with aclosing(stream):
+            async for chunk in stream:
+                if chunk["content"]:
+                    yield chunk["content"]
+
+    async def _stream_with_retry_rich(
+        self,
+        url: str,
+        headers: dict,
+        payload: dict,
+        parse_format: str,
+        max_retries: int = 3,
+    ) -> AsyncGenerator[dict[str, str], None]:
+        """Retry transient failures only before any output has been emitted."""
+        if max_retries < 1:
+            raise ValueError("max_retries must be at least 1")
+
+        provider, env_key_name = _provider_from_url(url)
+        model = str(payload.get("model", ""))
+        emitted = False
+
+        normalized_headers = {k.lower(): v for k, v in headers.items()}
+        if env_key_name:
+            auth_header = "x-api-key" if provider == "anthropic" else "authorization"
+            if not normalized_headers.get(auth_header):
+                raise LLMProviderError(
+                    ERROR_MISSING_KEY,
+                    provider,
+                    model,
+                    env_key_name=env_key_name,
+                )
+
         for attempt in range(max_retries):
+            retry_after: Optional[float] = None
+
             try:
-                async with self._http_client.stream("POST", url, headers=headers, json=payload) as response:
-                    if response.status_code == 429:
-                        # Rate limited — backoff and retry
-                        wait = (2 ** attempt) * 2
-                        logger.warning(
-                            "Rate limited (429). Retrying in %ds... (attempt %d/%d)", wait, attempt + 1, max_retries
-                        )
-                        await asyncio.sleep(wait)
-                        continue
-
-                    if response.status_code >= 500:
-                        wait = (2 ** attempt) * 1
-                        logger.warning(
-                            "Server error (%d). Retrying in %ds...", response.status_code, wait
-                        )
-                        await asyncio.sleep(wait)
-                        continue
-
+                async with self._http_client.stream(
+                    "POST", url, headers=headers, json=payload
+                ) as response:
                     if response.status_code != 200:
-                        err_body = await response.aread()
-                        raise LLMProviderError.classify_http_error(response.status_code, err_body.decode('utf-8'), parse_format)
+                        body = (await response.aread()).decode("utf-8", errors="replace")
 
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
+                        raw_retry_after = response.headers.get("Retry-After")
+                        if raw_retry_after:
+                            try:
+                                retry_after = max(
+                                    0.0, min(float(raw_retry_after), 120.0)
+                                )
+                            except ValueError:
+                                pass
+
+                        raise LLMProviderError.classify_http_error(
+                            response.status_code, body, provider, model
+                        )
+
+                    terminated = False
+                    async for raw in self._iter_sse_payloads(response):
+                        if raw.strip() == "[DONE]":
+                            terminated = True
                             break
-                        try:
-                            data = json.loads(data_str)
-                            content, _ = self._extract_text_from_sse(data, parse_format)
-                            if content:
-                                yield content
-                        except json.JSONDecodeError:
+                        if not raw.strip():
                             continue
-                    return  # Success — don't retry
 
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-                wait = (2 ** attempt) * 1
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        "Connection error: %s. Retrying in %ds... (attempt %d/%d)", e, wait, attempt + 1, max_retries
+                        data = json.loads(raw)
+                        if not isinstance(data, dict):
+                            raise ValueError("Expected an SSE JSON object")
+
+                        error = self._sse_error(data, provider, model)
+                        if error is not None:
+                            raise error
+
+                        if (
+                            parse_format == "anthropic"
+                            and data.get("type") == "message_stop"
+                        ):
+                            terminated = True
+                            break
+
+                        content, reasoning = self._extract_text_from_sse(
+                            data, parse_format
+                        )
+                        if content or reasoning:
+                            emitted = True
+                            yield {"content": content, "reasoning": reasoning}
+
+                    if not terminated:
+                        raise LLMProviderError(
+                            ERROR_PROVIDER_DOWN,
+                            provider,
+                            model,
+                            message="Provider stream ended without a completion marker.",
+                        )
+                    return
+
+            except LLMProviderError as exc:
+                retryable = (
+                    exc.error_type == ERROR_RATE_LIMITED
+                    or (
+                        exc.error_type == ERROR_PROVIDER_DOWN
+                        and (
+                            exc.status_code is None
+                            or exc.status_code >= 500
+                        )
                     )
-                    await asyncio.sleep(wait)
-                else:
-                    raise LLMProviderError(ERROR_PROVIDER_DOWN, parse_format, message=f"Connection Error after {max_retries} retries: {str(e)}")
-            except LLMProviderError:
-                raise
-            except Exception as e:
-                raise LLMProviderError(ERROR_PROVIDER_DOWN, parse_format, message=f"Router Exception: {str(e)}")
+                )
+                if emitted or not retryable or attempt == max_retries - 1:
+                    raise
+
+            except httpx.TransportError as exc:
+                if emitted or attempt == max_retries - 1:
+                    raise LLMProviderError(
+                        ERROR_PROVIDER_DOWN,
+                        provider,
+                        model,
+                        message=f"Provider connection failed ({type(exc).__name__}).",
+                    ) from exc
+
+            except (ValueError, TypeError, KeyError) as exc:
+                # Malformed protocol data is not a successful completion.
+                raise LLMProviderError(
+                    ERROR_PROVIDER_DOWN,
+                    provider,
+                    model,
+                    message="Provider returned an invalid streaming response.",
+                ) from exc
+
+            # The response context is closed before sleeping.
+            delay = (
+                retry_after
+                if retry_after is not None
+                else min(2 ** attempt, 30) + random.uniform(0, 0.5)
+            )
+            logger.warning(
+                "%s request failed before output; retrying in %.2fs (%d/%d)",
+                provider,
+                delay,
+                attempt + 1,
+                max_retries,
+            )
+            await asyncio.sleep(delay)
 
 
     @staticmethod
@@ -924,8 +1123,636 @@ class MultiModelRouter:
         return content, reasoning
 
     # ================================================================
-    # Embeddings (with Gemini fallback)
+    # Native Tool Calling (all providers)
     # ================================================================
+
+    async def generate_with_tools(
+        self,
+        model: str,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        *,
+        temperature: float = 0.4,
+        max_tokens: int = 8192,
+        tool_choice: str = "auto",
+        team_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        project_id: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        fallback_model: Optional[str] = None,
+    ):
+        """
+        Native tool-calling stream — unified across all providers.
+
+        Yields structured event dicts (not raw text):
+          {"type": "text_delta", "delta": str}       — streamed text chunk
+          {"type": "reasoning_delta", "delta": str}  — streamed thinking/reasoning chunk
+          {"type": "tool_use", "id": str, "name": str, "input": dict}  — complete tool call
+          {"type": "message_stop", "stop_reason": str} — end of response with finish reason
+
+        Supports:
+          - Anthropic (claude-*)            → true streaming SSE tool calling
+          - OpenAI (gpt-*, o*) / OpenRouter → streaming function call chunks
+          - Gemini (gemini-*)               → non-streaming generateContent
+          - Ollama / Nvidia / others        → fallback to text stream (no tools)
+        """
+        response_text = ""
+        provider = "unknown"
+        emitted_event = False
+
+        try:
+            if model.startswith("claude"):
+                if self.anthropic_key:
+                    provider = "anthropic"
+                    async for event in self._anthropic_tool_stream(
+                        model, system_prompt, messages, tools,
+                        temperature, max_tokens, tool_choice, reasoning_effort,
+                    ):
+                        if event["type"] == "text_delta":
+                            response_text += event["delta"]
+                        emitted_event = True
+                        yield event
+                elif self.openrouter_key:
+                    # Fallback: route via OpenRouter (OpenAI-compat function calling)
+                    provider = "openrouter"
+                    target = f"anthropic/{model}" if "/" not in model else model
+                    target = target.replace("claude-3-5-sonnet", "claude-3.5-sonnet").replace("-20241022", "")
+                    async for event in self._openai_tool_stream(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        self.openrouter_key, target,
+                        system_prompt, messages, tools,
+                        temperature, max_tokens, tool_choice,
+                    ):
+                        if event["type"] == "text_delta":
+                            response_text += event["delta"]
+                        emitted_event = True
+                        yield event
+                else:
+                    provider = "anthropic"
+                    async for event in self._anthropic_tool_stream(
+                        model, system_prompt, messages, tools,
+                        temperature, max_tokens, tool_choice, reasoning_effort,
+                    ):
+                        if event["type"] == "text_delta":
+                            response_text += event["delta"]
+                        emitted_event = True
+                        yield event
+
+            elif model.startswith("gemini"):
+                provider = "google"
+                async for event in self._gemini_tool_stream(
+                    model, system_prompt, messages, tools, temperature, max_tokens,
+                ):
+                    if event["type"] == "text_delta":
+                        response_text += event["delta"]
+                    yield event
+
+            elif model.startswith("openrouter/"):
+                provider = "openrouter"
+                target = (
+                    model
+                    if model in ("openrouter/free", "openrouter/auto")
+                    else model[len("openrouter/"):]
+                )
+                async for event in self._openai_tool_stream(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    self.openrouter_key, target,
+                    system_prompt, messages, tools,
+                    temperature, max_tokens, tool_choice,
+                ):
+                    if event["type"] == "text_delta":
+                        response_text += event["delta"]
+                    yield event
+
+            elif model.startswith("ollama/") or model.startswith("nvidia/"):
+                # These providers don't support structured tool calling via this client.
+                # Fall back to text stream; the old intent-engine path won't run because
+                # we're in the native loop, so agent will just get plain text with no tools.
+                provider = "ollama" if model.startswith("ollama/") else "nvidia"
+                logger.warning(
+                    "[generate_with_tools] Provider '%s' does not support native tool calling. "
+                    "Falling back to text-only stream.", provider
+                )
+                async for chunk in self.generate_stream(
+                    model, system_prompt, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                ):
+                    response_text += chunk
+                    emitted_event = True
+                    yield {"type": "text_delta", "delta": chunk}
+                emitted_event = True
+                yield {"type": "message_stop", "stop_reason": "stop"}
+
+            else:
+                # GPT-*, o-series, or any other OpenAI-compat model
+                if self.openai_key:
+                    provider = "openai"
+                    async for event in self._openai_tool_stream(
+                        "https://api.openai.com/v1/chat/completions",
+                        self.openai_key, model,
+                        system_prompt, messages, tools,
+                        temperature, max_tokens, tool_choice,
+                    ):
+                        if event["type"] == "text_delta":
+                            response_text += event["delta"]
+                        emitted_event = True
+                        yield event
+                elif self.openrouter_key:
+                    provider = "openrouter"
+                    target = f"openai/{model}" if "/" not in model else model
+                    async for event in self._openai_tool_stream(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        self.openrouter_key, target,
+                        system_prompt, messages, tools,
+                        temperature, max_tokens, tool_choice,
+                    ):
+                        if event["type"] == "text_delta":
+                            response_text += event["delta"]
+                        emitted_event = True
+                        yield event
+                else:
+                    provider = "openai"
+                    async for event in self._openai_tool_stream(
+                        "https://api.openai.com/v1/chat/completions",
+                        self.openai_key, model,
+                        system_prompt, messages, tools,
+                        temperature, max_tokens, tool_choice,
+                    ):
+                        if event["type"] == "text_delta":
+                            response_text += event["delta"]
+                        emitted_event = True
+                        yield event
+
+        except LLMProviderError as e:
+            fallback_model = (fallback_model or "").strip()
+            if not emitted_event and fallback_model and fallback_model != model:
+                logger.warning(
+                    "[generate_with_tools] Primary model '%s' failed: %s. Falling back to '%s'.",
+                    model, e, fallback_model
+                )
+                async for event in self.generate_with_tools(
+                    model=fallback_model,
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    tools=tools,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tool_choice=tool_choice,
+                    team_id=team_id,
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    project_id=project_id,
+                    reasoning_effort=reasoning_effort,
+                    fallback_model=None,
+                ):
+                    yield event
+                return
+            raise
+        finally:
+            if project_id or team_id or agent_id:
+                asyncio.create_task(self._log_usage(
+                    provider=provider, model=model,
+                    system_prompt=system_prompt, messages=messages,
+                    response_text=response_text,
+                    project_id=project_id, team_id=team_id,
+                    agent_id=agent_id, agent_name=agent_name,
+                ))
+
+    async def _anthropic_tool_stream(
+        self,
+        model: str,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+        tool_choice: str,
+        reasoning_effort: Optional[str] = None,
+    ):
+        """
+        Anthropic SSE tool-calling stream.
+        """
+        if not self.anthropic_key:
+            raise LLMProviderError(ERROR_MISSING_KEY, "anthropic", model, env_key_name="ANTHROPIC_API_KEY")
+
+        headers = {
+            "x-api-key": self.anthropic_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+
+        formatted_messages = self._format_messages_for_provider(messages, "anthropic")
+
+        # Prompt caching for large system prompts
+        if len(system_prompt) > 1024:
+            system_payload: Any = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+        else:
+            system_payload = system_prompt
+
+        payload: dict = {
+            "model": model,
+            "system": system_payload,
+            "messages": formatted_messages,
+            "tools": tools,
+            "tool_choice": {"type": tool_choice},
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+
+        thinking_budget = _anthropic_thinking_budget(reasoning_effort, max_tokens)
+        if thinking_budget is not None:
+            payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": thinking_budget,
+            }
+            payload["temperature"] = 1
+        else:
+            payload["temperature"] = temperature
+
+        for attempt in range(3):
+            received_data = False
+            stopped = False
+            current_tool_id = None
+            current_tool_name = None
+            current_json_chunks = []
+            try:
+                async with self._http_client.stream(
+                    "POST", "https://api.anthropic.com/v1/messages",
+                    headers=headers, json=payload,
+                ) as response:
+                    if response.status_code != 200:
+                        err = await response.aread()
+                        error = LLMProviderError.classify_http_error(
+                            response.status_code,
+                            err.decode("utf-8", errors="replace"),
+                            "anthropic",
+                            model,
+                        )
+                        if attempt < 2 and (
+                            error.error_type == ERROR_RATE_LIMITED
+                            or response.status_code >= 500
+                        ):
+                            await response.aclose()
+                            await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
+                            continue
+                        raise error
+
+                    stop_reason: Optional[str] = None
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if not data_str or data_str == "[DONE]":
+                            continue
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        received_data = True
+                        error = self._sse_error(data, "anthropic", model)
+                        if error is not None:
+                            raise error
+
+                        event_type = data.get("type", "")
+
+                        if event_type == "content_block_start":
+                            block = data.get("content_block", {})
+                            if block.get("type") == "tool_use":
+                                current_tool_id = block.get("id")
+                                current_tool_name = block.get("name")
+                                current_json_chunks = []
+
+                        elif event_type == "content_block_delta":
+                            delta = data.get("delta", {})
+                            dtype = delta.get("type", "")
+                            if dtype == "text_delta":
+                                text = delta.get("text", "")
+                                if text:
+                                    yield {"type": "text_delta", "delta": text}
+                            elif dtype == "input_json_delta":
+                                current_json_chunks.append(delta.get("partial_json", ""))
+                            elif dtype == "thinking_delta":
+                                thinking = delta.get("thinking", "")
+                                if thinking:
+                                    yield {"type": "reasoning_delta", "delta": thinking}
+
+                        elif event_type == "content_block_stop":
+                            if current_tool_id and current_tool_name:
+                                json_str = "".join(current_json_chunks)
+                                try:
+                                    tool_input = json.loads(json_str) if json_str.strip() else {}
+                                except json.JSONDecodeError as exc:
+                                    raise LLMProviderError(
+                                        ERROR_PROVIDER_DOWN, "anthropic", model,
+                                        message="Provider returned invalid tool arguments.",
+                                    ) from exc
+                                if not isinstance(tool_input, dict):
+                                    raise LLMProviderError(
+                                        ERROR_PROVIDER_DOWN, "anthropic", model,
+                                        message="Tool arguments must be a JSON object.",
+                                    )
+                                yield {
+                                    "type": "tool_use",
+                                    "id": current_tool_id,
+                                    "name": current_tool_name,
+                                    "input": tool_input,
+                                }
+                                current_tool_id = None
+                                current_tool_name = None
+                                current_json_chunks = []
+
+                        elif event_type == "message_delta":
+                            stop_reason = data.get("delta", {}).get("stop_reason")
+
+                        elif event_type == "message_stop":
+                            stopped = True
+                            yield {"type": "message_stop", "stop_reason": stop_reason or "end_turn"}
+                            break
+
+                if not stopped:
+                    raise LLMProviderError(
+                        ERROR_PROVIDER_DOWN, "anthropic", model,
+                        message="Tool stream ended without message_stop.",
+                    )
+                return  # Success
+
+            except httpx.TransportError as e:
+                if not received_data and attempt < 2:
+                    logger.warning("Anthropic tool stream connection error: %s. Retrying...", e)
+                    await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
+                else:
+                    raise LLMProviderError(ERROR_PROVIDER_DOWN, "anthropic", model, message=f"Connection Error: {e}")
+            except LLMProviderError:
+                raise
+
+        raise LLMProviderError(ERROR_PROVIDER_DOWN, "anthropic", model)
+
+    async def _openai_tool_stream(
+        self,
+        url: str,
+        key: Optional[str],
+        model: str,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+        tool_choice: str,
+    ):
+        """
+        OpenAI-compatible streaming function calling.
+        """
+        provider, _ = _provider_from_url(url)
+        if "api.openai.com" in url and not key:
+            raise LLMProviderError(ERROR_MISSING_KEY, "openai", model, env_key_name="OPENAI_API_KEY")
+        if "openrouter.ai" in url and not key:
+            raise LLMProviderError(ERROR_MISSING_KEY, "openrouter", model, env_key_name="OPENROUTER_API_KEY")
+
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+
+        formatted = self._format_messages_for_provider(messages, "openai")
+        final_messages = [{"role": "system", "content": system_prompt}] + formatted
+
+        # Map tool_choice string to OpenAI format
+        if tool_choice == "auto":
+            tc_param: Any = "auto"
+        elif tool_choice == "none":
+            tc_param = "none"
+        elif tool_choice in ("required", "any"):
+            tc_param = "required"
+        else:
+            raise ValueError(f"Unsupported tool_choice: {tool_choice!r}")
+
+        payload: dict = {
+            "model": model,
+            "messages": final_messages,
+            "tools": tools,
+            "tool_choice": tc_param,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+
+        for attempt in range(3):
+            tool_calls_acc = {}
+            finish_reason = None
+            received_data = False
+            stopped = False
+            try:
+                async with self._http_client.stream("POST", url, headers=headers, json=payload) as response:
+                    if response.status_code != 200:
+                        err = await response.aread()
+                        error = LLMProviderError.classify_http_error(
+                            response.status_code,
+                            err.decode("utf-8", errors="replace"),
+                            provider,
+                            model,
+                        )
+                        if attempt < 2 and (
+                            error.error_type == ERROR_RATE_LIMITED
+                            or response.status_code >= 500
+                        ):
+                            await response.aclose()
+                            await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
+                            continue
+                        raise error
+
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            stopped = True
+                            break
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        received_data = True
+                        error = self._sse_error(data, provider, model)
+                        if error is not None:
+                            raise error
+
+                        choices = data.get("choices", [])
+                        if not choices:
+                            continue
+
+                        choice = choices[0]
+                        delta = choice.get("delta", {})
+                        fr = choice.get("finish_reason")
+                        if fr:
+                            finish_reason = fr
+
+                        # Stream reasoning content if present (o1/o3/reasoning models)
+                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                        if reasoning:
+                            yield {"type": "reasoning_delta", "delta": reasoning}
+
+                        # Stream text content
+                        text = delta.get("content") or ""
+                        if text:
+                            yield {"type": "text_delta", "delta": text}
+
+                        # Accumulate tool call chunks
+                        for tc in delta.get("tool_calls", []):
+                            idx = tc.get("index", 0)
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tc.get("id"):
+                                tool_calls_acc[idx]["id"] = tc["id"]
+                            fn = tc.get("function", {})
+                            if fn.get("name"):
+                                tool_calls_acc[idx]["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                tool_calls_acc[idx]["arguments"] += fn["arguments"]
+
+                if not stopped or finish_reason is None:
+                    raise LLMProviderError(
+                        ERROR_PROVIDER_DOWN, provider, model,
+                        message="Tool stream ended without a completion marker.",
+                    )
+
+                # Never execute truncated or otherwise unfinished tool calls.
+                if tool_calls_acc and finish_reason != "tool_calls":
+                    raise LLMProviderError(
+                        ERROR_PROVIDER_DOWN, provider, model,
+                        message=f"Tool generation did not complete: {finish_reason}.",
+                    )
+
+                # Validate every call before exposing any for execution.
+                completed_calls = []
+                for idx in sorted(tool_calls_acc):
+                    tc = tool_calls_acc[idx]
+                    arg_str = tc.get("arguments", "")
+                    try:
+                        tool_input = json.loads(arg_str) if arg_str.strip() else {}
+                    except json.JSONDecodeError as exc:
+                        raise LLMProviderError(
+                            ERROR_PROVIDER_DOWN, provider, model,
+                            message="Provider returned invalid tool arguments.",
+                        ) from exc
+                    if not isinstance(tool_input, dict) or not tc.get("name") or not tc.get("id"):
+                        raise LLMProviderError(
+                            ERROR_PROVIDER_DOWN, provider, model,
+                            message="Provider returned an invalid tool call.",
+                        )
+                    completed_calls.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": tool_input,
+                    })
+
+                for event in completed_calls:
+                    yield event
+
+                yield {"type": "message_stop", "stop_reason": finish_reason or "stop"}
+                return  # Success
+
+            except httpx.TransportError as e:
+                if not received_data and attempt < 2:
+                    logger.warning("OpenAI tool stream connection error: %s. Retrying...", e)
+                    await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
+                else:
+                    raise LLMProviderError(
+                        ERROR_PROVIDER_DOWN, provider, model,
+                        message=f"Provider connection failed ({type(e).__name__}).",
+                    ) from e
+            except LLMProviderError:
+                raise
+            except Exception as e:
+                raise LLMProviderError(
+                    ERROR_PROVIDER_DOWN, provider, model,
+                    message="Invalid tool-stream response.",
+                ) from e
+
+        raise LLMProviderError(ERROR_PROVIDER_DOWN, provider, model)
+
+    async def _gemini_tool_stream(
+        self,
+        model: str,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+    ):
+        """
+        Gemini native function calling via generateContent (non-streaming).
+
+        Gemini's function calling response arrives in a single JSON response with
+        a ``functionCall`` part when the model wants to call a tool, or a ``text``
+        part when it's responding with natural language.
+        """
+        if not self.gemini_key:
+            raise LLMProviderError(ERROR_MISSING_KEY, "google", model, env_key_name="GOOGLE_API_KEY")
+
+        contents = self._format_messages_for_provider(messages, "google")
+
+        payload: dict = {
+            "contents": contents,
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "tools": tools,  # [{"functionDeclarations": [...]}]
+            "tool_config": {"function_calling_config": {"mode": "AUTO"}},
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+            },
+        }
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+            f":generateContent?key={self.gemini_key}"
+        )
+
+        try:
+            response = await self._http_client.post(url, json=payload)
+            if response.status_code != 200:
+                raise LLMProviderError.classify_http_error(
+                    response.status_code, response.text, "google", model
+                )
+
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                yield {"type": "message_stop", "stop_reason": "stop"}
+                return
+
+            finish_reason = candidates[0].get("finishReason", "STOP")
+            parts = candidates[0].get("content", {}).get("parts", [])
+            for part in parts:
+                if "text" in part and part["text"]:
+                    yield {"type": "text_delta", "delta": part["text"]}
+                elif "functionCall" in part:
+                    fc = part["functionCall"]
+                    # Gemini sends args as a dict already (not a JSON string)
+                    args = fc.get("args", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {"_raw": args}
+                    # Generate a unique ID for this function call
+                    import uuid as _uuid
+                    yield {
+                        "type": "tool_use",
+                        "id": f"gemini_{_uuid.uuid4().hex[:12]}",
+                        "name": fc.get("name", ""),
+                        "input": args,
+                    }
+
+            yield {"type": "message_stop", "stop_reason": finish_reason}
+
+        except LLMProviderError:
+            raise
+        except Exception as e:
+            raise LLMProviderError(ERROR_PROVIDER_DOWN, "google", model, message=f"Gemini Tool Call Exception: {e}")
 
     async def generate_stream_with_reasoning(
         self,
@@ -947,14 +1774,31 @@ class MultiModelRouter:
         Reasoning will be non-empty for models that support it
         (DeepSeek R1 via OpenRouter, Claude extended thinking, OpenAI o-series).
         """
-        async for chunk in self._generate_stream_rich(
+        emitted = False
+        primary = self._generate_stream_rich(
             model, system_prompt, messages, temperature, max_tokens,
             project_id, team_id, agent_id, agent_name, reasoning_effort
-        ):
-            yield chunk
+        )
+        try:
+            async with aclosing(primary):
+                async for chunk in primary:
+                    if chunk.get("content") or chunk.get("reasoning"):
+                        emitted = True
+                    yield chunk
+            return
+        except LLMProviderError:
+            fallback = (fallback_model or "").strip()
+            if emitted or not fallback or fallback == model:
+                raise
+            logger.warning("Primary model %s failed; falling back to %s", model, fallback)
 
-        # Fallback on first-chunk error
-        # (handled inside _generate_stream_rich — this outer wrapper is for future use)
+        secondary = self._generate_stream_rich(
+            fallback, system_prompt, messages, temperature, max_tokens,
+            project_id, team_id, agent_id, agent_name, reasoning_effort
+        )
+        async with aclosing(secondary):
+            async for chunk in secondary:
+                yield chunk
 
     async def _generate_stream_rich(
         self,
@@ -973,6 +1817,9 @@ class MultiModelRouter:
         Core rich-stream implementation yielding {content, reasoning} dicts.
         Re-uses existing per-provider SSE parsing with the updated extractor.
         """
+        system_prompt, messages, max_tokens = clamp_context_for_model(
+            model, system_prompt, messages, max_tokens
+        )
         _effort = reasoning_effort if reasoning_effort and reasoning_effort != "none" else None
         response_text = ""
         provider = "unknown"
@@ -1007,11 +1854,13 @@ class MultiModelRouter:
                 "model": mdl, "system": system_prompt, "messages": formatted_msgs,
                 "max_tokens": max_tokens, "stream": True
             }
-            if _effort and _effort in _BUDGETS:
-                payload["thinking"] = {"type": "enabled", "budget_tokens": _BUDGETS[_effort]}
+            thinking_budget = _anthropic_thinking_budget(_effort, max_tokens)
+            if thinking_budget is not None:
+                payload["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": thinking_budget,
+                }
                 payload["temperature"] = 1
-                if _BUDGETS[_effort] >= max_tokens:
-                    payload["max_tokens"] = _BUDGETS[_effort] + 2048
             else:
                 payload["temperature"] = temperature
             async for chunk in self._stream_with_retry_rich("https://api.anthropic.com/v1/messages", headers, payload, "anthropic"):
@@ -1078,55 +1927,6 @@ class MultiModelRouter:
                     project_id=project_id, team_id=team_id,
                     agent_id=agent_id, agent_name=agent_name
                 ))
-
-    async def _stream_with_retry_rich(
-        self, url: str, headers: dict, payload: dict, parse_format: str,
-        max_retries: int = 3
-    ):
-        """
-        Like _stream_with_retry but yields {content, reasoning} dicts.
-        Uses the shared persistent HTTP client for connection reuse.
-        """
-        for attempt in range(max_retries):
-            try:
-                async with self._http_client.stream("POST", url, headers=headers, json=payload) as response:
-                    if response.status_code == 429:
-                        wait = (2 ** attempt) * 2
-                        logger.warning("Rate limited (429) in rich stream. Retrying in %ds...", wait)
-                        await asyncio.sleep(wait)
-                        continue
-                    if response.status_code >= 500:
-                        wait = 2 ** attempt
-                        logger.warning("Server error (%d) in rich stream. Retrying in %ds...", response.status_code, wait)
-                        await asyncio.sleep(wait)
-                        continue
-                    if response.status_code != 200:
-                        err = await response.aread()
-                        raise LLMProviderError.classify_http_error(response.status_code, err.decode(), parse_format)
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            content, reasoning = self._extract_text_from_sse(data, parse_format)
-                            if content or reasoning:
-                                yield {"content": content, "reasoning": reasoning}
-                        except json.JSONDecodeError:
-                            continue
-                    return
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-                if attempt < max_retries - 1:
-                    logger.warning("Connection error in rich stream: %s. Retrying...", e)
-                    await asyncio.sleep(2 ** attempt)
-                else:
-                    raise LLMProviderError(ERROR_PROVIDER_DOWN, parse_format, message=f"Connection Error: {e}")
-            except LLMProviderError:
-                raise
-            except Exception as e:
-                raise LLMProviderError(ERROR_PROVIDER_DOWN, parse_format, message=f"Stream Exception: {e}")
 
     # ================================================================
     # Embeddings (with Gemini fallback)
@@ -1305,37 +2105,61 @@ class MultiModelRouter:
     # Alias for compatibility with older code paths
     get_embedding = generate_embeddings
 
-    def _format_messages_for_provider(self, messages: List[Dict[str, Any]], provider: str) -> List[Dict[str, Any]]:
-        """Converts the internal message format (with local_path images) into provider-specific payloads.
-        
-        File I/O is done synchronously here because this runs in an async context only during
-        stream setup — not inside a hot loop. For very large images, consider offloading via
-        asyncio.to_thread if needed in the future.
+    def _format_messages_for_provider(
+        self,
+        messages: List[Dict[str, Any]],
+        provider: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Transforms our internal canonical message dicts into provider-specific payloads.
+        Supports multimodal content blocks (text, image, document).
         """
         import base64
         import os
         import logging as _logging
         _log = _logging.getLogger("carole.router.formatter")
-        
+
         formatted = []
         for msg in messages:
-            content = msg["content"]
+            # Already formatted Gemini messages must retain functionCall,
+            # functionResponse, and thoughtSignature fields.
+            if provider == "google" and "parts" in msg:
+                formatted.append(dict(msg))
+                continue
+
+            content = msg.get("content")
+            if content is None:
+                if provider == "openai" and msg.get("tool_calls"):
+                    formatted.append(dict(msg))
+                    continue
+                raise ValueError(
+                    f"Message with role {msg.get('role')!r} has no content"
+                )
+
             if isinstance(content, str):
                 if provider == "google":
-                    role = "user" if msg["role"] == "user" else "model"
+                    roles = {"user": "user", "assistant": "model", "model": "model"}
+                    if msg["role"] not in roles:
+                        raise ValueError(
+                            "Gemini tool results require functionResponse parts"
+                        )
+                    role = roles[msg["role"]]
                     formatted.append({"role": role, "parts": [{"text": content}]})
                 else:
-                    formatted.append({"role": msg["role"], "content": content})
+                    formatted.append(dict(msg))
                 continue
-                
-            # Content is a list (multimodal)
+
+            if not isinstance(content, list):
+                raise ValueError("Message content must be a string or a list")
+
+            # Content is a list (multimodal / structured blocks)
             if provider == "google":
                 role = "user" if msg["role"] == "user" else "model"
                 parts = []
                 for item in content:
-                    if item["type"] == "text":
+                    if item.get("type") == "text":
                         parts.append({"text": item["text"]})
-                    elif item["type"] == "image":
+                    elif item.get("type") == "image":
                         local_path = item.get("local_path")
                         if local_path and os.path.exists(local_path):
                             with open(local_path, "rb") as f:
@@ -1348,7 +2172,7 @@ class MultiModelRouter:
                             })
                         else:
                             _log.warning("Image local_path not found or missing, skipping: %s", local_path)
-                    elif item["type"] == "document":
+                    elif item.get("type") == "document":
                         local_path = item.get("local_path")
                         mime = item.get("mime_type", "application/pdf")
                         if local_path and os.path.exists(local_path):
@@ -1373,13 +2197,19 @@ class MultiModelRouter:
                             _log.warning("Document local_path not found, skipping: %s", local_path)
                 if parts:
                     formatted.append({"role": role, "parts": parts})
-                
+
             elif provider == "anthropic":
                 parts = []
                 for item in content:
-                    if item["type"] == "text":
+                    if item.get("type") in (
+                        "tool_use", "tool_result", "thinking", "redacted_thinking"
+                    ):
+                        parts.append(dict(item))
+                    elif item.get("type") in ("image", "document") and "source" in item:
+                        parts.append(dict(item))
+                    elif item.get("type") == "text":
                         parts.append({"type": "text", "text": item["text"]})
-                    elif item["type"] == "image":
+                    elif item.get("type") == "image":
                         local_path = item.get("local_path")
                         if local_path and os.path.exists(local_path):
                             with open(local_path, "rb") as f:
@@ -1394,7 +2224,7 @@ class MultiModelRouter:
                             })
                         else:
                             _log.warning("Image local_path not found or missing, skipping: %s", local_path)
-                    elif item["type"] == "document":
+                    elif item.get("type") == "document":
                         local_path = item.get("local_path")
                         mime = item.get("mime_type", "application/pdf")
                         if local_path and os.path.exists(local_path):
@@ -1421,14 +2251,16 @@ class MultiModelRouter:
                             _log.warning("Document local_path not found, skipping: %s", local_path)
                 if parts:
                     formatted.append({"role": msg["role"], "content": parts})
-                
+
             else:
                 # OpenAI / OpenRouter format
                 parts = []
                 for item in content:
-                    if item["type"] == "text":
+                    if item.get("type") in ("image_url", "input_audio", "file"):
+                        parts.append(dict(item))
+                    elif item.get("type") == "text":
                         parts.append({"type": "text", "text": item["text"]})
-                    elif item["type"] == "image":
+                    elif item.get("type") == "image":
                         local_path = item.get("local_path")
                         if local_path and os.path.exists(local_path):
                             with open(local_path, "rb") as f:
@@ -1442,7 +2274,7 @@ class MultiModelRouter:
                             })
                         else:
                             _log.warning("Image local_path not found or missing, skipping: %s", local_path)
-                    elif item["type"] == "document":
+                    elif item.get("type") == "document":
                         local_path = item.get("local_path")
                         mime = item.get("mime_type", "application/pdf")
                         if local_path and os.path.exists(local_path):
@@ -1456,8 +2288,8 @@ class MultiModelRouter:
                         else:
                             _log.warning("Document local_path not found, skipping: %s", local_path)
                 if parts:
-                    formatted.append({"role": msg["role"], "content": parts})
-                
+                    formatted.append({**msg, "content": parts})
+
         return formatted
 
 

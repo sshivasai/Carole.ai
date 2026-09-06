@@ -100,6 +100,8 @@ async def init_db(force_recreate: bool = False):
             for query in [
                 "ALTER TABLE messages ADD COLUMN reasoning_text TEXT",
                 "ALTER TABLE file_backups ADD COLUMN backup_file_name VARCHAR(255)",
+                "ALTER TABLE compaction_events ADD COLUMN covered_through_message_id VARCHAR(36)",
+                "ALTER TABLE compaction_events ADD COLUMN covered_through_timestamp DATETIME",
             ]:
                 try:
                     await conn.execute(text(query))

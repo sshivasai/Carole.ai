@@ -980,7 +980,6 @@ async def list_messages(
 
     result = await db.execute(
         query
-        .where((Message.is_intermediate == False) | (Message.attachments.isnot(None)))
         .order_by(Message.created_at.desc(), nulls_last(Message.sequence.desc()))
         .limit(limit)
     )

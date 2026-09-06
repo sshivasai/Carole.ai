@@ -431,5 +431,9 @@ class CompactionEvent(Base):
     # "auto" = token threshold triggered it | "manual" = user invoked /compact command
     triggered_by = Column(String(20), nullable=False, default="auto")
 
+    # Coverage boundary: explicit watermark of the newest message summarized
+    covered_through_message_id = Column(Uuid, nullable=True)
+    covered_through_timestamp = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
