@@ -1,34 +1,22 @@
 """
-# backend/core/tools/browser_tool.py
+Browser tools using page-local, frame-aware DOM-node refs.
 
-Full-featured headless browser automation via Playwright.
-Implements the Snapshot/Ref architecture for maximum
-reliability and LLM token efficiency.
-
-Core design:
-  - browser_snapshot: Renders the live DOM as a compact Accessibility Tree.
-    Every interactive element gets a numbered Ref (e.g. [12]).
-    This is what the agent uses to UNDERSTAND and NAVIGATE the page.
-  - browser_act: Unified action dispatcher. The agent clicks, types, hovers,
-    selects, etc. by referring to Ref IDs from the snapshot.
-  - browser_navigate: Navigate to a URL. Waits for page readiness, detects
-    CAPTCHAs, and polls up to 45s for Browserbase to auto-resolve them.
-  - Legacy tools (extract_text, extract_html, screenshot) are preserved for
-    reading/scraping content after the agent has navigated to its destination.
-  - Dialog handling: alerts, confirms, and prompts are caught automatically
-    and surfaced to the agent instead of hanging the browser.
-
-All screenshots are automatically streamed to the team EventBus so humans
-can watch agents browse in real-time from the frontend.
+Refs are valid only for the last snapshot on the active page.
+A detached node, replaced document, changed active tab, or newer snapshot
+invalidates the old reference instead of silently retargeting it.
 """
 
 import asyncio
 import base64
+import functools
+import inspect
 import json
 import logging
-import os
 import re
-from typing import Optional
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Optional
 
 from core.chat.event_bus import event_bus
 
@@ -36,48 +24,33 @@ logger = logging.getLogger("carole.browser")
 
 MAX_TEXT_CHARS = 100_000
 MAX_HTML_CHARS = 100_000
+MAX_SNAPSHOT_CHARS = 14_000
+MAX_FRAMES = 12
 
-_SNAPSHOT_JS_PATH = os.path.join(os.path.dirname(__file__), "build_dom_tree.js")
-try:
-    with open(_SNAPSHOT_JS_PATH, "r", encoding="utf-8") as _f:
-        _SNAPSHOT_JS = _f.read().rstrip(";\n\r ")
-except Exception as e:
-    logger.error(f"Failed to load build_dom_tree.js: {e}")
-    _SNAPSHOT_JS = "() => { return { map: {}, rootId: null }; }"
+_SNAPSHOT_JS = Path(__file__).with_name("build_dom_tree.js").read_text(
+    encoding="utf-8"
+)
 
-# -- CAPTCHA detection patterns ------------------------------------------------
-CAPTCHA_TITLE_PATTERNS = [
-    re.compile(p, re.IGNORECASE) for p in [
-        r"just a moment",           # Cloudflare
-        r"attention required",      # Cloudflare
-        r"ddos.?protection",        # Generic
-        r"access denied",
-        r"verify you are human",
-        r"unusual traffic",         # Google
-        r"please enable cookies",
-        r"checking your browser",
-    ]
-]
-
-CAPTCHA_URL_PATTERNS = [
-    re.compile(p, re.IGNORECASE) for p in [
-        r"google\.com/sorry",
-        r"challenges\.cloudflare\.com",
-        r"captcha",
-        r"human-verification",
-    ]
-]
+_CAPTCHA_RE = re.compile(
+    r"just a moment|attention required|verify you are human|"
+    r"unusual traffic|checking your browser|human.verification|"
+    r"google\.com/sorry|challenges\.cloudflare\.com",
+    re.IGNORECASE,
+)
 
 
 def _is_captcha_page(url: str, title: str) -> bool:
-    """Returns True if the current page looks like a CAPTCHA/bot-challenge wall."""
-    for p in CAPTCHA_URL_PATTERNS:
-        if p.search(url):
-            return True
-    for p in CAPTCHA_TITLE_PATTERNS:
-        if p.search(title):
-            return True
-    return False
+    return bool(_CAPTCHA_RE.search(f"{url}\n{title}"))
+
+
+def _safe_url(url: str) -> str:
+    from core.llm.config_manager import load_config
+    from core.tools.ssrf_guard import assert_safe_public_url
+
+    cfg = (load_config() or {}).get("browser_automation") or {}
+    return assert_safe_public_url(
+        url, allow_local=cfg.get("allow_local_urls") is True
+    )
 
 
 async def _get_page(agent_id: str):
@@ -85,20 +58,52 @@ async def _get_page(agent_id: str):
     return await get_page(agent_id)
 
 
-async def _publish_screenshot(page, agent_id: str, agent_name: str, team_id: str, label: str = ""):
+async def _publish_screenshot(
+    page,
+    agent_id: str,
+    agent_name: str,
+    team_id: str,
+    label: str = "",
+):
+    if not team_id:
+        return
+
     try:
-        screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
-        b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-        await event_bus.publish(f"team:{team_id}", {
-            "type": "browser_screenshot",
-            "sender_id": agent_id,
-            "sender_name": agent_name,
-            "url": page.url,
-            "label": label,
-            "image_base64": f"data:image/jpeg;base64,{b64}",
-        })
-    except Exception as e:
-        logger.warning("Failed to capture screenshot: %s", e)
+        # Mask common credential/payment fields. Screenshots may still contain
+        # other PII; enforce access control and retention at the EventBus/UI.
+        mask = page.locator(
+            "input[type=password],"
+            "input[autocomplete=one-time-code],"
+            "input[autocomplete=cc-number],"
+            "input[autocomplete=cc-csc]"
+        )
+        shot = await page.screenshot(
+            type="jpeg",
+            quality=60,
+            full_page=False,
+            mask=[mask],
+            timeout=5_000,
+        )
+        await asyncio.wait_for(
+            event_bus.publish(
+                f"team:{team_id}",
+                {
+                    "type": "browser_screenshot",
+                    "sender_id": agent_id,
+                    "sender_name": agent_name,
+                    "url": page.url,
+                    "label": label,
+                    "image_base64": (
+                        "data:image/jpeg;base64,"
+                        + base64.b64encode(shot).decode("ascii")
+                    ),
+                },
+            ),
+            timeout=3,
+        )
+    except Exception:
+        # Screenshot delivery must not make an otherwise successful action fail.
+        logger.debug("Screenshot delivery failed", exc_info=True)
 
 
 async def _wait_for_page_readiness(
@@ -106,1025 +111,817 @@ async def _wait_for_page_readiness(
     agent_id: str,
     agent_name: str,
     team_id: str,
-    captcha_timeout: float = 120.0,
+    captcha_timeout: float = 15.0,
 ) -> str:
-    """
-    Smart page readiness helper. Called after any navigation or major action.
-
-    1. Waits for networkidle / domcontentloaded so JS-heavy SPAs fully render.
-    2. Detects CAPTCHA / bot-challenge walls.
-    3. If a CAPTCHA is found, polls up to `captcha_timeout` seconds to let
-       Browserbase (or another provider) auto-resolve it in the background.
-    4. Returns a status string: "ready", "captcha_resolved", or "captcha_timeout".
-    """
-    # Step 1: Wait for page to settle (best-effort)
     try:
-        await page.wait_for_load_state("domcontentloaded", timeout=15_000)
-    except Exception:
-        pass
-    try:
-        await page.wait_for_load_state("networkidle", timeout=12_000)
+        await page.wait_for_load_state("domcontentloaded", timeout=10_000)
     except Exception:
         pass
 
-    # Step 2: Check for CAPTCHA
-    title = await page.title()
-    url = page.url
-    if not _is_captcha_page(url, title):
-        return "ready"
+    # networkidle is not a readiness guarantee for SPAs and can add seconds
+    # to every action. Let subsequent snapshots observe asynchronous changes.
+    deadline = time.monotonic() + max(0, captcha_timeout)
 
-    logger.info(
-        "🔒 [BrowserTool] CAPTCHA detected on '%s'. "
-        "Polling up to %.0fs for auto-resolution...",
-        url, captcha_timeout,
-    )
-    await _publish_screenshot(page, agent_id, agent_name, team_id, "⏳ CAPTCHA detected — waiting for auto-resolve...")
+    while True:
+        title = await asyncio.wait_for(page.title(), timeout=5)
+        if not _is_captcha_page(page.url, title):
+            return "ready"
 
-    # Step 3: Poll until CAPTCHA resolves or timeout
-    poll_interval = 3.0
-    elapsed = 0.0
-    while elapsed < captcha_timeout:
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "captcha_timeout"
+
+        await asyncio.sleep(min(1.0, remaining))
+
+
+def _session_method(fn):
+    """Serialize public tool calls and install nonblocking page handlers."""
+    signature = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    async def wrapper(self, *args, **kwargs):
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        agent_id = bound.arguments["agent_id"]
+
+        from core.tools.browser_pool import browser_session
+
         try:
-            await page.wait_for_load_state("networkidle", timeout=6_000)
-        except Exception:
-            pass
-        title = await page.title()
-        url = page.url
-        if not _is_captcha_page(url, title):
-            logger.info("✅ [BrowserTool] CAPTCHA resolved after %.0fs.", elapsed)
-            await _publish_screenshot(
-                page, agent_id, agent_name, team_id, "✅ CAPTCHA resolved!"
+            async with browser_session(agent_id) as page:
+                self._setup_dialog_handler(page, agent_id)
+                return await fn(self, *args, **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Do not return arbitrary exception strings containing passwords,
+            # proxy URLs, request headers, or typed input.
+            logger.warning(
+                "Browser operation failed: operation=%s error=%s",
+                fn.__name__,
+                type(exc).__name__,
             )
-            return "captcha_resolved"
+            return (
+                f"Error: {fn.__name__} failed ({type(exc).__name__}). "
+                "Refresh the snapshot before retrying."
+            )
 
-    logger.warning("⚠️ [BrowserTool] CAPTCHA still present after %.0fs timeout.", captcha_timeout)
-    return "captcha_timeout"
+    return wrapper
 
 
 class BrowserTool:
-    """
-    Provides a complete, browser automation suite.
-
-    Primary workflow:
-        1. navigate(url)           → go to a page, auto-waits, CAPTCHA-polls
-        2. snapshot()              → get the Accessibility Tree with numbered Refs
-        3. act(kind, ref, ...)     → click/type/hover by Ref number from snapshot
-        4. snapshot()              → re-check state after action
-
-    Secondary workflow (scraping / reading content):
-        - extract_text(selector)   → read raw text from a section of the page
-        - extract_html(selector)   → read raw HTML (for structured data)
-        - screenshot()             → capture a screenshot
-    """
-
-    def __init__(self):
-        # Per-agent dialog queue: agent_id → list of dialog info dicts
-        self._dialog_queues: dict = {}
-        self._last_selector_maps: dict = {}
-
-    # -- Dialog handling setup --------------------------------------------------
-    def _resolve_selector(self, selector: str, page) -> str:
-        # If the selector is just digits (or surrounded by brackets like [5]), resolve it
-        clean_sel = selector.strip("[] \t\r\n")
-        if clean_sel.isdigit():
-            page_map = getattr(page, "_carole_selector_map", None)
-            refs = page_map if isinstance(page_map, dict) else self._last_selector_maps.get(getattr(page, "context", None), {})
-            if not isinstance(refs, dict):
-                refs = {}
-            if clean_sel in refs and isinstance(refs[clean_sel], dict):
-                xpath = refs[clean_sel].get("selector")
-                if xpath:
-                    if not xpath.startswith("xpath="):
-                        xpath = "xpath=" + xpath
-                    return xpath
-        return selector
-
-
     def _setup_dialog_handler(self, page, agent_id: str):
-        """Attach a dialog listener to a page. Dialogs are queued for the agent."""
         if getattr(page, "_carole_dialog_attached", False):
             return
-        setattr(page, "_carole_dialog_attached", True)
 
-        async def _on_dialog(dialog):
-            info = {
+        page._carole_dialog_attached = True
+        page._carole_dialog_events = []
+        page._carole_next_dialog = None
+
+        async def on_dialog(dialog):
+            policy = page._carole_next_dialog
+            page._carole_next_dialog = None
+
+            if policy and time.monotonic() <= policy["expires"]:
+                accept = policy["accept"]
+                prompt_text = policy["prompt_text"]
+            else:
+                accept = dialog.type == "alert"
+                prompt_text = ""
+
+            event = {
                 "type": dialog.type,
-                "message": dialog.message[:500],
-                "default_value": dialog.default_value,
-                "dialog_obj": dialog,
+                "message": dialog.message[:300],
+                "accepted": accept,
             }
-            if agent_id not in self._dialog_queues:
-                self._dialog_queues[agent_id] = []
-            self._dialog_queues[agent_id].append(info)
-            logger.info(
-                "🔔 [BrowserTool] Dialog for agent %s: type=%s msg=%s",
-                agent_id[:8], dialog.type, dialog.message[:80],
-            )
-            # Auto-dismiss non-confirm dialogs to prevent hanging
-            if dialog.type in ("alert", "beforeunload"):
-                try:
-                    await dialog.accept()
-                    info["auto_dismissed"] = True
-                except Exception:
-                    pass
 
-        page.on("dialog", _on_dialog)
+            try:
+                if accept:
+                    if dialog.type == "prompt":
+                        await dialog.accept(prompt_text)
+                    else:
+                        await dialog.accept()
+                else:
+                    await dialog.dismiss()
+            except Exception:
+                event["resolution_failed"] = True
 
-    # -- Navigation ------------------------------------------------------------
+            page._carole_dialog_events.append(event)
+            del page._carole_dialog_events[:-10]
 
-    async def navigate(self, url: str, agent_id: str, agent_name: str, team_id: str,
-                       wait_until: str = "domcontentloaded") -> str:
-        """Navigate to a URL. Returns the page title + a compact snapshot.
-        Automatically waits for JS rendering, detects CAPTCHAs, and polls
-        up to 45 seconds for providers like Browserbase to solve them."""
-        from core.tools.ssrf_guard import assert_safe_public_url
-        try:
-            url = assert_safe_public_url(url, allow_local=True)
-        except ValueError as e:
-            return f"Error: {e}"
+        page.on("dialog", on_dialog)
 
-        try:
-            page = await _get_page(agent_id)
-            self._setup_dialog_handler(page, agent_id)
-
-            # SSRF Protection: Intercept outgoing requests and validate redirects
-            if not getattr(page, "_carole_ssrf_route_attached", False):
-                async def _ssrf_route_filter(route):
-                    req_url = route.request.url
-                    try:
-                        assert_safe_public_url(req_url, allow_local=True)
-                        await route.continue_()
-                    except Exception as err:
-                        logger.warning("[SSRF Guard] Blocked request/redirect to %s: %s", req_url, err)
-                        await route.abort("blockedbyclient")
-
-                try:
-                    await page.route("**/*", _ssrf_route_filter)
-                    setattr(page, "_carole_ssrf_route_attached", True)
-                except Exception:
-                    pass
-
-            response = await page.goto(url, wait_until=wait_until, timeout=30_000)
-            status = response.status if response else "unknown"
-
-            readiness = await _wait_for_page_readiness(page, agent_id, agent_name, team_id)
-            await _publish_screenshot(page, agent_id, agent_name, team_id, f"Navigated to {url}")
-
-            title = await page.title()
-            captcha_note = ""
-            if readiness == "captcha_resolved":
-                captcha_note = "\n⚠️ Note: A CAPTCHA was detected and auto-resolved by the browser provider."
-            elif readiness == "captcha_timeout":
-                captcha_note = (
-                    "\n⚠️ Warning: A CAPTCHA wall was detected and could NOT be automatically resolved. "
-                    "The page content below may be the CAPTCHA page, not the destination."
-                )
-
-            # Check for intercepted download
-            if getattr(page, "_last_download_path", None) and isinstance(getattr(page, "_last_download_path", None), str):
-                import json
-                dl_path = page._last_download_path
-                dl_url = getattr(page, "_last_download_url", url)
-                page._last_download_path = None
-                return json.dumps({
-                    "_is_file": True,
-                    "local_path": dl_path,
-                    "mime_type": "application/octet-stream",
-                    "source_url": dl_url
-                })
-
-            # Return a compact snapshot instead of full HTML
-            snapshot_text = await self._build_snapshot_text(page)
-            iframe_count = await page.evaluate("document.querySelectorAll('iframe').length")
-            iframe_hint = ""
-            if iframe_count > 0:
-                iframe_hint = (
-                    f"\n⚠️ Page has {iframe_count} iframe(s). Elements inside iframes "
-                    f"may need browser_act with frame_index parameter."
-                )
-
-            return (
-                f"✓ Navigated to {url}\n"
-                f"  Status: {status} | Title: {title}{captcha_note}{iframe_hint}\n\n"
-                f"-- Page Snapshot --\n{snapshot_text}"
-            )
-        except Exception as e:
-            return f"Error navigating to '{url}': {str(e)}"
-
-    # -- Snapshot --------------------------------------------------------------
+    def _invalidate_refs(self, page):
+        page._carole_refs = {}
+        page._carole_snapshot_id = None
 
     async def _build_snapshot_text(self, page) -> str:
-        try:
-            arg = {"doHighlightElements": True, "focusHighlightIndex": -1, "viewportExpansion": 1500, "debugMode": False}
-            result = await page.evaluate(_SNAPSHOT_JS, arg)
-            
-            dom_map = result.get("map", {})
-            root_id = result.get("rootId")
-            
-            if not dom_map or root_id is None:
-                return "Error: Could not extract DOM tree."
+        self._invalidate_refs(page)
+        snapshot_id = uuid.uuid4().hex
+        refs = {}
+        lines = []
+        used = 0
+        stopped = False
 
-            # Save the refs for act() using xpath both on page and context
-            refs = {}
-            for index, node in dom_map.items():
-                if node.get("highlightIndex") is not None:
-                    # Map the highlight index to the xpath so act() can click it
-                    refs[str(node["highlightIndex"])] = {"selector": node.get("xpath")}
-            
-            setattr(page, "_carole_selector_map", refs)
-            self._last_selector_maps[page.context] = refs
-            
-            # Build the text tree
-            text_lines = []
-            
-            def build_tree(node_id, depth):
-                if str(node_id) not in dom_map:
-                    return
-                node = dom_map[str(node_id)]
-                
-                if node.get("type") == "TEXT_NODE":
-                    if node.get("isVisible"):
-                        text = node.get("text", "").strip()
-                        if text:
-                            text_lines.append(f"{'  '*depth}{text}")
-                    return
-                    
-                idx = node.get("highlightIndex")
-                if idx is not None:
-                    tag = node.get("tagName", "").lower()
-                    node_attrs = node.get("attributes", {})
-                    input_type = str(node_attrs.get("type", "")).lower()
+        def append(line: str) -> bool:
+            nonlocal used
+            if used + len(line) + 1 > MAX_SNAPSHOT_CHARS:
+                return False
+            lines.append(line)
+            used += len(line) + 1
+            return True
 
-                    attrs = []
-                    for k, v in node_attrs.items():
-                        if k in ["name", "type", "placeholder", "aria-label", "href"]:
-                            attrs.append(f"{k}='{v}'")
-                        elif k == "value":
-                            # Omit default HTML value='on' for checkboxes/radios so LLMs do not confuse it with checked state
-                            if input_type in ["checkbox", "radio"] and str(v).lower() == "on":
-                                continue
-                            attrs.append(f"{k}='{v}'")
+        frames = list(page.frames)
+        for frame_index, frame in enumerate(frames[:MAX_FRAMES]):
+            try:
+                result = await asyncio.wait_for(
+                    frame.evaluate(
+                        _SNAPSHOT_JS,
+                        {
+                            "maxNodes": 5000,
+                            "maxItems": 300,
+                            "viewportExpansion": 300,
+                        },
+                    ),
+                    timeout=8,
+                )
+            except Exception:
+                append(f"FRAME {frame_index}: snapshot unavailable")
+                continue
 
-                    if input_type in ["checkbox", "radio"]:
-                        is_checked = node_attrs.get("checked") or node.get("checked")
-                        if is_checked and str(is_checked).lower() not in ["false", "0", "null", "undefined"]:
-                            attrs.append("checked='true'")
-                        else:
-                            attrs.append("checked='false'")
-                    elif "checked" in node_attrs:
-                        attrs.append(f"checked='{node_attrs['checked']}'")
+            if not append(
+                f"FRAME {frame_index} "
+                f"URL={json.dumps(frame.url)} "
+                f"SCROLL={json.dumps(result.get('scroll', {}))}"
+            ):
+                break
 
-                    if tag == "select":
-                        options = []
-                        for child_id in node.get("children", []):
-                            child = dom_map.get(str(child_id))
-                            if child and child.get("tagName", "").lower() == "option":
-                                opt_text = ""
-                                for opt_child_id in child.get("children", []):
-                                    opt_child = dom_map.get(str(opt_child_id))
-                                    if opt_child and opt_child.get("type") == "TEXT_NODE":
-                                        opt_text += opt_child.get("text", "").strip()
-                                opt_val = child.get("attributes", {}).get("value") or opt_text
-                                if opt_text or opt_val:
-                                    options.append(opt_text or opt_val)
-                        if options:
-                            attrs.append(f"options='{', '.join(options[:8])}'")
-
-                    attr_str = " " + " ".join(attrs) if attrs else ""
-                    
-                    text = ""
-                    for child_id in node.get("children", []):
-                        child = dom_map.get(str(child_id))
-                        if child and child.get("type") == "TEXT_NODE":
-                            text += " " + child.get("text", "").strip()
-                            
-                    text_lines.append(f"{'  '*depth}[{idx}] <{tag}{attr_str}> {text.strip()}")
-                    
-                for child_id in node.get("children", []):
-                    build_tree(child_id, depth + 1 if idx is not None else depth)
-                    
-            build_tree(root_id, 0)
-            full_text = "\n".join(text_lines)
-            MAX_SNAPSHOT_CHARS = 12000
-            if len(full_text) > MAX_SNAPSHOT_CHARS:
-                return full_text[:MAX_SNAPSHOT_CHARS] + "\n\n[Snapshot truncated: page contains more elements...]"
-            return full_text
-            
-        except Exception as e:
-            return f"Error extracting page text: {str(e)}"
-
-    async def snapshot(
-        self,
-        agent_id: str,
-        agent_name: str = "Agent",
-        team_id: str = "default",
-        include_screenshot: bool = True,
-    ) -> str:
-        """Capture an accessibility snapshot of the current page for the agent.
-        Optionally stream a screenshot to the event bus.
-        """
-        try:
-            page = await _get_page(agent_id)
-            if include_screenshot:
-                await _publish_screenshot(page, agent_id, agent_name, team_id, "Snapshot")
-            snapshot_text = await self._build_snapshot_text(page)
-            title = await page.title()
-            url = page.url
-            return f"Page: {url}\nTitle: {title}\n\n-- Page Snapshot --\n{snapshot_text}"
-        except Exception as e:
-            return f"Error capturing snapshot: {str(e)}"
-
-    # -- Unified Act ----------------------------------------------------------─
-
-    async def act(self, kind: str, agent_id: str, agent_name: str, team_id: str,
-                  ref: Optional[int] = None,
-                  selector: Optional[str] = None,
-                  text: Optional[str] = None,
-                  key: Optional[str] = None,
-                  value: Optional[str] = None,
-                  x: Optional[float] = None,
-                  y: Optional[float] = None,
-                  frame_index: Optional[int] = None,
-                  slow_type: bool = False) -> str:
-        """
-        Unified browser action dispatcher. Interact with page elements by Ref number
-        (from browser_snapshot) or by CSS selector.
-
-        kind options:
-          - click       : click a button/link. Params: ref OR selector.
-          - type        : type text into an input. Params: ref OR selector, text.
-          - clear       : clear an input field. Params: ref OR selector.
-          - hover       : hover over an element. Params: ref OR selector.
-          - select      : pick a <select> option. Params: ref OR selector, value.
-          - check       : check a checkbox. Params: ref OR selector.
-          - uncheck     : uncheck a checkbox. Params: ref OR selector.
-          - press       : press a keyboard key. Params: key (e.g. 'Enter','Tab','Escape').
-          - scroll_down : scroll the page down. No extra params needed.
-          - scroll_up   : scroll the page up. No extra params needed.
-          - coords      : click at exact screen coordinates. Params: x, y.
-
-        ref: The numbered Ref from a snapshot (e.g. 12).
-        selector: A CSS selector fallback if no ref is available.
-        frame_index: Target an iframe by index (0-based, excluding main frame).
-        """
-        try:
-            page = await _get_page(agent_id)
-
-            # Resolve the target element's selector from a ref.
-            # Refs map to the XPath captured by the last snapshot (see
-            # _build_snapshot_text). We prefix with `xpath=` so Playwright
-            # treats it as an XPath selector rather than (invalid) CSS.
-            css_selector = None
-            if ref is not None:
-                clean_ref = str(ref).strip("[] \t\r\n")
-                page_map = getattr(page, "_carole_selector_map", None)
-                refs = page_map if isinstance(page_map, dict) else self._last_selector_maps.get(getattr(page, "context", None), {})
-                if not isinstance(refs, dict):
-                    refs = {}
-                ref_info = refs.get(clean_ref) if isinstance(refs, dict) else None
-                xpath = ref_info.get("selector") if isinstance(ref_info, dict) else None
-                if not xpath:
-                    # Ref may be stale — rebuild the snapshot to refresh the map.
-                    try:
-                        await self._build_snapshot_text(page)
-                        page_map = getattr(page, "_carole_selector_map", None)
-                        refs = page_map if isinstance(page_map, dict) else self._last_selector_maps.get(getattr(page, "context", None), {})
-                        if not isinstance(refs, dict):
-                            refs = {}
-                        ref_info = refs.get(clean_ref) if isinstance(refs, dict) else None
-                        xpath = ref_info.get("selector") if isinstance(ref_info, dict) else None
-                    except Exception as e:
-                        logger.warning("Failed to refresh snapshot for ref %s: %s", ref, e)
-                if not xpath:
-                    return (
-                        f"⚠️ Ref [{ref}] not found in current page snapshot "
-                        f"(page may have changed). "
-                        f"Call browser_snapshot again to get fresh refs."
-                    )
-                css_selector = xpath if xpath.startswith("xpath=") else f"xpath={xpath}"
-            elif selector:
-                css_selector = selector
-            elif kind not in ("press", "scroll_down", "scroll_up", "coords"):
-                return f"Error: '{kind}' requires a ref or selector."
-
-            # Determine frame context
-            frame = page
-            if frame_index is not None:
-                non_main = [f for f in page.frames if f != page.main_frame]
-                if 0 <= frame_index < len(non_main):
-                    frame = non_main[frame_index]
+            for item in result.get("items", []):
+                if item.get("kind") == "text":
+                    line = item.get("text", "")
                 else:
-                    return f"Error: frame_index {frame_index} out of range (0–{len(non_main)-1})."
-
-            # -- Execute the action --------------------------------------------
-            if kind == "click":
-                try:
-                    await frame.click(css_selector, timeout=10_000)
-                except Exception:
-                    # Try inside iframes if not already in a frame
-                    if frame == page:
-                        clicked = await self._try_in_frames(page, "click", css_selector)
-                        if not clicked:
-                            raise
-
-            elif kind == "type":
-                if not text:
-                    return "Error: 'type' requires text parameter."
-                try:
-                    if slow_type:
-                        await frame.click(css_selector, timeout=8_000)
-                        await frame.type(css_selector, text, delay=40, timeout=15_000)
-                    else:
-                        await frame.fill(css_selector, text, timeout=10_000)
-                except Exception:
-                    if frame == page:
-                        filled = await self._try_in_frames(page, "fill", css_selector, text)
-                        if not filled:
-                            raise
-
-            elif kind == "clear":
-                try:
-                    await frame.fill(css_selector, "", timeout=8_000)
-                except Exception:
-                    await frame.evaluate(
-                        f"document.querySelector('{css_selector}').value = ''"
+                    ref = str(len(refs))
+                    line = (
+                        f"[{ref}] <{item.get('tag', '?')}> "
+                        + json.dumps(
+                            item.get("attrs", {}),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
                     )
 
+                if not append(line):
+                    stopped = True
+                    break
+
+                if item.get("kind") == "element":
+                    refs[ref] = {
+                        "frame": frame,
+                        "token": result["token"],
+                        "local_ref": item["ref"],
+                    }
+
+            if result.get("truncated"):
+                append("[Frame snapshot truncated; scroll or narrow the task.]")
+            if stopped:
+                break
+
+        if len(frames) > MAX_FRAMES or stopped:
+            lines.append("[Snapshot truncated.]")
+
+        events = getattr(page, "_carole_dialog_events", [])
+        if events:
+            lines.append("RECENT DIALOGS: " + json.dumps(events[-3:]))
+
+        page._carole_refs = refs
+        page._carole_snapshot_id = snapshot_id
+
+        return "\n".join(lines) or "(No visible page content.)"
+
+    async def _target(
+        self,
+        page,
+        ref=None,
+        selector=None,
+        frame_index=None,
+        snapshot_id=None,
+    ):
+        """
+        Return (Locator or ElementHandle, dispose_after_use).
+
+        Ref resolution never rebuilds a snapshot and never searches other frames.
+        """
+        if snapshot_id is not None:
+            if snapshot_id != getattr(page, "_carole_snapshot_id", None):
+                raise ValueError("Stale snapshot")
+
+        if ref is None and selector:
+            clean = str(selector).strip("[] \t\r\n")
+            if clean.isdigit():
+                ref = clean
+                selector = None
+
+        if ref is not None:
+            key = str(ref).strip("[] \t\r\n")
+            info = getattr(page, "_carole_refs", {}).get(key)
+            if info is None:
+                raise ValueError("Unknown or stale ref")
+
+            frame = info["frame"]
+            if frame.is_detached():
+                raise ValueError("Ref frame is detached")
+
+            handle = await frame.evaluate_handle(
+                """({token, ref}) => {
+                    const snapshot = window.__caroleSnapshot;
+                    if (!snapshot || snapshot.token !== token) return null;
+                    const node = snapshot.nodes.get(ref);
+                    return node && node.isConnected ? node : null;
+                }""",
+                {"token": info["token"], "ref": info["local_ref"]},
+            )
+            element = handle.as_element()
+            if element is None:
+                await handle.dispose()
+                raise ValueError("Ref node is detached or document changed")
+
+            return element, True
+
+        if not selector:
+            raise ValueError("An element ref or selector is required")
+
+        frame = page
+        if frame_index is not None:
+            frames = [f for f in page.frames if f is not page.main_frame]
+            if not 0 <= frame_index < len(frames):
+                raise ValueError("frame_index out of range")
+            frame = frames[frame_index]
+
+        locator = frame.locator(selector)
+        if await locator.count() != 1:
+            raise ValueError("Selector must match exactly one element")
+
+        return locator, False
+
+    @_session_method
+    async def navigate(
+        self, url: str, agent_id: str, agent_name: str, team_id: str,
+        wait_until: str = "domcontentloaded",
+    ) -> str:
+        page = await _get_page(agent_id)
+        self._invalidate_refs(page)
+
+        response = await page.goto(
+            _safe_url(url), wait_until=wait_until, timeout=30_000
+        )
+        readiness = await _wait_for_page_readiness(
+            page, agent_id, agent_name, team_id
+        )
+        await _publish_screenshot(
+            page, agent_id, agent_name, team_id, "Navigated"
+        )
+
+        snapshot = await self._build_snapshot_text(page)
+        status = response.status if response else None
+
+        return (
+            f"Navigation status={status}; readiness={readiness}\n"
+            f"URL: {page.url}\nTitle: {await page.title()}\n{snapshot}"
+        )
+
+    @_session_method
+    async def snapshot(
+        self, agent_id: str, agent_name: str = "Agent",
+        team_id: str = "default", include_screenshot: bool = True,
+    ) -> str:
+        page = await _get_page(agent_id)
+        text = await self._build_snapshot_text(page)
+
+        if include_screenshot:
+            await _publish_screenshot(
+                page, agent_id, agent_name, team_id, "Snapshot"
+            )
+
+        return (
+            f"Page: {page.url}\n"
+            f"Title: {await page.title()}\n"
+            f"Snapshot ID: {page._carole_snapshot_id}\n\n{text}"
+        )
+
+    @_session_method
+    async def act(
+        self, kind: str, agent_id: str, agent_name: str, team_id: str,
+        ref: Optional[int] = None,
+        selector: Optional[str] = None,
+        text: Optional[str] = None,
+        key: Optional[str] = None,
+        value: Optional[str] = None,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        frame_index: Optional[int] = None,
+        slow_type: bool = False,
+        snapshot_id: Optional[str] = None,
+    ) -> str:
+        page = await _get_page(agent_id)
+        target = None
+        dispose = False
+
+        element_actions = {
+            "click", "type", "clear", "hover", "select", "check", "uncheck"
+        }
+        non_element_actions = {"press", "scroll_down", "scroll_up", "coords"}
+
+        if kind not in element_actions | non_element_actions:
+            raise ValueError("Unknown action")
+
+        if snapshot_id is not None:
+            if snapshot_id != getattr(page, "_carole_snapshot_id", None):
+                raise ValueError("Snapshot belongs to a different state or tab")
+
+        try:
+            if kind in element_actions:
+                target, dispose = await self._target(
+                    page, ref, selector, frame_index, snapshot_id
+                )
+
+            # Invalidate before acting, including when the action later times out.
+            # A timed-out click can still have triggered a side effect.
+            self._invalidate_refs(page)
+
+            if kind == "click":
+                await target.click(timeout=10_000)
+            elif kind == "type":
+                if not isinstance(text, str):
+                    raise ValueError("type requires string text")
+                if slow_type:
+                    await target.fill("", timeout=10_000)
+                    await target.type(text, delay=40, timeout=15_000)
+                else:
+                    await target.fill(text, timeout=10_000)
+            elif kind == "clear":
+                await target.fill("", timeout=10_000)
             elif kind == "hover":
-                await frame.hover(css_selector, timeout=10_000)
-
+                await target.hover(timeout=10_000)
             elif kind == "select":
-                if not value:
-                    return "Error: 'select' requires value parameter."
+                if not isinstance(value, str):
+                    raise ValueError("select requires string value")
+                # Empty-string option values are valid.
                 try:
-                    await frame.select_option(css_selector, value=value, timeout=8_000)
+                    selected = await target.select_option(
+                        value=value, timeout=4_000
+                    )
                 except Exception:
-                    await frame.select_option(css_selector, label=value, timeout=8_000)
-
+                    selected = await target.select_option(
+                        label=value, timeout=4_000
+                    )
+                if not selected:
+                    raise ValueError("No option selected")
             elif kind == "check":
-                await frame.check(css_selector, timeout=8_000)
-
+                await target.check(timeout=10_000)
             elif kind == "uncheck":
-                await frame.uncheck(css_selector, timeout=8_000)
-
+                await target.uncheck(timeout=10_000)
             elif kind == "press":
-                if not key:
-                    return "Error: 'press' requires key parameter."
+                if not isinstance(key, str) or not key:
+                    raise ValueError("press requires key")
                 await page.keyboard.press(key)
-
             elif kind == "scroll_down":
                 await page.evaluate("window.scrollBy(0, 600)")
-
             elif kind == "scroll_up":
                 await page.evaluate("window.scrollBy(0, -600)")
-
             elif kind == "coords":
                 if x is None or y is None:
-                    return "Error: 'coords' requires x and y parameters."
-                await page.mouse.click(x, y)
+                    raise ValueError("coords requires x and y")
+                await page.mouse.click(float(x), float(y))
 
-            else:
-                return f"Error: Unknown kind '{kind}'. Valid: click, type, clear, hover, select, check, uncheck, press, scroll_down, scroll_up, coords."
+        finally:
+            if dispose and target is not None:
+                await target.dispose()
 
-            # -- Post-action: wait for page to settle --------------------------
-            try:
-                await page.wait_for_load_state("domcontentloaded", timeout=5_000)
-            except Exception:
-                pass
-            try:
-                await page.wait_for_load_state("networkidle", timeout=8_000)
-            except Exception:
-                pass
-
-            # Check for intercepted download
-            if getattr(page, "_last_download_path", None) and isinstance(getattr(page, "_last_download_path", None), str):
-                import json
-                dl_path = page._last_download_path
-                dl_url = getattr(page, "_last_download_url", page.url)
-                page._last_download_path = None
-                return json.dumps({
-                    "_is_file": True,
-                    "local_path": dl_path,
-                    "mime_type": "application/octet-stream",
-                    "source_url": dl_url
-                })
-
-            await _publish_screenshot(page, agent_id, agent_name, team_id, f"act:{kind}")
-
-            ref_label = f"[{ref}]" if ref else (selector or "")
-            return (
-                f"✓ {kind} on {ref_label} succeeded. Page: {page.url}\n"
-                f"Call browser_snapshot to see the updated page state."
-            )
-
-        except Exception as e:
-            return f"Error performing act '{kind}': {str(e)}"
-
-    # -- Dialog handling ------------------------------------------------------─
-
-    async def handle_dialog(self, agent_id: str, accept: bool = True,
-                            prompt_text: str = "") -> str:
-        """
-        Accept or dismiss a pending browser dialog (alert, confirm, prompt).
-        Use browser_snapshot first to see if there is a pending dialog.
-
-        accept: True to click OK/Accept, False to click Cancel/Dismiss.
-        prompt_text: For 'prompt' dialogs, the text to enter before accepting.
-        """
-        pending = self._dialog_queues.get(agent_id, [])
-        if not pending:
-            return "No pending dialogs for this agent."
-        info = pending.pop(0)
-        dialog = info.get("dialog_obj")
-        if dialog is None:
-            return "Dialog already handled."
-        try:
-            if accept:
-                await dialog.accept(prompt_text or "")
-                return f"✓ Dialog accepted. (type={info['type']}, message={info['message'][:80]!r})"
-            else:
-                await dialog.dismiss()
-                return f"✓ Dialog dismissed. (type={info['type']}, message={info['message'][:80]!r})"
-        except Exception as e:
-            return f"Error handling dialog: {e}"
-
-    # -- Navigation helpers ----------------------------------------------------
-
-    async def go_back(self, agent_id: str, agent_name: str, team_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            await page.go_back(timeout=10_000)
-            await _wait_for_page_readiness(page, agent_id, agent_name, team_id)
-            await _publish_screenshot(page, agent_id, agent_name, team_id, "Go back")
-            return f"✓ Went back. Now at: {page.url}"
-        except Exception as e:
-            return f"Error going back: {str(e)}"
-
-    async def go_forward(self, agent_id: str, agent_name: str, team_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            await page.go_forward(timeout=10_000)
-            await _wait_for_page_readiness(page, agent_id, agent_name, team_id)
-            await _publish_screenshot(page, agent_id, agent_name, team_id, "Go forward")
-            return f"✓ Went forward. Now at: {page.url}"
-        except Exception as e:
-            return f"Error going forward: {str(e)}"
-
-    async def reload(self, agent_id: str, agent_name: str, team_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            await page.reload(wait_until="domcontentloaded", timeout=15_000)
-            await _wait_for_page_readiness(page, agent_id, agent_name, team_id)
-            await _publish_screenshot(page, agent_id, agent_name, team_id, "Page reloaded")
-            return f"✓ Page reloaded: {page.url}"
-        except Exception as e:
-            return f"Error reloading: {str(e)}"
-
-    async def get_current_url(self, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            return f"Current URL: {page.url}"
-        except Exception as e:
-            return f"Error getting URL: {str(e)}"
-
-    # -- Screenshots ----------------------------------------------------------─
-
-    async def screenshot(self, agent_id: str, agent_name: str, team_id: str,
-                         full_page: bool = False) -> str:
-        try:
-            page = await _get_page(agent_id)
-            screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=full_page)
-            b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-            await event_bus.publish(f"team:{team_id}", {
-                "type": "browser_screenshot",
-                "sender_id": agent_id,
-                "sender_name": agent_name,
-                "url": page.url,
-                "label": "Manual screenshot",
-                "image_base64": f"data:image/jpeg;base64,{b64}",
-            })
-            return f"✓ Screenshot captured for {page.url} ({'full page' if full_page else 'viewport'})"
-        except Exception as e:
-            return f"Error taking screenshot: {str(e)}"
-
-    # -- Content Extraction (for scraping/reading) ----------------------------─
-
-    async def extract_text(self, selector: str, agent_id: str) -> str:
-        """Extract visible text from a specific element or the whole page body.
-        Use this to read content after navigating — NOT for finding interactive elements."""
-        try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            target = selector if selector else "body"
-            text = await page.inner_text(target, timeout=8_000)
-            text = text[:MAX_TEXT_CHARS]
-            return text if text else "No text found."
-        except Exception as e:
-            return f"Error extracting text from '{selector}': {str(e)}"
-
-    async def extract_html(self, selector: str, agent_id: str) -> str:
-        """Extract the raw HTML of an element. Use for structured data / parsing."""
-        try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            if selector:
-                element = await page.query_selector(selector)
-                if not element:
-                    return f"Error: Element '{selector}' not found."
-                html = await element.inner_html()
-            else:
-                html = await page.content()
-            return html[:MAX_HTML_CHARS]
-        except Exception as e:
-            return f"Error extracting HTML from '{selector}': {str(e)}"
-
-    async def get_attribute(self, selector: str, attribute: str, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            element = await page.query_selector(selector)
-            if not element:
-                return f"Error: Element '{selector}' not found."
-            value = await element.get_attribute(attribute)
-            return f"Attribute '{attribute}' of '{selector}': {value}"
-        except Exception as e:
-            return f"Error getting attribute: {str(e)}"
-
-    async def evaluate_js(self, script: str, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            result = await page.evaluate(script)
-            result_str = json.dumps(result, default=str) if not isinstance(result, str) else result
-            return result_str[:3000]
-        except Exception as e:
-            return f"Error running JS: {str(e)}"
-
-    async def get_all_links(self, agent_id: str, limit: int = 30) -> str:
-        try:
-            page = await _get_page(agent_id)
-            links = await page.evaluate("""
-                () => Array.from(document.querySelectorAll('a[href]')).map(a => ({
-                    text: a.innerText.trim().slice(0, 80),
-                    href: a.href
-                }))
-            """)
-            if not links:
-                return "No links found on this page."
-            lines = [f"  [{i}] {l['text']!r} → {l['href']}" for i, l in enumerate(links[:limit])]
-            return f"Found {len(links)} links (showing {min(limit, len(links))}):\n" + "\n".join(lines)
-        except Exception as e:
-            return f"Error getting links: {str(e)}"
-
-    async def get_page_metadata(self, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            title = await page.title()
-            url = page.url
-            description = await page.evaluate(
-                "document.querySelector('meta[name=\"description\"]')?.content || ''"
-            )
-            links_count = await page.evaluate("document.querySelectorAll('a').length")
-            images_count = await page.evaluate("document.querySelectorAll('img').length")
-            return (
-                f"Page Metadata:\n"
-                f"  URL: {url}\n"
-                f"  Title: {title}\n"
-                f"  Description: {description}\n"
-                f"  Links: {links_count} | Images: {images_count}"
-            )
-        except Exception as e:
-            return f"Error getting page metadata: {str(e)}"
-
-    # -- Waiting --------------------------------------------------------------─
-
-    async def wait_for_selector(self, selector: str, agent_id: str, timeout_ms: int = 10000) -> str:
-        try:
-            page = await _get_page(agent_id)
-            await page.wait_for_selector(selector, timeout=timeout_ms)
-            return f"✓ Element '{selector}' appeared in DOM."
-        except Exception as e:
-            return f"Timeout/error waiting for '{selector}': {str(e)}"
-
-    async def wait_for_navigation(self, agent_id: str, timeout_ms: int = 10000) -> str:
-        try:
-            page = await _get_page(agent_id)
-            await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
-            return f"✓ Navigation complete. Now at: {page.url}"
-        except Exception as e:
-            return f"Timeout/error waiting for navigation: {str(e)}"
-
-    async def wait_ms(self, ms: int, agent_id: str) -> str:
-        ms = min(ms, 30_000)
-        await asyncio.sleep(ms / 1000)
-        return f"✓ Waited {ms}ms."
-
-    # -- Cookies & Storage ----------------------------------------------------─
-
-    async def get_cookies(self, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            cookies = await page.context.cookies()
-            if not cookies:
-                return "No cookies set."
-            lines = [
-                f"  {c['name']}={c['value'][:40]} (domain={c.get('domain', '')})"
-                for c in cookies[:30]
-            ]
-            return f"Cookies ({len(cookies)}):\n" + "\n".join(lines)
-        except Exception as e:
-            return f"Error getting cookies: {str(e)}"
-
-    async def clear_cookies(self, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            await page.context.clear_cookies()
-            return "✓ All cookies cleared."
-        except Exception as e:
-            return f"Error clearing cookies: {str(e)}"
-
-    # -- Tab Management --------------------------------------------------------
-
-    async def open_new_tab(self, url: str, agent_id: str, agent_name: str, team_id: str) -> str:
-        try:
-            from core.tools.browser_pool import get_new_page
-            new_page = await get_new_page(agent_id)
-            self._setup_dialog_handler(new_page, agent_id)
-            await new_page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            await _wait_for_page_readiness(new_page, agent_id, agent_name, team_id)
-            await _publish_screenshot(new_page, agent_id, agent_name, team_id, f"New tab: {url}")
-            page = await _get_page(agent_id)
-            return f"✓ Opened new tab at {url} (tab index {len(page.context.pages) - 1})"
-        except Exception as e:
-            return f"Error opening new tab: {str(e)}"
-
-    async def switch_tab(self, index: int, agent_id: str, agent_name: str, team_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            pages = page.context.pages
-            if index < 0 or index >= len(pages):
-                return f"Error: Tab index {index} is out of range (0–{len(pages)-1})."
-            target = pages[index]
-            await target.bring_to_front()
-            await _publish_screenshot(target, agent_id, agent_name, team_id, f"Switched to tab {index}")
-            return f"✓ Switched to tab {index}: {target.url}"
-        except Exception as e:
-            return f"Error switching tab: {str(e)}"
-
-    async def close_tab(self, index: int, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            pages = page.context.pages
-            if index < 0 or index >= len(pages):
-                return f"Error: Tab index {index} is out of range."
-            await pages[index].close()
-            return f"✓ Tab {index} closed. {len(page.context.pages) - 1} tab(s) remaining."
-        except Exception as e:
-            return f"Error closing tab: {str(e)}"
-
-    async def list_tabs(self, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            pages = page.context.pages
-            lines = [f"  [{i}] {p.url}" for i, p in enumerate(pages)]
-            return f"Open tabs ({len(pages)}):\n" + "\n".join(lines)
-        except Exception as e:
-            return f"Error listing tabs: {str(e)}"
-
-    # -- Session Management ----------------------------------------------------
-
-    async def close_browser(self, agent_id: str) -> str:
-        try:
-            from core.tools.browser_pool import close_agent_browser
-            closed = await close_agent_browser(agent_id)
-            self._dialog_queues.pop(agent_id, None)
-            return "✓ Browser session closed for agent." if closed else "No browser session to close."
-        except Exception as e:
-            return f"Error closing browser: {str(e)}"
-
-    # -- Legacy compatibility: get_interactive_elements ------------------------
-    # Kept for backward compatibility in case any older tool registrations still
-    # call this. It now delegates to snapshot().
-
-    async def get_interactive_elements(self, agent_id: str, selector_scope: str = "") -> str:
-        """Deprecated: use browser_snapshot instead. Returns a snapshot."""
+        # A click may have opened a new active tab.
         page = await _get_page(agent_id)
-        return await self._build_snapshot_text(page)
+        self._setup_dialog_handler(page, agent_id)
 
-    # -- Internal helpers ------------------------------------------------------
+        await _publish_screenshot(
+            page, agent_id, agent_name, team_id, f"act:{kind}"
+        )
+        return (
+            f"Action {kind} executed. URL: {page.url}. "
+            "Take a fresh snapshot to verify the outcome."
+        )
 
-    async def _try_in_frames(self, page, action: str, selector: str, text: str = "") -> bool:
-        frames = page.frames
-        for frame in frames:
-            if frame == page.main_frame:
-                continue
-            try:
-                el = await frame.query_selector(selector)
-                if el:
-                    if action == "click":
-                        await el.click(timeout=8_000)
-                    elif action == "fill":
-                        await frame.fill(selector, text, timeout=8_000)
-                    elif action == "type":
-                        await frame.type(selector, text, delay=30, timeout=8_000)
-                    logger.info("✓ [BrowserTool] Found '%s' inside iframe (%s)", selector, frame.url[:60])
-                    return True
-            except Exception:
-                continue
-        return False
+    @_session_method
+    async def handle_dialog(
+        self, agent_id: str, accept: bool = True, prompt_text: str = "",
+    ) -> str:
+        """
+        Preconfigure the NEXT dialog, expiring after 30 seconds.
 
-    # -- Screenshot element ----------------------------------------------------
+        Dialogs are never left pending because they can block the action that
+        triggered them. This method cannot accept an already-dismissed dialog.
+        """
+        page = await _get_page(agent_id)
+        page._carole_next_dialog = {
+            "accept": bool(accept),
+            "prompt_text": prompt_text,
+            "expires": time.monotonic() + 30,
+        }
+        return (
+            "Configured the next dialog response for 30 seconds: "
+            + ("accept." if accept else "dismiss.")
+        )
 
-    async def screenshot_element(self, selector: str, agent_id: str, agent_name: str, team_id: str) -> str:
+    async def _navigation_action(
+        self, action, agent_id, agent_name, team_id,
+    ):
+        page = await _get_page(agent_id)
+        self._invalidate_refs(page)
+        await getattr(page, action)(
+            wait_until="domcontentloaded", timeout=30_000
+        )
+        readiness = await _wait_for_page_readiness(
+            page, agent_id, agent_name, team_id
+        )
+        await _publish_screenshot(
+            page, agent_id, agent_name, team_id, action
+        )
+        return f"{action}: {page.url}; readiness={readiness}"
+
+    @_session_method
+    async def go_back(self, agent_id, agent_name, team_id):
+        return await self._navigation_action(
+            "go_back", agent_id, agent_name, team_id
+        )
+
+    @_session_method
+    async def go_forward(self, agent_id, agent_name, team_id):
+        return await self._navigation_action(
+            "go_forward", agent_id, agent_name, team_id
+        )
+
+    @_session_method
+    async def reload(self, agent_id, agent_name, team_id):
+        return await self._navigation_action(
+            "reload", agent_id, agent_name, team_id
+        )
+
+    @_session_method
+    async def get_current_url(self, agent_id):
+        return f"Current URL: {(await _get_page(agent_id)).url}"
+
+    @_session_method
+    async def screenshot(
+        self, agent_id, agent_name, team_id, full_page=False,
+    ):
+        # Streaming is deliberately viewport-only to limit data exposure/size.
+        page = await _get_page(agent_id)
+        await _publish_screenshot(
+            page, agent_id, agent_name, team_id, "Screenshot"
+        )
+        return "Screenshot capture/stream attempted (viewport only)."
+
+    async def _read_target(self, selector, agent_id, operation, *args):
+        page = await _get_page(agent_id)
+        target, dispose = await self._target(
+            page, selector=selector or "body"
+        )
         try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            element = await page.query_selector(selector)
-            if not element:
-                return f"Error: Element '{selector}' not found."
-            screenshot_bytes = await element.screenshot(type="jpeg", quality=60)
-            b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-            await event_bus.publish(f"team:{team_id}", {
-                "type": "browser_screenshot",
-                "sender_id": agent_id,
-                "sender_name": agent_name,
-                "url": page.url,
-                "label": f"Element: {selector}",
-                "image_base64": f"data:image/jpeg;base64,{b64}",
+            return await getattr(target, operation)(*args)
+        finally:
+            if dispose:
+                await target.dispose()
+
+    @_session_method
+    async def extract_text(self, selector, agent_id):
+        text = await self._read_target(selector, agent_id, "inner_text")
+        return text[:MAX_TEXT_CHARS] or "No text found."
+
+    @_session_method
+    async def extract_html(self, selector, agent_id):
+        if not selector:
+            html = await (await _get_page(agent_id)).content()
+        else:
+            html = await self._read_target(
+                selector, agent_id, "inner_html"
+            )
+        return html[:MAX_HTML_CHARS]
+
+    @_session_method
+    async def get_attribute(self, selector, attribute, agent_id):
+        value = await self._read_target(
+            selector, agent_id, "get_attribute", attribute
+        )
+        return json.dumps(value)
+
+    @_session_method
+    async def evaluate_js(self, script, agent_id):
+        # Keep this tool out of untrusted/autonomous tool registries.
+        # It can read secrets and perform arbitrary authenticated page actions.
+        from core.llm.config_manager import load_config
+        cfg = (load_config() or {}).get("browser_automation") or {}
+        if cfg.get("allow_evaluate_js") is not True:
+            return "Error: arbitrary JavaScript execution is disabled."
+
+        result = await (await _get_page(agent_id)).evaluate(script)
+        return json.dumps(result, default=str, ensure_ascii=False)[:3000]
+
+    @_session_method
+    async def get_all_links(self, agent_id, limit=30):
+        page = await _get_page(agent_id)
+        links = await page.locator("a[href]").evaluate_all(
+            """nodes => nodes.slice(0, 500).map(a => ({
+                text: (a.innerText || "").trim().slice(0, 100),
+                href: a.href
+            }))"""
+        )
+        # Do not label list indexes as actionable snapshot refs.
+        return json.dumps(links[:max(0, min(int(limit), 100))])
+
+    @_session_method
+    async def get_page_metadata(self, agent_id):
+        page = await _get_page(agent_id)
+        data = await page.evaluate(
+            """() => ({
+                title: document.title,
+                url: location.href,
+                description:
+                    document.querySelector('meta[name="description"]')
+                        ?.content || "",
+                links: document.links.length,
+                images: document.images.length
+            })"""
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @_session_method
+    async def wait_for_selector(
+        self, selector, agent_id, timeout_ms=10000,
+    ):
+        page = await _get_page(agent_id)
+        await page.locator(selector).wait_for(
+            state="visible",
+            timeout=max(1, min(int(timeout_ms), 30_000)),
+        )
+        return "Element is visible."
+
+    @_session_method
+    async def wait_for_navigation(self, agent_id, timeout_ms=10000):
+        page = await _get_page(agent_id)
+        await page.wait_for_load_state(
+            "domcontentloaded",
+            timeout=max(1, min(int(timeout_ms), 30_000)),
+        )
+        return (
+            f"Current document reached DOMContentLoaded: {page.url}. "
+            "This does not prove a new navigation occurred."
+        )
+
+    @_session_method
+    async def wait_ms(self, ms, agent_id):
+        ms = max(0, min(int(ms), 30_000))
+        await asyncio.sleep(ms / 1000)
+        return f"Waited {ms}ms."
+
+    @_session_method
+    async def get_cookies(self, agent_id):
+        cookies = await (await _get_page(agent_id)).context.cookies()
+        # Cookie values are authentication material; omit them.
+        return json.dumps([
+            {
+                "name": cookie["name"],
+                "domain": cookie.get("domain"),
+                "secure": cookie.get("secure"),
+                "httpOnly": cookie.get("httpOnly"),
+            }
+            for cookie in cookies[:100]
+        ])
+
+    @_session_method
+    async def clear_cookies(self, agent_id):
+        await (await _get_page(agent_id)).context.clear_cookies()
+        return "Cookies cleared."
+
+    @_session_method
+    async def open_new_tab(self, url, agent_id, agent_name, team_id):
+        from core.tools.browser_pool import get_new_page
+
+        url = _safe_url(url)
+        page = await get_new_page(agent_id)
+        self._setup_dialog_handler(page, agent_id)
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        await _publish_screenshot(
+            page, agent_id, agent_name, team_id, "New tab"
+        )
+        return f"Opened and activated new tab: {page.url}"
+
+    @_session_method
+    async def switch_tab(self, index, agent_id, agent_name, team_id):
+        from core.tools.browser_pool import set_active_page
+
+        page = await _get_page(agent_id)
+        pages = page.context.pages
+        if not 0 <= int(index) < len(pages):
+            raise ValueError("Tab index out of range")
+
+        target = pages[int(index)]
+        await set_active_page(agent_id, target)
+        self._invalidate_refs(target)
+        self._setup_dialog_handler(target, agent_id)
+        await target.bring_to_front()
+        await _publish_screenshot(
+            target, agent_id, agent_name, team_id, "Switched tab"
+        )
+        return f"Active tab: {target.url}"
+
+    @_session_method
+    async def close_tab(self, index, agent_id):
+        page = await _get_page(agent_id)
+        context = page.context
+        pages = context.pages
+        if not 0 <= int(index) < len(pages):
+            raise ValueError("Tab index out of range")
+
+        await pages[int(index)].close()
+        return f"Tab closed; {len(context.pages)} tab(s) remain."
+
+    @_session_method
+    async def list_tabs(self, agent_id):
+        page = await _get_page(agent_id)
+        return json.dumps([
+            {"index": i, "url": p.url, "active": p is page}
+            for i, p in enumerate(page.context.pages)
+        ])
+
+    async def close_browser(self, agent_id):
+        # Do not decorate: closing a session while holding it is forbidden.
+        from core.tools.browser_pool import close_agent_browser
+        try:
+            closed = await close_agent_browser(agent_id)
+            return "Session closed." if closed else "No browser session."
+        except RuntimeError:
+            return "Error: session is active; stop its browsing task first."
+
+    async def get_interactive_elements(self, agent_id, selector_scope=""):
+        return await self.snapshot(
+            agent_id, include_screenshot=False
+        )
+
+    @_session_method
+    async def screenshot_element(
+        self, selector, agent_id, agent_name, team_id,
+    ):
+        # Use the masked viewport screenshot instead of accidentally exposing
+        # the contents of a credential element.
+        page = await _get_page(agent_id)
+        target, dispose = await self._target(page, selector=selector)
+        try:
+            await target.scroll_into_view_if_needed(timeout=10_000)
+        finally:
+            if dispose:
+                await target.dispose()
+
+        await _publish_screenshot(
+            page, agent_id, agent_name, team_id, "Element viewport"
+        )
+        return "Element scrolled into view; masked screenshot attempted."
+
+    @_session_method
+    async def find_elements(self, selector, agent_id, limit=20):
+        page = await _get_page(agent_id)
+        clean = str(selector).strip("[] \t\r\n")
+
+        if clean.isdigit():
+            text = await self._read_target(selector, agent_id, "inner_text")
+            return json.dumps([{"text": text[:200]}])
+
+        locator = page.locator(selector)
+        count = await locator.count()
+        result = []
+        for i in range(min(count, max(0, min(int(limit), 100)))):
+            item = locator.nth(i)
+            result.append({
+                "index": i,
+                "text": (await item.inner_text())[:200],
+                "tag": await item.evaluate("el => el.localName"),
             })
-            return f"✓ Screenshot taken of element '{selector}'"
-        except Exception as e:
-            return f"Error screenshotting element '{selector}': {str(e)}"
+        return json.dumps({"count": count, "elements": result})
 
-    async def find_elements(self, selector: str, agent_id: str, limit: int = 20) -> str:
+    @_session_method
+    async def scroll_to_element(self, selector, agent_id):
+        page = await _get_page(agent_id)
+        target, dispose = await self._target(page, selector=selector)
         try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            elements = await page.query_selector_all(selector)
-            if not elements:
-                return f"No elements found matching '{selector}'."
-            results = []
-            for i, el in enumerate(elements[:limit]):
-                text = (await el.inner_text())[:100]
-                tag = await el.evaluate("el => el.tagName.toLowerCase()")
-                href = await el.get_attribute("href") or ""
-                results.append(f"  [{i}] <{tag}> {text!r}" + (f" href={href!r}" if href else ""))
-            header = f"Found {len(elements)} element(s) matching '{selector}' (showing {min(limit, len(elements))}):\n"
-            return header + "\n".join(results)
-        except Exception as e:
-            return f"Error finding elements: {str(e)}"
+            await target.scroll_into_view_if_needed(timeout=10_000)
+        finally:
+            if dispose:
+                await target.dispose()
+        self._invalidate_refs(page)
+        return "Element scrolled into view."
 
-    async def scroll_to_element(self, selector: str, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            element = await page.query_selector(selector)
-            if not element:
-                return f"Error: Element '{selector}' not found."
-            await element.scroll_into_view_if_needed()
-            return f"✓ Scrolled to element: {selector}"
-        except Exception as e:
-            return f"Error scrolling to element: {str(e)}"
+    @_session_method
+    async def switch_to_frame(self, frame_index, agent_id):
+        page = await _get_page(agent_id)
+        frames = [f for f in page.frames if f is not page.main_frame]
+        if not 0 <= int(frame_index) < len(frames):
+            raise ValueError("Frame index out of range")
+        frame = frames[int(frame_index)]
+        return (
+            f"Frame URL={frame.url}, name={frame.name}. "
+            "No persistent frame switch was performed. "
+            "Use snapshot refs or act(frame_index=...)."
+        )
 
-    async def switch_to_frame(self, frame_index: int, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            frames = page.frames
-            non_main = [f for f in frames if f != page.main_frame]
-            if frame_index < 0 or frame_index >= len(non_main):
-                return f"Error: Frame index {frame_index} out of range (0–{len(non_main)-1})."
-            frame = non_main[frame_index]
-            frame_url = frame.url or "about:blank"
-            return f"✓ Frame {frame_index} info: URL={frame_url}, Name={frame.name or '(none)'}"
-        except Exception as e:
-            return f"Error switching to frame: {str(e)}"
+    @_session_method
+    async def scroll(self, direction, amount, agent_id, selector=""):
+        vectors = {
+            "down": (0, 1), "up": (0, -1),
+            "right": (1, 0), "left": (-1, 0),
+        }
+        if direction not in vectors:
+            raise ValueError("Unknown scroll direction")
 
-    # -- Legacy scroll / click methods ----------------------------------------─
+        amount = max(0, min(int(amount), 10_000))
+        dx, dy = vectors[direction]
+        delta = [dx * amount, dy * amount]
+        page = await _get_page(agent_id)
 
-    async def scroll(self, direction: str, amount: int, agent_id: str, selector: str = "") -> str:
-        try:
-            page = await _get_page(agent_id)
-            dx = dy = 0
-            if direction == "down":   dy = amount
-            elif direction == "up":   dy = -amount
-            elif direction == "right": dx = amount
-            elif direction == "left":  dx = -amount
-            else:
-                return f"Error: Unknown direction '{direction}'. Use: up/down/left/right."
-            if selector:
-                await page.evaluate(f"document.querySelector('{selector}')?.scrollBy({dx}, {dy})")
-            else:
-                await page.evaluate(f"window.scrollBy({dx}, {dy})")
-            return f"✓ Scrolled {direction} by {amount}px"
-        except Exception as e:
-            return f"Error scrolling: {str(e)}"
-
-    async def click(self, selector: str, agent_id: str, agent_name: str = "", team_id: str = "") -> str:
-        """Legacy click by CSS selector. Prefer browser_act(kind='click', ref=N)."""
-        try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
+        if selector:
+            target, dispose = await self._target(page, selector=selector)
             try:
-                await page.click(selector, timeout=10_000)
-            except Exception:
-                clicked = await self._try_in_frames(page, "click", selector)
-                if not clicked:
-                    raise
-            try:
-                await page.wait_for_load_state("networkidle", timeout=8_000)
-            except Exception:
-                pass
-            if team_id:
-                await _publish_screenshot(page, agent_id, agent_name, team_id, f"Clicked: {selector}")
-            return f"✓ Clicked element: {selector}"
-        except Exception as e:
-            return f"Error clicking '{selector}': {str(e)}"
-
-    async def click_text(self, text: str, agent_id: str, agent_name: str = "", team_id: str = "") -> str:
-        """Legacy click by visible text. Prefer browser_act(kind='click', ref=N)."""
-        try:
-            page = await _get_page(agent_id)
-            await page.get_by_text(text, exact=False).first.click(timeout=10_000)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=8_000)
-            except Exception:
-                pass
-            if team_id:
-                await _publish_screenshot(page, agent_id, agent_name, team_id, f"Clicked text: {text}")
-            return f"✓ Clicked element with text: '{text}'"
-        except Exception as e:
-            return f"Error clicking text '{text}': {str(e)}"
-
-    async def type_text(self, selector: str, text: str, agent_id: str, clear_first: bool = True) -> str:
-        """Legacy type by CSS selector. Prefer browser_act(kind='type', ref=N, text='...')."""
-        try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            try:
-                if clear_first:
-                    await page.fill(selector, text, timeout=10_000)
-                else:
-                    await page.type(selector, text, delay=30, timeout=10_000)
-            except Exception:
-                filled = await self._try_in_frames(
-                    page, "fill" if clear_first else "type", selector, text
+                await target.evaluate(
+                    "(el, [x, y]) => el.scrollBy(x, y)", delta
                 )
-                if not filled:
-                    raise
-            return f"✓ Typed '{text[:80]}{'...' if len(text) > 80 else ''}' into {selector}"
-        except Exception as e:
-            return f"Error typing into '{selector}': {str(e)}"
+            finally:
+                if dispose:
+                    await target.dispose()
+        else:
+            await page.evaluate(
+                "([x, y]) => window.scrollBy(x, y)", delta
+            )
 
-    async def press_key(self, key: str, agent_id: str) -> str:
-        """Press a keyboard key. Prefer browser_act(kind='press', key='Enter')."""
-        try:
-            page = await _get_page(agent_id)
-            await page.keyboard.press(key)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=8_000)
-            except Exception:
-                pass
-            return f"✓ Pressed key: {key}"
-        except Exception as e:
-            return f"Error pressing key '{key}': {str(e)}"
+        self._invalidate_refs(page)
+        return "Scrolled."
 
-    async def hover(self, selector: str, agent_id: str, agent_name: str = "", team_id: str = "") -> str:
-        try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            await page.hover(selector, timeout=10_000)
-            if team_id:
-                await _publish_screenshot(page, agent_id, agent_name, team_id, f"Hover: {selector}")
-            return f"✓ Hovered over: {selector}"
-        except Exception as e:
-            return f"Error hovering over '{selector}': {str(e)}"
+    # Legacy entry points delegate to the same safe dispatcher.
 
-    async def select_option(self, selector: str, value: str, agent_id: str) -> str:
-        try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            try:
-                selected = await page.select_option(selector, value=value, timeout=8_000)
-            except Exception:
-                selected = await page.select_option(selector, label=value, timeout=8_000)
-            return f"✓ Selected '{value}' in {selector} (selected: {selected})"
-        except Exception as e:
-            return f"Error selecting option in '{selector}': {str(e)}"
+    async def click(
+        self, selector, agent_id, agent_name="", team_id="",
+    ):
+        return await self.act(
+            "click", agent_id, agent_name, team_id, selector=selector
+        )
 
-    async def check_checkbox(self, selector: str, checked: bool, agent_id: str) -> str:
+    @_session_method
+    async def click_text(
+        self, text, agent_id, agent_name="", team_id="",
+    ):
+        page = await _get_page(agent_id)
+        locator = page.get_by_text(text, exact=True)
+        if await locator.count() != 1:
+            raise ValueError("Text must match exactly one element")
+
+        self._invalidate_refs(page)
+        await locator.click(timeout=10_000)
+        await _publish_screenshot(
+            page, agent_id, agent_name, team_id, "Clicked text"
+        )
+        return "Click executed; verify with a snapshot."
+
+    @_session_method
+    async def type_text(
+        self, selector, text, agent_id, clear_first=True,
+    ):
+        page = await _get_page(agent_id)
+        target, dispose = await self._target(page, selector=selector)
+        self._invalidate_refs(page)
         try:
-            page = await _get_page(agent_id)
-            selector = self._resolve_selector(selector, page)
-            if checked:
-                await page.check(selector, timeout=8_000)
+            if clear_first:
+                await target.fill(text, timeout=10_000)
             else:
-                await page.uncheck(selector, timeout=8_000)
-            state = "checked" if checked else "unchecked"
-            return f"✓ Checkbox '{selector}' {state}"
-        except Exception as e:
-            return f"Error on checkbox '{selector}': {str(e)}"
+                await target.type(text, delay=40, timeout=15_000)
+        finally:
+            if dispose:
+                await target.dispose()
+        return "Text entered."
+
+    async def press_key(self, key, agent_id):
+        return await self.act("press", agent_id, "", "", key=key)
+
+    async def hover(
+        self, selector, agent_id, agent_name="", team_id="",
+    ):
+        return await self.act(
+            "hover", agent_id, agent_name, team_id, selector=selector
+        )
+
+    async def select_option(self, selector, value, agent_id):
+        return await self.act(
+            "select", agent_id, "", "", selector=selector, value=value
+        )
+
+    async def check_checkbox(self, selector, checked, agent_id):
+        return await self.act(
+            "check" if checked else "uncheck",
+            agent_id, "", "", selector=selector,
+        )
 
 
-# Singleton
 browser_tool = BrowserTool()

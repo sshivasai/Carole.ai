@@ -29,6 +29,7 @@ import os
 import json
 import asyncio
 import logging
+from decimal import Decimal, ROUND_HALF_UP
 import random
 import httpx
 from contextlib import aclosing
@@ -702,11 +703,17 @@ class MultiModelRouter:
             if "free" in model.lower() and provider in ["openrouter", "nvidia", "ollama"]:
                 rate_in, rate_out = 0.0, 0.0
 
-            cost = (prompt_tokens * rate_in + completion_tokens * rate_out) / 1_000_000
+            cost = (
+                (
+                    Decimal(prompt_tokens) * Decimal(str(rate_in))
+                    + Decimal(completion_tokens) * Decimal(str(rate_out))
+                )
+                / Decimal("1000000")
+            ).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
 
             from core.memory.database import async_session
             from core.memory.models import TokenUsage, Project
-            from sqlalchemy import select
+            from sqlalchemy import update
             import uuid
 
             async with async_session() as session:
@@ -717,22 +724,22 @@ class MultiModelRouter:
                     agent_name=agent_name,
                     model=model,
                     provider=provider,
-                    prompt_tokens=str(prompt_tokens),
-                    completion_tokens=str(completion_tokens),
-                    total_tokens=str(total_tokens),
-                    estimated_cost_usd=f"{cost:.6f}"
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    estimated_cost_usd=cost
                 )
                 session.add(usage)
                 
                 # Update Project total spend
                 if project_id:
                     proj_uuid = uuid.UUID(project_id) if isinstance(project_id, str) else project_id
-                    stmt = select(Project).where(Project.id == proj_uuid)
-                    result = await session.execute(stmt)
-                    project = result.scalars().first()
-                    if project:
-                        current_spend = float(project.total_spend_usd) if project.total_spend_usd else 0.0
-                        project.total_spend_usd = f"{current_spend + cost:.6f}"
+                    # Atomic increment, committed in the same transaction as usage.
+                    await session.execute(
+                        update(Project)
+                        .where(Project.id == proj_uuid)
+                        .values(total_spend_usd=Project.total_spend_usd + cost)
+                    )
                 
                 await session.commit()
 
@@ -749,7 +756,7 @@ class MultiModelRouter:
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens,
-                        "estimated_cost_usd": f"{cost:.6f}",
+                        "estimated_cost_usd": f"{cost:.8f}",
                     })
                 except Exception:
                     pass

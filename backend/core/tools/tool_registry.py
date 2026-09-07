@@ -50,20 +50,48 @@ class ToolRegistry:
     # ---- core CRUD ----
 
     @classmethod
-    def register(cls, spec: ToolSpec, force: bool = False) -> None:
-        # Validate tool name, uniqueness, and handler
+    def validate_spec(cls, spec: ToolSpec) -> None:
+        """Validate ToolSpec structure, name format, permission default, and handler."""
         import re
-        if spec.name in cls._tools:
-            if force:
-                # Silent idempotent re-registration (e.g., plugin hot-reload)
-                cls._tools[spec.name] = spec
-                return
-            raise ValueError(f"Tool '{spec.name}' already registered")
-        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_\-]*$', spec.name):
-            raise ValueError(f"Invalid tool name: {spec.name}")
+        if not isinstance(spec, ToolSpec):
+            raise TypeError(f"Expected ToolSpec instance, got {type(spec).__name__}")
+        if not isinstance(spec.name, str) or not re.match(r'^[a-zA-Z_][a-zA-Z0-9_\-]*$', spec.name):
+            raise ValueError(f"Invalid tool name: {getattr(spec, 'name', None)}")
+        if not isinstance(spec.description, str) or not spec.description.strip():
+            raise ValueError(f"Tool '{spec.name}' description must be a non-empty string")
+        if not isinstance(spec.category, str) or not spec.category.strip():
+            raise ValueError(f"Tool '{spec.name}' category must be a non-empty string")
+        if spec.permission_default not in {"safe", "judge", "human"}:
+            raise ValueError(
+                f"Tool '{spec.name}' invalid permission_default: '{spec.permission_default}'. "
+                "Must be 'safe', 'judge', or 'human'."
+            )
+        if not isinstance(spec.parameters, dict):
+            raise ValueError(f"Tool '{spec.name}' parameters must be a dictionary schema")
+        for p_name, p_info in spec.parameters.items():
+            if not isinstance(p_name, str) or not isinstance(p_info, dict):
+                raise ValueError(f"Tool '{spec.name}' parameter '{p_name}' must be a dict specification")
+            if "type" not in p_info:
+                raise ValueError(f"Tool '{spec.name}' parameter '{p_name}' must declare a 'type'")
         if not callable(spec.handler):
             raise ValueError(f"Handler for '{spec.name}' is not callable")
+
+    @classmethod
+    def register(cls, spec: ToolSpec, force: bool = False) -> None:
+        cls.validate_spec(spec)
+        if spec.name in cls._tools and not force:
+            raise ValueError(f"Tool '{spec.name}' already registered")
         cls._tools[spec.name] = spec
+
+    @classmethod
+    def register_batch(cls, specs: List[ToolSpec], force: bool = False) -> None:
+        """Validate an entire batch of tools before mutating the registry."""
+        for spec in specs:
+            cls.validate_spec(spec)
+            if spec.name in cls._tools and not force:
+                raise ValueError(f"Tool '{spec.name}' already registered")
+        for spec in specs:
+            cls._tools[spec.name] = spec
 
     @classmethod
     def unregister(cls, name: str) -> bool:
@@ -379,14 +407,20 @@ class ToolRegistry:
 
                 # ── Fast path: module explicitly lists its tools ──────────────
                 if hasattr(mod, "__carole_tools__"):
-                    tool_specs: List[ToolSpec] = mod.__carole_tools__
-                    for tool_spec in tool_specs:
+                    raw_specs = getattr(mod, "__carole_tools__")
+                    if not isinstance(raw_specs, (list, tuple)):
+                        logger.warning("Plugin '%s' export __carole_tools__ is not a list/tuple — skipping.", filename)
+                        continue
+                    for tool_spec in raw_specs:
+                        if not isinstance(tool_spec, ToolSpec):
+                            logger.warning("Item in '%s' __carole_tools__ is not a ToolSpec — skipping.", filename)
+                            continue
                         try:
                             cls.register(tool_spec, force=False)
                             logger.info("  ✓ Loaded plugin tool: %s (from __carole_tools__)", tool_spec.name)
                             loaded += 1
-                        except ValueError as dup:
-                            logger.debug("  ~ Plugin tool skipped (already registered): %s — %s", tool_spec.name, dup)
+                        except (ValueError, TypeError) as dup:
+                            logger.debug("  ~ Plugin tool skipped (invalid or already registered): %s — %s", getattr(tool_spec, 'name', None), dup)
 
                 else:
                     # ── Legacy fallback: scan all attributes for marker ───────

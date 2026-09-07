@@ -1,17 +1,19 @@
 """
 # backend/core/memory/database.py
 
-This file manages the SQLite database connection and setup.
+This file manages the SQLite/PostgreSQL database connection and setup.
 
 Responsibilities:
-1. Connect to SQLite via SQLAlchemy/Aiosqlite.
+1. Connect to SQLite via SQLAlchemy/Aiosqlite (or PostgreSQL via asyncpg).
 2. Provide dependency injection sessions for FastAPI routes and background workers.
-3. Run schema bootstrapping during startup.
+3. Run schema bootstrapping and Alembic migrations during startup.
 4. Support force-recreate for dev environments (drops and recreates all tables).
 """
 
 import os
 import logging
+import asyncio
+from typing import Optional, List
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
@@ -19,11 +21,14 @@ from core.config import CAROLE_HOME_DIR
 
 logger = logging.getLogger("carole.database")
 
-# Read the database URL from environment
+# Read the database URL from environment and normalize SQLite driver
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     _db_path = CAROLE_HOME_DIR / "carole.db"
     DATABASE_URL = f"sqlite+aiosqlite:///{_db_path.as_posix()}"
+elif DATABASE_URL.startswith("sqlite://"):
+    # Async SQLAlchemy requires sqlite+aiosqlite:// driver scheme
+    DATABASE_URL = "sqlite+aiosqlite://" + DATABASE_URL[len("sqlite://"):]
 
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 
@@ -35,7 +40,7 @@ engine = create_async_engine(
 )
 
 # Enable WAL mode for SQLite — reduces lock contention between concurrent
-# readers and the single writer.  This is a no-op for PostgreSQL.
+# readers and the single writer. This is a no-op for PostgreSQL.
 if _is_sqlite:
     from sqlalchemy import event as sa_event
 
@@ -58,6 +63,7 @@ async_session = async_sessionmaker(
 # Base class for models
 Base = declarative_base()
 
+
 # FastAPI Dependency Injection generator for DB sessions
 async def get_db():
     async with async_session() as session:
@@ -68,6 +74,71 @@ async def get_db():
             await session.rollback()
             raise
 
+
+def _register_orm_models():
+    """Import all ORM models to ensure they register on Base.metadata before schema creation."""
+    import core.memory.models  # noqa: F401
+
+
+def _run_alembic_upgrade() -> None:
+    """Run Alembic migrations to head synchronously in a worker thread."""
+    from pathlib import Path
+    from alembic.config import Config
+    from alembic import command
+
+    backend_dir = Path(__file__).resolve().parent.parent.parent
+    ini_path = backend_dir / "alembic.ini"
+    if not ini_path.exists():
+        logger.warning("Alembic configuration not found at %s; skipping migration.", ini_path)
+        return
+
+    alembic_cfg = Config(str(ini_path))
+    alembic_cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+
+    try:
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migrations upgraded to head successfully.")
+    except Exception as e:
+        logger.warning("Alembic upgrade encountered an issue: %s", e)
+        # If database already had tables created via create_all without alembic_version,
+        # stamp head so future migrations apply incrementally.
+        try:
+            command.stamp(alembic_cfg, "head")
+            logger.info("Stamped existing database schema with Alembic head.")
+        except Exception as stamp_err:
+            logger.warning("Alembic stamp failed: %s", stamp_err)
+
+
+async def verify_and_copy_sqlite_table(
+    conn,
+    source_table: str,
+    target_table: str,
+    indexes: Optional[List[str]] = None,
+) -> None:
+    """
+    Atomically copies matching columns from source_table to target_table in SQLite.
+    Verifies that source and target columns match before executing copy.
+    Preserves indexes and ensures atomic execution within the current transaction.
+    """
+    src_res = await conn.execute(text(f"PRAGMA table_info({source_table})"))
+    src_cols = {row[1] for row in src_res.fetchall()}
+
+    tgt_res = await conn.execute(text(f"PRAGMA table_info({target_table})"))
+    tgt_cols = {row[1] for row in tgt_res.fetchall()}
+
+    common_cols = [c for c in src_cols if c in tgt_cols]
+    if not common_cols:
+        raise ValueError(f"Cannot copy rows: no common columns between '{source_table}' and '{target_table}'")
+
+    col_names = ", ".join(f'"{c}"' for c in common_cols)
+    await conn.execute(text(f'INSERT INTO "{target_table}" ({col_names}) SELECT {col_names} FROM "{source_table}"'))
+
+    if indexes:
+        for idx_sql in indexes:
+            await conn.execute(text(idx_sql))
+
+
 # Database initialization function
 async def init_db(force_recreate: bool = False):
     """
@@ -75,80 +146,40 @@ async def init_db(force_recreate: bool = False):
     
     Args:
         force_recreate: If True, drops all existing tables and recreates them.
-                        Useful during development when schema changes are made.
+                        ONLY permitted in explicit development mode.
                         Set via FORCE_DB_RECREATE=true environment variable.
     """
-    # Check env var for force recreate
-    if os.getenv("FORCE_DB_RECREATE", "").lower() in ("true", "1", "yes"):
-        force_recreate = True
+    # Guard FORCE_DB_RECREATE: disabled outside explicit development mode
+    env = os.getenv("ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    is_dev = env in ("development", "dev", "local", "test", "testing")
+    force_env = os.getenv("FORCE_DB_RECREATE", "").lower() in ("true", "1", "yes")
+
+    if force_env or force_recreate:
+        if is_dev:
+            force_recreate = True
+        else:
+            logger.warning(
+                "FORCE_DB_RECREATE requested but ignored: disabled outside explicit development mode (current env=%r)",
+                env,
+            )
+            force_recreate = False
+    else:
+        force_recreate = False
+
+    # 1. Dynamically import all ORM models to register with Base.metadata before creation
+    _register_orm_models()
 
     async with engine.begin() as conn:
-        # 1. Dynamically import models to register with Base metadata
-        
-        # 2. Optionally drop all tables first (dev convenience)
+        # 2. Optionally drop all tables first (explicit dev mode only)
         if force_recreate:
             logger.warning("FORCE_DB_RECREATE enabled — dropping all tables...")
             await conn.run_sync(Base.metadata.drop_all)
         
         # 3. Create all tables (additive — won't modify existing columns)
         await conn.run_sync(Base.metadata.create_all)
-        
-        # 4. Additive migration — add missing columns if they don't exist yet
-        # TODO: Replace this brittle ALTER TABLE approach with Alembic when
-        #       the schema stabilises for production.
-        if _is_sqlite:
-            for query in [
-                "ALTER TABLE messages ADD COLUMN reasoning_text TEXT",
-                "ALTER TABLE file_backups ADD COLUMN backup_file_name VARCHAR(255)",
-                "ALTER TABLE compaction_events ADD COLUMN covered_through_message_id VARCHAR(36)",
-                "ALTER TABLE compaction_events ADD COLUMN covered_through_timestamp DATETIME",
-            ]:
-                try:
-                    await conn.execute(text(query))
-                except Exception as e:
-                    # Duplicate column error is expected on existing databases
-                    if "duplicate column name" not in str(e).lower():
-                        logger.info("DB Migration Notice: %s", e)
 
-        # 5. Fix file_backups.message_id NOT NULL constraint mismatch.
-        #    The initial migration created this column as NOT NULL, but the
-        #    SQLAlchemy model defines it as nullable=True. Subagents hit an
-        #    IntegrityError on every write_file because they have no
-        #    active_message_id at their first tool call.
-        #    SQLite doesn't support ALTER COLUMN, so we use the recommended
-        #    table-rebuild approach.
-        if _is_sqlite:
-            try:
-                # Check current nullability via PRAGMA table_info
-                result = await conn.execute(text("PRAGMA table_info(file_backups)"))
-                rows = result.fetchall()
-                col_info = {row[1]: row for row in rows}  # name -> row
-                msg_id_col = col_info.get("message_id")
-                # notnull=1 means it's NOT NULL — we need to make it nullable
-                if msg_id_col and msg_id_col[3] == 1:
-                    logger.info("DB Migration: Fixing file_backups.message_id NOT NULL → nullable...")
-                    await conn.execute(text(
-                        "CREATE TABLE IF NOT EXISTS file_backups_new ("
-                        "  id TEXT NOT NULL, "
-                        "  team_id TEXT NOT NULL, "
-                        "  message_id TEXT NULL, "
-                        "  file_path TEXT NOT NULL, "
-                        "  backup_file_name VARCHAR(255), "
-                        "  operation VARCHAR(20) NOT NULL DEFAULT 'write_file', "
-                        "  created_at DATETIME, "
-                        "  PRIMARY KEY (id), "
-                        "  FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE, "
-                        "  FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE"
-                        ")"
-                    ))
-                    await conn.execute(text(
-                        "INSERT INTO file_backups_new "
-                        "SELECT id, team_id, message_id, file_path, backup_file_name, operation, created_at "
-                        "FROM file_backups"
-                    ))
-                    await conn.execute(text("DROP TABLE file_backups"))
-                    await conn.execute(text("ALTER TABLE file_backups_new RENAME TO file_backups"))
-                    logger.info("DB Migration: file_backups.message_id is now nullable.")
-            except Exception as e:
-                logger.warning("DB Migration: Could not fix file_backups.message_id: %s", e)
-
+    # 4. Versioned schema migrations via Alembic
+    try:
+        await asyncio.to_thread(_run_alembic_upgrade)
+    except Exception as alembic_err:
+        logger.warning("Alembic automatic migration notice: %s", alembic_err)

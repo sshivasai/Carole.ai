@@ -13,8 +13,13 @@ Multi-Tenant Hierarchical Architecture:
 """
 
 import uuid
+from decimal import Decimal
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Uuid, Integer, Numeric, Float, Index, func
+from sqlalchemy import (
+    Column, String, Text, DateTime, ForeignKey, JSON, Boolean,
+    Uuid, Integer, Numeric, Float, Index, CheckConstraint, func,
+)
+from sqlalchemy.ext.mutable import MutableDict, MutableList
 from .database import Base
 
 class User(Base):
@@ -45,14 +50,35 @@ class Project(Base):
     owner_id = Column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     
     # Cost Management — stored as Numeric for SQL aggregation
-    budget_limit_usd = Column(Numeric(10, 4), nullable=True)
-    total_spend_usd = Column(Numeric(10, 4), nullable=False, default=0.0)
+    budget_limit_usd = Column(Numeric(20, 8), nullable=True)
+    total_spend_usd = Column(
+        Numeric(20, 8),
+        nullable=False,
+        default=Decimal("0"),
+        server_default="0",
+    )
+
+    __table_args__ = (
+        Index("ix_projects_owner_id", "owner_id"),
+        CheckConstraint(
+            "budget_limit_usd IS NULL OR budget_limit_usd >= 0",
+            name="ck_projects_budget_nonnegative",
+        ),
+        CheckConstraint(
+            "total_spend_usd >= 0",
+            name="ck_projects_spend_nonnegative",
+        ),
+    )
     
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class Team(Base):
     __tablename__ = "teams"
+
+    __table_args__ = (
+        Index("ix_teams_project_id", "project_id"),
+    )
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
@@ -67,12 +93,20 @@ class Team(Base):
 class Agent(Base):
     __tablename__ = "agents"
 
+    __table_args__ = (
+        Index("ix_agents_team_id", "team_id"),
+        CheckConstraint(
+            "reasoning_effort IN ('none', 'low', 'medium', 'high')",
+            name="ck_agents_reasoning_effort",
+        ),
+    )
+
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(100), nullable=False)
     role = Column(String(100), nullable=False)  # e.g. "Coder", "Reviewer", "Manager", or custom role
-    model = Column(String(100), nullable=False)  # e.g. "claude-sonnet-4", "gpt-4o-mini", "gemini-2.0-flash"
-    fallback_model = Column(String(100), nullable=True)  # Optional recovery model if primary fails
+    model = Column(String(255), nullable=False)  # e.g. "claude-sonnet-4", "gpt-4o-mini", "gemini-2.0-flash"
+    fallback_model = Column(String(255), nullable=True)  # Optional recovery model if primary fails
     # Reasoning effort for reasoning-capable models: none | low | medium | high
     reasoning_effort = Column(String(20), nullable=False, default="none")
     system_prompt = Column(Text, nullable=False)
@@ -84,11 +118,17 @@ class Agent(Base):
     custom_instructions = Column(Text, nullable=True)
     
     # List of specialized skills/toolkits the agent has
-    skills = Column(JSON, nullable=True, default=list)
+    skills = Column(MutableList.as_mutable(JSON), nullable=True, default=list)
     
     # JSON columns for dynamic configuration
-    tool_permissions = Column(JSON, nullable=False, default=dict)  # {"file_read": "safe", "bash": "human_only"}
-    working_memory = Column(JSON, nullable=True, default=dict)    # Scratchpad state / current task variables
+    # Mutable containers track top-level edits only. For nested edits, replace
+    # the outer container or explicitly flag the attribute as modified.
+    tool_permissions = Column(
+        MutableDict.as_mutable(JSON), nullable=False, default=dict
+    )  # {"file_read": "safe", "bash": "human_only"}
+    working_memory = Column(
+        MutableDict.as_mutable(JSON), nullable=True, default=dict
+    )    # Scratchpad state / current task variables
     
     is_active = Column(Boolean, default=True, nullable=False)
 
@@ -114,15 +154,16 @@ class Message(Base):
     text = Column(Text, nullable=False)
     # Raw model reasoning / thinking trace (for DeepSeek R1, Claude thinking, etc.)
     reasoning_text = Column(Text, nullable=True)
-    attachments = Column(JSON, nullable=True, default=list)
+    attachments = Column(MutableList.as_mutable(JSON), nullable=True, default=list)
 
     # Tracks whether the AutoDream worker has processed this message for memory consolidation.
     # Prevents duplicate lesson extraction across dream cycles.
     processed = Column(Boolean, default=False, nullable=False)
 
-    # Monotonically increasing integer for stable sub-second ordering (tiebreaker after created_at).
-    # SQLite/Postgres autoincrement ensures globally unique order even within the same second.
-    sequence = Column(Integer, autoincrement=True, nullable=True, index=True)
+    # A non-primary-key Integer does not auto-increment portably.
+    # Keep the legacy field until the writer/query paths and migration provide
+    # an explicit allocator. Do not rely on this field for ordering yet.
+    sequence = Column(Integer, nullable=True, index=True)
 
     # True for intermediate per-loop rows (thought + tool trace). False for final agent responses.
     # Lets the UI render intermediate steps as compact collapsed rows vs full chat bubbles.
@@ -136,10 +177,31 @@ class Message(Base):
     __table_args__ = (
         Index('ix_messages_team_created', 'team_id', 'created_at'),
         Index('ix_messages_team_sender', 'team_id', 'sender_id'),
+        Index(
+            "ix_messages_team_created_id",
+            "team_id", "created_at", "id",
+        ),
+        Index(
+            "ix_messages_team_processed_created",
+            "team_id", "processed", "created_at",
+        ),
     )
 
 class Learning(Base):
     __tablename__ = "learnings"
+
+    # These indexes do not enforce tenant isolation. The memory service must
+    # authorize scope and verify project/team/agent ancestry before every write
+    # and retrieval, including LanceDB operations.
+    __table_args__ = (
+        Index("ix_learnings_project_team", "project_id", "team_id"),
+        Index("ix_learnings_team_id", "team_id"),
+        Index("ix_learnings_agent_id", "agent_id"),
+        CheckConstraint(
+            "confidence_score >= 0 AND confidence_score <= 1",
+            name="ck_learnings_confidence",
+        ),
+    )
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     
@@ -165,6 +227,35 @@ class Learning(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
+
+    __table_args__ = (
+        Index("ix_tasks_team_status", "team_id", "status"),
+        Index("ix_tasks_assigned_agent_id", "assigned_agent_id"),
+        Index("ix_tasks_parent_task_id", "parent_task_id"),
+        Index("ix_tasks_blocked_by_task_id", "blocked_by_task_id"),
+        CheckConstraint(
+            "status IN ('todo', 'in_progress', 'review', 'done', 'blocked')",
+            name="ck_tasks_status",
+        ),
+        CheckConstraint(
+            "priority IN ('low', 'medium', 'high', 'critical')",
+            name="ck_tasks_priority",
+        ),
+        CheckConstraint(
+            "plan_status IS NULL OR plan_status IN "
+            "('draft', 'awaiting_approval', 'approved', 'rejected', "
+            "'revision_requested')",
+            name="ck_tasks_plan_status",
+        ),
+        CheckConstraint(
+            "parent_task_id IS NULL OR parent_task_id <> id",
+            name="ck_tasks_not_own_parent",
+        ),
+        CheckConstraint(
+            "blocked_by_task_id IS NULL OR blocked_by_task_id <> id",
+            name="ck_tasks_not_self_blocked",
+        ),
+    )
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
@@ -195,8 +286,9 @@ class Task(Base):
     plan_feedback = Column(Text, nullable=True)
 
     # ── Todo Checklist ────────────────────────────────────────────────────────
+    # Nested checklist changes require outer-list reassignment or flag_modified.
     # JSON list: [{"id": "t1", "text": "...", "done": false}, ...]
-    todo_list = Column(JSON, nullable=True, default=list)
+    todo_list = Column(MutableList.as_mutable(JSON), nullable=True, default=list)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -204,6 +296,10 @@ class Task(Base):
 
 class TaskComment(Base):
     __tablename__ = "task_comments"
+
+    __table_args__ = (
+        Index("ix_task_comments_task_created", "task_id", "created_at"),
+    )
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
@@ -222,6 +318,14 @@ class PlanInlineComment(Base):
     Styled like GitHub PR review comments — attached to a specific section of the plan.
     """
     __tablename__ = "plan_inline_comments"
+
+    __table_args__ = (
+        Index("ix_plan_inline_comments_task_line", "task_id", "line_index"),
+        CheckConstraint(
+            "line_index >= 0",
+            name="ck_plan_inline_comments_line_nonnegative",
+        ),
+    )
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
@@ -273,13 +377,35 @@ class TokenUsage(Base):
     """
     __tablename__ = "token_usage"
 
+    __table_args__ = (
+        Index("ix_token_usage_project_created", "project_id", "created_at"),
+        Index("ix_token_usage_team_created", "team_id", "created_at"),
+        Index("ix_token_usage_agent_created", "agent_id", "created_at"),
+        CheckConstraint(
+            "prompt_tokens IS NULL OR prompt_tokens >= 0",
+            name="ck_token_usage_prompt_nonnegative",
+        ),
+        CheckConstraint(
+            "completion_tokens IS NULL OR completion_tokens >= 0",
+            name="ck_token_usage_completion_nonnegative",
+        ),
+        CheckConstraint(
+            "total_tokens IS NULL OR total_tokens >= 0",
+            name="ck_token_usage_total_nonnegative",
+        ),
+        CheckConstraint(
+            "estimated_cost_usd IS NULL OR estimated_cost_usd >= 0",
+            name="ck_token_usage_cost_nonnegative",
+        ),
+    )
+
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     project_id = Column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=True)
     agent_id = Column(Uuid, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
     agent_name = Column(String(100), nullable=True)
 
-    model = Column(String(80), nullable=False)
+    model = Column(String(255), nullable=False)
     provider = Column(String(30), nullable=False)        # anthropic | openai | google | qwen | ollama
 
     # Stored as Integer/Numeric for proper SQL aggregation (SUM, AVG, GROUP BY).
@@ -287,7 +413,8 @@ class TokenUsage(Base):
     prompt_tokens = Column(Integer, nullable=True)
     completion_tokens = Column(Integer, nullable=True)
     total_tokens = Column(Integer, nullable=True)
-    estimated_cost_usd = Column(Numeric(12, 8), nullable=True)  # e.g. 0.00240000
+    # NULL means unknown cost, not a free request.
+    estimated_cost_usd = Column(Numeric(20, 8), nullable=True)  # e.g. 0.00240000
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -316,6 +443,11 @@ class FileBackup(Base):
     - `operation`                → 'write' or 'edit', for debugging/auditing.
     """
     __tablename__ = "file_backups"
+
+    __table_args__ = (
+        Index("ix_file_backups_team_created", "team_id", "created_at"),
+        Index("ix_file_backups_message_id", "message_id"),
+    )
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
@@ -368,6 +500,11 @@ class EntityMemory(Base):
     """
     __tablename__ = "entity_memories"
 
+    __table_args__ = (
+        Index("ix_entity_memories_project_key", "project_id", "key"),
+        Index("ix_entity_memories_team_key", "team_id", "key"),
+    )
+
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     # Scope: can be bound to a team, or broadly to a project
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=True)
@@ -390,6 +527,16 @@ class GraphTriple(Base):
     Subject: 'BrowserView'   | Predicate: 'connects_to' | Object: 'browser_routes.py'
     """
     __tablename__ = "graph_triples"
+
+    __table_args__ = (
+        Index("ix_graph_triples_project_subject", "project_id", "subject"),
+        Index("ix_graph_triples_team_subject", "team_id", "subject"),
+        CheckConstraint(
+            "confidence_score IS NULL OR "
+            "(confidence_score >= 0 AND confidence_score <= 1)",
+            name="ck_graph_triples_confidence",
+        ),
+    )
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     project_id = Column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
@@ -419,6 +566,18 @@ class CompactionEvent(Base):
     """
     __tablename__ = "compaction_events"
 
+    __table_args__ = (
+        Index("ix_compaction_events_team_created", "team_id", "created_at"),
+        CheckConstraint(
+            "message_count_before IS NULL OR message_count_before >= 0",
+            name="ck_compaction_events_count_nonnegative",
+        ),
+        CheckConstraint(
+            "triggered_by IN ('auto', 'manual')",
+            name="ck_compaction_events_trigger",
+        ),
+    )
+
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True)
 
@@ -436,4 +595,3 @@ class CompactionEvent(Base):
     covered_through_timestamp = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-

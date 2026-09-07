@@ -1798,7 +1798,10 @@ async def save_model_catalog_endpoint(body: dict, user: dict = Depends(require_a
     Accepts the full catalog object (same shape as GET response).
     """
     from core.llm.model_catalog import save_model_catalog
-    save_model_catalog(body)
+    try:
+        save_model_catalog(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"status": "saved"}
 
 
@@ -3023,6 +3026,10 @@ async def save_settings(body: AppSettings, user: dict = Depends(require_auth)):
     # Hot-reload web_tools so Tavily key is picked up
     from core.tools.web_tools import web_tools
     web_tools.reload_config()
+
+    # Hot-reload voice_service so TTS/STT keys are picked up
+    from core.tools.voice_stt_tts import voice_service
+    voice_service.reload_config()
     
     # Close active browsers so they restart with the new provider
     from core.tools.browser_pool import close_all

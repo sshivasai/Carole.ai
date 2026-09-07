@@ -71,8 +71,8 @@ class TestBrowserPool:
             assert call_kwargs["headless"] is True
             assert call_kwargs["proxy"] is None
             args = call_kwargs["args"]
-            assert "--disable-blink-features=AutomationControlled" in args
             assert "--disable-dev-shm-usage" in args
+            assert "--window-size=1280,900" in args
 
             # Cleanup
             bp._browser = None
@@ -105,7 +105,8 @@ class TestBrowserPool:
             browser = await bp._ensure_browser()
             assert browser == mock_browser
             mock_chromium.connect_over_cdp.assert_called_once_with(
-                "wss://connect.browserbase.com?apiKey=bb_test_key_12345"
+                "wss://connect.browserbase.com?apiKey=bb_test_key_12345",
+                timeout=30_000,
             )
             # Ensure local launch was NOT called
             mock_chromium.launch.assert_not_called()
@@ -139,7 +140,9 @@ class TestBrowserPool:
             bp._playwright = None
             await bp._ensure_browser()
             assert mock_chromium.launch.call_args[1]["proxy"] == {
-                "server": "http://scraperapi:scraper_token_999@proxy-server.scraperapi.com:8001"
+                "server": "http://proxy-server.scraperapi.com:8001",
+                "username": "scraperapi",
+                "password": "scraper_token_999",
             }
 
             # 2. ZenRows proxy
@@ -154,7 +157,9 @@ class TestBrowserPool:
             bp._playwright = None
             await bp._ensure_browser()
             assert mock_chromium.launch.call_args[1]["proxy"] == {
-                "server": "http://zenrows_token_888:@proxy.zenrows.com:8001"
+                "server": "http://proxy.zenrows.com:8001",
+                "username": "zenrows_token_888",
+                "password": "",
             }
 
             bp._browser = None
@@ -232,22 +237,26 @@ class TestBrowserTool:
 
     @pytest.mark.asyncio
     async def test_snapshot_method_and_ref_mapping(self):
-        """Verify snapshot() builds accessibility tree with numbered refs and stores XPath mapping."""
+        """Verify snapshot() builds accessibility tree with numbered refs and stores page refs."""
         mock_page = AsyncMock()
         mock_page.url = "https://example.com"
         mock_page.title = AsyncMock(return_value="Example Domain")
         mock_page.context = "ctx_1"
+        mock_page._carole_dialog_events = []
+        mock_page._carole_snapshot_id = None
 
-        # Mock build_dom_tree.js evaluation returning interactive elements
-        mock_page.evaluate = AsyncMock(return_value={
-            "rootId": 0,
-            "map": {
-                "0": {"type": "ELEMENT", "tagName": "BODY", "children": [1, 2]},
-                "1": {"type": "ELEMENT", "tagName": "INPUT", "highlightIndex": 0, "xpath": "/html/body/input", "attributes": {"name": "q", "type": "text"}, "children": []},
-                "2": {"type": "ELEMENT", "tagName": "BUTTON", "highlightIndex": 1, "xpath": "/html/body/button", "attributes": {}, "children": [3]},
-                "3": {"type": "TEXT_NODE", "text": "Search", "isVisible": True, "children": []},
-            }
+        mock_frame = AsyncMock()
+        mock_frame.url = "https://example.com"
+        mock_frame.evaluate = AsyncMock(return_value={
+            "token": "tok_123",
+            "scroll": {},
+            "items": [
+                {"kind": "element", "tag": "input", "ref": 0, "attrs": {"name": "q", "type": "text"}},
+                {"kind": "element", "tag": "button", "ref": 1, "attrs": {}},
+                {"kind": "text", "text": "Search"},
+            ],
         })
+        mock_page.frames = [mock_frame]
 
         with patch("core.tools.browser_tool._get_page", return_value=mock_page), \
              patch("core.tools.browser_tool._publish_screenshot", new_callable=AsyncMock) as mock_shot:
@@ -256,13 +265,15 @@ class TestBrowserTool:
             assert "Page: https://example.com" in res
             assert "Title: Example Domain" in res
             assert "[0] <input" in res
-            assert "[1] <button> Search" in res
+            assert "[1] <button" in res
+            assert "Search" in res
             mock_shot.assert_called_once()
 
-            # Verify selector map was cached for act()
-            refs = browser_tool._last_selector_maps.get("ctx_1", {})
+            # Verify page refs were cached
+            refs = mock_page._carole_refs
             assert "0" in refs
-            assert refs["0"]["selector"] == "/html/body/input"
+            assert refs["0"]["local_ref"] == 0
+            assert refs["0"]["token"] == "tok_123"
 
     @pytest.mark.asyncio
     async def test_act_dispatcher_all_actions(self):
@@ -271,88 +282,112 @@ class TestBrowserTool:
         mock_page.url = "https://example.com"
         mock_page.context = "ctx_test"
         mock_page._last_download_path = None
-        browser_tool._last_selector_maps["ctx_test"] = {
-            "10": {"selector": "/html/body/button[@id='btn']"},
-            "11": {"selector": "/html/body/input[@id='txt']"},
-            "12": {"selector": "/html/body/select[@id='sel']"},
-            "13": {"selector": "/html/body/input[@type='checkbox']"},
-        }
+        mock_page._carole_dialog_events = []
+        mock_page._carole_snapshot_id = None
+
+        mock_element = AsyncMock()
+        mock_handle = MagicMock()
+        mock_handle.as_element.return_value = mock_element
+
+        mock_frame = MagicMock()
+        mock_frame.is_detached.return_value = False
+        mock_frame.evaluate_handle = AsyncMock(return_value=mock_handle)
+
+        def set_refs():
+            mock_page._carole_refs = {
+                "10": {"frame": mock_frame, "token": "tok_1", "local_ref": 10},
+                "11": {"frame": mock_frame, "token": "tok_1", "local_ref": 11},
+                "12": {"frame": mock_frame, "token": "tok_1", "local_ref": 12},
+                "13": {"frame": mock_frame, "token": "tok_1", "local_ref": 13},
+            }
 
         with patch("core.tools.browser_tool._get_page", return_value=mock_page), \
+             patch("core.tools.browser_pool.get_page", return_value=mock_page), \
              patch("core.tools.browser_tool._publish_screenshot", new_callable=AsyncMock):
             
             # 1. Click by ref
+            set_refs()
             res = await browser_tool.act("click", "ag", "Ag", "tm", ref=10)
-            assert "✓ click on [10] succeeded" in res
-            mock_page.click.assert_called_with("xpath=/html/body/button[@id='btn']", timeout=10000)
+            assert "Action click executed" in res
+            mock_element.click.assert_called_with(timeout=10000)
 
             # 2. Type with instant fill
+            set_refs()
             res = await browser_tool.act("type", "ag", "Ag", "tm", ref=11, text="Carole AI")
-            assert "✓ type on [11] succeeded" in res
-            mock_page.fill.assert_called_with("xpath=/html/body/input[@id='txt']", "Carole AI", timeout=10000)
+            assert "Action type executed" in res
+            mock_element.fill.assert_called_with("Carole AI", timeout=10000)
 
             # 3. Type with slow_type delay
+            set_refs()
             res = await browser_tool.act("type", "ag", "Ag", "tm", ref=11, text="Slow", slow_type=True)
-            assert "✓ type on [11] succeeded" in res
-            mock_page.type.assert_called_with("xpath=/html/body/input[@id='txt']", "Slow", delay=40, timeout=15000)
+            assert "Action type executed" in res
+            mock_element.type.assert_called_with("Slow", delay=40, timeout=15000)
 
             # 4. Clear input
+            set_refs()
             res = await browser_tool.act("clear", "ag", "Ag", "tm", ref=11)
-            assert "✓ clear on [11] succeeded" in res
+            assert "Action clear executed" in res
+            mock_element.fill.assert_called_with("", timeout=10000)
 
             # 5. Select dropdown option
+            set_refs()
+            mock_element.select_option = AsyncMock(return_value=["US"])
             res = await browser_tool.act("select", "ag", "Ag", "tm", ref=12, value="US")
-            assert "✓ select on [12] succeeded" in res
-            mock_page.select_option.assert_called_with("xpath=/html/body/select[@id='sel']", value="US", timeout=8000)
+            assert "Action select executed" in res
 
             # 6. Check / Uncheck
+            set_refs()
             res = await browser_tool.act("check", "ag", "Ag", "tm", ref=13)
-            assert "✓ check on [13] succeeded" in res
-            mock_page.check.assert_called_with("xpath=/html/body/input[@type='checkbox']", timeout=8000)
+            assert "Action check executed" in res
+            mock_element.check.assert_called_with(timeout=10000)
 
+            set_refs()
             res = await browser_tool.act("uncheck", "ag", "Ag", "tm", ref=13)
-            assert "✓ uncheck on [13] succeeded" in res
-            mock_page.uncheck.assert_called_with("xpath=/html/body/input[@type='checkbox']", timeout=8000)
+            assert "Action uncheck executed" in res
+            mock_element.uncheck.assert_called_with(timeout=10000)
 
             # 7. Press keyboard key
             res = await browser_tool.act("press", "ag", "Ag", "tm", key="Enter")
-            assert "✓ press" in res and "succeeded" in res
+            assert "Action press executed" in res
             mock_page.keyboard.press.assert_called_with("Enter")
 
             # 8. Scroll down & up
             res = await browser_tool.act("scroll_down", "ag", "Ag", "tm")
-            assert "✓ scroll_down" in res and "succeeded" in res
+            assert "Action scroll_down executed" in res
             mock_page.evaluate.assert_called_with("window.scrollBy(0, 600)")
 
             # 9. Mouse coordinates click
             res = await browser_tool.act("coords", "ag", "Ag", "tm", x=250.0, y=400.0)
-            assert "✓ coords" in res and "succeeded" in res
+            assert "Action coords executed" in res
             mock_page.mouse.click.assert_called_with(250.0, 400.0)
 
     @pytest.mark.asyncio
     async def test_dialog_handling(self):
-        """Verify queueing, auto-dismissing, and handling of browser alert/confirm/prompts."""
-        mock_dialog = AsyncMock()
-        mock_dialog.type = "confirm"
-        mock_dialog.message = "Do you want to delete this record?"
-        mock_dialog.default_value = ""
+        """Verify preconfiguring and handling browser dialogs."""
+        mock_page = AsyncMock()
+        mock_page._carole_dialog_attached = False
 
-        # Enqueue dialog
-        browser_tool._dialog_queues["agent_dlg"] = [{
-            "type": mock_dialog.type,
-            "message": mock_dialog.message,
-            "default_value": "",
-            "dialog_obj": mock_dialog,
-        }]
+        # First attach dialog listener
+        browser_tool._setup_dialog_handler(mock_page, "agent_dlg")
+        mock_page.on.assert_called_once()
+        on_dialog_cb = mock_page.on.call_args[0][1]
 
-        # 1. Accept dialog
-        res = await browser_tool.handle_dialog("agent_dlg", accept=True)
-        assert "✓ Dialog accepted" in res
-        mock_dialog.accept.assert_called_once_with("")
+        with patch("core.tools.browser_tool._get_page", return_value=mock_page):
+            # Preconfigure next dialog response
+            res = await browser_tool.handle_dialog("agent_dlg", accept=True)
+            assert "Configured the next dialog response for 30 seconds: accept." in res
+            assert mock_page._carole_next_dialog["accept"] is True
 
-        # 2. Empty queue handling
-        res = await browser_tool.handle_dialog("agent_dlg", accept=True)
-        assert "No pending dialogs" in res
+            # Trigger event
+            mock_dialog = AsyncMock()
+            mock_dialog.type = "confirm"
+            mock_dialog.message = "Do you want to delete this record?"
+            await on_dialog_cb(mock_dialog)
+
+            mock_dialog.accept.assert_called_once()
+            assert len(mock_page._carole_dialog_events) == 1
+            assert mock_page._carole_dialog_events[0]["type"] == "confirm"
+            assert mock_page._carole_dialog_events[0]["accepted"] is True
 
     @pytest.mark.asyncio
     async def test_tab_management_and_cookies(self):
@@ -364,31 +399,35 @@ class TestBrowserTool:
 
         mock_context = MagicMock()
         mock_context.pages = [mock_page1, mock_page2]
-        mock_context.cookies = AsyncMock(return_value=[{"name": "session_id", "value": "abc12345", "domain": "site1.com"}])
+        mock_context.cookies = AsyncMock(return_value=[{"name": "session_id", "domain": "site1.com"}])
         mock_context.clear_cookies = AsyncMock()
 
         mock_page1.context = mock_context
 
         with patch("core.tools.browser_tool._get_page", return_value=mock_page1), \
+             patch("core.tools.browser_pool.set_active_page", new_callable=AsyncMock) as mock_set_active, \
              patch("core.tools.browser_tool._publish_screenshot", new_callable=AsyncMock):
             
-            # List tabs
+            # List tabs (returns JSON array)
             tabs_res = await browser_tool.list_tabs("ag_tabs")
-            assert "Open tabs (2):" in tabs_res
-            assert "https://site1.com" in tabs_res
-            assert "https://site2.com" in tabs_res
+            tabs_data = json.loads(tabs_res)
+            assert len(tabs_data) == 2
+            assert tabs_data[0]["url"] == "https://site1.com"
+            assert tabs_data[1]["url"] == "https://site2.com"
 
             # Switch tab
             switch_res = await browser_tool.switch_tab(1, "ag_tabs", "Agent", "team_1")
-            assert "✓ Switched to tab 1" in switch_res
+            assert "Active tab: https://site2.com" in switch_res
+            mock_set_active.assert_called_once_with("ag_tabs", mock_page2)
             mock_page2.bring_to_front.assert_called_once()
 
-            # Cookies
+            # Cookies (returns JSON metadata without raw values)
             cookies_res = await browser_tool.get_cookies("ag_tabs")
-            assert "session_id=abc12345" in cookies_res
+            cookies_data = json.loads(cookies_res)
+            assert any(c["name"] == "session_id" for c in cookies_data)
             
             clear_res = await browser_tool.clear_cookies("ag_tabs")
-            assert "✓ All cookies cleared" in clear_res
+            assert "Cookies cleared" in clear_res
             mock_context.clear_cookies.assert_called_once()
 
 
@@ -400,7 +439,7 @@ class TestBrowserAgentNative:
     """Tests the autonomous BrowserAgent ReACT inner loop, parsing, and bounds."""
 
     def test_extract_json_resilience(self):
-        """Verify _extract_json extracts JSON across various LLM formatting quirks."""
+        """Verify _extract_json extracts clean JSON and fenced blocks strictly."""
         # Clean json
         assert _extract_json('{"thought": "go", "action": {"type": "navigate"}}') == {
             "thought": "go", "action": {"type": "navigate"}
@@ -411,10 +450,14 @@ class TestBrowserAgentNative:
             "thought": "done", "done": True
         }
 
-        # Leading & trailing chatter
-        assert _extract_json('I will click the button now:\n{"thought": "click", "done": false}\nLet me know.') == {
-            "thought": "click", "done": False
-        }
+        # Reject duplicate keys
+        assert _extract_json('{"key": 1, "key": 2}') is None
+
+        # Reject non-finite constants (NaN, Infinity)
+        assert _extract_json('{"val": NaN}') is None
+
+        # Unfenced chatter is rejected for security against prompt injection
+        assert _extract_json('I will click the button now:\n{"thought": "click", "done": false}\nLet me know.') is None
 
         # Invalid returns None
         assert _extract_json('I am not returning valid json at all.') is None
@@ -430,8 +473,14 @@ class TestBrowserAgentNative:
             json.dumps({"thought": "Navigate to search engine", "done": False, "action": {"type": "navigate", "url": "https://example.com"}}),
             # Step 2: Type search text
             json.dumps({"thought": "Type search keywords", "done": False, "action": {"type": "type", "ref": 1, "text": "Flights to NYC"}}),
-            # Step 3: Complete
-            json.dumps({"thought": "Found NYC flights under $300", "done": True, "success": True, "summary": "Cheapest flight is JFK $249."}),
+            # Step 3: Complete with required evidence
+            json.dumps({
+                "thought": "Found NYC flights under $300",
+                "done": True,
+                "success": True,
+                "summary": "Cheapest flight is JFK $249.",
+                "evidence": "Flight search table displayed JFK $249 nonstop",
+            }),
         ]
 
         mock_page = MagicMock(url="https://example.com")
@@ -455,12 +504,15 @@ class TestBrowserAgentNative:
                 agent_name="Flyer",
                 team_id="team_travel",
             )
-            assert result.startswith("✓")
-            assert "Cheapest flight is JFK $249." in result
+            data = json.loads(result)
+            assert data["success"] is True
+            assert data["status"] == "completed"
+            assert "Cheapest flight is JFK $249." in data["summary"]
+            assert "JFK $249" in data["evidence"]
 
     @pytest.mark.asyncio
     async def test_autonomous_browser_agent_stuck_detection(self):
-        """Verify agent terminates early when snapshots remain unchanged for 3 consecutive steps."""
+        """Verify agent terminates early when actions in same state repeat 3 times."""
         agent = BrowserAgent(model="gpt-4o")
 
         # LLM keeps attempting the same click
@@ -483,7 +535,10 @@ class TestBrowserAgentNative:
                 agent_name="Clicker",
                 team_id="team_test",
             )
-            assert "⚠️ Browsing stopped: the page stopped changing after 3 steps" in result
+            data = json.loads(result)
+            assert data["success"] is False
+            assert data["status"] == "stuck"
+            assert "repeatedly chose the same action" in data["summary"]
 
     @pytest.mark.asyncio
     async def test_autonomous_browser_agent_human_takeover(self):
@@ -503,6 +558,7 @@ class TestBrowserAgentNative:
             "done": True,
             "success": True,
             "summary": "Page accessed successfully after CAPTCHA solution.",
+            "evidence": "Observed main dashboard view after challenge completion",
         })
 
         mock_page = AsyncMock(url="https://challenges.cloudflare.com")
@@ -519,7 +575,10 @@ class TestBrowserAgentNative:
                 agent_name="Scraper",
                 team_id="team_test",
             )
-            assert "✓ Page accessed successfully after CAPTCHA solution." in result
+            data = json.loads(result)
+            assert data["success"] is True
+            assert data["status"] == "completed"
+            assert "Page accessed successfully" in data["summary"]
             mock_takeover.assert_called_once()
             assert "Cloudflare verification" in mock_takeover.call_args[1]["reason"]
 
@@ -727,19 +786,19 @@ class TestEndToEndRealPlaywright:
             # 2. Interact using live selector / refs
             # Type into username
             type_res = await browser_tool.act("type", agent_id, "Agent", "team_1", selector="#username", text="Ada Lovelace")
-            assert "succeeded" in type_res
+            assert "executed" in type_res
 
             # Select role
             sel_res = await browser_tool.act("select", agent_id, "Agent", "team_1", selector="#role", value="developer")
-            assert "succeeded" in sel_res
+            assert "executed" in sel_res
 
             # Check checkbox
             chk_res = await browser_tool.act("check", agent_id, "Agent", "team_1", selector="#terms")
-            assert "succeeded" in chk_res
+            assert "executed" in chk_res
 
             # Click submit button
             clk_res = await browser_tool.act("click", agent_id, "Agent", "team_1", selector="#submit-btn")
-            assert "succeeded" in clk_res
+            assert "executed" in clk_res
 
             # 3. Verify DOM text updated from the submission
             result_text = await browser_tool.extract_text("#msg", agent_id)

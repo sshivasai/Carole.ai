@@ -256,12 +256,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("LLM router cleanup error: %s", e)
 
+    # Close WebTools and VoiceService connection pools and temp files
+    try:
+        from core.tools.web_tools import web_tools
+        await web_tools.aclose()
+        logger.info("✓ [Lifespan] Web tools closed.")
+    except Exception as e:
+        logger.warning("Web tools cleanup error: %s", e)
+
+    try:
+        from core.tools.voice_stt_tts import voice_service
+        await voice_service.aclose()
+        logger.info("✓ [Lifespan] Voice service closed.")
+    except Exception as e:
+        logger.warning("Voice service cleanup error: %s", e)
+
     # Close Database connection pool
     try:
         from core.memory.database import engine
         await engine.dispose()
     except Exception as e:
         logger.warning("Database dispose error: %s", e)
+
 
 
 app = FastAPI(title="Carole.ai Backend", version="0.2.0", lifespan=lifespan)

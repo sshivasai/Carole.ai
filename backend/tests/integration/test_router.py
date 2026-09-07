@@ -70,13 +70,22 @@ async def test_realtime_router_openrouter_free():
         pytest.skip("OPENROUTER_API_KEY is not configured")
 
     router = MultiModelRouter()
-    resp = await router.generate_completion(
-        model="openrouter/free",
-        system_prompt="You are a helpful and concise assistant.",
-        messages=[{"role": "user", "content": "Respond with the word 'HELLO' and nothing else."}],
-        temperature=0.0,
-        max_tokens=100,
-    )
+    resp = None
+    # Retry once if public free-tier endpoint yields transient empty response
+    for attempt in range(2):
+        try:
+            resp = await router.generate_completion(
+                model="openrouter/free",
+                system_prompt="You are a helpful and concise assistant.",
+                messages=[{"role": "user", "content": "Respond with the word 'HELLO' and nothing else."}],
+                temperature=0.0,
+                max_tokens=100,
+            )
+            if resp and "HELLO" in resp.upper():
+                break
+        except Exception:
+            if attempt == 1:
+                raise
     assert resp is not None
     assert isinstance(resp, str)
     assert len(resp.strip()) > 0

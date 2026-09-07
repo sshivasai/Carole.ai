@@ -103,7 +103,6 @@ def register_builtin_tools():
     if _builtins_registered:
         logger.debug("[ToolRegistry] Built-in tools already registered — skipping.")
         return
-    _builtins_registered = True
 
     builtins = [
         # ---- Filesystem (Strict Verification Pattern) ----
@@ -111,7 +110,7 @@ def register_builtin_tools():
                  {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
                   "force": {"type": "boolean", "required": False, "description": "Set to true to re-read full content even if unchanged"}},
                  "safe", _wrap_read_file),
-        ToolSpec("write_file", "Create a new file or completely overwrite an existing one. WARNING: Replaces ENTIRE file. To modify existing code, use edit_file instead. For Markdown/text docs (.md, .txt), writes are auto-approved without Judge review.", "filesystem",
+        ToolSpec("write_file", "Create a new file or completely overwrite an existing one. WARNING: Replaces ENTIRE file. To modify existing code, use edit_file instead.", "filesystem",
                  {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
                   "content": {"type": "string", "required": True, "description": "Full file content to write"}},
                  "judge", _wrap_write_file),
@@ -226,15 +225,19 @@ def register_builtin_tools():
                   "top_k": {"type": "number", "required": False}}, "safe", _wrap_hybrid_code_search),
 
         # ---- Web ----
-        ToolSpec("web_search", "Search the web using Tavily API. Returns search result summaries with titles, URLs, and content snippets. Use for quick research, fact-checking, or finding resources. CRITICAL LIMITATIONS: (1) Results are search-engine summaries — URLs often point to aggregator/listing pages, NOT direct application or product links. If the user asks for 'exact links', 'direct links', or specific job/product URLs, you MUST follow up with browser_navigate + browser_get_all_links to extract actual destination URLs from the page. (2) ALWAYS include a 'Sources:' section at the end of your response listing URLs as markdown hyperlinks [Title](URL). (3) Use the CURRENT YEAR in search queries for recent information.", "web",
+        ToolSpec("web_search", "Search the web using Tavily API. Returns search result summaries with titles, URLs, and content snippets. Use for quick research, fact-checking, or finding resources. If direct links from a known static page are needed, prefer web_extract_links before launching a full browser. ALWAYS include a 'Sources:' section at the end of your response listing URLs as markdown hyperlinks [Title](URL).", "web",
                  {"query": {"type": "string", "required": True},
-                  "max_results": {"type": "number", "required": False}},
+                  "max_results": {"type": "integer", "required": False}},
                  "safe", _wrap_web_search),
-        ToolSpec("web_fetch", "Fetch a URL's content and return it as plain text (HTML is stripped, up to 5000 chars). Use when you have a specific URL and need to read its contents. LIMITATIONS: Does NOT execute JavaScript — dynamic/SPA content will be missing. For pages requiring JS rendering, login, or form interaction, use browser_navigate instead.", "web",
+        ToolSpec("web_fetch", "Fetch static public web content. Text is returned in markdown and limited to 20,000 characters. Known document/image formats return managed file metadata. Does not execute JavaScript.", "web",
                  {"url": {"type": "string", "required": True}}, "safe", _wrap_web_fetch),
-        ToolSpec("http_request", "Make an arbitrary HTTP request (GET, POST, PUT, PATCH, DELETE) to any URL. Returns the status code, response headers, and body. Use for testing REST APIs, triggering webhooks, or calling internal services. For public web pages, prefer web_fetch instead.", "web",
+        ToolSpec("web_extract_links", "Extract direct HTTP(S) links from a public static HTML page. Returns link text and absolute URLs without launching a browser. Does not execute JavaScript or verify each destination.", "web",
+                 {"url": {"type": "string", "required": True, "description": "Public HTML page URL"},
+                  "limit": {"type": "integer", "required": False, "minimum": 1, "maximum": 200, "description": "Maximum links to return; default 50"}},
+                 "safe", _wrap_web_extract_links),
+        ToolSpec("http_request", "Make a public HTTP request (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS). No automatic redirects or private-network access. Response headers and text output are bounded.", "web",
                  {"url": {"type": "string", "required": True},
-                  "method": {"type": "string", "required": False, "description": "HTTP method: GET (default), POST, PUT, PATCH, DELETE"},
+                  "method": {"type": "string", "required": False, "description": "HTTP method: GET (default), POST, PUT, PATCH, DELETE, HEAD, OPTIONS"},
                   "headers": {"type": "object", "required": False, "description": "Optional request headers as key-value pairs"},
                   "body": {"type": "object", "required": False, "description": "Optional JSON request body (auto-sets Content-Type: application/json)"},
                   "timeout": {"type": "number", "required": False, "description": "Timeout in seconds (default 30)"}},
@@ -656,9 +659,8 @@ def register_builtin_tools():
                  "safe", _wrap_clear_scratchpad),
     ]
 
-    for spec in builtins:
-        ToolRegistry.register(spec)
-
+    ToolRegistry.register_batch(builtins, force=True)
+    _builtins_registered = True
     logger.info("🔧 [ToolRegistry] Registered %d built-in tools.", len(builtins))
 
 
@@ -668,13 +670,14 @@ def register_builtin_tools():
 
 # Map UI permission levels → internal gate levels
 _PERM_ALIAS: Dict[str, str] = {
-    "allow":      "safe",
-    "judge":      "judge",
-    "always_ask": "human",
-    "block":      "block",
+    "allow":            "safe",
+    "judge":            "judge",
+    "always_ask":       "human",
+    "require_approval": "judge",
+    "block":            "block",
     # legacy aliases
-    "safe":       "safe",
-    "human":      "human",
+    "safe":             "safe",
+    "human":            "human",
 }
 
 # Map tool names → high-level action category
@@ -702,7 +705,7 @@ _TOOL_CATEGORY: Dict[str, str] = {
     "git_pull": "git", "git_branch": "git", "git_checkout": "git",
     "git_stash": "git", "git_clone": "git",
     # web
-    "web_search": "web", "web_fetch": "web",
+    "web_search": "web", "web_fetch": "web", "web_extract_links": "web",
     # browser
     "browser_navigate": "browser", "browser_click": "browser",
     "browser_click_text": "browser", "browser_type": "browser",
@@ -805,32 +808,49 @@ def _get_effective_permissions(permissions: Any) -> Dict[str, Any]:
     }
 
 
-def _resolve_gate_level(tool_name: str, permissions: Dict[str, Any]) -> str:
-    """
-    Resolve the effective gate level for a tool from a structured
-    AccessControlConfig dict.
+_GATE_RANK = {
+    "safe": 0,
+    "judge": 1,
+    "human": 2,
+    "block": 3,
+}
 
-    Priority (highest → lowest):
-      1. Per-tool overrides  (permissions["overrides"][tool_name])
-      2. Category permission (permissions["categories"][category])
-      3. _CATEGORY_DEFAULTS
-      4. Tool spec default   (caller's fallback)
-    """
-    overrides = permissions.get("overrides", {})
-    if tool_name in overrides:
-        raw = overrides[tool_name]
-        return _PERM_ALIAS.get(raw, raw)
 
-    category = _TOOL_CATEGORY.get(tool_name, "mcp")
+def _normalize_gate(value: Any) -> str:
+    if not isinstance(value, str):
+        return "block"
+    normalized = _PERM_ALIAS.get(value, value)
+    return normalized if normalized in _GATE_RANK else "block"
+
+
+def _resolve_gate_level(
+    tool_name: str,
+    permissions: Dict[str, Any],
+) -> str:
+    spec = ToolRegistry.get(tool_name)
+    if spec is None:
+        return "block"
+
+    baseline = _normalize_gate(spec.permission_default)
+    category = _TOOL_CATEGORY.get(tool_name, spec.category)
+
     categories = permissions.get("categories", {})
-    if category in categories:
-        raw = categories[category]
-        return _PERM_ALIAS.get(raw, raw)
+    overrides = permissions.get("overrides", {})
 
-    if category in _CATEGORY_DEFAULTS:
-        return _CATEGORY_DEFAULTS[category]
+    if not isinstance(categories, dict) or not isinstance(overrides, dict):
+        return "block"
 
-    return "judge"  # safe conservative default for unknown tools
+    category_gate = _normalize_gate(
+        categories.get(category, baseline)
+    )
+    override_gate = _normalize_gate(
+        overrides.get(tool_name, baseline)
+    )
+
+    return max(
+        (baseline, category_gate, override_gate),
+        key=_GATE_RANK.__getitem__,
+    )
 
 
 def _matches_skip_judge(tool_name: str, arguments: Dict[str, Any], permissions: Dict[str, Any]) -> bool:
@@ -1040,6 +1060,12 @@ class ToolExecutor:
         if not spec:
             return f"Error: Tool '{tool_name}' is not registered in the system."
 
+        # ── Scope enforcement (Recommendation 7.A) ──
+        if spec.team_id is not None and str(spec.team_id) != str(team_id):
+            return "Execution Denied: Tool is not available to this team."
+        if spec.agent_id is not None and str(spec.agent_id) != str(agent_id):
+            return "Execution Denied: Tool is not available to this agent."
+
         # ── Orchestrator Role Guard ──
         # Orchestrators/Coordinators are hard-blocked from modifying project source code files directly,
         # but ARE permitted to author planning/documentation Markdown files (*.md, *.markdown).
@@ -1060,7 +1086,15 @@ class ToolExecutor:
                     "(e.g. create_task with assignee_name), or delegate using spawn_agent."
                 )
 
-        # ── Pre-validation of arguments ──
+        # ── Pre-validation & Sanitization of arguments ──
+        # Strip reserved internal arguments to prevent authorization forgery (Recommendation 7.D)
+        RESERVED_ARGS = {
+            "_human_confirmed", "_server_approved", "_context",
+            "_agent_id", "_agent_name", "_team_id", "_active_message_id",
+            "confirm_destructive",
+        }
+        arguments = {k: v for k, v in arguments.items() if k not in RESERVED_ARGS}
+
         # Check for placeholder Ellipsis or empty/placeholder values
         if arguments:
             has_ellipsis = False
@@ -1146,7 +1180,7 @@ class ToolExecutor:
         elif gate_level == "judge":
             tx_id = str(uuid.uuid4())
             topic = f"team:{team_id}"
-            
+
             # Setup human override event
             event = asyncio.Event()
             pending_approvals[tx_id] = event
@@ -1161,7 +1195,11 @@ class ToolExecutor:
                 "created_at": time.time(),
             }
             resolved_status = "denied"
-            
+            judge_task = None
+            human_task = None
+            start_monotonic = time.monotonic()
+            deadline = start_monotonic + APPROVAL_TIMEOUT_SECS
+
             try:
                 # 1. Publish approval request to UI instantly
                 await _publish_approval(topic, {
@@ -1173,25 +1211,25 @@ class ToolExecutor:
                     "arguments": arguments,
                     "text": f"⚠️ Judge AI is evaluating '{tool_name}'... (You can override now)"
                 })
-                
+
                 # 2. Start concurrent Judge evaluation
                 judge_task = asyncio.create_task(
                     judge_evaluator.evaluate(tool_name, arguments, agent_name, team_id=team_id)
                 )
                 human_task = asyncio.create_task(event.wait())
-                
+
                 logger.info("⚖️ [Executor] Racing Judge vs Human for agent '%s' tool=%s tx_id=%s", agent_name, tool_name, tx_id)
-                
-                # 3. Wait for the FIRST one to finish
+
+                # 3. Wait for the FIRST one to finish within monotonic deadline
+                remaining = max(0.1, deadline - time.monotonic())
                 done, pending = await asyncio.wait(
-                    [judge_task, human_task], 
+                    [judge_task, human_task],
                     return_when=asyncio.FIRST_COMPLETED,
-                    timeout=APPROVAL_TIMEOUT_SECS
+                    timeout=remaining,
                 )
-                
+
                 if not done:
                     # Both timed out
-                    judge_task.cancel()
                     logger.warning("[Executor] Approval for tx_id=%s timed out after %ds.", tx_id, APPROVAL_TIMEOUT_SECS)
                     resolved_status = "denied"
                     await _publish_approval(topic, {
@@ -1204,12 +1242,11 @@ class ToolExecutor:
                         "reason": "Timed out waiting for approval"
                     })
                     return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
-                
+
                 if human_task in done:
                     # Human answered first
-                    judge_task.cancel()
                     override_approved = approval_results.get(tx_id, False)
-                    
+
                     if override_approved:
                         logger.info("✓ [Executor] tx_id=%s HUMAN APPROVED (preempted judge).", tx_id)
                         resolved_status = "approved"
@@ -1222,6 +1259,8 @@ class ToolExecutor:
                             "status": "approved",
                             "reason": "Human override approved"
                         })
+                        arguments["_server_approved"] = True
+                        arguments["_human_confirmed"] = True
                         return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
                     else:
                         logger.info("✗ [Executor] tx_id=%s HUMAN DENIED (preempted judge).", tx_id)
@@ -1236,7 +1275,7 @@ class ToolExecutor:
                             "reason": "Human override denied"
                         })
                         return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}'."
-                
+
                 if judge_task in done:
                     # Judge answered first
                     try:
@@ -1245,10 +1284,9 @@ class ToolExecutor:
                         logger.error("[Executor] Judge evaluator crashed: %s", e)
                         approved, reason = False, f"Judge crashed during evaluation: {e}"
                     if approved:
-                        human_task.cancel()
                         logger.info("✓ [Executor] tx_id=%s JUDGE APPROVED.", tx_id)
                         resolved_status = "approved"
-                        
+
                         # Notify UI that approval is resolved so card can disappear
                         await _publish_approval(topic, {
                             "type": "approval_resolved",
@@ -1259,11 +1297,12 @@ class ToolExecutor:
                             "status": "approved",
                             "reason": reason
                         })
+                        arguments["_server_approved"] = True
                         return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
                     else:
                         # Judge denied. We DO NOT cancel human task. We wait for human override!
                         logger.info("🛑 [Executor] tx_id=%s JUDGE DENIED. Awaiting human override...", tx_id)
-                        
+
                         # Update UI to show denial reason
                         await _publish_approval(topic, {
                             "type": "approval_update",
@@ -1273,12 +1312,13 @@ class ToolExecutor:
                             "tool_name": tool_name,
                             "text": f"🛑 Judge DENIED execution: {reason}\nRequire human override to proceed."
                         })
-                        
-                        # Wait for human task (remaining time)
+
+                        # Wait for human task (remaining monotonic deadline)
+                        remaining = max(0.1, deadline - time.monotonic())
                         try:
-                            await asyncio.wait_for(human_task, timeout=APPROVAL_TIMEOUT_SECS)
+                            await asyncio.wait_for(human_task, timeout=remaining)
                         except asyncio.TimeoutError:
-                            logger.warning("[Executor] Override for tx_id=%s timed out after %ds.", tx_id, APPROVAL_TIMEOUT_SECS)
+                            logger.warning("[Executor] Override for tx_id=%s timed out.", tx_id)
                             resolved_status = "denied"
                             await _publish_approval(topic, {
                                 "type": "approval_resolved",
@@ -1290,9 +1330,9 @@ class ToolExecutor:
                                 "reason": "Timed out waiting for human override"
                             })
                             return f"✗ Approval timed out after {APPROVAL_TIMEOUT_SECS}s: '{tool_name}' was not approved."
-                        
+
                         override_approved = approval_results.get(tx_id, False)
-                        
+
                         if override_approved:
                             logger.info("✓ [Executor] tx_id=%s OVERRIDE APPROVED. Resuming...", tx_id)
                             resolved_status = "approved"
@@ -1305,6 +1345,8 @@ class ToolExecutor:
                                 "status": "approved",
                                 "reason": "Human override approved"
                             })
+                            arguments["_server_approved"] = True
+                            arguments["_human_confirmed"] = True
                             return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
                         else:
                             logger.info("✗ [Executor] tx_id=%s OVERRIDE DENIED.", tx_id)
@@ -1320,6 +1362,17 @@ class ToolExecutor:
                             })
                             return f"✗ Execution Cancelled: Human operator denied approval to run '{tool_name}' after Judge rejection."
             finally:
+                tasks = [
+                    task
+                    for task in (judge_task, human_task)
+                    if task is not None
+                ]
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
                 pending_approvals.pop(tx_id, None)
                 approval_results.pop(tx_id, None)
                 pending_approval_details.pop(tx_id, None)
@@ -1403,8 +1456,10 @@ class ToolExecutor:
                         "agent_name": agent_name,
                         "tool_name": tool_name,
                         "status": "approved",
-                        "reason": "Human approved"
+                        "reason": "Human approval granted"
                     })
+                    arguments["_server_approved"] = True
+                    arguments["_human_confirmed"] = True
                     return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
                 else:
                     logger.info("✗ [Executor] tx_id=%s DENIED. Cancelling execution...", tx_id)
@@ -1458,7 +1513,13 @@ class ToolExecutor:
         if context:
             arguments["_context"] = context
         try:
-            result = await spec.handler(arguments, team_id)
+            if asyncio.iscoroutinefunction(spec.handler):
+                result = await spec.handler(arguments, team_id)
+            else:
+                result = spec.handler(arguments, team_id)
+                if asyncio.iscoroutine(result):
+                    result = await result
+
         except Exception as e:
             logger.exception("[Executor] Tool '%s' raised: %s", spec.name, e)
             return f"Error: Tool '{spec.name}' raised an exception: {type(e).__name__}: {e}"
@@ -1799,92 +1860,134 @@ async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
         r"\btruncate\s+table\b",
     ]
     if any(re.search(pat, command, re.IGNORECASE) for pat in destructive_patterns):
-        if not args.get("_human_confirmed") and not args.get("confirm_destructive"):
+        if not args.get("_server_approved") and not args.get("_human_confirmed"):
             return (
                 f"⚠️ HIGH-RISK DESTRUCTIVE ACTION INTERCEPTED: '{command}'.\n"
                 "This command contains destructive operations (rm -rf, DROP TABLE, git reset --hard) that risk irreversible data loss.\n"
-                "To execute this command, you must explicitly confirm with the operator or pass confirm_destructive=True."
+                "To execute this command, you must obtain explicit human operator approval."
             )
 
     timeout = float(args.get("timeout", 60.0))
     background = bool(args.get("background", False) or args.get("is_daemon", False))
     context = args.get("_context")
     base_cwd = await _team_cwd(team_id)
-    # Allow agent to specify a subdirectory relative to workspace root
+    if not base_cwd:
+        return "Error: Cannot resolve workspace directory for team."
+
+    # Allow agent to specify a subdirectory relative to workspace root (Recommendation 7.E)
     sub_cwd = args.get("cwd")
-    if sub_cwd and base_cwd:
-        import os
-        resolved = os.path.normpath(os.path.join(base_cwd, sub_cwd))
-        # Security: ensure resolved path is still within the workspace
-        if resolved.startswith(base_cwd):
-            cwd = resolved
-        else:
+    if sub_cwd:
+        from pathlib import Path
+        root = Path(base_cwd).resolve()
+        candidate = (root / sub_cwd).resolve()
+        if not candidate.is_relative_to(root):
             return f"Error: cwd '{sub_cwd}' escapes the workspace root."
+        cwd = str(candidate)
     else:
         cwd = base_cwd
     return await shell_tools.execute_command(command, team_id, timeout, context=context, cwd=cwd, background=background)
 
 
 async def _wrap_git_status(args: Dict[str, Any], team_id: str) -> str:
-    return await git_tools.status(cwd=await _team_cwd(team_id))
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
+    return await git_tools.status(cwd=cwd)
+
 
 async def _wrap_git_diff(args: Dict[str, Any], team_id: str) -> str:
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
     staged = args.get("staged", False)
-    return await git_tools.diff(staged=staged, cwd=await _team_cwd(team_id))
+    return await git_tools.diff(staged=staged, cwd=cwd)
+
 
 async def _wrap_git_add(args: Dict[str, Any], team_id: str) -> str:
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
     paths = args.get("paths", ".") or args.get("value", ".")
-    return await git_tools.add(paths, cwd=await _team_cwd(team_id))
+    return await git_tools.add(paths, cwd=cwd)
+
 
 async def _wrap_git_commit(args: Dict[str, Any], team_id: str) -> str:
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
     message = args.get("message") or args.get("value", "")
-    return await git_tools.commit(message, cwd=await _team_cwd(team_id))
+    return await git_tools.commit(message, cwd=cwd)
+
 
 async def _wrap_git_log(args: Dict[str, Any], team_id: str) -> str:
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
     count = int(args.get("count", 10))
-    return await git_tools.log(count=count, cwd=await _team_cwd(team_id))
+    return await git_tools.log(count=count, cwd=cwd)
+
 
 async def _wrap_git_checkout(args: Dict[str, Any], team_id: str) -> str:
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
     branch = args.get("branch") or args.get("value", "")
     create = args.get("create", False)
-    return await git_tools.checkout_branch(branch, create=create, cwd=await _team_cwd(team_id))
+    return await git_tools.checkout_branch(branch, create=create, cwd=cwd)
+
 
 async def _wrap_git_push(args: Dict[str, Any], team_id: str) -> str:
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
     remote = args.get("remote", "origin")
     branch = args.get("branch")
-    return await git_tools.push(remote, branch, cwd=await _team_cwd(team_id))
+    return await git_tools.push(remote, branch, cwd=cwd)
+
 
 async def _wrap_git_pull(args: Dict[str, Any], team_id: str) -> str:
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
     remote = args.get("remote", "origin")
     branch = args.get("branch")
-    return await git_tools.pull(remote, branch, cwd=await _team_cwd(team_id))
+    return await git_tools.pull(remote, branch, cwd=cwd)
+
 
 async def _wrap_git_branch(args: Dict[str, Any], team_id: str) -> str:
+    cwd = await _team_cwd(team_id)
+    if not cwd:
+        return "Error: Cannot resolve workspace directory for team."
     show_all = args.get("all", False)
-    return await git_tools.branch(all=show_all, cwd=await _team_cwd(team_id))
+    return await git_tools.branch(all=show_all, cwd=cwd)
+
 
 async def _wrap_web_search(args: Dict[str, Any], team_id: str) -> str:
-    query = args.get("query") or args.get("value", "")
-    if not query:
-        return "Error: Missing parameter 'query'."
-    max_results = int(args.get("max_results", 5))
-    return await web_tools.web_search(query, max_results)
+    return await web_tools.web_search(
+        query=args.get("query", ""),
+        max_results=args.get("max_results", 5),
+    )
+
 
 async def _wrap_web_fetch(args: Dict[str, Any], team_id: str) -> str:
-    url = args.get("url") or args.get("value", "")
-    if not url:
-        return "Error: Missing parameter 'url'."
-    return await web_tools.web_fetch(url)
+    return await web_tools.web_fetch(args.get("url", ""))
+
+
+async def _wrap_web_extract_links(args: Dict[str, Any], team_id: str) -> str:
+    return await web_tools.web_extract_links(
+        url=args.get("url", ""),
+        limit=args.get("limit", 50),
+    )
+
 
 async def _wrap_http_request(args: Dict[str, Any], team_id: str) -> str:
-    url = args.get("url") or args.get("value", "")
-    if not url:
-        return "Error: Missing parameter 'url'."
-    method = args.get("method", "GET")
-    headers = args.get("headers")
-    body = args.get("body")
-    timeout = float(args.get("timeout", 30.0))
-    return await web_tools.http_request(url, method=method, headers=headers, body=body, timeout=timeout)
+    return await web_tools.http_request(
+        url=args.get("url", ""),
+        method=args.get("method", "GET"),
+        headers=args.get("headers"),
+        body=args.get("body"),
+        timeout=args.get("timeout", 30.0),
+    )
 
 async def _wrap_diff_files(args: Dict[str, Any], team_id: str) -> str:
     path_a = args.get("path_a") or args.get("file_a", "")
@@ -2951,87 +3054,129 @@ async def _wrap_generate_mom(args: Dict[str, Any], team_id: str) -> str:
 
 
 
-import urllib.request
 import tempfile
-import mimetypes
+from pathlib import Path
 
 async def _wrap_extract_document(args: Dict[str, Any], team_id: str) -> str:
     path_or_url = args.get("path_or_url", "")
-    if not path_or_url:
+    if not isinstance(path_or_url, str) or not path_or_url.strip():
         return "Error: Missing path_or_url parameter."
-    
+
+    path_or_url = path_or_url.strip()
+    tmp_path = None
+    is_remote = False
+
     try:
         if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
-            import urllib.request
-            req = urllib.request.Request(path_or_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                content = response.read()
-            
-            # Detect extension from URL or content-type
+            is_remote = True
+            try:
+                result = await web_tools._fetch(path_or_url)
+            except Exception as e:
+                return f"Error downloading remote document: {e}"
+
+            content = result.content
+            ctype = result.mime_type or ""
+
             ext = ".txt"
-            ctype = response.headers.get("Content-Type", "")
-            if "pdf" in ctype: ext = ".pdf"
-            elif "wordprocessingml.document" in ctype: ext = ".docx"
-            elif "spreadsheetml.sheet" in ctype: ext = ".xlsx"
-            elif "image" in ctype: ext = ".png"
-            elif path_or_url.lower().endswith(".pdf"): ext = ".pdf"
-            elif path_or_url.lower().endswith(".docx"): ext = ".docx"
-            elif path_or_url.lower().endswith(".xlsx"): ext = ".xlsx"
-            elif path_or_url.lower().endswith(".jpg") or path_or_url.lower().endswith(".png"): ext = ".png"
-            
+            if "pdf" in ctype or path_or_url.lower().endswith(".pdf"):
+                ext = ".pdf"
+            elif "wordprocessingml.document" in ctype or path_or_url.lower().endswith(".docx"):
+                ext = ".docx"
+            elif "spreadsheetml.sheet" in ctype or path_or_url.lower().endswith(".xlsx"):
+                ext = ".xlsx"
+            elif "image" in ctype or any(path_or_url.lower().endswith(x) for x in [".jpg", ".jpeg", ".png", ".webp"]):
+                ext = ".png"
+            elif path_or_url.lower().endswith(".doc"):
+                ext = ".doc"
+            elif path_or_url.lower().endswith(".xls"):
+                ext = ".xls"
+
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
         else:
-            tmp_path = path_or_url
-            
-        ext = os.path.splitext(tmp_path)[1].lower()
-        text = ""
-        
-        if ext == ".pdf":
-            try:
-                import PyPDF2
-                with open(tmp_path, "rb") as f:
-                    reader = PyPDF2.PdfReader(f)
-                    for page in reader.pages:
-                        text += page.extract_text() + "\n"
-            except ImportError:
-                return "Error: PyPDF2 is not installed."
-        elif ext == ".docx":
-            try:
-                import docx
-                doc = docx.Document(tmp_path)
-                for para in doc.paragraphs:
-                    text += para.text + "\n"
-            except ImportError:
-                return "Error: python-docx is not installed."
-        elif ext == ".xlsx":
-            try:
-                import openpyxl
-                wb = openpyxl.load_workbook(tmp_path, data_only=True)
-                for sheet in wb.worksheets:
-                    text += f"--- Sheet: {sheet.title} ---\n"
-                    for row in sheet.iter_rows(values_only=True):
-                        text += "\t".join([str(v) if v is not None else "" for v in row]) + "\n"
-            except ImportError:
-                return "Error: openpyxl is not installed."
-        elif ext in [".png", ".jpg", ".jpeg"]:
-            try:
-                import pytesseract
-                from PIL import Image
-                text = pytesseract.image_to_string(Image.open(tmp_path))
-            except Exception as e:
-                return f"Error extracting image text: {e}"
-        else:
-            try:
-                with open(tmp_path, "r", encoding="utf-8") as f:
-                    text = f.read()
-            except:
-                return f"Error: Unsupported or unreadable document type: {ext}"
-        
-        if path_or_url.startswith("http"):
-            os.remove(tmp_path)
-            
-        return f"Successfully extracted document ({ext}):\n\n{text[:100000]}"
+            base_dir = await _team_cwd(team_id)
+            if not base_dir:
+                return "Error: Cannot resolve workspace directory for team."
+
+            root_dir = Path(base_dir).resolve()
+            target_path = Path(path_or_url)
+            if not target_path.is_absolute():
+                target_path = (root_dir / target_path).resolve()
+            else:
+                target_path = target_path.resolve()
+
+            if not target_path.is_relative_to(root_dir):
+                return f"Error: Path '{path_or_url}' is outside workspace boundaries."
+
+            if not target_path.exists() or not target_path.is_file():
+                return f"Error: File '{path_or_url}' not found."
+
+            tmp_path = str(target_path)
+
+        def _parse_doc(file_path: str) -> tuple[str, str]:
+            file_ext = os.path.splitext(file_path)[1].lower()
+            text = ""
+            if file_ext == ".pdf":
+                try:
+                    import PyPDF2
+                    with open(file_path, "rb") as f:
+                        reader = PyPDF2.PdfReader(f)
+                        for page in reader.pages:
+                            text += (page.extract_text() or "") + "\n"
+                except ImportError:
+                    return file_ext, "Error: PyPDF2 is not installed."
+                except Exception as ex:
+                    return file_ext, f"Error reading PDF: {ex}"
+            elif file_ext == ".docx":
+                try:
+                    import docx
+                    doc = docx.Document(file_path)
+                    for para in doc.paragraphs:
+                        text += para.text + "\n"
+                except ImportError:
+                    return file_ext, "Error: python-docx is not installed."
+                except Exception as ex:
+                    return file_ext, f"Error reading DOCX: {ex}"
+            elif file_ext == ".xlsx":
+                try:
+                    import openpyxl
+                    wb = openpyxl.load_workbook(file_path, data_only=True)
+                    for sheet in wb.worksheets:
+                        text += f"--- Sheet: {sheet.title} ---\n"
+                        for row in sheet.iter_rows(values_only=True):
+                            text += "\t".join([str(v) if v is not None else "" for v in row]) + "\n"
+                except ImportError:
+                    return file_ext, "Error: openpyxl is not installed."
+                except Exception as ex:
+                    return file_ext, f"Error reading XLSX: {ex}"
+            elif file_ext in [".png", ".jpg", ".jpeg", ".webp"]:
+                try:
+                    import pytesseract
+                    from PIL import Image
+                    text = pytesseract.image_to_string(Image.open(file_path))
+                except Exception as e:
+                    return file_ext, f"Error extracting image text: {e}"
+            else:
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                        text = f.read(100_000)
+                except Exception as ex:
+                    return file_ext, f"Error: Unsupported or unreadable document type: {file_ext} ({ex})"
+            return file_ext, text
+
+        doc_ext, parsed_text = await asyncio.to_thread(_parse_doc, tmp_path)
+        if parsed_text.startswith("Error"):
+            return parsed_text
+
+        return f"Successfully extracted document ({doc_ext}):\n\n{parsed_text[:100000]}"
+
     except Exception as e:
         return f"Error processing document: {str(e)}"
+    finally:
+        if is_remote and tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+

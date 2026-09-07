@@ -91,6 +91,7 @@ _PROMPT_ALIASES = {
     "COMPACTION_USER_PROMPT":   "system.compaction_user",
     "KEYWORD_EXTRACTION_PROMPT":"system.keyword_extraction",
     "OUTPUT_EFFICIENCY_PROMPT": "system.output_efficiency",
+    "BROWSER_AGENT_SYSTEM_PROMPT": "system.browser_agent",
 }
 
 
