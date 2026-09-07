@@ -147,6 +147,18 @@ class ShellTools:
 
         return None
 
+    @staticmethod
+    def sanitize_command(command: str) -> str:
+        """Redacts sensitive API keys, PATs, and tokens from shell command strings."""
+        try:
+            sanitized_cmd = re.sub(r'(Bearer\s+|api[_-]?key[=:\s]+|token[=:\s]+|password[=:\s]+)([\w\-.~]+)', r'\1***REDACTED***', command, flags=re.IGNORECASE)
+            sanitized_cmd = re.sub(r'sk-(?:proj-)?[a-zA-Z0-9_\-]{16,}', 'sk-***REDACTED***', sanitized_cmd)
+            sanitized_cmd = re.sub(r'(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82})', r'***REDACTED***', sanitized_cmd)
+            sanitized_cmd = re.sub(r'AIza[0-9A-Za-z-_]{35}', r'AIza***REDACTED***', sanitized_cmd)
+            return sanitized_cmd
+        except Exception:
+            return command
+
     async def execute_command(
         self,
         command: str,
@@ -167,13 +179,13 @@ class ShellTools:
         if policy_violation:
             logger.warning("[Shell] Intercepted non-exclusive command: %s", command)
             return policy_violation
-        workdir = cwd or str(self.workspace_root)
-        try:
-            sanitized_cmd = re.sub(r'(Bearer\s+|api[_-]?key[=:\s]+|token[=:\s]+|password[=:\s]+)([\w\-.~]+)', r'\1***REDACTED***', command, flags=re.IGNORECASE)
-            sanitized_cmd = re.sub(r'sk-[a-zA-Z0-9_\-]{16,}', 'sk-***REDACTED***', sanitized_cmd)
-            logger.info("[Shell] Executing in %s: '%s' (Timeout: %ss, Background: %s)", workdir, sanitized_cmd, timeout, background)
-        except Exception:
-            sanitized_cmd = command
+        workdir_path = Path(cwd).resolve() if cwd else self.workspace_root.resolve()
+        if not workdir_path.exists() or not workdir_path.is_dir():
+            return f"✗ Subprocess Launch Error: Working directory '{workdir_path}' does not exist or is not a directory."
+        workdir = str(workdir_path)
+
+        sanitized_cmd = self.sanitize_command(command)
+        logger.info("[Shell] Executing in %s: '%s' (Timeout: %ss, Background: %s)", workdir, sanitized_cmd, timeout, background)
 
         loop = asyncio.get_running_loop()
         topic = f"team:{team_id}"
@@ -182,7 +194,10 @@ class ShellTools:
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
-            kwargs["preexec_fn"] = os.setpgrp
+            if sys.version_info >= (3, 11):
+                kwargs["process_group"] = 0
+            else:
+                kwargs["preexec_fn"] = os.setpgrp
 
         try:
             proc = subprocess.Popen(

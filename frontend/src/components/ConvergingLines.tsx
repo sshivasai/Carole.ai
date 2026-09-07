@@ -158,11 +158,11 @@ export default function ConvergingLines({
       size: number;
     }
 
-    const pulses: Pulse[] = Array.from({ length: 26 }, () => ({
+    const pulses: Pulse[] = Array.from({ length: 36 }, () => ({
       rodIndex: Math.floor(Math.random() * lineCount),
       progress: Math.random(),
-      speed: 0.003 + Math.random() * 0.005,
-      size: 1.5 + Math.random() * 2,
+      speed: 0.003 + Math.random() * 0.006,
+      size: 2 + Math.random() * 2.5,
     }));
 
     // Spring-mass physics parameters (elastic tensile rod simulation)
@@ -187,21 +187,22 @@ export default function ConvergingLines({
       ctx.clearRect(0, 0, width, height);
 
       const isDark =
-        theme === "dark" || document.documentElement.classList.contains("dark");
+        theme !== "light" &&
+        !document.documentElement.classList.contains("theme-light");
 
-      // Dynamic theme color palette (+10% visibility enhancement)
+      // Dynamic theme color palette with balanced, refined visibility through glass
       const baseLineColor = isDark
-        ? "rgba(167, 139, 250, 0.065)"
-        : "rgba(99, 102, 241, 0.075)";
+        ? "rgba(167, 139, 250, 0.10)"
+        : "rgba(99, 102, 241, 0.07)";
       const focalLineColor = isDark
-        ? "rgba(167, 139, 250, 0.18)"
-        : "rgba(79, 70, 229, 0.20)";
+        ? "rgba(167, 139, 250, 0.25)"
+        : "rgba(79, 70, 229, 0.16)";
       const pulseColor = isDark
-        ? "rgba(192, 132, 252, 0.50)"
-        : "rgba(99, 102, 241, 0.50)";
+        ? "rgba(216, 180, 254, 0.70)"
+        : "rgba(99, 102, 241, 0.45)";
       const ringColor = isDark
-        ? "rgba(167, 139, 250, 0.038)"
-        : "rgba(99, 102, 241, 0.048)";
+        ? "rgba(167, 139, 250, 0.06)"
+        : "rgba(99, 102, 241, 0.035)";
 
       // Draw perspective rings around focal convergence
       const ringRadii = [60, 130, 220, 340, 500, 700];

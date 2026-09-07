@@ -156,9 +156,10 @@ def _session_method(fn):
             # Do not return arbitrary exception strings containing passwords,
             # proxy URLs, request headers, or typed input.
             logger.warning(
-                "Browser operation failed: operation=%s error=%s",
+                "Browser operation failed: operation=%s error=%s msg=%s",
                 fn.__name__,
                 type(exc).__name__,
+                exc,
             )
             return (
                 f"Error: {fn.__name__} failed ({type(exc).__name__}). "
@@ -208,7 +209,13 @@ class BrowserTool:
             page._carole_dialog_events.append(event)
             del page._carole_dialog_events[:-10]
 
-        page.on("dialog", on_dialog)
+        res = page.on("dialog", on_dialog)
+        if inspect.isawaitable(res):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(res)
+            except RuntimeError:
+                pass
 
     def _invalidate_refs(self, page):
         page._carole_refs = {}

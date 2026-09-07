@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import type { BrowserScreenshotEvent } from "@/lib/types";
 import {
   Monitor,
@@ -12,11 +12,14 @@ import {
   MousePointer,
   ArrowDown,
   ArrowUp,
+  ArrowLeft,
   RotateCcw,
   CornerDownLeft,
   CheckCircle2,
   Loader2,
   Keyboard,
+  Zap,
+  Wifi,
 } from "lucide-react";
 import { api } from "@/hooks/useApi";
 
@@ -29,17 +32,84 @@ export default function BrowserView({ screenshots }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
 
-  // Interactive Takeover Mode (Solution 2)
+  // Interactive Takeover Mode
   const [takeoverActive, setTakeoverActive] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [textInput, setTextInput] = useState("");
+  const [navUrl, setNavUrl] = useState("");
   const [lastClickPos, setLastClickPos] = useState<{ x: number; y: number } | null>(null);
   const [currentLiveShot, setCurrentLiveShot] = useState<string | null>(null);
+
+  // Real-time WebSocket CDP Screencast Stream
+  const [wsConnected, setWsConnected] = useState(false);
+  const [streamMode, setStreamMode] = useState<"cdp" | "snapshot" | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   const imgRef = useRef<HTMLImageElement>(null);
 
   const active = selectedIndex !== null ? screenshots[selectedIndex] : screenshots[screenshots.length - 1];
   const agentNames = Array.from(new Set(screenshots.map(s => s.sender_name || "Unknown")));
+
+  useEffect(() => {
+    if (active?.url) {
+      setNavUrl(active.url);
+    }
+  }, [active?.url]);
+
+  // Connect to WebSocket CDP Screencast
+  useEffect(() => {
+    const agentId = active?.sender_id || "global";
+    if (typeof window === "undefined") return;
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    // Map dev frontend port 3000 -> backend port 8000
+    const backendHost = host.includes(":3000") ? host.replace(":3000", ":8000") : host;
+    const wsUrl = `${protocol}//${backendHost}/api/browser/stream?agent_id=${encodeURIComponent(agentId)}`;
+
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "frame" && data.image) {
+            setCurrentLiveShot(data.image);
+            if (data.url) {
+              setNavUrl(data.url);
+            }
+          } else if (data.type === "connected") {
+            setStreamMode(data.mode);
+          } else if (data.type === "action_result") {
+            setActionLoading(false);
+          }
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        setStreamMode(null);
+      };
+
+      ws.onerror = () => {
+        setWsConnected(false);
+      };
+    } catch {}
+
+    return () => {
+      if (ws) {
+        try {
+          ws.close();
+        } catch {}
+      }
+    };
+  }, [active?.sender_id]);
 
   const download = () => {
     const src = currentLiveShot || active?.image_base64;
@@ -51,8 +121,9 @@ export default function BrowserView({ screenshots }: Props) {
   };
 
   const copyUrl = () => {
-    if (!active?.url) return;
-    navigator.clipboard.writeText(active.url);
+    const urlToCopy = navUrl || active?.url;
+    if (!urlToCopy) return;
+    navigator.clipboard.writeText(urlToCopy);
     setCopiedUrl(true);
     setTimeout(() => setCopiedUrl(false), 1500);
   };
@@ -72,71 +143,163 @@ export default function BrowserView({ screenshots }: Props) {
     setTimeout(() => setLastClickPos(null), 1000);
 
     setActionLoading(true);
-    try {
-      const res = await api.browserAct({
-        agent_id: active?.sender_id || "global",
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "act",
         kind: "coords",
         x: normX,
         y: normY,
-      });
-      if (res.screenshot) {
-        setCurrentLiveShot(res.screenshot);
+      }));
+    } else {
+      try {
+        const res = await api.browserAct({
+          agent_id: active?.sender_id || "global",
+          kind: "coords",
+          x: normX,
+          y: normY,
+        });
+        if (res.screenshot) {
+          setCurrentLiveShot(res.screenshot);
+        }
+      } catch (err) {
+        console.error("Canvas click action failed:", err);
+      } finally {
+        setActionLoading(false);
       }
-    } catch (err) {
-      console.error("Canvas click action failed:", err);
-    } finally {
-      setActionLoading(false);
     }
   };
 
   const handleSendText = async () => {
     if (!textInput.trim() || actionLoading) return;
     setActionLoading(true);
-    try {
-      const res = await api.browserAct({
-        agent_id: active?.sender_id || "global",
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "act",
         kind: "type",
         text: textInput,
-      });
-      if (res.screenshot) setCurrentLiveShot(res.screenshot);
+      }));
       setTextInput("");
-    } catch (err) {
-      console.error("Send text failed:", err);
-    } finally {
-      setActionLoading(false);
+    } else {
+      try {
+        const res = await api.browserAct({
+          agent_id: active?.sender_id || "global",
+          kind: "type",
+          text: textInput,
+        });
+        if (res.screenshot) setCurrentLiveShot(res.screenshot);
+        setTextInput("");
+      } catch (err) {
+        console.error("Send text failed:", err);
+      } finally {
+        setActionLoading(false);
+      }
     }
   };
 
   const handleKeyPress = async (keyName: string) => {
     if (actionLoading) return;
     setActionLoading(true);
-    try {
-      const res = await api.browserAct({
-        agent_id: active?.sender_id || "global",
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "act",
         kind: "press",
         key: keyName,
-      });
-      if (res.screenshot) setCurrentLiveShot(res.screenshot);
-    } catch (err) {
-      console.error("Key press failed:", err);
-    } finally {
-      setActionLoading(false);
+      }));
+    } else {
+      try {
+        const res = await api.browserAct({
+          agent_id: active?.sender_id || "global",
+          kind: "press",
+          key: keyName,
+        });
+        if (res.screenshot) setCurrentLiveShot(res.screenshot);
+      } catch (err) {
+        console.error("Key press failed:", err);
+      } finally {
+        setActionLoading(false);
+      }
     }
   };
 
   const handleScroll = async (direction: "down" | "up") => {
     if (actionLoading) return;
     setActionLoading(true);
-    try {
-      const res = await api.browserAct({
-        agent_id: active?.sender_id || "global",
-        kind: direction === "down" ? "scroll_down" : "scroll_up",
-      });
-      if (res.screenshot) setCurrentLiveShot(res.screenshot);
-    } catch (err) {
-      console.error("Scroll failed:", err);
-    } finally {
-      setActionLoading(false);
+    const kind = direction === "down" ? "scroll_down" : "scroll_up";
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "act", kind }));
+    } else {
+      try {
+        const res = await api.browserAct({
+          agent_id: active?.sender_id || "global",
+          kind,
+        });
+        if (res.screenshot) setCurrentLiveShot(res.screenshot);
+      } catch (err) {
+        console.error("Scroll failed:", err);
+      } finally {
+        setActionLoading(false);
+      }
+    }
+  };
+
+  const handleNavigate = async (urlToGo: string) => {
+    if (!urlToGo.trim() || actionLoading) return;
+    setActionLoading(true);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "act", kind: "navigate", url: urlToGo }));
+    } else {
+      try {
+        const res = await api.browserAct({
+          agent_id: active?.sender_id || "global",
+          kind: "navigate",
+          url: urlToGo,
+        });
+        if (res.screenshot) setCurrentLiveShot(res.screenshot);
+      } catch (e) {
+        console.error("Navigation failed:", e);
+      } finally {
+        setActionLoading(false);
+      }
+    }
+  };
+
+  const handleBack = async () => {
+    if (actionLoading) return;
+    setActionLoading(true);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "act", kind: "go_back" }));
+    } else {
+      try {
+        const res = await api.browserAct({
+          agent_id: active?.sender_id || "global",
+          kind: "go_back",
+        });
+        if (res.screenshot) setCurrentLiveShot(res.screenshot);
+      } catch (e) {
+        console.error("Go back failed:", e);
+      } finally {
+        setActionLoading(false);
+      }
+    }
+  };
+
+  const handleReload = async () => {
+    if (actionLoading) return;
+    setActionLoading(true);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "act", kind: "reload" }));
+    } else {
+      try {
+        const res = await api.browserAct({
+          agent_id: active?.sender_id || "global",
+          kind: "reload",
+        });
+        if (res.screenshot) setCurrentLiveShot(res.screenshot);
+      } catch (e) {
+        console.error("Reload failed:", e);
+      } finally {
+        setActionLoading(false);
+      }
     }
   };
 
@@ -177,8 +340,23 @@ export default function BrowserView({ screenshots }: Props) {
       {!fullscreen && (
         <header className="flex-between" style={{ marginBottom: "var(--sp-xl)" }}>
           <div>
-            <h2 className="display-md">Live Browser Observer & Takeover</h2>
-            <p className="body-sm text-mute">Watch autonomous agents navigate or take over live control to solve roadblocks.</p>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+              <h2 className="display-md" style={{ margin: 0 }}>Live Browser Observer &amp; Takeover</h2>
+              {wsConnected && streamMode === "cdp" ? (
+                <span className="pill pill-live" style={{ fontSize: 10 }}>
+                  <Zap size={10} style={{ marginRight: 3 }} /> CDP Stream 30 FPS
+                </span>
+              ) : wsConnected ? (
+                <span className="pill pill-safe" style={{ fontSize: 10 }}>
+                  <Wifi size={10} style={{ marginRight: 3 }} /> Live Stream
+                </span>
+              ) : (
+                <span className="pill" style={{ fontSize: 10, background: "var(--color-hairline)" }}>
+                  Visual Feed
+                </span>
+              )}
+            </div>
+            <p className="body-sm text-mute">Watch autonomous agents navigate in real-time or take over interactive control.</p>
           </div>
           {agentNames.length > 0 && (
             <div style={{ display: "flex", gap: "var(--sp-sm)", flexWrap: "wrap", alignItems: "center" }}>
@@ -199,7 +377,7 @@ export default function BrowserView({ screenshots }: Props) {
 
       {active || currentLiveShot ? (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", border: "1px solid var(--color-hairline)", borderRadius: fullscreen ? 0 : "var(--radius-md)", overflow: "hidden" }}>
-          {/* Browser chrome */}
+          {/* Browser chrome toolbar */}
           <div style={{ background: "var(--color-canvas-soft)", borderBottom: "1px solid var(--color-hairline)", padding: "var(--sp-sm) var(--sp-lg)", display: "flex", alignItems: "center", gap: "var(--sp-md)", flexShrink: 0, flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: 6 }}>
               {["var(--color-danger)", "var(--color-warning)", "var(--color-primary)"].map((c, i) => (
@@ -207,13 +385,55 @@ export default function BrowserView({ screenshots }: Props) {
               ))}
             </div>
 
-            <button onClick={copyUrl} style={{ flex: 1, minWidth: 200, background: "var(--color-canvas)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-xs)", padding: "3px var(--sp-md)", display: "flex", alignItems: "center", gap: "var(--sp-sm)", cursor: "pointer", textAlign: "left" }}>
-              <Globe size={12} color="var(--color-mute)" />
-              <span style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--color-mute)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {active?.url || "about:blank"}
-              </span>
-              <Copy size={10} color={copiedUrl ? "var(--color-primary)" : "var(--color-mute)"} />
-            </button>
+            {/* Navigation Controls */}
+            <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+              <button
+                className="btn btn-icon-sm btn-ghost"
+                onClick={handleBack}
+                disabled={actionLoading}
+                title="Go Back"
+              >
+                <ArrowLeft size={13} />
+              </button>
+              <button
+                className="btn btn-icon-sm btn-ghost"
+                onClick={handleReload}
+                disabled={actionLoading}
+                title="Reload Page"
+              >
+                <RotateCcw size={13} className={actionLoading ? "animate-spin" : ""} />
+              </button>
+            </div>
+
+            {/* URL Address Bar */}
+            <div style={{ flex: 1, minWidth: 200, display: "flex", alignItems: "center", background: "var(--color-canvas)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-xs)", padding: "2px var(--sp-sm)" }}>
+              <Globe size={12} color="var(--color-mute)" style={{ marginRight: 6, flexShrink: 0 }} />
+              {takeoverActive ? (
+                <input
+                  type="text"
+                  value={navUrl}
+                  onChange={e => setNavUrl(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") handleNavigate(navUrl); }}
+                  placeholder="https://..."
+                  style={{
+                    flex: 1,
+                    background: "transparent",
+                    border: "none",
+                    outline: "none",
+                    fontSize: 12,
+                    fontFamily: "var(--font-mono)",
+                    color: "var(--color-text)",
+                  }}
+                />
+              ) : (
+                <span style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--color-mute)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {navUrl || active?.url || "about:blank"}
+                </span>
+              )}
+              <button onClick={copyUrl} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }} title="Copy URL">
+                <Copy size={11} color={copiedUrl ? "var(--color-primary)" : "var(--color-mute)"} />
+              </button>
+            </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
               <button
@@ -228,7 +448,9 @@ export default function BrowserView({ screenshots }: Props) {
               <button className="btn btn-icon-sm btn-ghost" onClick={handleRefresh} disabled={actionLoading} title="Refresh Live View">
                 <RotateCcw size={12} className={actionLoading ? "animate-spin" : ""} />
               </button>
-              <span className="pill pill-live" style={{ fontSize: 10 }}><div className="live-dot" style={{ width: 5, height: 5 }} /> Live</span>
+              <span className="pill pill-live" style={{ fontSize: 10 }}>
+                <div className="live-dot" style={{ width: 5, height: 5 }} /> Live
+              </span>
               <span className="caption">{active?.sender_name || "Browser"}</span>
             </div>
 
@@ -240,7 +462,7 @@ export default function BrowserView({ screenshots }: Props) {
             </div>
           </div>
 
-          {/* Interactive Takeover Control Toolbar (Solution 2) */}
+          {/* Interactive Takeover Control Toolbar */}
           {takeoverActive && (
             <div style={{
               background: "rgba(99, 102, 241, 0.08)",

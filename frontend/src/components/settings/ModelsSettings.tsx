@@ -13,6 +13,7 @@ const DEFAULT_MODEL_ROLES = [
   {
     key: "DEFAULT_FAST_MODEL",
     label: "Fast / Small Model (Flush, Compaction & Dreaming)",
+    fallbackModel: "openrouter/free",
     desc: "Used for Pre-Compaction Memory Flush, Rolling Compaction, Memory Consolidation ('Dreaming'), GraphRAG Extraction, and Fast Routing.",
     why: "Minimizes latency and token cost for high-frequency internal operations: extracting durable facts before context truncation, compacting chat history, and extracting search keywords.",
     how: "Executed automatically by Pre-Compaction Flush & Rolling Compaction (react_agent.py), AutoDream Worker (auto_dream.py), Meeting Tool (meeting_tool.py), and Sub-agents.",
@@ -21,6 +22,7 @@ const DEFAULT_MODEL_ROLES = [
   {
     key: "DEFAULT_SMART_MODEL",
     label: "Smart / Reasoning Model (Orchestration & Planning)",
+    fallbackModel: "openrouter/auto",
     desc: "Used for deep analysis, multi-step orchestration, complex reasoning, and system architecture planning.",
     why: "Provides deep reasoning, architectural planning, and high-context problem solving across complex multi-step workflows.",
     how: "Used by the Orchestrator, Architect, and Research agents when planning execution paths and evaluating tool outcomes.",
@@ -29,6 +31,7 @@ const DEFAULT_MODEL_ROLES = [
   {
     key: "DEFAULT_CODER_MODEL",
     label: "Software Engineer Model (CodeGraph & Refactoring)",
+    fallbackModel: "openrouter/free",
     desc: "Specialized model for code generation, AST analysis, syntax validation, bug fixing, test writing, and repo refactoring.",
     why: "Tuned for high-precision syntax generation, Workspace Symbol Call Graph queries, and repository-wide refactoring across multi-language codebases.",
     how: "Assigned to the Software Engineer (SWE) and Debugger agents to write, test, and commit code on disk.",
@@ -37,6 +40,7 @@ const DEFAULT_MODEL_ROLES = [
   {
     key: "DEFAULT_JUDGE_MODEL",
     label: "Autonomous Judge Model (Safety & Verification)",
+    fallbackModel: "openrouter/free",
     desc: "High-integrity safety arbiter reviewing tool calls, data deletion, shell commands, and risk gates.",
     why: "Guards against unintended data loss, dangerous terminal commands, or harmful API actions.",
     how: "Invoked asynchronously prior to executing risky tool calls to confirm parameters, blast radius, and safety constraints.",
@@ -45,6 +49,7 @@ const DEFAULT_MODEL_ROLES = [
   {
     key: "DEFAULT_EMBEDDING_MODEL",
     label: "Fixed 1536-Dim Vector Embedding Model (RAG & LanceDB)",
+    fallbackModel: "auto",
     desc: "Standardized 1536-dimensional vector embedding model for document chunks, conversation recall, and code search.",
     why: "Guarantees mathematically uniform 1536-dimensional semantic vectors with zero zero-padding distortion across knowledge files and auto-dream learnings.",
     how: "Executed across knowledge_ingestor.py, lancedb_client.py, and auto_dream.py to generate 1536-dim vector embeddings.",
@@ -147,7 +152,7 @@ export default function ModelsSettings({ onToast }: Props) {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "var(--sp-md)" }}>
-                {DEFAULT_MODEL_ROLES.map(({ key, label, desc, why, how, subsystems }) => (
+                {DEFAULT_MODEL_ROLES.map(({ key, label, fallbackModel, desc, why, how, subsystems }) => (
                   <div
                     key={key}
                     style={{
@@ -173,7 +178,7 @@ export default function ModelsSettings({ onToast }: Props) {
                         onChange={e => setDefaults(d => ({ ...d, [key]: e.target.value }))}
                         style={{ fontSize: 11 }}
                       >
-                        <option value="auto">-- Auto Waterfall (OpenAI 1536 → OpenRouter 1536 → Ollama 1536) --</option>
+                        <option value="auto">-- Auto Waterfall (Default: OpenAI 1536 → OpenRouter → Ollama) --</option>
                         <optgroup label="OpenAI Native 1536-Dim Embeddings">
                           <option value="openai/text-embedding-3-small">OpenAI text-embedding-3-small (Standard / Fast — 1536-dim)</option>
                           <option value="openai/text-embedding-3-large">OpenAI text-embedding-3-large (High-Accuracy — 1536-dim)</option>
@@ -193,7 +198,7 @@ export default function ModelsSettings({ onToast }: Props) {
                         onChange={e => setDefaults(d => ({ ...d, [key]: e.target.value }))}
                         style={{ fontSize: 11 }}
                       >
-                        <option value="">-- Use Environment Variable / Fallback --</option>
+                        <option value="">-- Auto Dynamic Fallback (Default: {fallbackModel}) --</option>
                         {Object.entries(catalog).map(([providerId, provider]: [string, any]) => (
                           <optgroup key={providerId} label={provider.label || providerId}>
                             {provider.models?.map((m: any, idx: number) => (
@@ -205,6 +210,14 @@ export default function ModelsSettings({ onToast }: Props) {
                         ))}
                       </select>
                     )}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 2 }}>
+                      <span className="caption text-mute" style={{ fontSize: 10 }}>
+                        Active: <strong style={{ color: defaults[key] ? "var(--color-primary)" : "var(--color-text-secondary)" }}>{defaults[key] || `${fallbackModel} (auto-fallback)`}</strong>
+                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: "var(--radius-xs)", background: "rgba(255, 255, 255, 0.05)", border: "1px solid var(--color-hairline)", color: "var(--color-text-muted)" }}>
+                        Fallback: {fallbackModel}
+                      </span>
+                    </div>
                     <span className="caption text-mute" style={{ fontSize: 10 }}>
                       {desc}
                     </span>

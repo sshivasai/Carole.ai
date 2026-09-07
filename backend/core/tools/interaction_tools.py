@@ -29,6 +29,8 @@ logger = logging.getLogger("carole.interaction_tools")
 pending_questions: Dict[str, asyncio.Event] = {}
 # Answers: maps question_id -> answer text
 question_answers: Dict[str, str] = {}
+# Question details: maps question_id -> metadata (team_id, agent_id)
+pending_question_details: Dict[str, dict] = {}
 
 
 class InteractionTools:
@@ -54,6 +56,7 @@ class InteractionTools:
         q_id = str(uuid.uuid4())
         event = asyncio.Event()
         pending_questions[q_id] = event
+        pending_question_details[q_id] = {"team_id": team_id, "agent_id": agent_id}
 
         payload = {
             "type": "agent_question",
@@ -87,6 +90,7 @@ class InteractionTools:
         finally:
             # Ensure cleanup in all exit paths (answer received or exception)
             pending_questions.pop(q_id, None)
+            pending_question_details.pop(q_id, None)
 
         answer = question_answers.pop(q_id, "")
         logger.info("[InteractionTools] q_id=%s answered: %.80s", q_id[:8], answer)
@@ -109,6 +113,7 @@ class InteractionTools:
         q_id = str(uuid.uuid4())
         event = asyncio.Event()
         pending_questions[q_id] = event
+        pending_question_details[q_id] = {"team_id": team_id, "agent_id": agent_id}
 
         payload = {
             "type": "browser_intervention",
@@ -132,6 +137,7 @@ class InteractionTools:
             await asyncio.wait_for(event.wait(), timeout=wait_timeout)
         except asyncio.TimeoutError:
             pending_questions.pop(q_id, None)
+            pending_question_details.pop(q_id, None)
             question_answers.pop(q_id, None)
             logger.warning(
                 "[BrowserHIL] Takeover q_id=%s timed out after %ds — no confirmation received.",
@@ -140,6 +146,7 @@ class InteractionTools:
             return f"No human response received within {wait_timeout}s — browser takeover timed out."
         finally:
             pending_questions.pop(q_id, None)
+            pending_question_details.pop(q_id, None)
 
         answer = question_answers.pop(q_id, "")
         logger.info("[BrowserHIL] q_id=%s resolved by human: %.80s", q_id[:8], answer or "Done")

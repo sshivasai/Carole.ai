@@ -20,6 +20,7 @@ from core.tools.file_tools import file_tools
 from core.config import CAROLE_HOME_DIR
 from core.memory.database import async_session
 from core.memory.models import FileBackup
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def create_authenticated_user(client: AsyncClient, email: str = "file_tester@carole.ai"):
@@ -103,7 +104,7 @@ async def test_file_crud_and_sandboxing(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_file_backup_and_rollback_restore(client: AsyncClient):
+async def test_file_backup_and_rollback_restore(client: AsyncClient, db_session: AsyncSession):
     headers, user_id, email = await create_authenticated_user(client, "backup_user@carole.ai")
 
     # Setup Project & Team
@@ -111,10 +112,15 @@ async def test_file_backup_and_rollback_restore(client: AsyncClient):
     project_id = p_res.json()["id"]
     t_res = await client.post("/api/teams", json={"name": "Backup Team", "project_id": project_id}, headers=headers)
     team_id = t_res.json()["id"]
+    await db_session.commit()
 
     from core.tools.tool_executor import _snapshot_file
     from unittest.mock import patch
-    from tests.conftest import TestSession
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def mock_async_session():
+        yield db_session
 
     # 1. Write initial file
     rel_path = "app/config.py"
@@ -122,7 +128,7 @@ async def test_file_backup_and_rollback_restore(client: AsyncClient):
     await file_tools.write_file(rel_path, initial_content, agent_name="User", project_id=project_id)
 
     # 2. Trigger snapshot using _snapshot_file
-    with patch("core.memory.database.async_session", TestSession):
+    with patch("core.memory.database.async_session", mock_async_session):
         await _snapshot_file(rel_path, team_id, message_id=None, operation="write_file")
 
     # 3. Modify file as Agent

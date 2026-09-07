@@ -1,12 +1,13 @@
 "use client";
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Server, Loader2, AlertCircle, CheckCircle2, Plug, Trash2, X } from "lucide-react";
+import { Server, Loader2, AlertCircle, CheckCircle2, Plug, Trash2, RefreshCw } from "lucide-react";
 import { api } from "../hooks/useApi";
 
 export const McpStatusIndicator: React.FC = () => {
   const [statuses, setStatuses] = useState<Record<string, any>>({});
   const [isOpen, setIsOpen] = useState(false);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const fetchStatus = useCallback(async () => {
@@ -66,12 +67,28 @@ export const McpStatusIndicator: React.FC = () => {
     }
   };
 
+  const handleReload = async () => {
+    setReloading(true);
+    try {
+      await api.reloadMcpServers();
+      // Poll quickly after reload to show "loading" state right away
+      await fetchStatus();
+      setTimeout(fetchStatus, 2000);
+      setTimeout(fetchStatus, 5000);
+    } catch (e) {
+      console.error("Failed to reload MCP servers", e);
+    } finally {
+      setReloading(false);
+    }
+  };
+
   const statusEntries = Object.entries(statuses);
   if (statusEntries.length === 0) return null; // Don't show if no MCPs
 
   const statusList = statusEntries.map(([k, v]) => ({ keyStr: k, ...v }));
   const isLoading = statusList.some((s) => s.status === "loading");
   const hasError = statusList.some((s) => s.status === "error");
+  const hasErrored = statusList.filter((s) => s.status === "error");
 
   let Icon = Server;
   let color = "var(--text-secondary)";
@@ -104,7 +121,7 @@ export const McpStatusIndicator: React.FC = () => {
             top: "100%",
             right: 0,
             marginTop: "8px",
-            width: "320px",
+            width: "340px",
             background: "var(--bg-surface)",
             border: "1px solid var(--color-hairline)",
             borderRadius: "var(--radius-md)",
@@ -115,16 +132,29 @@ export const McpStatusIndicator: React.FC = () => {
             flexDirection: "column",
           }}
         >
-          <div style={{ padding: "12px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-surface-elevated)" }}>
+          <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--color-hairline)", background: "var(--bg-surface-elevated)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <h3 style={{ fontSize: "14px", fontWeight: 600, margin: 0, display: "flex", alignItems: "center", gap: "6px" }}>
               <Plug size={16} /> MCP Connections
             </h3>
+            <button
+              className="btn btn-ghost btn-xs"
+              style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: hasErrored.length > 0 ? "var(--color-danger)" : "var(--text-secondary)", padding: "3px 7px", height: "auto" }}
+              onClick={handleReload}
+              disabled={reloading}
+              title={hasErrored.length > 0 ? `Reload ${hasErrored.length} failed server(s)` : "Hot-reload all MCP servers"}
+            >
+              <RefreshCw size={11} className={reloading ? "animate-spin" : ""} />
+              {reloading ? "Reloading…" : hasErrored.length > 0 ? `Retry (${hasErrored.length})` : "Reload"}
+            </button>
           </div>
-          
+
           <div style={{ maxHeight: "300px", overflowY: "auto", padding: "8px" }}>
             {statusList.map((server, i) => {
               const isGlobal = !server.team_id || server.team_id === "None";
               const isBusy = disconnecting === server.server_name;
+              const attemptInfo = server.attempt && server.max_attempts
+                ? `Attempt ${server.attempt}/${server.max_attempts}`
+                : null;
               return (
                 <div key={server.keyStr || i} style={{ padding: "8px", borderBottom: i < statusList.length - 1 ? "1px solid var(--color-hairline)" : "none" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
@@ -147,19 +177,25 @@ export const McpStatusIndicator: React.FC = () => {
                       </button>
                     )}
                   </div>
-                  
+
                   {server.status === "error" && (
                     <div style={{ fontSize: "11px", color: "var(--color-danger)", marginTop: "4px" }}>
                       {server.error || "Failed to initialize"}
                     </div>
                   )}
-                  
+
+                  {server.status === "loading" && attemptInfo && (
+                    <div style={{ fontSize: "11px", color: "var(--color-primary)", marginTop: "4px" }}>
+                      {attemptInfo}
+                    </div>
+                  )}
+
                   {server.status === "connected" && server.tools && (
                     <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "4px" }}>
                       {server.tools.length} tool(s) registered
                     </div>
                   )}
-                  
+
                   {server.team_id && server.team_id !== "None" && (
                     <span style={{ display: "inline-block", fontSize: "10px", padding: "2px 6px", background: "var(--bg-surface-elevated)", borderRadius: "4px", marginTop: "4px" }}>
                       Team specific

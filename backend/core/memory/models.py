@@ -58,6 +58,9 @@ class Project(Base):
         server_default="0",
     )
 
+    # Optional external workspace directory binding (e.g. C:\external_path
+    custom_workspace_path = Column(String(1024), nullable=True)
+
     __table_args__ = (
         Index("ix_projects_owner_id", "owner_id"),
         CheckConstraint(
@@ -269,6 +272,8 @@ class Task(Base):
     assigned_agent_id = Column(Uuid, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
     parent_task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
     blocked_by_task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    # Multi-dependency DAG task graph: list of task IDs that must be completed before this task can start
+    depends_on = Column(MutableList.as_mutable(JSON), nullable=True, default=list)
     created_by = Column(String(100), nullable=False, default="human")  # agent_id or "human"
 
     # ── Implementation Plan ───────────────────────────────────────────────────

@@ -216,7 +216,16 @@ class MCPManager:
                 ToolRegistry.unregister(name)
                 print(f"  [MCP] Unregistered tool: {name}")
 
-    async def connect_stdio_server(self, server_name: str, command: str, args: list[str], team_id: str = None, agent_id: str = None, env_vars: dict = None):
+    async def connect_stdio_server(
+        self,
+        server_name: str,
+        command: str,
+        args: list[str],
+        team_id: str = None,
+        agent_id: str = None,
+        env_vars: dict = None,
+        init_timeout: float = 120.0,
+    ):
         """
         Connects to an MCP server via stdio, extracts its tools, 
         and registers them in the Carole ToolRegistry.
@@ -269,9 +278,8 @@ class MCPManager:
             "team_id": team_id,
             "agent_id": agent_id,
             "status": "loading",
-            "tools": []
+            "tools": [],
         }
-        
         try:
             merged_env = os.environ.copy()
             if env_vars:
@@ -283,9 +291,9 @@ class MCPManager:
             stdio_transport = await server_stack.enter_async_context(client_cm)
             read_stream, write_stream = stdio_transport[0], stdio_transport[1]
         
-            # Initialize session with 60s timeout to allow cold-boot package installation (e.g. uvx/npx)
+            # Initialize session with 120s timeout (configurable via MCP_INIT_TIMEOUT) to allow cold-boot package installation (e.g. uvx/npx)
             session = await server_stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await asyncio.wait_for(session.initialize(), timeout=60.0)
+            await asyncio.wait_for(session.initialize(), timeout=init_timeout)
         
             self.sessions[key] = session
         
@@ -382,7 +390,7 @@ class MCPManager:
             err_msg = str(e).strip()
             if not err_msg:
                 if isinstance(e, asyncio.TimeoutError):
-                    err_msg = "Connection timed out (initialization exceeded 60s limit)"
+                    err_msg = f"Connection timed out (initialization exceeded {int(init_timeout)}s limit)"
                 else:
                     err_msg = f"{type(e).__name__} during startup"
             self.statuses[key]["status"] = "error"

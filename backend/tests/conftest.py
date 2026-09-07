@@ -16,14 +16,21 @@ from main import app
 from core.memory.database import get_db, Base
 from core.auth.rate_limiter import limiter, SLOWAPI_AVAILABLE
 
+from sqlalchemy.pool import StaticPool
+
 if SLOWAPI_AVAILABLE and limiter:
     limiter.enabled = False
 
 # Test SQLite in-memory database URL
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
-# Create async engine for testing
-test_engine = create_async_engine(TEST_DB_URL, echo=False)
+# Create async engine for testing with StaticPool to keep single in-memory instance
+test_engine = create_async_engine(
+    TEST_DB_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+    echo=False
+)
 
 # Async session factory
 TestSession = async_sessionmaker(
@@ -71,9 +78,15 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 @pytest.fixture
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """Provides a configured HTTPX AsyncClient for FastAPI test routes."""
-    # Override get_db dependency to use the test session
+    # Override get_db dependency to use the test session with commit on success
     async def override_get_db():
-        yield db_session
+        async with TestSession() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
     app.dependency_overrides[get_db] = override_get_db
 

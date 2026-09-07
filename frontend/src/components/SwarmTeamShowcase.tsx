@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 import PrettyAvatar, { PrettyAvatarPreset } from "./PrettyAvatar";
+import { useTheme } from "@/hooks/useTheme";
 import {
   Sparkles,
   Bot,
@@ -111,6 +112,8 @@ const TEAM_MEMBERS: TeamMember[] = [
 const AUTO_ROTATE_DURATION = 2000; // ms (snappy speed as requested)
 
 export default function SwarmTeamShowcase() {
+  const { theme } = useTheme();
+  const isDark = theme !== "light";
   const [currentIndex, setCurrentIndex] = useState(0);
   const [direction, setDirection] = useState(1);
   const [typedCommand, setTypedCommand] = useState("");
@@ -254,14 +257,19 @@ export default function SwarmTeamShowcase() {
                 borderRadius: 8,
                 position: "relative",
                 background: isSelected
-                  ? "var(--color-canvas-raised, #18181b)"
-                  : "var(--color-canvas-soft, #121215)",
+                  ? (isDark ? "rgba(99, 102, 241, 0.22)" : "rgba(99, 102, 241, 0.12)")
+                  : (isDark ? "rgba(18, 18, 28, 0.72)" : "rgba(255, 255, 255, 0.92)"),
+                backdropFilter: "blur(14px)",
+                WebkitBackdropFilter: "blur(14px)",
                 border: isSelected
-                  ? "1px solid var(--color-primary-soft, #6366f1)"
-                  : "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
+                  ? "1.5px solid #6366f1"
+                  : (isDark ? "1px solid rgba(255, 255, 255, 0.08)" : "1px solid rgba(0, 0, 0, 0.08)"),
+                boxShadow: isSelected
+                  ? (isDark ? "0 4px 14px rgba(99, 102, 241, 0.25)" : "0 4px 14px rgba(99, 102, 241, 0.15)")
+                  : (isDark ? "none" : "0 2px 6px rgba(0, 0, 0, 0.03)"),
                 color: isSelected
-                  ? "var(--color-ink-strong, #ffffff)"
-                  : "var(--color-mute, #a1a1aa)",
+                  ? (isDark ? "#ffffff" : "#4338ca")
+                  : (isDark ? "#cbd5e1" : "#0f172a"),
                 cursor: "pointer",
                 textAlign: "left",
                 transition: "all 0.15s ease",
@@ -290,10 +298,10 @@ export default function SwarmTeamShowcase() {
                 <PrettyAvatar preset={member.preset} size={28} />
               </div>
               <div style={{ position: "relative", zIndex: 1 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 600, color: isSelected ? "var(--color-ink-strong, #fff)" : "inherit" }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: isSelected ? (isDark ? "#fff" : "#4338ca") : (isDark ? "#e2e8f0" : "#0f172a") }}>
                   {member.name}
                 </div>
-                <div style={{ fontSize: 11, color: "var(--color-mute, #71717a)" }}>
+                <div style={{ fontSize: 11, color: isDark ? "#94a3b8" : "#64748b" }}>
                   {member.role.split("&")[0].trim()}
                 </div>
               </div>
@@ -305,13 +313,18 @@ export default function SwarmTeamShowcase() {
       {/* Simple, Pure Agent Details Card */}
       <div
         style={{
-          background: "var(--color-canvas-raised, #141418)",
-          border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
-          borderRadius: 12,
+          background: isDark ? "rgba(14, 14, 24, 0.78)" : "rgba(255, 255, 255, 0.95)",
+          backdropFilter: "blur(24px)",
+          WebkitBackdropFilter: "blur(24px)",
+          border: isDark ? "1px solid rgba(255, 255, 255, 0.12)" : "1px solid rgba(0, 0, 0, 0.08)",
+          borderRadius: 14,
           padding: "28px",
           minHeight: 310,
           position: "relative",
           overflow: "hidden",
+          boxShadow: isDark
+            ? "0 16px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08)"
+            : "0 12px 36px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.8)",
         }}
       >
         <AnimatePresence mode="wait" custom={direction}>
@@ -332,7 +345,7 @@ export default function SwarmTeamShowcase() {
                 gap: 16,
                 marginBottom: 16,
                 paddingBottom: 16,
-                borderBottom: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.06))",
+                borderBottom: isDark ? "1px solid rgba(255, 255, 255, 0.06)" : "1px solid rgba(0, 0, 0, 0.06)",
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -343,7 +356,7 @@ export default function SwarmTeamShowcase() {
                       style={{
                         fontSize: 18,
                         fontWeight: 700,
-                        color: "var(--color-ink-strong, #ffffff)",
+                        color: isDark ? "#ffffff" : "#0f172a",
                         margin: 0,
                       }}
                     >
@@ -355,15 +368,15 @@ export default function SwarmTeamShowcase() {
                         fontFamily: "var(--font-family-mono, monospace)",
                         padding: "2px 8px",
                         borderRadius: 4,
-                        background: "rgba(99, 102, 241, 0.1)",
-                        color: "var(--color-primary-soft, #818cf8)",
-                        border: "1px solid rgba(99, 102, 241, 0.2)",
+                        background: isDark ? "rgba(99, 102, 241, 0.1)" : "#ede9fe",
+                        color: isDark ? "var(--color-primary-soft, #818cf8)" : "#4338ca",
+                        border: isDark ? "1px solid rgba(99, 102, 241, 0.2)" : "1px solid rgba(99, 102, 241, 0.3)",
                       }}
                     >
                       {selectedAgent.model}
                     </span>
                   </div>
-                  <div style={{ fontSize: 13, color: "var(--color-mute, #a1a1aa)", marginTop: 2 }}>
+                  <div style={{ fontSize: 13, color: isDark ? "#94a3b8" : "#64748b", marginTop: 2 }}>
                     {selectedAgent.role}
                   </div>
                 </div>
@@ -373,9 +386,11 @@ export default function SwarmTeamShowcase() {
                 style={{
                   fontSize: 11.5,
                   fontFamily: "var(--font-family-mono, monospace)",
-                  color: "var(--color-mute, #a1a1aa)",
-                  background: "var(--color-canvas, #09090b)",
-                  border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
+                  color: isDark ? "#94a3b8" : "#475569",
+                  background: isDark ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.04)",
+                  backdropFilter: "blur(8px)",
+                  WebkitBackdropFilter: "blur(8px)",
+                  border: isDark ? "1px solid rgba(255, 255, 255, 0.08)" : "1px solid rgba(0, 0, 0, 0.08)",
                   padding: "4px 10px",
                   borderRadius: 6,
                 }}
@@ -387,7 +402,7 @@ export default function SwarmTeamShowcase() {
             <p
               style={{
                 fontSize: 14.5,
-                color: "var(--color-mute, #a1a1aa)",
+                color: isDark ? "#cbd5e1" : "#334155",
                 lineHeight: 1.6,
                 margin: "0 0 20px",
               }}
@@ -405,9 +420,11 @@ export default function SwarmTeamShowcase() {
                     fontWeight: 500,
                     padding: "3px 9px",
                     borderRadius: 4,
-                    background: "var(--color-canvas, #09090b)",
-                    border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
-                    color: "var(--color-ink, #e2e8f0)",
+                    background: isDark ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.04)",
+                    backdropFilter: "blur(8px)",
+                    WebkitBackdropFilter: "blur(8px)",
+                    border: isDark ? "1px solid rgba(255, 255, 255, 0.08)" : "1px solid rgba(0, 0, 0, 0.08)",
+                    color: isDark ? "#e2e8f0" : "#1e293b",
                   }}
                 >
                   {skill}
@@ -418,8 +435,10 @@ export default function SwarmTeamShowcase() {
             {/* Live Fast Terminal Tool Call */}
             <div
               style={{
-                background: "var(--color-canvas, #09090b)",
-                border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.08))",
+                background: isDark ? "rgba(6, 6, 14, 0.72)" : "#0f172a",
+                backdropFilter: "blur(12px)",
+                WebkitBackdropFilter: "blur(12px)",
+                border: isDark ? "1px solid rgba(255, 255, 255, 0.08)" : "1px solid #1e293b",
                 borderRadius: 8,
                 padding: "12px 14px",
                 fontFamily: "var(--font-family-mono, monospace)",

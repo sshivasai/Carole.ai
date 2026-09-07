@@ -293,11 +293,21 @@ class ReACTAgent:
         # 3. Format past learnings
         learnings_block = ""
         if past_learnings:
-            learnings_block = "LESSONS LEARNED (Apply these rules to your current task):\n"
-            for learning in past_learnings:
-                # learning.get('lesson_rule') already contains [CATEGORY] prefix from auto_dream
-                learnings_block += f"- Context: {learning.get('task_summary')}\n  Directive: {learning.get('lesson_rule')}\n"
-            learnings_block += "\n"
+            valid_learnings = []
+            for l in past_learnings:
+                dist = l.get("_distance")
+                if dist is not None and dist > 0.65:
+                    continue  # Discard weak vector matches
+                valid_learnings.append(l)
+
+            if valid_learnings:
+                learnings_block = (
+                    "PAST EXPERIENCES & GENERAL HEURISTICS (Reference only to avoid repeating past engineering or tool mistakes. "
+                    "Do NOT adopt file names, function signatures, or task parameters from past experiences unless explicitly requested by the user):\n"
+                )
+                for learning in valid_learnings:
+                    learnings_block += f"- Past Situation: {learning.get('task_summary')}\n  Heuristic: {learning.get('lesson_rule')}\n"
+                learnings_block += "\n"
             
         # 3.5 Format Entity Facts (with hard limit to prevent unbounded context growth)
         proj_uuid = uuid.UUID(str(self.project_id)) if self.project_id else None
@@ -346,20 +356,22 @@ class ReACTAgent:
         except Exception as e:
             self._log.debug("Could not generate repo map: %s", e)
 
-        # 4. Dynamic Skills (Injected before tools so LLM reads skill context first)
+        # 4. Dynamic Skills (Antigravity & Claude SKILL.md Standard + DB Skills)
         from core.skills.skill_manager import SkillManager
-        active_skills = await SkillManager.get_team_skills(db_session, str(self.team_id), active_only=True)
-        skill_addendums = ""
-        for skill in active_skills:
-            if skill.system_prompt_addendum:
-                skill_addendums += f"\n[SKILL: {skill.name}]\n{skill.system_prompt_addendum}\n"
-            if skill.tools:
-                skill_addendums += f"Skill specific tools allowed: {', '.join(skill.tools)}\n"
-            if skill.mcp_servers:
-                skill_addendums += f"Skill MCP servers available: {', '.join(skill.mcp_servers)}\n"
-                
-        if skill_addendums:
-            capabilities_block += f"\nACTIVE SKILLS:\n{skill_addendums}\n"
+        from core.tools.file_tools import file_tools
+        workspace_root = None
+        try:
+            workspace_root = await file_tools.get_workspace_root(str(self.project_id))
+        except Exception:
+            pass
+        all_skills = await SkillManager.discover_all_skills(
+            workspace_root=workspace_root,
+            team_id=str(self.team_id),
+            db=db_session
+        )
+        skills_block = SkillManager.build_skills_prompt_block(all_skills)
+        if skills_block:
+            capabilities_block += f"\n{skills_block}\n\n"
 
         # 5. Tool list
         tools_block = "AVAILABLE TOOLS:\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n\n"
@@ -974,6 +986,22 @@ class ReACTAgent:
                 await db_session.rollback()
             self._log.warning("Pre-compaction memory flush error: %s", flush_err)
 
+    @staticmethod
+    def _detect_oscillating_loop(tool_signatures: List[str]) -> Optional[str]:
+        """
+        Sliding-window n-gram detector for oscillating multi-step loops (e.g. A->B->A->B or A->B->C->A->B->C).
+        Returns explanation string if an oscillating loop cycle is confirmed, else None.
+        """
+        n = len(tool_signatures)
+        for L in (2, 3, 4):
+            if n >= 2 * L:
+                block1 = tool_signatures[-2 * L : -L]
+                block2 = tool_signatures[-L:]
+                if block1 == block2:
+                    cycle_names = [s.split(":")[0] for s in block2]
+                    return f"Oscillating tool cycle ({' -> '.join(cycle_names)}) repeated identically"
+        return None
+
     # ──────────────────────────────────────────────────────────────────────
     # Native Tool-Calling Loop (replaces _run_loop_inner)
     # ──────────────────────────────────────────────────────────────────────
@@ -995,6 +1023,8 @@ class ReACTAgent:
         - Sequential tool execution preserving causal order and file consistency.
         - Privacy propagation across traces, events, and compaction checkpoints.
         - Stuck-loop detection with argument and error fingerprinting.
+        - Sliding-window n-gram oscillating loop detection & circuit breaker.
+        - Token budget cap enforcement halts.
         - Observation cache preventing context explosion.
         - Single clean termination without double-finalization on max_loops.
         """
@@ -1013,6 +1043,9 @@ class ReACTAgent:
         self.reply_recipient_id = None
         self._current_thought_buffer = ""
         self._current_reasoning_buffer = ""
+        self._tool_call_history: List[str] = []
+        self._oscillating_warned: bool = False
+        self._total_run_tokens: int = 0
 
         if trigger_message_id:
             self.active_message_id = trigger_message_id
@@ -1041,12 +1074,24 @@ class ReACTAgent:
         # ── Build system prompt & tool schemas ───────────────────────────────
         system_prompt = await self.assemble_system_prompt(db_session, initial_prompt)
 
-        # Select the right tool schema format for this model/provider
+        # Select the right tool schema format for this model/provider and filter by permissions
         model = self.model
         if model.startswith("gemini"):
-            tools = ToolRegistry.to_gemini_tools(team_id=self.team_id, agent_id=self.agent_id)
+            all_tools = ToolRegistry.to_gemini_tools(team_id=self.team_id, agent_id=self.agent_id)
+            if all_tools and "functionDeclarations" in all_tools[0]:
+                filtered_decls = [
+                    d for d in all_tools[0]["functionDeclarations"]
+                    if permissions.get(d.get("name"), "allow") != "block"
+                ]
+                tools = [{"functionDeclarations": filtered_decls}]
+            else:
+                tools = all_tools
+        elif (model.startswith("claude") or model.startswith("anthropic")) and getattr(llm_router, "anthropic_key", None):
+            all_tools = ToolRegistry.to_anthropic_tools(team_id=self.team_id, agent_id=self.agent_id)
+            tools = [t for t in all_tools if permissions.get(t.get("name"), "allow") != "block"]
         else:
-            tools = ToolRegistry.to_anthropic_tools(team_id=self.team_id, agent_id=self.agent_id)
+            all_tools = ToolRegistry.to_openai_tools(team_id=self.team_id, agent_id=self.agent_id)
+            tools = [t for t in all_tools if permissions.get(t.get("function", {}).get("name"), "allow") != "block"]
 
         # ── Load conversation history into MessageHistory ─────────────────────
         from core.llm.multi_model_router import get_model_context_window
@@ -1164,6 +1209,47 @@ class ReACTAgent:
                 "loop_count": loop_count,
                 "max_loops": max_loops,
             })
+
+            # Enforce cumulative run token budget circuit breaker
+            self._total_run_tokens += estimated_tokens
+            max_budget_tokens = getattr(core.config, "MAX_BUDGET_TOKENS", 150_000)
+            if self._total_run_tokens > max_budget_tokens:
+                self._log.warning("[native] Run token budget exceeded: %d > %d", self._total_run_tokens, max_budget_tokens)
+                budget_note = f"\n\n*[System: Agent execution halted by Circuit Breaker — cumulative token budget of {max_budget_tokens:,} tokens reached.]*"
+                final_text = (self._current_thought_buffer or "") + budget_note
+                db_msg = Message(
+                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                    sender_id=self.agent_id,
+                    sender_name=self.name,
+                    text=final_text,
+                    reasoning_text=self._current_reasoning_buffer or None,
+                    is_private=self.is_private_response,
+                    recipient_id=self.reply_recipient_id,
+                )
+                db_session.add(db_msg)
+                try:
+                    await db_session.commit()
+                except Exception:
+                    await db_session.rollback()
+                await event_bus.publish(self.topic, {
+                    "type": "message",
+                    "id": str(db_msg.id),
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "text": final_text,
+                    "is_private": self.is_private_response,
+                    "recipient_id": self.reply_recipient_id,
+                })
+                await event_bus.publish(self.topic, {
+                    "type": "agent_status",
+                    "sender_id": self.agent_id,
+                    "sender_name": self.name,
+                    "role": self.role,
+                    "status": "idle",
+                })
+                terminated = True
+                break
 
             if ContextCondenser.is_under_context_pressure(estimated_tokens, window_size, trigger_ratio):
                 self._log.warning(
@@ -1627,6 +1713,67 @@ class ReACTAgent:
                 fp_parts.append(f"{r_name}:{sorted_args}:{norm_obs}:{r_err}")
 
             obs_fp = _hs.md5("|".join(fp_parts).encode("utf-8")).hexdigest()
+
+            # Record signatures for sliding-window n-gram loop detection
+            for r_id, r_name, r_obs, r_err in results:
+                tc_input = next((t["input"] for t in tool_uses if t["id"] == r_id), {})
+                input_hash = _hs.md5(json.dumps(tc_input, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:6]
+                self._tool_call_history.append(f"{r_name}:{input_hash}")
+
+            # ── Sliding-window oscillating loop circuit breaker ──────────────
+            osc_loop = self._detect_oscillating_loop(self._tool_call_history)
+            if osc_loop:
+                self._log.warning("[native] Oscillating loop detected: %s", osc_loop)
+                if not self._oscillating_warned:
+                    self._oscillating_warned = True
+                    history.add_context_note(
+                        f"[CIRCUIT BREAKER WARNING: {osc_loop}. "
+                        "You are trapped in an oscillating action cycle. Cease executing this tool sequence. "
+                        "Switch to a new approach or conclude your response immediately.]"
+                    )
+                else:
+                    self._log.warning("[native] Halting execution due to repeating oscillating cycle.")
+                    halt_note = f"\n\n*[System: Execution halted by Circuit Breaker — {osc_loop}.]*"
+                    final_text = (assistant_text or "") + halt_note
+                    db_msg = Message(
+                        team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                        sender_id=self.agent_id,
+                        sender_name=self.name,
+                        text=final_text,
+                        reasoning_text=self._current_reasoning_buffer or None,
+                        is_private=self.is_private_response,
+                        recipient_id=self.reply_recipient_id,
+                    )
+                    db_session.add(db_msg)
+                    try:
+                        await db_session.commit()
+                    except Exception:
+                        await db_session.rollback()
+                    await event_bus.publish(self.topic, {
+                        "type": "message",
+                        "id": str(db_msg.id),
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "text": final_text,
+                        "is_private": self.is_private_response,
+                        "recipient_id": self.reply_recipient_id,
+                    })
+                    await event_bus.publish(self.topic, {
+                        "type": "agent_status",
+                        "sender_id": self.agent_id,
+                        "sender_name": self.name,
+                        "role": self.role,
+                        "status": "idle",
+                    })
+                    await self._auto_save_failure_lesson(
+                        initial_prompt=initial_prompt,
+                        messages=history.get_messages(),
+                        reason=f"oscillating-loop ({osc_loop})",
+                    )
+                    terminated = True
+                    return
+
             if obs_fp == self._last_observation and not any_mutations:
                 self._no_progress_count += 1
                 if self._no_progress_count >= 2:
@@ -1772,17 +1919,19 @@ class ReACTAgent:
                 f"{reason}.\n\n"
                 f"Original user request: {initial_prompt[:300]}\n\n"
                 f"Last conversation context:\n{context_block}\n\n"
-                "Extract exactly ONE concise lesson the agent should remember for next time. "
-                "Focus on: which approaches/selectors/tools FAILED and what the correct approach should be.\n\n"
+                "Extract exactly ONE concise, abstract tool-engineering rule the agent should remember.\n\n"
+                "CRITICAL RULES FOR EXTRACTION:\n"
+                "- NEVER extract user requirements, specific application logic, file paths (e.g. 'calc.py'), or method signatures (e.g. 'add(a, b)') as a lesson!\n"
+                "- ONLY extract abstract tool-usage failure rules (e.g. 'Always check if directory exists before creating nested files', 'Do not retry the same failing bash command repeatedly').\n"
+                "- If the task simply timed out or the agent didn't finish coding, output NO_LESSON.\n\n"
                 "Output format:\n"
-                "TASK: <one-line summary of what the agent was trying to do>\n"
-                "LESSON: <one-line actionable rule for next time>\n\n"
+                "TASK: <one-line abstract category of operation>\n"
+                "LESSON: <one-line actionable tool heuristic>\n\n"
                 "Output exactly NO_LESSON (nothing else) if ANY of these are true:\n"
-                "- The failure was caused by an external factor (API downtime, rate limits, network errors, service unavailable)\n"
-                "- The failure was caused by missing credentials or permissions the agent cannot control\n"
-                "- The agent succeeded partially and the remaining work is straightforward\n"
-                "- The conversation context shows no repeated mistake pattern\n"
-                "Only extract a lesson if there is a clear, correctable agent behavior to encode."
+                "- The failure was simply running out of loops or partial implementation\n"
+                "- The failure was caused by external factors (API downtime, rate limits, network errors)\n"
+                "- The lesson would merely restate user requirements or code specifications\n"
+                "- There is no clear, generalizable tool usage mistake to correct"
             )
 
             extraction = await llm_router.generate_completion(

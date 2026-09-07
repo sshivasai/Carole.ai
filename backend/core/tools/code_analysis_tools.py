@@ -23,23 +23,90 @@ class CodeAnalysisTools:
             workspace_root = os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[3]))
         self.workspace_root = Path(workspace_root).resolve()
 
-    def _resolve_safe_path(self, relative_path: str) -> Path:
-        joined = Path(self.workspace_root / relative_path)
+    def _resolve_safe_path(self, relative_path: str, workspace_root: Optional[Path] = None) -> Path:
+        if not relative_path or not str(relative_path).strip():
+            raise ValueError("Path cannot be empty or whitespace.")
+        raw = Path(relative_path)
+        if raw.is_absolute() and raw.exists():
+            return raw.resolve()
+        root = (workspace_root or self.workspace_root).resolve()
+        joined = Path(root / relative_path)
         resolved = joined.resolve()
+        is_inside = False
         try:
-            resolved.relative_to(self.workspace_root)
+            resolved.relative_to(root)
+            is_inside = True
         except ValueError:
-            raise PermissionError("Access Denied: Path outside sandbox.")
+            if os.name == 'nt':
+                try:
+                    Path(str(resolved).lower()).relative_to(Path(str(root).lower()))
+                    is_inside = True
+                except ValueError:
+                    is_inside = False
+        if not is_inside:
+            raise PermissionError(f"Access Denied: Path '{resolved}' outside sandbox '{root}'.")
         return resolved
 
     _SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.next', 'venv', '.venv', 'dist', 'build'}
 
+    _BINARY_EXTENSIONS = {
+        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.svgz',
+        '.mp3', '.mp4', '.wav', '.avi', '.mov', '.flac', '.ogg', '.mkv', '.webm',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt',
+        '.zip', '.tar', '.gz', '.tgz', '.bz2', '.7z', '.rar', '.xz', '.zst',
+        '.exe', '.dll', '.so', '.dylib', '.bin', '.iso', '.dmg',
+        '.pyc', '.pyd', '.pyo', '.class', '.o', '.obj', '.a', '.lib',
+        '.wasm', '.lock', '.parquet', '.db', '.sqlite', '.sqlite3'
+    }
+
+    _CODE_EXTENSIONS = {
+        # Python
+        '.py', '.pyi', '.pyx',
+        # JavaScript / TypeScript
+        '.js', '.mjs', '.cjs', '.jsx', '.ts', '.mts', '.cts', '.tsx',
+        # Systems
+        '.c', '.h', '.cpp', '.hpp', '.cc', '.hh', '.cxx', '.hxx', '.rs', '.go', '.zig', '.d', '.nim',
+        # JVM
+        '.java', '.kt', '.kts', '.scala', '.sc', '.groovy', '.clj', '.cljs',
+        # Mobile / Apple
+        '.swift', '.m', '.mm',
+        # Scripting
+        '.rb', '.php', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd', '.lua', '.pl', '.pm', '.tcl',
+        # Functional
+        '.ex', '.exs', '.erl', '.hrl', '.hs', '.lhs', '.ml', '.mli', '.fs', '.fsi', '.fsx', '.lisp', '.lsp', '.rkt',
+        # Web & Styling
+        '.html', '.htm', '.css', '.scss', '.sass', '.less', '.vue', '.svelte',
+        # Data / Query / Config
+        '.sql', '.psql', '.json', '.jsonc', '.yaml', '.yml', '.toml', '.xml', '.graphql', '.gql', '.proto',
+        # Documents
+        '.md', '.markdown', '.rst', '.tex',
+        # Build / Infra
+        '.tf', '.hcl', '.dockerfile', '.mk', '.cmake'
+    }
+
+    def _is_code_file(self, fname: str) -> bool:
+        """Determines if a filename is a source code or textual file for analysis."""
+        lower = fname.lower()
+        suffix = Path(lower).suffix
+        if suffix in self._BINARY_EXTENSIONS:
+            return False
+        if suffix in self._CODE_EXTENSIONS:
+            return True
+        if lower in {
+            "makefile", "gnumakefile", "dockerfile", "containerfile", "gemfile",
+            "rakefile", "cmakelists.txt", "jenkinsfile", "procfile", "vagrantfile"
+        }:
+            return True
+        # If unknown extension or no extension, include unless identified as binary
+        return bool(suffix) and suffix not in self._BINARY_EXTENSIONS
+
     def find_function(self, name: str, relative_path: str = ".") -> str:
-        """Finds function/class definitions matching a name across files."""
+        """Finds function/class definitions matching a name across files in any language."""
         try:
             safe_path = self._resolve_safe_path(relative_path)
             pattern = re.compile(
-                rf"^\s*(?:def|class|function|const|let|var|export\s+(?:default\s+)?(?:function|class|const))\s+{re.escape(name)}\b",
+                rf"^\s*(?:(?:pub(?:lic)?|private|protected|internal|export|default|async|static|final|abstract|override|open|sealed|inline)\s+)*"
+                rf"(?:def|class|function|fn|func|fun|sub|procedure|proc|struct|interface|trait|type|enum|protocol|record|actor|module|contract|const|let|var)\s+{re.escape(name)}\b",
                 re.MULTILINE
             )
             results = []
@@ -50,7 +117,10 @@ class CodeAnalysisTools:
                     with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                         for i, line in enumerate(f, 1):
                             if pattern.search(line):
-                                rel = fpath.relative_to(self.workspace_root)
+                                try:
+                                    rel = fpath.relative_to(self.workspace_root)
+                                except ValueError:
+                                    rel = fpath.name if (target and target == fpath) else fpath
                                 results.append(f"{rel}:{i}: {line.rstrip()}")
                 except (UnicodeDecodeError, PermissionError):
                     pass
@@ -61,9 +131,9 @@ class CodeAnalysisTools:
                 for root, dirs, files in os.walk(safe_path):
                     dirs[:] = [d for d in dirs if d not in self._SKIP_DIRS and not d.startswith('.')]
                     for fname in files:
-                        if fname.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java')):
+                        if self._is_code_file(fname):
                             scan(Path(root) / fname)
-                            if len(results) >= 30:
+                            if len(results) >= 50:
                                 break
 
             if not results:
@@ -73,10 +143,13 @@ class CodeAnalysisTools:
             return f"Error: {str(e)}"
 
     def find_todos(self, relative_path: str = ".") -> str:
-        """Finds TODO/FIXME/HACK/XXX comments across files."""
+        """Finds TODO/FIXME/HACK/XXX comments across files in any language."""
         try:
             safe_path = self._resolve_safe_path(relative_path)
-            pattern = re.compile(r"#\s*(TODO|FIXME|HACK|XXX|BUG|NOTE)\b.*|//\s*(TODO|FIXME|HACK|XXX|BUG|NOTE)\b.*", re.IGNORECASE)
+            pattern = re.compile(
+                r"(?:#|//|--|;|%|/\*|<!--|\bREM\b|::)\s*(TODO|FIXME|HACK|XXX|BUG|NOTE)\b.*",
+                re.IGNORECASE
+            )
             results = []
 
             def scan(fpath: Path):
@@ -85,7 +158,10 @@ class CodeAnalysisTools:
                         for i, line in enumerate(f, 1):
                             m = pattern.search(line)
                             if m:
-                                rel = fpath.relative_to(self.workspace_root)
+                                try:
+                                    rel = fpath.relative_to(self.workspace_root)
+                                except ValueError:
+                                    rel = fpath.name if safe_path.is_file() else fpath
                                 results.append(f"{rel}:{i}: {line.strip()}")
                 except (UnicodeDecodeError, PermissionError):
                     pass
@@ -96,7 +172,7 @@ class CodeAnalysisTools:
                 for root, dirs, files in os.walk(safe_path):
                     dirs[:] = [d for d in dirs if d not in self._SKIP_DIRS and not d.startswith('.')]
                     for fname in files:
-                        if fname.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.css', '.html')):
+                        if self._is_code_file(fname):
                             scan(Path(root) / fname)
                             if len(results) >= 50:
                                 break
@@ -108,15 +184,29 @@ class CodeAnalysisTools:
             return f"Error: {str(e)}"
 
     def count_lines(self, relative_path: str) -> str:
-        """Counts total lines, code lines, comment lines, and blank lines."""
+        """Counts total lines, code lines, comment lines, and blank lines across any language."""
         try:
             safe_path = self._resolve_safe_path(relative_path)
             if not safe_path.is_file():
                 return f"Error: '{relative_path}' is not a file."
 
             total = code = comments = blanks = 0
-            ext = safe_path.suffix
-            comment_char = "#" if ext == ".py" else "//"
+            ext = safe_path.suffix.lower()
+            hash_exts = {'.py', '.pyi', '.rb', '.sh', '.bash', '.zsh', '.yaml', '.yml', '.r', '.pl', '.pm', '.ex', '.exs', '.dockerfile'}
+            dash_exts = {'.sql', '.psql', '.lua', '.hs', '.ada', '.vhd', '.vhdl'}
+            semi_exts = {'.ini', '.asm', '.clj', '.cljs', '.lisp', '.lsp'}
+            percent_exts = {'.erl', '.tex', '.prolog'}
+
+            def is_comment(line_str: str) -> bool:
+                if ext in hash_exts or safe_path.name.lower() in ("dockerfile", "makefile"):
+                    return line_str.startswith("#")
+                if ext in dash_exts:
+                    return line_str.startswith("--")
+                if ext in semi_exts:
+                    return line_str.startswith(";")
+                if ext in percent_exts:
+                    return line_str.startswith("%")
+                return line_str.startswith("//") or line_str.startswith("/*") or line_str.startswith("*")
 
             with open(safe_path, "r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
@@ -124,7 +214,7 @@ class CodeAnalysisTools:
                     stripped = line.strip()
                     if not stripped:
                         blanks += 1
-                    elif stripped.startswith(comment_char):
+                    elif is_comment(stripped):
                         comments += 1
                     else:
                         code += 1
@@ -140,17 +230,33 @@ class CodeAnalysisTools:
             return f"Error: {str(e)}"
 
     def analyze_imports(self, relative_path: str) -> str:
-        """Lists all import statements in a file."""
+        """Lists all import/require/include/use statements across multiple languages."""
         try:
             safe_path = self._resolve_safe_path(relative_path)
             if not safe_path.is_file():
                 return f"Error: '{relative_path}' is not a file."
 
+            import_pattern = re.compile(
+                r"^(?:"
+                r"import\s+|"
+                r"from\s+.+\s+import\s+|"
+                r"(?:const|let|var)\s+.+\s*=\s*require\(|"
+                r"export\s+.+\s+from\s+|"
+                r"#\s*include\s+[<\"]|"
+                r"use\s+[\w:\\]+|"
+                r"using\s+[\w.]+|"
+                r"require(?:_relative)?\s*[\(\'\"]|"
+                r"package\s+[\w.]+|"
+                r"@import\s+|"
+                r"(?:alias|require)\s+[A-Z]"
+                r")"
+            )
+
             imports = []
             with open(safe_path, "r", encoding="utf-8", errors="ignore") as f:
                 for i, line in enumerate(f, 1):
                     stripped = line.strip()
-                    if re.match(r"^(import |from .+ import |const .+ = require\(|import .+ from )", stripped):
+                    if import_pattern.match(stripped):
                         imports.append(f"  L{i}: {stripped}")
 
             if not imports:
@@ -238,13 +344,34 @@ class CodeAnalysisTools:
             for d in defs:
                 parent_info = f" (inside class {d['parent_symbol']})" if d.get('parent_symbol') else ""
                 params_info = f"({', '.join(d.get('params', []))})" if d.get('params') is not None else ""
-                output.append(f"[{d['file_path']} L{d['start_line']}-L{d['end_line']}] [{d['kind']}] {d['name']}{params_info}{parent_info}")
+                bases_info = f" : {', '.join(d['bases'])}" if d.get('bases') else ""
+                output.append(f"[{d['file_path']} L{d['start_line']}-L{d['end_line']}] [{d['kind']}] {d['name']}{params_info}{parent_info}{bases_info}")
                 if d.get('docstring'):
                     output.append(f"  \"\"\"{d['docstring'].strip()}\"\"\"")
                 output.append("```\n" + d['code'] + "\n```\n")
             return "\n".join(output)
         except Exception as e:
             return f"Error finding symbol definition: {str(e)}"
+
+    async def get_class_hierarchy(self, class_name: str, project_id: Optional[str] = None) -> str:
+        """Inspects superclasses, subclasses, and inheritance tree for a class."""
+        from core.knowledge.code_graph import code_graph
+        try:
+            info = await code_graph.get_class_hierarchy(class_name, project_id)
+            output = [f"🏛️ Class Hierarchy for '{class_name}':"]
+            if info.get("file"):
+                output.append(f"  Defined in: {info['file']}")
+            if info.get("superclasses"):
+                output.append(f"  Superclasses: {', '.join(info['superclasses'])}")
+            else:
+                output.append("  Superclasses: None (root class or unmapped)")
+            if info.get("subclasses"):
+                output.append(f"  Direct Subclasses ({len(info['subclasses'])}): {', '.join(info['subclasses'])}")
+            if info.get("all_descendants"):
+                output.append(f"  All Descendants ({len(info['all_descendants'])}): {', '.join(info['all_descendants'])}")
+            return "\n".join(output)
+        except Exception as e:
+            return f"Error retrieving class hierarchy: {str(e)}"
 
     async def get_file_outline(self, file_path: str, project_id: Optional[str] = None) -> str:
         """Returns the structural outline (classes, methods, functions) of a source file."""

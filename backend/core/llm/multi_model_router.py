@@ -26,6 +26,7 @@ Features:
 """
 
 import os
+import re
 import json
 import asyncio
 import logging
@@ -35,7 +36,7 @@ import httpx
 from contextlib import aclosing
 from urllib.parse import urlparse
 from typing import AsyncGenerator, List, Dict, Optional, Any
-from core.llm.config_manager import load_config, get_key
+from core.llm.config_manager import load_config, get_key, has_user_configured_keys
 
 logger = logging.getLogger("carole.router")
 
@@ -184,19 +185,19 @@ def get_model_context_window(model: str) -> int:
         return 1_000_000
     if "claude" in m:
         return 200_000
-    if "gpt-4" in m or "o4" in m or "o3" in m or "llama-3" in m or "deepseek" in m:
+    if "gpt-4" in m or "o4" in m or "o3" in m or "llama-3" in m or "deepseek" in m or "qwen" in m or "mistral-large" in m:
         return 128_000
     if "gpt-3.5" in m or "phi" in m or "16k" in m:
         return 16_384
-    if "32k" in m or "mistral" in m or "qwen" in m:
+    if "32k" in m or "mistral" in m:
         return 32_768
     if "8k" in m:
         return 8_192
     if "4k" in m:
         return 4_096
     if "free" in m or "auto" in m:
-        return 32_768
-    return 32_768
+        return 128_000
+    return 65_536
 
 
 def clamp_context_for_model(
@@ -313,11 +314,17 @@ class MultiModelRouter:
         self.openai_key    = get_key(cfg, "openai",    "OPENAI_API_KEY")
         self.gemini_key    = get_key(cfg, "google",    "GOOGLE_API_KEY")
         self.openrouter_key = get_key(cfg, "openrouter", "OPENROUTER_API_KEY")
-        self.nvidia_key    = get_key(cfg, "nvidia",    "NVIDIA_API_KEY")
-        self.ollama_base_url = (
-            cfg.get("providers", {}).get("ollama_base_url", "").strip()
-            or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-        )
+        cfg_ollama = cfg.get("providers", {}).get("ollama_base_url", "").strip()
+        if cfg_ollama:
+            self.ollama_base_url = cfg_ollama
+        elif not has_user_configured_keys(cfg):
+            self.ollama_base_url = (
+                os.getenv("OLLAMA_BASE_URL", "").strip()
+                or os.getenv("OLLAMA_HOST", "").strip()
+                or "http://localhost:11434/v1"
+            )
+        else:
+            self.ollama_base_url = "http://localhost:11434/v1"
 
     async def generate_completion(
         self,
@@ -1547,6 +1554,7 @@ class MultiModelRouter:
 
         for attempt in range(3):
             tool_calls_acc = {}
+            accumulated_text = []
             finish_reason = None
             received_data = False
             stopped = False
@@ -1604,6 +1612,7 @@ class MultiModelRouter:
                         # Stream text content
                         text = delta.get("content") or ""
                         if text:
+                            accumulated_text.append(text)
                             yield {"type": "text_delta", "delta": text}
 
                         # Accumulate tool call chunks
@@ -1655,6 +1664,53 @@ class MultiModelRouter:
                         "name": tc["name"],
                         "input": tool_input,
                     })
+
+                # Fallback: check if an open-source model leaked tool calls as raw text/XML tags
+                if not completed_calls and accumulated_text:
+                    full_text = "".join(accumulated_text)
+                    if "<dots_function_call>" in full_text or "<invoke" in full_text:
+                        import uuid as _uuid
+                        # 1. Dots studio format: <dots_function_call> <fn_name> args </fn_name> </dots_function_call>
+                        for m in re.finditer(r"<dots_function_call>\s*<([a-zA-Z0-9_-]+)>\s*(.*?)\s*</\1>\s*</dots_function_call>", full_text, re.DOTALL):
+                            fn_name = m.group(1).strip()
+                            fn_arg = m.group(2).strip()
+                            tool_input = {}
+                            if fn_arg.startswith("{") and fn_arg.endswith("}"):
+                                try:
+                                    tool_input = json.loads(fn_arg)
+                                except Exception:
+                                    tool_input = {"raw": fn_arg}
+                            elif fn_arg:
+                                if fn_name in ("list_directory", "list_dir"):
+                                    tool_input = {"path": fn_arg}
+                                elif fn_name in ("read_file", "view_file"):
+                                    tool_input = {"path": fn_arg}
+                                else:
+                                    tool_input = {"input": fn_arg}
+                            completed_calls.append({
+                                "type": "tool_use",
+                                "id": f"call_{_uuid.uuid4().hex[:12]}",
+                                "name": fn_name,
+                                "input": tool_input,
+                            })
+                        # 2. Invoke XML format: <invoke name="..."><parameter name="...">...</parameter></invoke>
+                        for m in re.finditer(r'<invoke\s+name=["\']([a-zA-Z0-9_-]+)["\']\s*>(.*?)</invoke>', full_text, re.DOTALL):
+                            fn_name = m.group(1).strip()
+                            fn_body = m.group(2).strip()
+                            params = {}
+                            for pm in re.finditer(r'<parameter\s+name=["\']([a-zA-Z0-9_-]+)["\']\s*>(.*?)</parameter>', fn_body, re.DOTALL):
+                                params[pm.group(1).strip()] = pm.group(2).strip()
+                            if not params and fn_body.startswith("{") and fn_body.endswith("}"):
+                                try:
+                                    params = json.loads(fn_body)
+                                except Exception:
+                                    pass
+                            completed_calls.append({
+                                "type": "tool_use",
+                                "id": f"call_{_uuid.uuid4().hex[:12]}",
+                                "name": fn_name,
+                                "input": params or {"input": fn_body},
+                            })
 
                 for event in completed_calls:
                     yield event
@@ -2086,7 +2142,7 @@ class MultiModelRouter:
 
     async def _embeddings_ollama(self, text: str, model: str = "nomic-embed-text") -> Optional[List[float]]:
         """Local Ollama embeddings (e.g. nomic-embed-text or all-minilm, zero-padded/truncated to 1536)."""
-        ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        ollama_host = (self.ollama_base_url or "http://localhost:11434/v1").removesuffix("/v1").rstrip("/")
         payload = {
             "model": model,
             "prompt": text

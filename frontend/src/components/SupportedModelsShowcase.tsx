@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import MagneticCard from "./MagneticCard";
 import GravityText from "./GravityText";
+import { useTheme } from "@/hooks/useTheme";
 import {
   Sparkles,
   Zap,
@@ -231,6 +232,8 @@ const PROVIDERS: ModelProvider[] = [
 ];
 
 export default function SupportedModelsShowcase() {
+  const { theme } = useTheme();
+  const isDark = theme !== "light";
   const [selectedProvider, setSelectedProvider] = useState<string>("anthropic");
 
   const currentProvider =
@@ -319,11 +322,17 @@ export default function SupportedModelsShowcase() {
                 alignItems: "center",
                 gap: 8,
                 background: isSelected
-                  ? "var(--bg-glass-card, #ffffff)"
-                  : "var(--color-canvas-raised, #f1f5f9)",
+                  ? "rgba(99, 102, 241, 0.28)"
+                  : isDark
+                  ? "rgba(18, 18, 28, 0.72)"
+                  : "rgba(255, 255, 255, 0.85)",
+                backdropFilter: "blur(12px)",
+                WebkitBackdropFilter: "blur(12px)",
                 border: isSelected
                   ? `2px solid ${prov.color}`
-                  : "1px solid var(--color-hairline, #e2e8f0)",
+                  : isDark
+                  ? "1px solid rgba(255, 255, 255, 0.08)"
+                  : "1px solid rgba(0, 0, 0, 0.08)",
                 color: isSelected ? "var(--color-ink-strong, #0f172a)" : "var(--color-body, #475569)",
                 boxShadow: isSelected ? `0 6px 20px ${prov.bgGlow}` : "none",
                 transform: isSelected ? "translateY(-2px)" : "none",
@@ -355,11 +364,11 @@ export default function SupportedModelsShowcase() {
       >
         <div
           style={{
-            background: "var(--color-canvas-raised, #ffffff)",
-            border: `1px solid var(--color-hairline, rgba(0,0,0,0.1))`,
+            background: isDark ? "rgba(14, 14, 24, 0.78)" : "rgba(255, 255, 255, 0.88)",
+            border: isDark ? `1px solid rgba(255, 255, 255, 0.12)` : "1px solid rgba(0, 0, 0, 0.08)",
             borderRadius: 20,
             padding: "28px 24px",
-            boxShadow: `0 16px 48px rgba(0, 0, 0, 0.08), 0 0 32px ${currentProvider.bgGlow}`,
+            boxShadow: `0 16px 48px rgba(0, 0, 0, 0.3), 0 0 32px ${currentProvider.bgGlow}`,
             backdropFilter: "blur(24px)",
             WebkitBackdropFilter: "blur(24px)",
             transition: "all 0.3s ease",
@@ -374,7 +383,7 @@ export default function SupportedModelsShowcase() {
               flexWrap: "wrap",
               gap: 16,
               marginBottom: 20,
-              borderBottom: "1px solid var(--color-hairline, rgba(0, 0, 0, 0.08))",
+              borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
               paddingBottom: 16,
             }}
           >
@@ -384,7 +393,9 @@ export default function SupportedModelsShowcase() {
                   width: 44,
                   height: 44,
                   borderRadius: 12,
-                  background: "var(--color-canvas-soft, rgba(0, 0, 0, 0.04))",
+                  background: "rgba(255, 255, 255, 0.04)",
+                  backdropFilter: "blur(8px)",
+                  WebkitBackdropFilter: "blur(8px)",
                   border: `1px solid ${currentProvider.color}50`,
                   display: "flex",
                   alignItems: "center",
@@ -462,14 +473,16 @@ export default function SupportedModelsShowcase() {
               <div
                 key={idx}
                 style={{
-                  background: "var(--color-canvas-soft, #f8fafc)",
-                  border: `1px solid var(--color-hairline, rgba(0, 0, 0, 0.08))`,
+                  background: isDark ? "rgba(18, 18, 32, 0.72)" : "rgba(248, 250, 252, 0.90)",
+                  backdropFilter: "blur(12px)",
+                  WebkitBackdropFilter: "blur(12px)",
+                  border: isDark ? "1px solid rgba(255, 255, 255, 0.08)" : "1px solid rgba(0, 0, 0, 0.08)",
                   borderRadius: 14,
                   padding: "18px 16px",
                   display: "flex",
                   flexDirection: "column",
                   justifyContent: "space-between",
-                  boxShadow: "0 4px 16px rgba(0, 0, 0, 0.04)",
+                  boxShadow: "0 4px 16px rgba(0, 0, 0, 0.2)",
                   transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
                 }}
               >

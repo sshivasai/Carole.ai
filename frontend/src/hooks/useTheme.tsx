@@ -23,11 +23,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       document.documentElement.classList.add(`theme-${savedTheme}`);
       document.documentElement.classList.remove(savedTheme === 'light' ? 'theme-dark' : 'theme-light');
       document.documentElement.style.colorScheme = savedTheme;
-    } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-      setThemeState('light');
-      document.documentElement.classList.add('theme-light');
-      document.documentElement.classList.remove('theme-dark');
-      document.documentElement.style.colorScheme = 'light';
     } else {
       setThemeState('dark');
       document.documentElement.classList.add('theme-dark');

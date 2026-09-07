@@ -3,8 +3,8 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import type { ChatMessage, AgentConfig, CompactionEvent } from "@/lib/types";
 import {
   Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion,
-  Loader2, ChevronDown, ChevronUp, ChevronRight, Search, Edit2, Trash2,
-  History, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode,
+  Loader2, ChevronDown, ChevronUp, ChevronRight, Search, Trash2,
+  RotateCcw, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode,
   Terminal, Copy, Check, ThumbsUp, ThumbsDown, Cpu, Scale, Sparkles,
   FileText, Globe, GitBranch, CheckCircle2, AlertTriangle, ShieldCheck, ArrowDown, ShieldAlert
 } from "lucide-react";
@@ -22,6 +22,8 @@ import FileChangeCard, { ChangedFileItem } from "./FileChangeCard";
 import AgentPermissionCard from "./AgentPermissionCard";
 import AgentActivityStream, { ActivityStep } from "./AgentActivityStream";
 import ContextUsageGauge from "./ContextUsageGauge";
+import InChatPlanCard from "./InChatPlanCard";
+import AskUserQuestionCard from "./AskUserQuestionCard";
 
 interface Props {
   messages: ChatMessage[];
@@ -136,15 +138,18 @@ function TaskNotificationCard({ text }: { text: string }) {
   );
 }
 
-function ApprovalCard({ msg }: { msg: ChatMessage }) {
+function ApprovalCard({ msg, onFeedback }: { msg: ChatMessage; onFeedback?: (text: string) => void }) {
   const [loading, setLoading] = useState(false);
   const txId = msg.pending_approval?.tx_id || msg.tx_id;
 
-  const decide = async (approved: boolean) => {
+  const decide = async (approved: boolean, feedback?: string) => {
     if (!txId) return;
     setLoading(true);
     try {
       await api.approveToolExecution(txId, approved);
+      if (feedback && onFeedback) {
+        onFeedback(`[Guidance on ${msg.pending_approval?.tool_name || msg.tool_name || "action"}]: ${feedback}`);
+      }
     } catch (e: any) {
       if (!e?.message?.includes("already resolved") && !e?.message?.includes("not found") && e?.status !== 404) {
         console.error("Failed to submit approval decision:", e);
@@ -157,11 +162,7 @@ function ApprovalCard({ msg }: { msg: ChatMessage }) {
   return <AgentPermissionCard msg={msg} onDecide={decide} loading={loading} />;
 }
 
-function AskUserCard({ msg }: { msg: ChatMessage }) {
-  const [answer, setAnswer] = useState("");
-  const [submitted, setSubmitted] = useState(false);
-  const [loading, setLoading] = useState(false);
-
+function AskUserCard({ msg, onAnswerSubmit }: { msg: ChatMessage; onAnswerSubmit?: (text: string) => void }) {
   // Parse question and options from raw message fields
   const { parsedQuestion, parsedOptions } = useMemo(() => {
     let questionText = msg.question || msg.text || "";
@@ -199,72 +200,32 @@ function AskUserCard({ msg }: { msg: ChatMessage }) {
     return { parsedQuestion: questionText, parsedOptions: optionsList };
   }, [msg.question, msg.text, (msg as any).options]);
 
-  const options = parsedOptions;
-
-  const submit = async (text: string) => {
-    if (!msg.question_id || !text.trim() || submitted) return;
-    setLoading(true);
-    try { await api.answerAgentQuestion(msg.question_id, text.trim()); setSubmitted(true); setAnswer(text.trim()); }
-    catch (e) { console.error(e); }
-    finally { setLoading(false); }
+  const handleAnswer = async (qId: string, answerText: string) => {
+    try {
+      await api.answerAgentQuestion(qId, answerText);
+      if (onAnswerSubmit) onAnswerSubmit(`Answer to ${msg.sender_name}: ${answerText}`);
+    } catch (e) {
+      console.error("Failed to submit question answer:", e);
+    }
   };
 
   return (
-    <div style={{ border: "1px solid var(--color-info)", borderRadius: "var(--radius-md)", padding: "var(--sp-lg)", background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", boxShadow: "var(--shadow-clay)", display: "flex", flexDirection: "column", gap: "var(--sp-md)", maxWidth: 460 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-        <MessageCircleQuestion size={15} color="var(--color-info)" />
-        <span className="body-sm-strong">{msg.sender_name} asks:</span>
-      </div>
-      <p className="body-sm" style={{ margin: 0 }}>{parsedQuestion}</p>
-      {submitted ? (
-        <span className="pill pill-live" style={{ alignSelf: "flex-start" }}>Answered: {answer} ✓</span>
-      ) : (
-        <>
-          {/* Multiple-choice option buttons */}
-          {options.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {options.map((opt, i) => (
-                <button
-                  key={i}
-                  onClick={() => submit(opt)}
-                  disabled={loading}
-                  style={{
-                    textAlign: "left", background: "var(--color-canvas-soft, #111827)",
-                    border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-sm)",
-                    padding: "8px 12px", fontSize: 13, color: "var(--color-ink)",
-                    cursor: "pointer", transition: "all 0.15s",
-                    display: "flex", alignItems: "center", gap: 8,
-                  }}
-                  onMouseEnter={e => {
-                    (e.currentTarget as HTMLElement).style.background = "var(--color-info)";
-                    (e.currentTarget as HTMLElement).style.color = "#fff";
-                  }}
-                  onMouseLeave={e => {
-                    (e.currentTarget as HTMLElement).style.background = "var(--color-canvas-soft, #111827)";
-                    (e.currentTarget as HTMLElement).style.color = "var(--color-ink)";
-                  }}
-                >
-                  <span style={{ fontSize: 10, color: "var(--color-mute)", width: 18, flexShrink: 0, fontWeight: 700 }}>
-                    {String.fromCharCode(65 + i)}.
-                  </span>
-                  {opt}
-                </button>
-              ))}
-            </div>
-          )}
-          {/* Free-form input */}
-          <div style={{ display: "flex", gap: "var(--sp-sm)" }}>
-            <input className="input" style={{ flex: 1, minHeight: 36 }}
-              placeholder={options.length > 0 ? "Or type a custom answer…" : "Your answer…"}
-              value={answer} onChange={e => setAnswer(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) submit(answer); }} autoFocus />
-            <button className="btn btn-primary btn-sm" onClick={() => submit(answer)} disabled={loading || !answer.trim()}>
-              {loading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-            </button>
-          </div>
-        </>
-      )}
-    </div>
+    <AskUserQuestionCard
+      questionId={msg.question_id || msg.id}
+      agentName={msg.sender_name || "Agent"}
+      question={parsedQuestion}
+      options={parsedOptions}
+      answered={Boolean((msg as any).is_answered)}
+      chosenAnswer={(msg as any).answer}
+      onAnswer={handleAnswer}
+      onSkip={async (qId) => {
+        try {
+          await api.answerAgentQuestion(qId, "Skipped by user");
+        } catch (e) {
+          console.error("Failed to skip question:", e);
+        }
+      }}
+    />
   );
 }
 
@@ -1169,9 +1130,6 @@ export default function ChatInterface({
     del: ({ children, ...props }: any) => searchMode && searchQuery.trim() ? <mark style={{ backgroundColor: "var(--color-primary-glow)", color: "var(--color-primary)", borderRadius: 2, padding: "0 2px" }} {...props}>{children}</mark> : <del {...props}>{children}</del>
   }), [onOpenFile, searchMode, searchQuery]);
 
-  // Editing state
-  const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
-  const [editText, setEditText] = useState("");
 
   // Attachments state
   const [attachments, setAttachments] = useState<any[]>([]);
@@ -1326,7 +1284,11 @@ export default function ChatInterface({
     description: string;
   }
   const AVAILABLE_COMMANDS: SlashCommandItem[] = useMemo(() => [
-    { command: "/compact", description: "Manually compact the conversation history" },
+    { command: "/goal", description: "Autonomous long-running execution mode — runs until objective is fully achieved" },
+    { command: "/plan", description: "Planning Mode — forces agent to generate an implementation plan before executing" },
+    { command: "/learn", description: "Persistent Memory — commits rules, user corrections, or preferences to long-term memory" },
+    { command: "/schedule", description: "Scheduled Task — schedule a recurring cron prompt or timer for the agent" },
+    { command: "/compact", description: "Context Compaction — compress older conversation turns into summaries" },
   ], []);
 
   const [commandOpen, setCommandOpen] = useState(false);
@@ -1378,15 +1340,32 @@ export default function ChatInterface({
   const handleSend = useCallback(() => {
     if (!inputText.trim() && attachments.length === 0) return;
 
+    let textToSend = inputText.trim();
+
     // ── /compact slash command ──
     // Intercept before sending to backend. Triggers manual compaction via API.
-    if (inputText.trim() === "/compact") {
+    if (textToSend === "/compact") {
       setInputText("");
       setAttachments([]);
       if (onCompact) {
         onCompact().catch(() => {/* error handled in parent */ });
       }
       return;
+    }
+
+    // ── Slash Command Directive Augmentations ──
+    if (textToSend.startsWith("/goal ")) {
+      const rest = textToSend.slice(6).trim();
+      textToSend = `[AUTONOMOUS GOAL MODE: Execute relentlessly until this high-level objective is fully achieved. Delegate subtasks, perform thorough verifications, and continue autonomously until complete.]\n\n${rest}`;
+    } else if (textToSend.startsWith("/plan ")) {
+      const rest = textToSend.slice(6).trim();
+      textToSend = `[PLANNING MODE: Formulate a detailed step-by-step implementation plan before making any code modifications. Specify tasks, dependencies, risks, and verification steps.]\n\n${rest}`;
+    } else if (textToSend.startsWith("/learn ")) {
+      const rest = textToSend.slice(7).trim();
+      textToSend = `[PERSISTENT LEARNING: Commit the following rule, preference, or architectural constraint to your long-term memory so all agents follow it in future tasks.]\n\n${rest}`;
+    } else if (textToSend.startsWith("/schedule ")) {
+      const rest = textToSend.slice(10).trim();
+      textToSend = `[SCHEDULED TASK: Set up or register a recurring schedule/cron for the following task.]\n\n${rest}`;
     }
 
     // Extract @file:path references and pass them as structured file_ref
@@ -1401,7 +1380,7 @@ export default function ChatInterface({
       const p = m[1].replace(/[),.;]+$/, ""); // strip trailing punctuation
       if (!seen.has(p)) { seen.add(p); fileRefs.push({ type: "file_ref", path: p }); }
     }
-    onSendMessage(inputText.trim(), [...attachments, ...fileRefs]);
+    onSendMessage(textToSend, [...attachments, ...fileRefs]);
     setInputText("");
     setAttachments([]);
     setMentionOpen(false);
@@ -1501,12 +1480,6 @@ export default function ChatInterface({
     }
   };
 
-  const saveEdit = async (msgId: string) => {
-    if (!editText.trim()) return;
-    try { await api.editMessage(msgId, editText); }
-    catch (e) { console.error(e); }
-    finally { setEditingMsgId(null); }
-  };
 
   const doDelete = async (msgId: string) => {
     if (onDeleteMessage) {
@@ -2204,23 +2177,7 @@ export default function ChatInterface({
                     })()}
                     {isHuman && msg.timestamp && <div style={{ textAlign: "right", marginBottom: 3 }}><span className="caption">{fmtTime(msg.timestamp)}</span></div>}
 
-                    {/* Edit Mode vs Normal Mode */}
-                    {editingMsgId === msg.id ? (
-                      <div style={{ background: "var(--bg-glass-card)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)", border: "1px solid var(--color-primary)", padding: "var(--sp-sm)", borderRadius: "var(--radius-md)", boxShadow: "var(--shadow-clay)", display: "flex", flexDirection: "column", gap: "var(--sp-sm)", width: "100%", minWidth: 320 }}>
-                        <textarea
-                          className="input"
-                          style={{ minHeight: 80, resize: "vertical" }}
-                          value={editText}
-                          onChange={e => setEditText(e.target.value)}
-                          autoFocus
-                        />
-                        <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end" }}>
-                          <button className="btn btn-ghost btn-sm" onClick={() => setEditingMsgId(null)}>Cancel</button>
-                          <button className="btn btn-primary btn-sm" onClick={() => saveEdit(msg.id)}>Save</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{
+                    <div style={{
                         padding: "var(--sp-md) var(--sp-lg)", lineHeight: 1.6,
                         background: isHuman ? "var(--bg-surface-raised)" : "var(--bg-surface)",
                         border: isHuman ? "1px solid var(--border-subtle)" : "1px solid var(--border-subtle)",
@@ -2251,15 +2208,25 @@ export default function ChatInterface({
                             )}
                           </div>
                         ) : (
-                          <div className="markdown-body">
-                            <ReactMarkdown
-                              skipHtml={true}
-                              remarkPlugins={[remarkGfm]}
-                              components={markdownComponents}
-                            >
-                              {markdownText}
-                            </ReactMarkdown>
-                          </div>
+                          <>
+                            {(!isHuman && (cleanText.includes("# Implementation Plan") || cleanText.includes("[ARTIFACT: implementation_plan]") || cleanText.includes("## User Review Required"))) && (
+                              <div style={{ marginBottom: "12px" }}>
+                                <InChatPlanCard
+                                  planContent={cleanText}
+                                  onProceed={() => onSendMessage("Proceed with the approved plan")}
+                                />
+                              </div>
+                            )}
+                            <div className="markdown-body">
+                              <ReactMarkdown
+                                skipHtml={true}
+                                remarkPlugins={[remarkGfm]}
+                                components={markdownComponents}
+                              >
+                                {markdownText}
+                              </ReactMarkdown>
+                            </div>
+                          </>
                         )}
                         {isStreaming && <TypingIndicator />}
                         {/* Stop Generating button — visible while streaming or thinking */}
@@ -2367,10 +2334,9 @@ export default function ChatInterface({
                           </div>
                         )}
                       </div>
-                    )}
 
                     {/* Action Menu Hover — anchored right on top of this message bubble */}
-                    {!isThinking && !isStreaming && !isSystem && !isApproval && !isQuestion && editingMsgId !== msg.id && (
+                    {!isThinking && !isStreaming && !isSystem && !isApproval && !isQuestion && (
                       <div className="msg-actions" style={{
                         display: "flex", gap: 4, position: "absolute", top: -12,
                         [isHuman ? "left" : "right"]: 0,
@@ -2386,7 +2352,7 @@ export default function ChatInterface({
                         </button>
                         {!isHuman && (
                           <>
-                            <button className="btn btn-icon btn-ghost btn-sm" title="Helpful"
+                            <button className="btn btn-icon btn-ghost btn-sm" title="Helpful response"
                               onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: prev[msg.id] === "up" ? undefined : "up" } as any))}
                               style={{ color: feedbackState[msg.id] === "up" ? "var(--color-success, #4ade80)" : undefined }}>
                               <ThumbsUp size={12} fill={feedbackState[msg.id] === "up" ? "currentColor" : "none"} />
@@ -2398,14 +2364,16 @@ export default function ChatInterface({
                             </button>
                           </>
                         )}
-                        <button className="btn btn-icon btn-ghost btn-sm" title="Edit text only" onClick={() => { setEditingMsgId(msg.id); setEditText(msg.text || ""); }}>
-                          <Edit2 size={12} />
-                        </button>
                         <button className="btn btn-icon btn-ghost btn-sm" title="Delete this message only" onClick={() => doDelete(msg.id)}>
                           <Trash2 size={12} />
                         </button>
-                        <button className="btn btn-icon btn-ghost btn-sm" style={{ color: "var(--color-warning)" }} title="Rollback context and file changes to this point" onClick={() => requestRollback(msg.id)}>
-                          <History size={12} />
+                        <button
+                          className="btn btn-icon btn-ghost btn-sm"
+                          style={{ color: "var(--color-warning, #f59e0b)" }}
+                          title="Rollback to this checkpoint (undo messages, file changes, tasks & memories)"
+                          onClick={() => requestRollback(msg.id)}
+                        >
+                          <RotateCcw size={12} />
                         </button>
                       </div>
                     )}
@@ -2491,8 +2459,8 @@ export default function ChatInterface({
           )
         }
 
-        {/* Input */}
-        <div style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-app)", zIndex: 10, position: "relative" }}>
+        {/* Floating Antigravity Input Bar */}
+        <div style={{ flexShrink: 0, padding: "0 var(--sp-md) var(--sp-md)", background: "transparent", zIndex: 10, position: "relative" }}>
           {isUserScrolledUp && (
             <button
               onClick={() => scrollToBottom(true)}
@@ -2522,9 +2490,33 @@ export default function ChatInterface({
               <ArrowDown size={12} /> Jump to latest
             </button>
           )}
-          <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto" }}>
-            <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
+          <div className="antigravity-composer-floating">
+            {/* Top Quick Actions Bar */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, paddingBottom: 6, borderBottom: "1px solid rgba(255, 255, 255, 0.06)", flexWrap: "wrap", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                {["/goal", "/plan", "/learn", "/schedule", "/compact"].map(cmd => (
+                  <button
+                    key={cmd}
+                    onClick={() => {
+                      setInputText(prev => (prev ? `${prev} ${cmd}` : `${cmd} `));
+                      inputRef.current?.focus();
+                    }}
+                    className="antigravity-pill-btn"
+                    style={{ fontSize: 10, padding: "2px 7px" }}
+                    title={`Insert slash command ${cmd}`}
+                  >
+                    <code>{cmd}</code>
+                  </button>
+                ))}
+              </div>
+              {contextUsage && (
+                <div style={{ fontSize: 10, color: "var(--color-mute, #94a3b8)", fontFamily: "var(--font-mono, monospace)" }}>
+                  {contextUsage.percent_used ? `${contextUsage.percent_used}% context` : ""}
+                </div>
+              )}
+            </div>
 
+            <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
               <input
                 type="file"
                 ref={fileInputRef}
@@ -2532,7 +2524,13 @@ export default function ChatInterface({
                 onChange={handleFileUpload}
                 accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.json,.md,.py,.ts,.tsx,.js,.jsx"
               />
-              <button className="btn btn-sm btn-icon btn-ghost" title="Attach file" onClick={() => fileInputRef.current?.click()} disabled={uploading} style={{ flexShrink: 0, padding: "8px 12px" }}>
+              <button
+                className="btn btn-sm btn-icon btn-ghost"
+                title="Attach file"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                style={{ flexShrink: 0, padding: "8px 10px", borderRadius: "8px" }}
+              >
                 {uploading ? <Loader2 size={16} className="animate-spin" /> : <Folder size={16} />}
               </button>
 
@@ -2620,14 +2618,42 @@ export default function ChatInterface({
 
               <textarea
                 ref={inputRef}
-                className="input" style={{ flex: 1, resize: "none", minHeight: 40, maxHeight: 384, lineHeight: 1.5, padding: "9px var(--sp-md)", overflowY: "auto" }}
-                placeholder="Message your team... (@ to mention an agent or a file · Enter to send, Shift+Enter for newline)"
-                value={inputText} rows={1}
+                className="input"
+                style={{
+                  flex: 1,
+                  resize: "none",
+                  minHeight: 40,
+                  maxHeight: 384,
+                  lineHeight: 1.5,
+                  padding: "9px var(--sp-md)",
+                  overflowY: "auto",
+                  background: "transparent",
+                  border: "none",
+                  boxShadow: "none"
+                }}
+                placeholder="Message your team... (@ to mention agent or file · Enter to send, Shift+Enter for newline)"
+                value={inputText}
+                rows={1}
                 onChange={handleChange}
                 onKeyDown={handleKeyDown}
               />
-              <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={!inputText.trim() && attachments.length === 0} style={{ height: 40 }}>
-                <Send size={14} /> Send
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleSend}
+                disabled={!inputText.trim() && attachments.length === 0}
+                style={{
+                  height: 38,
+                  padding: "0 16px",
+                  borderRadius: "10px",
+                  background: "linear-gradient(135deg, #4f46e5, #6366f1)",
+                  boxShadow: "0 4px 14px rgba(79, 70, 229, 0.4)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6
+                }}
+              >
+                <Send size={14} />
+                <span>Send</span>
               </button>
             </div>
           </div>
@@ -2635,13 +2661,33 @@ export default function ChatInterface({
 
         <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
 
-        <Modal open={rollbackOpen} onClose={() => setRollbackOpen(false)} title="Confirm Rollback">
-          <p className="body-sm">
-            Are you sure? This will delete this message, all following messages, and revert any files the agents modified during those messages.
-          </p>
-          <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end", marginTop: "var(--sp-xl)" }}>
+        <Modal open={rollbackOpen} onClose={() => setRollbackOpen(false)} title="Confirm Checkpoint Rollback">
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
+            <p className="body-sm" style={{ color: "var(--text-primary)" }}>
+              Are you sure you want to rollback to this checkpoint?
+            </p>
+            <div style={{
+              padding: "var(--sp-sm) var(--sp-md)",
+              background: "var(--bg-surface-raised)",
+              borderRadius: "var(--radius-sm)",
+              border: "1px solid var(--border-subtle)",
+              fontSize: "var(--text-xs)",
+              color: "var(--text-secondary)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 4
+            }}>
+              <div>• <b>Messages</b>: Permanently deletes all subsequent conversation turns.</div>
+              <div>• <b>Files</b>: Reverts modified files and unlinks newly created files.</div>
+              <div>• <b>Tasks</b>: Deletes newly created tasks and plan files from that turn.</div>
+              <div>• <b>Memory</b>: Purges learnings and vector memories generated during those turns.</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end", marginTop: "var(--sp-lg)" }}>
             <button className="btn btn-ghost" onClick={() => setRollbackOpen(false)}>Cancel</button>
-            <button className="btn btn-danger" onClick={doRollbackConfirm}>Rollback</button>
+            <button className="btn btn-danger" onClick={doRollbackConfirm} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <RotateCcw size={13} /> Revert Changes & Rollback
+            </button>
           </div>
         </Modal>
 

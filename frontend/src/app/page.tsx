@@ -13,6 +13,8 @@ import SettingsPanel from "@/components/SettingsPanel";
 import PluginStudio from "@/components/PluginStudio";
 import SkillsStudio from "@/components/SkillsStudio";
 import McpIntegration from "@/components/McpIntegration";
+import WorkflowDAGCanvas from "@/components/WorkflowDAGCanvas";
+import CodeGraphVisualizer from "@/components/CodeGraphVisualizer";
 import ScratchpadPanel from "@/components/ScratchpadPanel";
 import LoadingScreen from "@/components/LoadingScreen";
 import AuthPage from "@/components/AuthPage";
@@ -497,14 +499,21 @@ function AppShell() {
     if (evt.type === "browser_screenshot") {
       setScreenshots(prev => [...prev, evt as BrowserScreenshotEvent].slice(-50));
     }
-    if (evt.type === "task_update" && evt.task) {
-      setTasks(prev => {
-        const exists = prev.some(t => t.id === evt.task!.id);
-        if (exists) {
-          return prev.map(t => t.id === evt.task!.id ? { ...t, ...evt.task! } : t);
-        }
-        return [evt.task!, ...prev];
-      });
+    if (evt.type === "task_update") {
+      if (evt.task) {
+        setTasks(prev => {
+          const exists = prev.some(t => t.id === evt.task!.id);
+          if (exists) {
+            return prev.map(t => t.id === evt.task!.id ? { ...t, ...evt.task! } : t);
+          }
+          return [evt.task!, ...prev];
+        });
+      } else if (evt.task_id) {
+        setTasks(prev => prev.map(t => t.id === evt.task_id ? { ...t, status: evt.status || t.status, plan_status: evt.plan_status || t.plan_status } : t));
+      }
+    }
+    if (evt.type === "task_deleted" && evt.task_id) {
+      setTasks(prev => prev.filter(t => t.id !== evt.task_id));
     }
     if (evt.type === "agent_queue_update" && evt.agent_id != null) {
       setAgentQueues(prev => ({ ...prev, [evt.agent_id]: evt.queue_depth ?? 0 }));
@@ -584,7 +593,7 @@ function AppShell() {
 
   // Load teams when project changes
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || projectId === "undefined" || projectId === "null") return;
     Promise.all([api.listTeams(projectId), api.listLearnings(projectId), api.listEntityMemories(projectId, undefined)])
       .then(([tms, lrn, entities]) => {
         setTeams(tms);
@@ -596,7 +605,7 @@ function AppShell() {
 
   // Load team data when team changes
   useEffect(() => {
-    if (!teamId) { setAgents([]); setMessages([]); setTasks([]); setScreenshots([]); setScratchpads([]); setCompactionEvents([]); return; }
+    if (!teamId || teamId === "undefined" || teamId === "null") { setAgents([]); setMessages([]); setTasks([]); setScreenshots([]); setScratchpads([]); setCompactionEvents([]); return; }
     Promise.all([
       api.listAgents(teamId),
       api.listTasks(teamId),
@@ -872,8 +881,23 @@ function AppShell() {
                         const res = await api.rollbackFromMessage(id);
                         const restoredCount = res?.restored_files?.length ?? 0;
                         const deletedCount = res?.deleted_files?.length ?? 0;
+                        const deletedTasksCount = res?.deleted_task_ids?.length ?? 0;
                         const msgCount = res?.deleted_count ?? 1;
-                        toast.success(`Rolled back ${msgCount} message(s)${restoredCount + deletedCount > 0 ? ` and restored ${restoredCount + deletedCount} file(s)` : ""}`);
+
+                        if (res?.deleted_task_ids?.length) {
+                          const deletedSet = new Set(res.deleted_task_ids);
+                          setTasks(prev => prev.filter(t => !deletedSet.has(t.id)));
+                        }
+                        if (teamId) {
+                          api.listTasks(teamId).then(tks => setTasks(tks)).catch(() => {});
+                        }
+                        setLastFileChange({ type: "file_change", action: "rollback_restore", path: "*", _seq: Date.now() });
+
+                        const details = [];
+                        if (restoredCount + deletedCount > 0) details.push(`${restoredCount + deletedCount} file(s) reverted`);
+                        if (deletedTasksCount > 0) details.push(`${deletedTasksCount} task(s) removed`);
+                        const detailStr = details.length ? ` (${details.join(", ")})` : "";
+                        toast.success(`Checkpoint restored: ${msgCount} message(s) undone${detailStr}`);
                       } catch (err: any) {
                         if (err?.status !== 404) {
                           toast.error(err?.message || "Failed to rollback");
@@ -941,6 +965,16 @@ function AppShell() {
             <AgentPanel agents={agents} teamId={teamId} streamingAgents={streamingAgents}
               agentQueues={agentQueues}
               onAgentsChange={setAgents} onToast={(msg, type) => toast.show(msg, type)} />
+          </div>
+        )}
+        {activeView === "workflow_dag" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <WorkflowDAGCanvas teamId={teamId} />
+          </div>
+        )}
+        {activeView === "code_graph" && (
+          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+            <CodeGraphVisualizer projectId={projectId} />
           </div>
         )}
         {activeView === "browser" && (

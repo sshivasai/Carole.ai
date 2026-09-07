@@ -159,6 +159,72 @@ class LanceDBClient:
             logger.error("LanceDB delete failed: %s", e)
             return False
 
+    async def delete_by_team(self, team_id: str) -> bool:
+        """Delete all learnings associated with a team (non-blocking)."""
+        return await asyncio.to_thread(self._sync_delete_by_team, team_id)
+
+    def _sync_delete_by_team(self, team_id: str) -> bool:
+        try:
+            import re as _re
+            safe_id = _re.sub(r"[^a-zA-Z0-9_\-]", "", team_id) if team_id else ""
+            if not safe_id:
+                return False
+            db = self._get_db()
+            if not self._has_table(db):
+                return False
+            table = db.open_table(self.table_name)
+            table.delete(f"team_id = '{safe_id}'")
+            return True
+        except Exception as e:
+            logger.error("LanceDB delete_by_team failed: %s", e)
+            return False
+
+    async def delete_by_project(self, project_id: str) -> bool:
+        """Delete all learnings associated with a project (non-blocking)."""
+        return await asyncio.to_thread(self._sync_delete_by_project, project_id)
+
+    def _sync_delete_by_project(self, project_id: str) -> bool:
+        try:
+            import re as _re
+            safe_id = _re.sub(r"[^a-zA-Z0-9_\-]", "", project_id) if project_id else ""
+            if not safe_id:
+                return False
+            db = self._get_db()
+            if not self._has_table(db):
+                return False
+            table = db.open_table(self.table_name)
+            table.delete(f"project_id = '{safe_id}'")
+            return True
+        except Exception as e:
+            logger.error("LanceDB delete_by_project failed: %s", e)
+            return False
+
+    async def delete_learnings_batch(self, learning_ids: List[str]) -> bool:
+        """Delete multiple learnings by ID (non-blocking)."""
+        return await asyncio.to_thread(self._sync_delete_batch, learning_ids)
+
+    def _sync_delete_batch(self, learning_ids: List[str]) -> bool:
+        try:
+            if not learning_ids:
+                return True
+            import re as _re
+            safe_ids = [
+                f"'{_re.sub(r'[^a-zA-Z0-9_\-]', '', lid)}'"
+                for lid in learning_ids
+                if lid and _re.sub(r'[^a-zA-Z0-9_\-]', '', lid)
+            ]
+            if not safe_ids:
+                return False
+            db = self._get_db()
+            if not self._has_table(db):
+                return False
+            table = db.open_table(self.table_name)
+            table.delete(f"id IN ({', '.join(safe_ids)})")
+            return True
+        except Exception as e:
+            logger.error("LanceDB delete_batch failed: %s", e)
+            return False
+
     async def update_project_id(self, learning_id: str, new_project_id: Optional[str]) -> bool:
         """Update the project_id of an existing learning (non-blocking)."""
         return await asyncio.to_thread(self._sync_update_project_id, learning_id, new_project_id)

@@ -14,7 +14,7 @@ Rate limits (Finding #7):
 
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Header, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.memory.database import get_db
@@ -25,10 +25,10 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 class SignupRequest(BaseModel):
-    email: str
-    password: str
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
+    email: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1)
+    first_name: Optional[str] = Field(default=None, max_length=100)
+    last_name: Optional[str] = Field(default=None, max_length=100)
 
 
 class LoginRequest(BaseModel):
@@ -68,7 +68,7 @@ async def get_me(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid token.")
 
-    token = authorization.split(" ")[1]
+    token = authorization[7:]
     user = await auth_service.get_current_user(db, token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token.")
@@ -86,7 +86,7 @@ async def get_ws_ticket(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid token.")
 
-    token = authorization.split(" ")[1]
+    token = authorization[7:]
     user = await auth_service.get_current_user(db, token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token.")

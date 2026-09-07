@@ -7,7 +7,13 @@ Background worker that evaluates ScheduledTasks and triggers agents.
 import asyncio
 import logging
 from datetime import datetime, timezone
-from croniter import croniter
+try:
+    from croniter import croniter
+    CRONITER_AVAILABLE = True
+except ImportError:
+    croniter = None
+    CRONITER_AVAILABLE = False
+
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +34,10 @@ class AgentCronWorker:
         self._running = False
 
     async def start(self):
+        if not CRONITER_AVAILABLE:
+            logger.warning("⚠️ [Cron Worker] 'croniter' package is not installed. Scheduled cron triggers will be paused until installed.")
+            return
+
         self._running = True
         logger.info("⏱️ [Cron Worker] Started. Checking schedule every %d seconds.", self._interval_seconds)
 

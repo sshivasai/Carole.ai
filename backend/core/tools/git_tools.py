@@ -124,10 +124,29 @@ class GitTools:
         val_err = _validate_git_url(url)
         if val_err:
             return val_err
+        base_dir = Path(cwd).resolve() if cwd else self.workspace_root.resolve()
         args = ["clone", url]
         if directory:
-            args.append(directory)
-        return await self._run_git(*args, cwd=cwd)
+            target_dir = Path(directory)
+            if not target_dir.is_absolute():
+                resolved_target = (base_dir / target_dir).resolve()
+            else:
+                resolved_target = target_dir.resolve()
+            is_inside = False
+            try:
+                resolved_target.relative_to(base_dir)
+                is_inside = True
+            except ValueError:
+                if os.name == 'nt':
+                    try:
+                        Path(str(resolved_target).lower()).relative_to(Path(str(base_dir).lower()))
+                        is_inside = True
+                    except ValueError:
+                        is_inside = False
+            if not is_inside:
+                return f"Error: Clone destination directory '{directory}' escapes workspace sandbox."
+            args.append(str(resolved_target))
+        return await self._run_git(*args, cwd=str(base_dir))
 
     async def pull(self, remote: str = "origin", branch: str = None, cwd: Optional[str] = None) -> str:
         """Pulls latest changes from the remote. Equivalent to git fetch + git merge."""
@@ -140,6 +159,113 @@ class GitTools:
         if all:
             return await self._run_git("branch", "-a", cwd=cwd)
         return await self._run_git("branch", "-v", cwd=cwd)
+
+    async def create_checkpoint(self, name: str = "", cwd: Optional[str] = None) -> dict:
+        """
+        Creates an atomic Git checkpoint in refs/carole/checkpoints/<checkpoint_id>.
+        Stages current changes and commits if dirty, then records the reference.
+        """
+        import time
+        import secrets
+
+        checkpoint_id = f"cp_{int(time.time())}_{secrets.token_hex(4)}"
+        status = await self.status(cwd=cwd)
+        if "Git Error" in status and "not a git repository" in status.lower():
+            await self._run_git("init", cwd=cwd)
+
+        await self._run_git("add", "-A", cwd=cwd)
+        diff_staged = await self._run_git("diff", "--staged", cwd=cwd)
+        commit_msg = f"[CAROLE CHECKPOINT] {name or 'Manual Checkpoint'}"
+        if diff_staged:
+            await self._run_git("commit", "-m", commit_msg, cwd=cwd)
+        else:
+            head_check = await self._run_git("rev-parse", "--verify", "HEAD", cwd=cwd)
+            if "Git Error" in head_check:
+                await self._run_git("commit", "--allow-empty", "-m", commit_msg, cwd=cwd)
+
+        head_sha = await self._run_git("rev-parse", "HEAD", cwd=cwd)
+        ref_name = f"refs/carole/checkpoints/{checkpoint_id}"
+        await self._run_git("update-ref", ref_name, head_sha, cwd=cwd)
+
+        return {
+            "status": "success",
+            "checkpoint_id": checkpoint_id,
+            "ref": ref_name,
+            "commit_sha": head_sha[:8],
+            "message": name or "Manual Checkpoint"
+        }
+
+    async def list_checkpoints(self, cwd: Optional[str] = None) -> list[dict]:
+        """Lists all Git checkpoints created by Carole."""
+        out = await self._run_git(
+            "for-each-ref", "refs/carole/checkpoints",
+            "--format=%(refname:short)|%(objectname:short)|%(authordate:iso)|%(subject)",
+            cwd=cwd
+        )
+        if not out or "Git Error" in out:
+            return []
+
+        checkpoints = []
+        for line in out.splitlines():
+            parts = line.split("|", 3)
+            if len(parts) >= 4:
+                ref_short = parts[0]
+                cp_id = ref_short.split("/")[-1]
+                checkpoints.append({
+                    "checkpoint_id": cp_id,
+                    "commit_sha": parts[1],
+                    "timestamp": parts[2],
+                    "message": parts[3].replace("[CAROLE CHECKPOINT] ", "").strip()
+                })
+        return checkpoints
+
+    async def rollback_checkpoint(self, checkpoint_id: str, cwd: Optional[str] = None) -> dict:
+        """
+        Transactional rollback: reverts working tree and index to checkpoint ref.
+        """
+        ref_name = f"refs/carole/checkpoints/{checkpoint_id}"
+        verify = await self._run_git("rev-parse", "--verify", ref_name, cwd=cwd)
+        if "Git Error" in verify:
+            return {"status": "error", "message": f"Checkpoint '{checkpoint_id}' not found."}
+
+        reset_res = await self._run_git("reset", "--hard", ref_name, cwd=cwd)
+        if "Git Error" in reset_res:
+            return {"status": "error", "message": reset_res}
+
+        await self._run_git("clean", "-fd", cwd=cwd)
+        return {"status": "success", "message": f"Rolled back to checkpoint {checkpoint_id}."}
+
+    async def diff_checkpoint(self, checkpoint_id: str, cwd: Optional[str] = None) -> dict:
+        """
+        Returns structured diff and numstat between checkpoint ref and current state.
+        """
+        ref_name = f"refs/carole/checkpoints/{checkpoint_id}"
+        verify = await self._run_git("rev-parse", "--verify", ref_name, cwd=cwd)
+        if "Git Error" in verify:
+            return {"status": "error", "message": f"Checkpoint '{checkpoint_id}' not found."}
+
+        numstat_out = await self._run_git("diff", ref_name, "HEAD", "--numstat", cwd=cwd)
+        patch_out = await self._run_git("diff", ref_name, "HEAD", cwd=cwd)
+
+        files = []
+        if numstat_out and "Git Error" not in numstat_out:
+            for line in numstat_out.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    additions = int(parts[0]) if parts[0].isdigit() else 0
+                    deletions = int(parts[1]) if parts[1].isdigit() else 0
+                    files.append({
+                        "file": parts[2],
+                        "additions": additions,
+                        "deletions": deletions
+                    })
+
+        return {
+            "status": "success",
+            "checkpoint_id": checkpoint_id,
+            "files": files,
+            "unified_diff": patch_out if "Git Error" not in patch_out else ""
+        }
 
 
 # Singleton

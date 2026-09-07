@@ -250,11 +250,13 @@ export default function TeamChatAnimation() {
     >
       <div
         style={{
-          background: "#030315",
-          border: "1px solid var(--color-hairline, #2a2a3f)",
+          background: "rgba(12, 12, 24, 0.80)",
+          backdropFilter: "blur(24px)",
+          WebkitBackdropFilter: "blur(24px)",
+          border: "1px solid rgba(255, 255, 255, 0.12)",
           borderRadius: 20,
           overflow: "hidden",
-          boxShadow: "0 32px 80px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(167, 139, 250, 0.15)",
+          boxShadow: "0 32px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(167, 139, 250, 0.15)",
           display: "flex",
           flexDirection: "column",
           minHeight: 560,
@@ -270,8 +272,10 @@ export default function TeamChatAnimation() {
             alignItems: "center",
             justifyContent: "space-between",
             padding: "10px 18px",
-            background: "#0a0a1a",
-            borderBottom: "1px solid var(--color-hairline, #2a2a3f)",
+            background: "rgba(10, 10, 22, 0.85)",
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
             zIndex: 10,
           }}
         >
@@ -335,7 +339,9 @@ export default function TeamChatAnimation() {
               justifyContent: "center",
               textAlign: "center",
               padding: "24px 24px",
-              background: "radial-gradient(circle at center, rgba(167, 139, 250, 0.14) 0%, #030315 75%)",
+              background: "radial-gradient(circle at center, rgba(167, 139, 250, 0.16) 0%, rgba(10, 10, 24, 0.82) 75%)",
+              backdropFilter: "blur(16px)",
+              WebkitBackdropFilter: "blur(16px)",
               position: "relative",
               overflow: "hidden",
               animation: "fadeIn 0.2s ease-out",
@@ -435,7 +441,6 @@ export default function TeamChatAnimation() {
                 color: currentSceneMeta.color,
                 marginBottom: 8,
                 maxWidth: 620,
-                animation: "fadeIn 0.3s ease-out",
               }}
             >
               {currentSceneMeta.subtitle}
@@ -445,11 +450,10 @@ export default function TeamChatAnimation() {
             <p
               style={{
                 fontSize: 12.5,
-                color: "var(--color-body, #94a3b8)",
+                color: "#cbd5e1",
                 maxWidth: 560,
                 lineHeight: 1.45,
                 margin: 0,
-                animation: "fadeIn 0.4s ease-out",
               }}
             >
               {currentSceneMeta.description}
@@ -481,15 +485,17 @@ export default function TeamChatAnimation() {
               gridTemplateColumns: "195px 1fr",
               flex: 1,
               minHeight: 0,
-              background: "#030315",
+              background: "transparent",
               animation: "fadeIn 0.25s ease-out",
             }}
           >
             {/* Left Console Sidebar (Exact Real App Colors & Layout) */}
             <div
               style={{
-                background: "#0a0a1a",
-                borderRight: "1px solid var(--color-hairline, #2a2a3f)",
+                background: "rgba(10, 10, 22, 0.82)",
+                backdropFilter: "blur(12px)",
+                WebkitBackdropFilter: "blur(12px)",
+                borderRight: "1px solid rgba(255, 255, 255, 0.08)",
                 display: "flex",
                 flexDirection: "column",
                 padding: "12px 10px",
@@ -724,7 +730,7 @@ export default function TeamChatAnimation() {
             </div>
 
             {/* Dynamic Console Subsystem Area */}
-            <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "#030315" }}>
+            <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "rgba(8, 8, 18, 0.76)" }}>
               
               {/* VIEW 1: LIVE TEAM CHAT */}
               {activeScene === "chat" && (
@@ -755,7 +761,7 @@ export default function TeamChatAnimation() {
                         </div>
                         <div style={{ maxWidth: "78%", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
                           <div style={{ fontSize: 10, color: "#64748b", marginBottom: 2 }}>12:45 AM</div>
-                          <div style={{ padding: "10px 14px", borderRadius: "14px 2px 14px 14px", background: "#121225", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 12.5, color: "#f1f5f9", lineHeight: 1.5, boxShadow: "0 4px 14px rgba(0,0,0,0.3)" }}>
+                          <div style={{ padding: "10px 14px", borderRadius: "14px 2px 14px 14px", background: "rgba(18, 18, 37, 0.82)", backdropFilter: "blur(8px)", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 12.5, color: "#f1f5f9", lineHeight: 1.5, boxShadow: "0 4px 14px rgba(0,0,0,0.3)" }}>
                             {PROMPT_TO_TYPE}
                             <div style={{ display: "inline-flex", alignItems: "center", gap: 5, marginTop: 6, padding: "2px 8px", borderRadius: 6, background: "rgba(167, 139, 250, 0.15)", border: "1px solid rgba(167, 139, 250, 0.3)", fontSize: 10.5, color: "#c4b5fd", fontWeight: 600 }}>
                               <ImageIcon size={11} />
@@ -788,9 +794,9 @@ export default function TeamChatAnimation() {
                             <span style={{ fontWeight: 700, color: "#a78bfa" }}>Thought: </span>
                             Decomposing auth migration into 3 parallel workstreams: 1) RS256 JWT & Redis bucket, 2) GraphRAG AST route mapping, 3) Playwright E2E verification. Spawning Coder subagent with depth-1 safety permissions.
                           </div>
-                          <div style={{ padding: "9px 12px", borderRadius: "2px 14px 14px 14px", background: "rgba(255, 255, 255, 0.03)", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 12.5, color: "#e2e8f0", lineHeight: 1.5 }}>
+                          <div style={{ padding: "9px 12px", borderRadius: "2px 14px 14px 14px", background: "rgba(18, 18, 32, 0.75)", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 12.5, color: "#e2e8f0", lineHeight: 1.5 }}>
                             Task received. Initializing Actor-model FIFO queues and hiring specialist subagents with depth-1 safety guards.
-                            <div style={{ marginTop: 6, padding: "5px 8px", borderRadius: 6, background: "#0a0a1a", border: "1px solid rgba(167, 139, 250, 0.25)", fontFamily: "var(--font-mono, monospace)", fontSize: 10.5, color: "#c4b5fd", display: "flex", alignItems: "center", gap: 6 }}>
+                            <div style={{ marginTop: 6, padding: "5px 8px", borderRadius: 6, background: "rgba(10, 10, 26, 0.80)", border: "1px solid rgba(167, 139, 250, 0.25)", fontFamily: "var(--font-mono, monospace)", fontSize: 10.5, color: "#c4b5fd", display: "flex", alignItems: "center", gap: 6 }}>
                               <Terminal size={11} />
                               <span>{"hire_subagent(target='Sub-PythonDeveloper_8777', task='Implement RS256 JWT & Redis rate limiter', permissions={'subagents': 'block'})"}</span>
                             </div>
@@ -812,7 +818,7 @@ export default function TeamChatAnimation() {
                           </div>
                           <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 9.5, color: "#94a3b8" }}>ID: 8779b01c</span>
                         </div>
-                        <div style={{ fontSize: 11.5, color: "#e2e8f0", lineHeight: 1.45, fontFamily: "var(--font-mono, monospace)", background: "#0a0a1a", padding: "6px 10px", borderRadius: 6 }}>
+                        <div style={{ fontSize: 11.5, color: "#e2e8f0", lineHeight: 1.45, fontFamily: "var(--font-mono, monospace)", background: "rgba(10, 10, 26, 0.80)", padding: "6px 10px", borderRadius: 6 }}>
                           File &apos;backend/core/auth/jwt_handler.py&apos; successfully updated in project root with RS256 asymmetric signing, sliding expiration refresh, and Redis token bucket rate limiting (100 req/min). AST syntax validation passed (0 cyclic errors).
                         </div>
                       </div>
@@ -828,7 +834,7 @@ export default function TeamChatAnimation() {
                             <span style={{ fontSize: 10, color: "var(--color-body, #94a3b8)" }}>Playwright Automation</span>
                             <span style={{ fontSize: 10, color: "#64748b", marginLeft: "auto" }}>12:48 AM</span>
                           </div>
-                          <div style={{ padding: "9px 12px", borderRadius: "2px 14px 14px 14px", background: "rgba(255, 255, 255, 0.03)", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 12.5, color: "#e2e8f0", lineHeight: 1.5 }}>
+                          <div style={{ padding: "9px 12px", borderRadius: "2px 14px 14px 14px", background: "rgba(18, 18, 32, 0.75)", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 12.5, color: "#e2e8f0", lineHeight: 1.5 }}>
                             Playwright headless browser verification passed: Verified /login, /refresh token exchange, and HTTP 429 rate limit response (3 assertions, 0 errors).
                           </div>
                         </div>
@@ -837,7 +843,7 @@ export default function TeamChatAnimation() {
                   </div>
 
                   {/* Bottom Live Typing Input Field */}
-                  <div style={{ padding: "10px 16px", borderTop: "1px solid var(--color-hairline, #2a2a3f)", background: "#0a0a1a", display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ padding: "10px 16px", borderTop: "1px solid var(--color-hairline, #2a2a3f)", background: "rgba(10, 10, 22, 0.85)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255, 255, 255, 0.04)", border: "1px solid var(--color-hairline, #2a2a3f)", display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8" }}>
                       <Folder size={13} />
                     </div>
@@ -847,7 +853,7 @@ export default function TeamChatAnimation() {
                         flex: 1,
                         padding: "7px 12px",
                         borderRadius: 8,
-                        background: "#030315",
+                        background: "rgba(10, 10, 24, 0.78)",
                         border: "1px solid var(--color-hairline, #2a2a3f)",
                         fontSize: 11.5,
                         color: typedText ? "#f1f5f9" : "var(--color-mute, #64748b)",
@@ -912,12 +918,12 @@ export default function TeamChatAnimation() {
 
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, flex: 1, minHeight: 0, overflowX: "auto" }}>
                     {/* Backlog */}
-                    <div style={{ background: "#0a0a1a", borderRadius: 10, border: "1px solid var(--color-hairline, #2a2a3f)", padding: "10px", display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ background: "rgba(10, 10, 24, 0.82)", backdropFilter: "blur(12px)", borderRadius: 10, border: "1px solid var(--color-hairline, #2a2a3f)", padding: "10px", display: "flex", flexDirection: "column", gap: 8 }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, color: "var(--color-body, #94a3b8)", paddingBottom: 6, borderBottom: "1px solid var(--color-hairline, #2a2a3f)" }}>
                         <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Clock size={12} /> Backlog</span>
                         <span style={{ fontSize: 10, background: "rgba(255,255,255,0.06)", padding: "1px 6px", borderRadius: 9999 }}>2</span>
                       </div>
-                      <div style={{ padding: "10px", borderRadius: 8, background: "#121225", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 11.5 }}>
+                      <div style={{ padding: "10px", borderRadius: 8, background: "rgba(18, 18, 37, 0.80)", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 11.5 }}>
                         <div style={{ fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>Setup Redis Cluster Sharding</div>
                         <div style={{ fontSize: 10, color: "var(--color-mute, #64748b)", marginBottom: 8 }}>Multi-node rate limiter failover state</div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -928,12 +934,12 @@ export default function TeamChatAnimation() {
                     </div>
 
                     {/* In Progress */}
-                    <div style={{ background: "rgba(56, 189, 248, 0.03)", borderRadius: 10, border: "1px solid rgba(56, 189, 248, 0.25)", padding: "10px", display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, color: "#38bdf8", paddingBottom: 6, borderBottom: "1px solid rgba(56, 189, 248, 0.15)" }}>
+                    <div style={{ background: "rgba(12, 20, 34, 0.82)", backdropFilter: "blur(12px)", borderRadius: 10, border: "1px solid rgba(56, 189, 248, 0.35)", padding: "10px", display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, color: "#38bdf8", paddingBottom: 6, borderBottom: "1px solid rgba(56, 189, 248, 0.25)" }}>
                         <span style={{ display: "flex", alignItems: "center", gap: 5 }}><PlayCircle size={12} /> In Progress</span>
-                        <span style={{ fontSize: 10, background: "rgba(56, 189, 248, 0.2)", padding: "1px 6px", borderRadius: 9999, color: "#38bdf8" }}>2</span>
+                        <span style={{ fontSize: 10, background: "rgba(56, 189, 248, 0.25)", padding: "1px 6px", borderRadius: 9999, color: "#38bdf8" }}>2</span>
                       </div>
-                      <div style={{ padding: "10px", borderRadius: 8, background: "#151829", border: "1px solid rgba(56, 189, 248, 0.35)", fontSize: 11.5, boxShadow: "0 4px 14px rgba(56, 189, 248, 0.1)" }}>
+                      <div style={{ padding: "10px", borderRadius: 8, background: "rgba(21, 24, 41, 0.85)", border: "1px solid rgba(56, 189, 248, 0.4)", fontSize: 11.5, boxShadow: "0 4px 14px rgba(56, 189, 248, 0.15)" }}>
                         <div style={{ fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>RS256 JWT Token Migration</div>
                         <div style={{ fontSize: 10, color: "var(--color-body, #94a3b8)", marginBottom: 8 }}>Asymmetric crypto signing in jwt_handler.py</div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -941,7 +947,7 @@ export default function TeamChatAnimation() {
                           <PrettyAvatar preset="coder" name="Coder" size={18} />
                         </div>
                       </div>
-                      <div style={{ padding: "10px", borderRadius: 8, background: "#121225", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 11.5 }}>
+                      <div style={{ padding: "10px", borderRadius: 8, background: "rgba(18, 18, 37, 0.80)", border: "1px solid var(--color-hairline, #2a2a3f)", fontSize: 11.5 }}>
                         <div style={{ fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>Redis Token Bucket Limiter</div>
                         <div style={{ fontSize: 10, color: "var(--color-body, #94a3b8)", marginBottom: 8 }}>100 req/min sliding expiration window</div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -952,12 +958,12 @@ export default function TeamChatAnimation() {
                     </div>
 
                     {/* Security Review */}
-                    <div style={{ background: "rgba(251, 191, 36, 0.03)", borderRadius: 10, border: "1px solid rgba(251, 191, 36, 0.25)", padding: "10px", display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, color: "#fbbf24", paddingBottom: 6, borderBottom: "1px solid rgba(251, 191, 36, 0.15)" }}>
+                    <div style={{ background: "rgba(22, 20, 18, 0.82)", backdropFilter: "blur(12px)", borderRadius: 10, border: "1px solid rgba(251, 191, 36, 0.35)", padding: "10px", display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, color: "#fbbf24", paddingBottom: 6, borderBottom: "1px solid rgba(251, 191, 36, 0.25)" }}>
                         <span style={{ display: "flex", alignItems: "center", gap: 5 }}><ShieldCheck size={12} /> Security Review</span>
-                        <span style={{ fontSize: 10, background: "rgba(251, 191, 36, 0.2)", padding: "1px 6px", borderRadius: 9999, color: "#fbbf24" }}>1</span>
+                        <span style={{ fontSize: 10, background: "rgba(251, 191, 36, 0.25)", padding: "1px 6px", borderRadius: 9999, color: "#fbbf24" }}>1</span>
                       </div>
-                      <div style={{ padding: "10px", borderRadius: 8, background: "#181822", border: "1px solid rgba(251, 191, 36, 0.3)", fontSize: 11.5 }}>
+                      <div style={{ padding: "10px", borderRadius: 8, background: "rgba(24, 24, 34, 0.82)", border: "1px solid rgba(251, 191, 36, 0.35)", fontSize: 11.5 }}>
                         <div style={{ fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>Policy Matrix Shell Intercept</div>
                         <div style={{ fontSize: 10, color: "var(--color-body, #94a3b8)", marginBottom: 8 }}>Evaluating pytest test execution safety</div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -968,12 +974,12 @@ export default function TeamChatAnimation() {
                     </div>
 
                     {/* Done */}
-                    <div style={{ background: "rgba(16, 185, 129, 0.03)", borderRadius: 10, border: "1px solid rgba(16, 185, 129, 0.25)", padding: "10px", display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, color: "#34d399", paddingBottom: 6, borderBottom: "1px solid rgba(16, 185, 129, 0.15)" }}>
+                    <div style={{ background: "rgba(12, 24, 22, 0.82)", backdropFilter: "blur(12px)", borderRadius: 10, border: "1px solid rgba(16, 185, 129, 0.35)", padding: "10px", display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, color: "#34d399", paddingBottom: 6, borderBottom: "1px solid rgba(16, 185, 129, 0.25)" }}>
                         <span style={{ display: "flex", alignItems: "center", gap: 5 }}><CheckCircle size={12} /> Done</span>
-                        <span style={{ fontSize: 10, background: "rgba(16, 185, 129, 0.2)", padding: "1px 6px", borderRadius: 9999, color: "#34d399" }}>3</span>
+                        <span style={{ fontSize: 10, background: "rgba(16, 185, 129, 0.25)", padding: "1px 6px", borderRadius: 9999, color: "#34d399" }}>3</span>
                       </div>
-                      <div style={{ padding: "10px", borderRadius: 8, background: "#12191c", border: "1px solid rgba(16, 185, 129, 0.3)", fontSize: 11.5 }}>
+                      <div style={{ padding: "10px", borderRadius: 8, background: "rgba(18, 25, 28, 0.82)", border: "1px solid rgba(16, 185, 129, 0.35)", fontSize: 11.5 }}>
                         <div style={{ fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>Playwright E2E Auth Suite</div>
                         <div style={{ fontSize: 10, color: "#34d399", marginBottom: 8 }}>3 assertions passed in 1.84s</div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -989,7 +995,7 @@ export default function TeamChatAnimation() {
               {/* VIEW 3: INBUILT FILE EXPLORER & AST DIFF VIEWER */}
               {activeScene === "explorer" && (
                 <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", height: "100%", overflow: "hidden" }}>
-                  <div style={{ background: "#0a0a1a", borderRight: "1px solid var(--color-hairline, #2a2a3f)", padding: "12px 10px", display: "flex", flexDirection: "column", gap: 6, fontSize: 11.5 }}>
+                  <div style={{ background: "rgba(10, 10, 22, 0.85)", backdropFilter: "blur(12px)", borderRight: "1px solid var(--color-hairline, #2a2a3f)", padding: "12px 10px", display: "flex", flexDirection: "column", gap: 6, fontSize: 11.5 }}>
                     <div style={{ fontSize: 10, fontWeight: 800, color: "var(--color-mute, #64748b)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>PROJECT FILES</div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#cbd5e1", fontWeight: 600, padding: "3px 6px" }}>
                       <span>📁</span> <span>backend/core</span>
@@ -1017,7 +1023,7 @@ export default function TeamChatAnimation() {
                   </div>
 
                   <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-                    <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--color-hairline, #2a2a3f)", background: "#0a0a1a", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--color-hairline, #2a2a3f)", background: "rgba(10, 10, 22, 0.85)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 10px", borderRadius: 6, background: "rgba(16, 185, 129, 0.15)", border: "1px solid rgba(16, 185, 129, 0.3)", fontSize: 11.5, color: "#34d399", fontWeight: 700 }}>
                           <FileCode size={13} />
@@ -1036,7 +1042,7 @@ export default function TeamChatAnimation() {
                       </div>
                     </div>
 
-                    <div style={{ flex: 1, padding: "12px 16px", background: "#030315", overflowY: "auto", fontFamily: "var(--font-mono, monospace)", fontSize: 11.5, lineHeight: 1.6 }}>
+                    <div style={{ flex: 1, padding: "12px 16px", background: "rgba(6, 6, 18, 0.78)", backdropFilter: "blur(12px)", overflowY: "auto", fontFamily: "var(--font-mono, monospace)", fontSize: 11.5, lineHeight: 1.6 }}>
                       <div style={{ color: "#64748b", marginBottom: 6 }}>{"// Diff: RS256 Asymmetric Token Signing & Sliding Expiration"}</div>
                       <div style={{ background: "rgba(239, 68, 68, 0.12)", color: "#f87171", padding: "1px 6px" }}>{"- def encode_token(payload: dict) -> str:"}</div>
                       <div style={{ background: "rgba(239, 68, 68, 0.12)", color: "#f87171", padding: "1px 6px" }}>{"-     return jwt.encode(payload, SECRET_KEY, algorithm='HS256')"}</div>
@@ -1056,7 +1062,7 @@ export default function TeamChatAnimation() {
 
               {/* VIEW 4: INTEGRATED TERMINAL & GIT BRANCH CONTROL */}
               {activeScene === "terminal" && (
-                <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "14px 18px", background: "#030315" }}>
+                <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "14px 18px", background: "rgba(6, 6, 18, 0.78)", backdropFilter: "blur(12px)" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <div style={{ fontSize: 13, fontWeight: 800, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
@@ -1081,7 +1087,7 @@ export default function TeamChatAnimation() {
                     </div>
                   </div>
 
-                  <div style={{ flex: 1, padding: "12px 14px", borderRadius: 8, background: "#0a0a1a", border: "1px solid var(--color-hairline, #2a2a3f)", fontFamily: "var(--font-mono, monospace)", fontSize: 11, lineHeight: 1.5, overflowY: "auto" }}>
+                  <div style={{ flex: 1, padding: "12px 14px", borderRadius: 8, background: "rgba(10, 10, 22, 0.82)", border: "1px solid var(--color-hairline, #2a2a3f)", fontFamily: "var(--font-mono, monospace)", fontSize: 11, lineHeight: 1.5, overflowY: "auto" }}>
                     {terminalTab === "pytest" && (
                       <>
                         <div style={{ color: "var(--color-body, #94a3b8)" }}>$ pytest tests/test_jwt_auth.py --cov=backend/core/auth -v</div>
@@ -1123,7 +1129,7 @@ export default function TeamChatAnimation() {
 
               {/* VIEW 5: JUDGE AI SECURITY GATE */}
               {activeScene === "security" && (
-                <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "12px 14px", background: "#030315" }}>
+                <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "12px 14px", background: "rgba(6, 6, 18, 0.78)", backdropFilter: "blur(12px)" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                     <div>
                       <div style={{ fontSize: 13.5, fontWeight: 800, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
@@ -1138,7 +1144,7 @@ export default function TeamChatAnimation() {
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <div style={{ padding: "10px", borderRadius: 8, background: "rgba(16, 185, 129, 0.05)", border: "1px solid rgba(16, 185, 129, 0.25)" }}>
+                    <div style={{ padding: "10px", borderRadius: 8, background: "rgba(12, 24, 22, 0.78)", border: "1px solid rgba(16, 185, 129, 0.35)" }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
                         <span style={{ fontSize: 11.5, fontWeight: 700, color: "#34d399" }}>Tier 1: Safe (Auto-Execute)</span>
                         <span style={{ fontSize: 8.5, padding: "1px 5px", background: "rgba(16,185,129,0.2)", color: "#34d399", borderRadius: 4 }}>Score &lt; 0.2</span>
@@ -1148,7 +1154,7 @@ export default function TeamChatAnimation() {
                       </div>
                     </div>
 
-                    <div style={{ padding: "10px", borderRadius: 8, background: "rgba(239, 68, 68, 0.05)", border: "1px solid rgba(239, 68, 68, 0.25)" }}>
+                    <div style={{ padding: "10px", borderRadius: 8, background: "rgba(28, 14, 18, 0.78)", border: "1px solid rgba(239, 68, 68, 0.35)" }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
                         <span style={{ fontSize: 11.5, fontWeight: 700, color: "#f87171" }}>Tier 2: Gated (Human Card)</span>
                         <span style={{ fontSize: 8.5, padding: "1px 5px", background: "rgba(239,68,68,0.2)", color: "#f87171", borderRadius: 4 }}>Score &ge; 0.7</span>
@@ -1159,7 +1165,7 @@ export default function TeamChatAnimation() {
                     </div>
                   </div>
 
-                  <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, background: "#0a0a1a", border: "1px solid rgba(251, 191, 36, 0.3)" }}>
+                  <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, background: "rgba(10, 10, 22, 0.82)", border: "1px solid rgba(251, 191, 36, 0.3)" }}>
                     <div style={{ fontSize: 10.5, fontWeight: 700, color: "#fbbf24", marginBottom: 3 }}>LIVE AUDIT STREAM:</div>
                     <div style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 10.5, color: "#f1f5f9" }}>
                       Tool Call: <code>execute_command(command=&quot;pytest tests/test_jwt_auth.py&quot;)</code>

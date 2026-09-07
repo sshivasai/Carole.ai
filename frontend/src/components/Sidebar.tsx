@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu, Code2, Server, BookOpen, StickyNote } from "lucide-react";
+import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu, Code2, Server, BookOpen, StickyNote, Network, GitBranch } from "lucide-react";
 import styles from "./Sidebar.module.css";
 import { api } from "@/hooks/useApi";
 import { useAuth } from "@/hooks/useAuth";
@@ -32,6 +32,8 @@ const NAV = [
   { id: "chat", label: "Chat Room", Icon: MessageSquare },
   { id: "tasks", label: "Task Board", Icon: LayoutGrid },
   { id: "agents", label: "Agents", Icon: Zap },
+  { id: "workflow_dag", label: "Swarm Topology", Icon: Network },
+  { id: "code_graph", label: "Code Graph", Icon: GitBranch },
   { id: "browser", label: "Browser View", Icon: Globe },
   { id: "memory", label: "Memory & Logs", Icon: Brain },
   { id: "scratchpad", label: "Scratchpad", Icon: StickyNote },

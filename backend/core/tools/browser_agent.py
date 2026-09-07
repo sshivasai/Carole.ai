@@ -267,6 +267,13 @@ class BrowserAgent:
         recent_signatures = deque(maxlen=8)
         last_result = ""
 
+        from core.llm.config_manager import load_config
+        ba_cfg = (load_config() or {}).get("browser_automation") or {}
+        vision_model = ba_cfg.get("vision_model")
+        active_model = self.model
+        if vision_model and vision_model != "inherit":
+            active_model = vision_model
+
         async with browser_session(agent_id):
             if start_url:
                 last_result = await browser_tool.navigate(
@@ -306,7 +313,7 @@ class BrowserAgent:
                     try:
                         raw = await asyncio.wait_for(
                             llm_router.generate_completion(
-                                model=self.model,
+                                model=active_model,
                                 system_prompt=BROWSER_AGENT_SYSTEM_PROMPT,
                                 messages=messages,
                                 temperature=0.1,

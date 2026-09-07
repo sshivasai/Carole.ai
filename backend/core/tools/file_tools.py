@@ -162,7 +162,7 @@ class FileTools:
         # Used for Pre-Read enforcement and FILE_UNCHANGED_STUB compression
         self._read_state: Dict[str, Dict[str, float]] = {}
 
-    async def get_workspace_root(self, project_id: Optional[str] = None) -> Path:
+    async def get_workspace_root(self, project_id: Optional[str] = None, db: Optional[AsyncSession] = None) -> Path:
         workspaces_dir = CAROLE_HOME_DIR / "workspaces"
         if not workspaces_dir.exists():
             workspaces_dir.mkdir(parents=True, exist_ok=True)
@@ -185,16 +185,35 @@ class FileTools:
                 safe_id = re.sub(r'[^a-zA-Z0-9_-]+', '', str(project_id))
                 return (workspaces_dir / safe_id).resolve()
 
-            async with async_session() as db:
-                result = await db.execute(select(Project).where(Project.id == project_uuid))
-                project = result.scalar_one_or_none()
-                if project:
-                    slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
-                    if not slug:
-                        slug = str(project.id)[:8]
-                    root = (workspaces_dir / slug).resolve()
+            project = None
+            if db is not None:
+                try:
+                    result = await db.execute(select(Project).where(Project.id == project_uuid))
+                    project = result.scalar_one_or_none()
+                except Exception:
+                    pass
+            else:
+                try:
+                    async with async_session() as session:
+                        result = await session.execute(select(Project).where(Project.id == project_uuid))
+                        project = result.scalar_one_or_none()
+                except Exception:
+                    pass
+
+            if project:
+                custom_path = getattr(project, "custom_workspace_path", None)
+                if custom_path and str(custom_path).strip():
+                    root = Path(str(custom_path).strip()).resolve()
+                    root.mkdir(parents=True, exist_ok=True)
                     self._project_workspace_cache[project_id] = root
                     return root
+
+                slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
+                if not slug:
+                    slug = str(project.id)[:8]
+                root = (workspaces_dir / slug).resolve()
+                self._project_workspace_cache[project_id] = root
+                return root
 
             # Fallback if project not found
             safe_id = re.sub(r'[^a-zA-Z0-9_-]+', '', str(project_id))
@@ -287,10 +306,15 @@ class FileTools:
         carole_dir.mkdir(parents=True, exist_ok=True)
         return carole_dir
 
-    async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None, allow_out_of_bounds: bool = False) -> Path:
-        root = (await self.get_workspace_root(project_id)).resolve()
-        joined_path = Path(root / relative_path)
-        resolved_path = joined_path.resolve()
+    async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None, allow_out_of_bounds: bool = False, db: Optional[AsyncSession] = None) -> Path:
+        if not relative_path or not str(relative_path).strip():
+            raise ValueError("Path cannot be empty or whitespace.")
+        root = (await self.get_workspace_root(project_id, db=db)).resolve()
+        raw = Path(relative_path)
+        if raw.is_absolute():
+            resolved_path = raw.resolve()
+        else:
+            resolved_path = (root / relative_path).resolve()
 
         is_inside = False
         try:
@@ -353,7 +377,8 @@ class FileTools:
         force: bool = False
     ) -> str:
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=False)
+            allow_out_of_bounds = Path(relative_path).is_absolute() if relative_path and str(relative_path).strip() else False
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=allow_out_of_bounds)
             lock = self._get_lock(safe_path)
             scope = team_id or "global"
             norm_path = str(safe_path.resolve())
@@ -437,6 +462,8 @@ class FileTools:
                 return FileChangeResult(message=syntax_err)
 
             def _sync_write():
+                if safe_path.is_dir():
+                    return FileChangeResult(message=f"Error: Target path '{relative_path}' is a directory, not a file.")
                 before = ""
                 action = "create"
                 if safe_path.is_file():
@@ -591,6 +618,8 @@ class FileTools:
                 )
 
             def _sync_append():
+                if safe_path.is_dir():
+                    return FileChangeResult(message=f"Error: Target path '{relative_path}' is a directory, not a file.")
                 before = ""
                 if safe_path.is_file():
                     with open(safe_path, "r", encoding="utf-8") as f:
@@ -643,7 +672,8 @@ class FileTools:
 
     async def list_directory(self, relative_path: str = ".", project_id: Optional[str] = None) -> str:
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=False)
+            allow_out_of_bounds = Path(relative_path).is_absolute() if relative_path and str(relative_path).strip() else False
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=allow_out_of_bounds)
             def _sync_list():
                 if not safe_path.is_dir():
                     return f"Error: '{relative_path}' is not a directory."
@@ -662,8 +692,9 @@ class FileTools:
     async def grep_search(self, pattern: str, relative_path: str = ".", case_sensitive: bool = True, project_id: Optional[str] = None) -> str:
         """Searches file contents for a regex pattern. Returns matching lines with file:line references."""
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=False)
-            root_path = await self.get_workspace_root(project_id)
+            is_abs = Path(relative_path).is_absolute() if relative_path and str(relative_path).strip() else False
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=is_abs)
+            root_path = (safe_path if safe_path.is_dir() else safe_path.parent) if is_abs else await self.get_workspace_root(project_id)
             def _sync_grep():
                 flags = 0 if case_sensitive else re.IGNORECASE
                 compiled = re.compile(pattern, flags)
@@ -711,8 +742,9 @@ class FileTools:
     async def glob_search(self, pattern: str, relative_path: str = ".", project_id: Optional[str] = None) -> str:
         """Finds files matching a glob pattern (e.g. '**/*.py')."""
         try:
-            safe_path = await self._resolve_safe_path(relative_path, project_id)
-            root_path = await self.get_workspace_root(project_id)
+            is_abs = Path(relative_path).is_absolute() if relative_path and str(relative_path).strip() else False
+            safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=is_abs)
+            root_path = (safe_path if safe_path.is_dir() else safe_path.parent) if is_abs else await self.get_workspace_root(project_id)
             def _sync_glob():
                 if not safe_path.is_dir():
                     return f"Error: '{relative_path}' is not a directory."
@@ -738,18 +770,30 @@ class FileTools:
 
 
     async def copy_file(self, source: str, destination: str, project_id: Optional[str] = None) -> str:
-        """Copies a file within the sandbox."""
+        """Copies a file or directory into or within the workspace.
+        Source can be an absolute external path or a workspace-relative path.
+        Destination must resolve within the workspace sandbox.
+        """
         import shutil
         try:
-            src = await self._resolve_safe_path(source, project_id)
-            dst = await self._resolve_safe_path(destination, project_id)
+            src_is_abs = Path(source).is_absolute() if source and str(source).strip() else False
+            src = await self._resolve_safe_path(source, project_id, allow_out_of_bounds=src_is_abs)
+            dst = await self._resolve_safe_path(destination, project_id, allow_out_of_bounds=False)
             
             def _sync_copy():
-                if not src.is_file():
+                if not src.exists():
                     return f"Error: Source '{source}' does not exist."
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(src), str(dst))
-                return f"Success: Copied '{source}' → '{destination}'."
+                if src.is_dir():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+                    return f"Success: Copied directory '{source}' → '{destination}'."
+                elif src.is_file():
+                    target_dst = dst / src.name if dst.is_dir() else dst
+                    target_dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(src), str(target_dst))
+                    return f"Success: Copied '{source}' → '{destination}'."
+                else:
+                    return f"Error: Source '{source}' is neither a file nor a directory."
                 
             async with self._acquire_locks(src, dst):
                 return await asyncio.to_thread(_sync_copy)
@@ -802,21 +846,16 @@ class FileTools:
             path_a: Relative path to the first (original) file.
             path_b: Relative path to the second (new) file.
         """
-        workspace = await self.get_workspace_root(project_id)
+        try:
+            abs_a = await self._resolve_safe_path(path_a, project_id)
+        except Exception as e:
+            return f"Error: path_a '{path_a}' is outside the workspace: {e}"
+        try:
+            abs_b = await self._resolve_safe_path(path_b, project_id)
+        except Exception as e:
+            return f"Error: path_b '{path_b}' is outside the workspace: {e}"
 
         def _sync_diff():
-            abs_a = (workspace / path_a).resolve()
-            abs_b = (workspace / path_b).resolve()
-
-            # Sandbox check — use relative_to() for case-safe enforcement on Windows
-            try:
-                abs_a.relative_to(workspace)
-            except ValueError:
-                return f"Error: path_a '{path_a}' is outside the workspace."
-            try:
-                abs_b.relative_to(workspace)
-            except ValueError:
-                return f"Error: path_b '{path_b}' is outside the workspace."
             if not abs_a.exists():
                 return f"Error: File not found: {path_a}"
             if not abs_b.exists():

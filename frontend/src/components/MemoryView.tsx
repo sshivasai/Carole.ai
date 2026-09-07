@@ -1,7 +1,7 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import type { LearningItem } from "@/lib/types";
-import { BrainCircuit, Database, Search, Edit2, Trash2, Plus, Loader2, X, Check, Globe } from "lucide-react";
+import { BrainCircuit, Database, Search, Edit2, Trash2, Plus, Loader2, X, Check, Globe, Moon, RefreshCw } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 
@@ -25,6 +25,50 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
   const [entityForm, setEntityForm] = useState({ key: "", value: "" });
   const [saving,   setSaving]   = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [clearAllOpen, setClearAllOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [dreamStatus, setDreamStatus] = useState<any>(null);
+  const [runningDream, setRunningDream] = useState(false);
+
+  const fetchDreamStatus = async () => {
+    try {
+      const st = await api.getDreamStatus();
+      if (st) setDreamStatus(st);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    fetchDreamStatus();
+  }, []);
+
+  const handleTriggerDream = async () => {
+    setRunningDream(true);
+    try {
+      const res = await api.runDream(teamId || undefined);
+      if (res && res.status === "completed") {
+        onToast(`Dream consolidation complete (+${res.consolidated_learnings || 0} learnings, +${res.consolidated_facts || 0} facts)`, "success");
+      } else if (res && res.status === "no_op") {
+        onToast("Dream cycle ran: no new episodic memories needed consolidation", "success");
+      } else {
+        onToast("Dream cycle executed successfully", "success");
+      }
+      await fetchDreamStatus();
+      if (projectId) {
+        const updatedLearnings = await api.listLearnings(projectId, teamId || undefined);
+        if (updatedLearnings) onLearningsChange(updatedLearnings);
+        if (onEntityMemoriesChange) {
+          const updatedEntities = await api.listEntityMemories(projectId, teamId || undefined);
+          if (updatedEntities) onEntityMemoriesChange(updatedEntities);
+        }
+      }
+    } catch (e: any) {
+      onToast(e?.message || "Failed to trigger dream consolidation", "error");
+    } finally {
+      setRunningDream(false);
+    }
+  };
 
   const filtered = learnings.filter(l =>
     !query || l.task_summary.toLowerCase().includes(query.toLowerCase()) || l.lesson_rule.toLowerCase().includes(query.toLowerCase())
@@ -33,6 +77,22 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
   const filteredEntities = entityMemories.filter(e => 
     !query || e.key.toLowerCase().includes(query.toLowerCase()) || e.value.toLowerCase().includes(query.toLowerCase())
   );
+
+  const handleClearAll = async () => {
+    if (!projectId) return;
+    setClearing(true);
+    try {
+      await api.purgeProjectMemory(projectId);
+      onLearningsChange([]);
+      if (onEntityMemoriesChange) onEntityMemoriesChange([]);
+      onToast("All project memory successfully cleared", "success");
+      setClearAllOpen(false);
+    } catch {
+      onToast("Failed to clear project memory", "error");
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!projectId) return;
@@ -51,7 +111,6 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
         }
       } else {
         if (!entityForm.key.trim() || !entityForm.value.trim()) return;
-        // Edit not supported natively in CRUD, just delete + recreate for simplicity, or we can just leave it as add-only for MVP
         const created = await api.createEntityMemory({ project_id: projectId, key: entityForm.key, value: entityForm.value, team_id: teamId || undefined });
         if (onEntityMemoriesChange) onEntityMemoriesChange([created, ...entityMemories]);
         onToast("Fact saved", "success");
@@ -107,8 +166,88 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
             Rules and explicit facts stored in vector and relational memory.
           </p>
         </div>
-        <button className="btn btn-primary btn-sm" onClick={() => { setEditItem(null); setForm({ task_summary: "", lesson_rule: "" }); setAddOpen(true); }}>
-          <Plus size={13} /> Add {tab === "learnings" ? "Memory" : "Fact"}
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+          {(learnings.length > 0 || entityMemories.length > 0) && (
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ color: "var(--color-danger, #ef4444)" }}
+              onClick={() => setClearAllOpen(true)}
+              title="Purge all rules and vector memories for this project"
+            >
+              <Trash2 size={13} /> Clear All Memory
+            </button>
+          )}
+          <button className="btn btn-primary btn-sm" onClick={() => { setEditItem(null); setForm({ task_summary: "", lesson_rule: "" }); setAddOpen(true); }}>
+            <Plus size={13} /> Add {tab === "learnings" ? "Memory" : "Fact"}
+          </button>
+        </div>
+      </div>
+
+      {/* Dream Cycle Telemetry Bar */}
+      <div
+        className="card"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "12px 16px",
+          marginBottom: "16px",
+          background: "var(--bg-surface-elevated, rgba(255,255,255,0.03))",
+          border: "1px solid var(--border-subtle)",
+          borderRadius: "8px",
+          gap: "12px",
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "32px",
+              height: "32px",
+              borderRadius: "8px",
+              background: "rgba(139, 92, 246, 0.15)",
+              color: "#a78bfa",
+              flexShrink: 0,
+            }}
+          >
+            <Moon size={16} />
+          </div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontWeight: 600, fontSize: "13px" }}>Auto-Dream Engine</span>
+              <span
+                style={{
+                  fontSize: "11px",
+                  padding: "1px 7px",
+                  borderRadius: "10px",
+                  background: dreamStatus?.running ? "rgba(34, 197, 94, 0.15)" : "rgba(148, 163, 184, 0.15)",
+                  color: dreamStatus?.running ? "#4ade80" : "var(--color-mute)",
+                  fontWeight: 500,
+                }}
+              >
+                {dreamStatus?.running ? "Active" : "Idle"}
+              </span>
+            </div>
+            <div className="caption text-mute" style={{ fontSize: "11px", marginTop: "2px" }}>
+              {dreamStatus?.last_run_at
+                ? `Last consolidated: ${new Date(dreamStatus.last_run_at).toLocaleTimeString()} (${dreamStatus.last_cycle_duration_secs ? `${dreamStatus.last_cycle_duration_secs.toFixed(1)}s` : "<1s"}) · ${dreamStatus.total_consolidated_learnings || 0} total rules · ${dreamStatus.total_entity_facts || 0} total facts`
+                : "Continuous consolidation: synthesizes episodic chats into long-term vector rules & facts"}
+            </div>
+          </div>
+        </div>
+
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={handleTriggerDream}
+          disabled={runningDream}
+          title="Run consolidation cycle immediately on recent messages"
+          style={{ display: "flex", alignItems: "center", gap: "6px" }}
+        >
+          {runningDream ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+          <span>{runningDream ? "Consolidating…" : "Consolidate Now"}</span>
         </button>
       </div>
       
@@ -232,6 +371,40 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
             <button className="btn btn-ghost btn-sm" onClick={() => { setAddOpen(false); setEditItem(null); setEditEntity(null); }}>Cancel</button>
             <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving || (tab === "learnings" ? (!form.task_summary.trim() || !form.lesson_rule.trim()) : (!entityForm.key.trim() || !entityForm.value.trim()))}>
               {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Save
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={clearAllOpen} onClose={() => setClearAllOpen(false)} title="Confirm Clear All Memory">
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
+          <p className="body-sm" style={{ color: "var(--text-primary)" }}>
+            Are you sure you want to permanently clear all long-term memory for this project?
+          </p>
+          <div style={{
+            padding: "var(--sp-sm) var(--sp-md)",
+            background: "var(--bg-surface-raised)",
+            borderRadius: "var(--radius-sm)",
+            border: "1px solid var(--border-subtle)",
+            fontSize: "var(--text-xs)",
+            color: "var(--text-secondary)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4
+          }}>
+            <div>• All rules and lessons will be deleted from SQLite and LanceDB vector store.</div>
+            <div>• All entity facts and knowledge graph triples will be wiped clean.</div>
+            <div>• Past compaction events will be reset.</div>
+          </div>
+          <div style={{ display: "flex", gap: "var(--sp-sm)", justifyContent: "flex-end", marginTop: "var(--sp-md)" }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setClearAllOpen(false)}>Cancel</button>
+            <button
+              className="btn btn-danger btn-sm"
+              onClick={handleClearAll}
+              disabled={clearing}
+              style={{ display: "flex", alignItems: "center", gap: 6 }}
+            >
+              {clearing ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Clear All Memory
             </button>
           </div>
         </div>

@@ -48,7 +48,7 @@
 }
 
 .theme-light {
-  /* Clean Studio Minimalist Neutral-Grey Light Palette */
+  /* Clean Studio Minimalist Neutral-Slate Light Palette */
   --color-primary: #4f46e5;
   --color-primary-soft: #6366f1;
   --color-primary-deep: #3730a3;
@@ -56,19 +56,19 @@
   --color-primary-glow: rgba(79, 70, 229, 0.16);
   --color-primary-glow-sm: rgba(79, 70, 229, 0.08);
   
-  --color-canvas: #eeeeee;
-  --color-canvas-soft: #e2e2e2;
-  --color-canvas-raised: #f5f5f5;
-  --color-hairline: #d1d5db;
-  --color-hairline-soft: #9ca3af;
+  --color-canvas: #f8fafc;
+  --color-canvas-soft: #f1f5f9;
+  --color-canvas-raised: #ffffff;
+  --color-hairline: #e2e8f0;
+  --color-hairline-soft: #cbd5e1;
   
-  --color-ink: #27272a;
-  --color-ink-strong: #18181b;
-  --color-fg: #27272a;
-  --color-fg-strong: #18181b;
-  --color-body: #52525b;
-  --color-mute: #71717a;
-  --color-canvas-text-soft: #3f3f46;
+  --color-ink: #0f172a;
+  --color-ink-strong: #020617;
+  --color-fg: #0f172a;
+  --color-fg-strong: #020617;
+  --color-body: #334155;
+  --color-mute: #64748b;
+  --color-canvas-text-soft: #475569;
   
   --color-danger: #dc2626;
   --color-danger-glow: rgba(220, 38, 38, 0.12);
@@ -79,14 +79,14 @@
   --grid-line: rgba(0, 0, 0, 0.04);
 
   /* Glassmorphism & Cards */
-  --bg-glass-panel: rgba(238, 238, 238, 0.95);
-  --bg-glass-card: rgba(245, 245, 245, 0.92);
+  --bg-glass-panel: rgba(255, 255, 255, 0.92);
+  --bg-glass-card: rgba(255, 255, 255, 0.88);
   --blur-md: blur(12px);
   --blur-lg: blur(24px);
   --shadow-clay: 0 4px 16px rgba(0, 0, 0, 0.05);
   --shadow-clay-sm: 0 2px 6px rgba(0, 0, 0, 0.03);
   --shadow-clay-inset: none;
-  --border-glass: #d1d5db;
+  --border-glass: #e2e8f0;
 }
 
 :root {
@@ -1449,4 +1449,259 @@ select.input {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   animation: cardSlideUp 0.3s ease-out;
 }
+
+/* ==========================================================================
+   Antigravity IDE Design System Styles (Chat, Approvals, Composer, Artifacts)
+   ========================================================================== */
+
+/* Antigravity Thinking Accordion Pill */
+.antigravity-thinking-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  color: var(--color-primary-soft, #6366f1);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.antigravity-thinking-pill:hover {
+  background: rgba(99, 102, 241, 0.16);
+  border-color: rgba(99, 102, 241, 0.45);
+  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.25);
+  transform: translateY(-0.5px);
+}
+
+.antigravity-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6366f1;
+  box-shadow: 0 0 8px #6366f1;
+  animation: livePulseGlow 1.5s infinite ease-in-out;
+}
+
+/* Antigravity Reasoning Drawer */
+.antigravity-thinking-drawer {
+  background: rgba(14, 14, 28, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 8px 0 12px 0;
+  max-height: 420px;
+  overflow-y: auto;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px rgba(0, 0, 0, 0.3);
+  animation: cardSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.antigravity-thinking-drawer::-webkit-scrollbar {
+  width: 4px;
+}
+.antigravity-thinking-drawer::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+/* Antigravity Execution Step Row */
+.antigravity-step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-mute, #94a3b8);
+  font-family: var(--font-mono, monospace);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+.antigravity-step-row:last-child {
+  border-bottom: none;
+}
+
+/* Antigravity Risk Tier Badges */
+.antigravity-badge-tier3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+}
+
+.antigravity-badge-tier2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fde047;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.15);
+}
+
+.antigravity-badge-tier1 {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  color: #a5b4fc;
+}
+
+.antigravity-badge-tier0 {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(52, 211, 153, 0.15);
+  border: 1px solid rgba(52, 211, 153, 0.4);
+  color: #6ee7b7;
+}
+
+/* Antigravity Artifact Card */
+.antigravity-artifact-card {
+  background: linear-gradient(145deg, rgba(20, 20, 42, 0.88), rgba(12, 12, 26, 0.94));
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 10px 0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45), 0 0 20px rgba(99, 102, 241, 0.12);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: cardSlideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.antigravity-artifact-card:hover {
+  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 28px rgba(99, 102, 241, 0.22);
+}
+
+/* Antigravity Floating Composer */
+.antigravity-composer-floating {
+  position: sticky;
+  bottom: 14px;
+  margin: 0 auto;
+  width: calc(100% - 28px);
+  max-width: 960px;
+  background: rgba(12, 12, 24, 0.85);
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  padding: 10px 14px;
+  z-index: 40;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+.antigravity-composer-floating:focus-within {
+  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.65), 0 0 24px rgba(99, 102, 241, 0.25);
+}
+
+/* Antigravity Pill Buttons */
+.antigravity-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--color-mute, #94a3b8);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.antigravity-pill-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--color-ink, #f8fafc);
+}
+
+.antigravity-pill-btn.active {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #a5b4fc;
+}
+
+/* Slash Command Autocomplete Popover */
+.antigravity-slash-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 14px;
+  background: rgba(14, 14, 28, 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+  padding: 6px;
+  width: 280px;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 50;
+  animation: cardSlideUp 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.antigravity-slash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-body, #cbd5e1);
+  transition: background 0.12s;
+}
+
+.antigravity-slash-item:hover,
+.antigravity-slash-item.selected {
+  background: rgba(99, 102, 241, 0.2);
+  color: #ffffff;
+}
+
+.antigravity-slash-item code {
+  color: var(--color-primary-soft, #6366f1);
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
 

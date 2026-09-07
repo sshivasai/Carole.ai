@@ -6,6 +6,7 @@ Also provides a /api/seed endpoint for bootstrapping a demo environment.
 """
 
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Union, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
@@ -57,10 +58,9 @@ async def _get_human_name(db: AsyncSession, team_id: Optional[uuid.UUID] = None)
     return f"{user_name}(admin)"
 
 
-async def _assert_team_access(db: AsyncSession, team_id: str, user_id: str) -> None:
+async def _assert_team_access(db: AsyncSession, team_id: str, user_id: str) -> Team:
     """
-    Finding #8 — Ownership check. Raises 403 if the authenticated user does not
-    own the project that this team belongs to.
+    Ownership check. Raises 400 on invalid format, 404 if team not found, 403 if user is not owner.
     """
     try:
         team = (await db.execute(
@@ -78,6 +78,89 @@ async def _assert_team_access(db: AsyncSession, team_id: str, user_id: str) -> N
 
     if not project or str(project.owner_id) != user_id:
         raise HTTPException(status_code=403, detail="Access denied.")
+
+    return team
+
+
+async def _assert_project_access(db: AsyncSession, project_id: str, user_id: str) -> Project:
+    """
+    Ownership check. Raises 400 on invalid format, 404 if project not found, 403 if user is not owner.
+    """
+    try:
+        p_uuid = uuid.UUID(project_id)
+    except (ValueError, Exception):
+        raise HTTPException(status_code=400, detail="Invalid project_id format.")
+
+    project = (await db.execute(
+        select(Project).where(Project.id == p_uuid)
+    )).scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    if str(project.owner_id) != user_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    return project
+
+
+async def _assert_agent_access(db: AsyncSession, agent_id: str, user_id: str) -> Agent:
+    """
+    Ownership check for Agent. Raises 400 on bad UUID, 404 if not found, 403 if caller does not own parent team.
+    """
+    try:
+        a_uuid = uuid.UUID(agent_id)
+    except (ValueError, Exception):
+        raise HTTPException(status_code=400, detail="Invalid agent_id format.")
+
+    agent = (await db.execute(
+        select(Agent).where(Agent.id == a_uuid)
+    )).scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+
+    await _assert_team_access(db, str(agent.team_id), user_id)
+    return agent
+
+
+async def _assert_task_access(db: AsyncSession, task_id: str, user_id: str) -> Task:
+    """
+    Ownership check for Task. Raises 400 on bad UUID, 404 if not found, 403 if caller does not own parent team.
+    """
+    try:
+        t_uuid = uuid.UUID(task_id)
+    except (ValueError, Exception):
+        raise HTTPException(status_code=400, detail="Invalid task_id format.")
+
+    task = (await db.execute(
+        select(Task).where(Task.id == t_uuid)
+    )).scalar_one_or_none()
+
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    if task.team_id:
+        await _assert_team_access(db, str(task.team_id), user_id)
+    return task
+
+
+async def _assert_message_access(db: AsyncSession, message_id: str, user_id: str) -> Message:
+    """
+    Ownership check for Message. Raises 400 on bad UUID, 404 if not found, 403 if caller does not own parent team.
+    """
+    try:
+        m_uuid = uuid.UUID(message_id)
+    except (ValueError, Exception):
+        raise HTTPException(status_code=400, detail="Invalid message_id format.")
+
+    msg = await db.get(Message, m_uuid)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found.")
+
+    if msg.team_id:
+        await _assert_team_access(db, str(msg.team_id), user_id)
+    return msg
 
 
 # ============================================================
@@ -105,9 +188,11 @@ class LearningUpdate(BaseModel):
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)  # Finding #13
     owner_id: Optional[str] = None
+    custom_workspace_path: Optional[str] = None
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
+    custom_workspace_path: Optional[str] = None
 
 class TeamCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)  # Finding #13
@@ -149,6 +234,7 @@ class TaskCreate(BaseModel):
     assigned_agent_id: Optional[str] = None
     parent_task_id: Optional[str] = None
     blocked_by_task_id: Optional[str] = None
+    depends_on: Optional[List[str]] = None
     created_by: str = "human"
 
 class TaskUpdate(BaseModel):
@@ -158,6 +244,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     blocked_by_task_id: Optional[str] = None
+    depends_on: Optional[List[str]] = None
 
 class TaskCommentCreate(BaseModel):
     author_id: str
@@ -205,11 +292,19 @@ async def list_users(db: AsyncSession = Depends(get_db), user: dict = Depends(re
 
 @router.post("/projects")
 async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    # If owner_id is provided, make sure it is valid; otherwise fetch the first user or default
+    # If owner_id is provided, make sure it is valid; otherwise use authenticated caller
     owner_uuid = None
     if body.owner_id:
-        owner_uuid = uuid.UUID(body.owner_id)
-    else:
+        try:
+            owner_uuid = uuid.UUID(body.owner_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid owner_id format.")
+    elif user and "sub" in user:
+        try:
+            owner_uuid = uuid.UUID(user["sub"])
+        except Exception:
+            owner_uuid = None
+    if not owner_uuid:
         # fallback to first user
         users_result = await db.execute(select(User).limit(1))
         first_user = users_result.scalar_one_or_none()
@@ -218,7 +313,13 @@ async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)
         else:
             owner_uuid = uuid.uuid4()
     
-    project = Project(name=body.name, owner_id=owner_uuid)
+    custom_path = None
+    if body.custom_workspace_path and body.custom_workspace_path.strip():
+        resolved_custom = Path(body.custom_workspace_path.strip()).resolve()
+        resolved_custom.mkdir(parents=True, exist_ok=True)
+        custom_path = str(resolved_custom)
+
+    project = Project(name=body.name, owner_id=owner_uuid, custom_workspace_path=custom_path)
     db.add(project)
     await db.flush()
 
@@ -231,38 +332,55 @@ async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)
     workspace_dir = CAROLE_HOME_DIR / "workspaces" / slug
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    return {"id": str(project.id), "name": project.name}
+    return {"id": str(project.id), "name": project.name, "custom_workspace_path": project.custom_workspace_path}
 
 @router.get("/projects")
 async def list_projects(db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     result = await db.execute(select(Project).order_by(Project.created_at.desc()))
-    return [{"id": str(p.id), "name": p.name, "owner_id": str(p.owner_id)} for p in result.scalars().all()]
+    return [
+        {
+            "id": str(p.id),
+            "name": p.name,
+            "owner_id": str(p.owner_id),
+            "custom_workspace_path": getattr(p, "custom_workspace_path", None),
+        }
+        for p in result.scalars().all()
+    ]
 
 @router.put("/projects/{project_id}")
 async def update_project(project_id: str, body: ProjectUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Project).where(Project.id == uuid.UUID(project_id)))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-        
+    project = await _assert_project_access(db, project_id, user["sub"])
+    from core.tools.file_tools import file_tools
+
+    if body.custom_workspace_path is not None:
+        if body.custom_workspace_path.strip():
+            resolved_custom = Path(body.custom_workspace_path.strip()).resolve()
+            resolved_custom.mkdir(parents=True, exist_ok=True)
+            project.custom_workspace_path = str(resolved_custom)
+        else:
+            project.custom_workspace_path = None
+        file_tools._project_workspace_cache.pop(project_id, None)
+        file_tools._team_workspace_cache.clear()
+
     if body.name is not None and body.name != project.name:
         project.name = body.name
-        
+        file_tools._project_workspace_cache.pop(project_id, None)
+        file_tools._team_workspace_cache.clear()
+
         # Rename workspace folder if it exists
-        import re
-        from core.tools.file_tools import file_tools
-        old_dir = await file_tools.get_workspace_root(project_id)
-        
-        if old_dir.exists() and old_dir.name != "workspaces":
-            new_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', body.name).strip('-')
-            if not new_slug:
-                new_slug = str(project.id)[:8]
-            new_dir = old_dir.parent / new_slug
-            if old_dir != new_dir and not new_dir.exists():
-                old_dir.rename(new_dir)
+        if not project.custom_workspace_path:
+            import re
+            old_dir = await file_tools.get_workspace_root(project_id)
+            if old_dir.exists() and old_dir.name != "workspaces":
+                new_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', body.name).strip('-')
+                if not new_slug:
+                    new_slug = str(project.id)[:8]
+                new_dir = old_dir.parent / new_slug
+                if old_dir != new_dir and not new_dir.exists():
+                    old_dir.rename(new_dir)
                 
     await db.flush()
-    return {"status": "updated", "id": project_id}
+    return {"status": "updated", "id": project_id, "custom_workspace_path": getattr(project, "custom_workspace_path", None)}
 
 
 # ============================================================
@@ -310,12 +428,22 @@ async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_d
     return {"id": str(learning.id), "task_summary": learning.task_summary, "lesson_rule": learning.lesson_rule}
 
 @router.get("/learnings")
-async def list_learnings(project_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+async def list_learnings(project_id: Optional[str] = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import Learning
     from sqlalchemy import or_
+    import uuid
+
+    if not project_id or project_id in ("undefined", "null", ""):
+        return []
+
+    try:
+        p_uuid = uuid.UUID(project_id)
+    except (ValueError, TypeError):
+        return []
+
     stmt = select(Learning).where(
         or_(
-            Learning.project_id == uuid.UUID(project_id),
+            Learning.project_id == p_uuid,
             Learning.project_id.is_(None)
         )
     ).order_by(Learning.created_at.desc())
@@ -388,6 +516,30 @@ async def delete_learning(learning_id: str, db: AsyncSession = Depends(get_db), 
     return {"status": "deleted", "id": learning_id}
 
 
+# ============================================================
+# Memory Dream Engine Telemetry & On-Demand Trigger
+# ============================================================
+
+class DreamRunRequest(BaseModel):
+    team_id: Optional[str] = None
+
+
+@router.post("/memory/dream/run")
+async def trigger_dream_cycle(body: Optional[DreamRunRequest] = None, user: dict = Depends(require_auth)):
+    """Triggers an immediate on-demand memory dream consolidation cycle."""
+    from core.memory.auto_dream import dream_worker
+    team_id = body.team_id if body else None
+    result = await dream_worker.run_once(team_id=team_id)
+    return result
+
+
+@router.get("/memory/dream/status")
+async def get_dream_status(user: dict = Depends(require_auth)):
+    """Returns real-time operational telemetry for the Auto-Dream consolidation engine."""
+    from core.memory.auto_dream import dream_worker
+    return dream_worker.get_status()
+
+
 
 # ============================================================
 # Teams
@@ -395,6 +547,7 @@ async def delete_learning(learning_id: str, db: AsyncSession = Depends(get_db), 
 
 @router.post("/teams")
 async def create_team(body: TeamCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_project_access(db, body.project_id, user["sub"])
     team = Team(name=body.name, project_id=uuid.UUID(body.project_id))
     db.add(team)
     await db.flush()
@@ -403,6 +556,7 @@ async def create_team(body: TeamCreate, db: AsyncSession = Depends(get_db), user
 
 @router.get("/teams/{project_id}")
 async def list_teams(project_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_project_access(db, project_id, user["sub"])
     result = await db.execute(
         select(Team).where(Team.project_id == uuid.UUID(project_id)).order_by(Team.created_at.desc())
     )
@@ -414,7 +568,8 @@ async def list_teams(project_id: str, db: AsyncSession = Depends(get_db), user: 
 # ============================================================
 
 @router.post("/agents")
-async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
+async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_team_access(db, body.team_id, user["sub"])
     prompt = body.system_prompt or _default_system_prompt(body.name, body.role, body.personality)
     
     if body.custom_instructions:
@@ -496,10 +651,7 @@ async def list_agents(team_id: str, db: AsyncSession = Depends(get_db), user: di
 
 @router.put("/agents/{agent_id}")
 async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
-    agent = result.scalar_one_or_none()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = await _assert_agent_access(db, agent_id, user["sub"])
     if body.name is not None:
         agent.name = body.name
     if body.role is not None:
@@ -574,26 +726,24 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
 
 @router.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Agent).where(Agent.id == uuid.UUID(agent_id)))
-    agent = result.scalar_one_or_none()
-    if agent:
-        team_id_str = str(agent.team_id)
-        await db.execute(delete(Agent).where(Agent.id == uuid.UUID(agent_id)))
-        await db.commit()
-        from core.chat.event_bus import event_bus
-        await event_bus.publish(f"team:{team_id_str}", {
-            "type": "agent_deleted",
-            "agent_id": str(agent_id),
-        })
-        from core.chat.message_router import message_router
-        human_name = await _get_human_name(db, agent.team_id)
-        await message_router.route_message(
-            text=f"[AGENT_REMOVE] @{agent.name} was removed from the team by {human_name}",
-            sender_id="system",
-            team_id=team_id_str,
-            sender_name="System",
-            attachments=[]
-        )
+    agent = await _assert_agent_access(db, agent_id, user["sub"])
+    team_id_str = str(agent.team_id)
+    await db.execute(delete(Agent).where(Agent.id == agent.id))
+    await db.commit()
+    from core.chat.event_bus import event_bus
+    await event_bus.publish(f"team:{team_id_str}", {
+        "type": "agent_deleted",
+        "agent_id": str(agent_id),
+    })
+    from core.chat.message_router import message_router
+    human_name = await _get_human_name(db, agent.team_id)
+    await message_router.route_message(
+        text=f"[AGENT_REMOVE] @{agent.name} was removed from the team by {human_name}",
+        sender_id="system",
+        team_id=team_id_str,
+        sender_name="System",
+        attachments=[]
+    )
     return {"status": "deleted", "id": agent_id}
 
 
@@ -644,7 +794,7 @@ async def clone_agent(agent_id: str, db: AsyncSession = Depends(get_db), user: d
 
 @router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, delete_content: bool = False, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    # Finding #2 — authentication required
+    await _assert_project_access(db, project_id, user["sub"])
     if delete_content:
         import shutil
         from core.tools.file_tools import file_tools
@@ -661,7 +811,7 @@ async def delete_project(project_id: str, delete_content: bool = False, db: Asyn
 
 @router.delete("/teams/{team_id}")
 async def delete_team(team_id: str, delete_content: bool = False, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    # Finding #2 — authentication required
+    await _assert_team_access(db, team_id, user["sub"])
     if delete_content:
         import shutil
         from core.tools.file_tools import file_tools
@@ -693,18 +843,17 @@ async def delete_user(user_id: str, db: AsyncSession = Depends(get_db), user: di
 
 @router.get("/projects/single/{project_id}")
 async def get_project(project_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Project).where(Project.id == uuid.UUID(project_id)))
-    p = result.scalar_one_or_none()
-    if not p:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return {"id": str(p.id), "name": p.name, "owner_id": str(p.owner_id)}
+    p = await _assert_project_access(db, project_id, user["sub"])
+    return {
+        "id": str(p.id),
+        "name": p.name,
+        "owner_id": str(p.owner_id),
+        "custom_workspace_path": getattr(p, "custom_workspace_path", None),
+    }
 
 @router.get("/teams/single/{team_id}")
 async def get_team(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Team).where(Team.id == uuid.UUID(team_id)))
-    t = result.scalar_one_or_none()
-    if not t:
-        raise HTTPException(status_code=404, detail="Team not found")
+    t = await _assert_team_access(db, team_id, user["sub"])
     return {"id": str(t.id), "name": t.name, "project_id": str(t.project_id)}
 
 
@@ -734,9 +883,7 @@ async def get_task_plan(
     user: dict = Depends(require_auth)
 ):
     """Return the implementation plan, status, feedback, todos, and inline comments for a task."""
-    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
 
     comments = (await db.execute(
         select(PlanInlineComment)
@@ -774,11 +921,11 @@ async def approve_task_plan(
     user: dict = Depends(require_auth)
 ):
     """Approve an implementation plan — allows the agent to begin execution."""
-    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
     task.plan_status = "approved"
     task.plan_feedback = None
+    if task.status in ("blocked", "todo"):
+        task.status = "in_progress"
     await db.commit()
 
     # Notify the agent via event bus so its ReAct loop can resume
@@ -794,13 +941,22 @@ async def approve_task_plan(
 
     # Route a chat message so the agent sees the approval
     from core.chat.message_router import message_router
+    approval_msg = f"[PLAN_APPROVED] {human_name} approved the implementation plan for task '{task.title}'. You may now begin execution."
     await message_router.route_message(
-        text=f"[PLAN_APPROVED] {human_name} approved the implementation plan for task '{task.title}'. You may now begin execution.",
+        text=approval_msg,
         sender_id="system",
         team_id=team_id_str,
         sender_name="System",
         attachments=[]
     )
+
+    # Wake assigned agent
+    if task.assigned_agent_id:
+        agent_stmt = select(Agent).where(Agent.id == task.assigned_agent_id)
+        assigned_agent = (await db.execute(agent_stmt)).scalar_one_or_none()
+        if assigned_agent:
+            await message_router._enqueue_agent(assigned_agent, approval_msg, db)
+
     return {"status": "approved", "task_id": task_id}
 
 
@@ -812,9 +968,7 @@ async def reject_task_plan(
     user: dict = Depends(require_auth)
 ):
     """Reject a plan with optional feedback, asking the agent to revise."""
-    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
     task.plan_status = "revision_requested"
     task.plan_feedback = body.feedback
     await db.commit()
@@ -831,13 +985,22 @@ async def reject_task_plan(
 
     from core.chat.message_router import message_router
     feedback_text = f" Feedback: {body.feedback}" if body.feedback else ""
+    reject_msg = f"[PLAN_REJECTED] {human_name} requested revisions to the plan for task '{task.title}'.{feedback_text} Please update your implementation plan and re-submit with request_plan_approval."
     await message_router.route_message(
-        text=f"[PLAN_REJECTED] {human_name} requested revisions to the plan for task '{task.title}'.{feedback_text} Please update your implementation plan and re-submit with request_plan_approval.",
+        text=reject_msg,
         sender_id="system",
         team_id=team_id_str,
         sender_name="System",
         attachments=[]
     )
+
+    # Wake assigned agent to address revisions
+    if task.assigned_agent_id:
+        agent_stmt = select(Agent).where(Agent.id == task.assigned_agent_id)
+        assigned_agent = (await db.execute(agent_stmt)).scalar_one_or_none()
+        if assigned_agent:
+            await message_router._enqueue_agent(assigned_agent, reject_msg, db)
+
     return {"status": "revision_requested", "task_id": task_id}
 
 
@@ -849,9 +1012,7 @@ async def add_plan_inline_comment(
     user: dict = Depends(require_auth)
 ):
     """Add an inline comment anchored to a specific line in the implementation plan."""
-    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
 
     human_name = await _get_human_name(db, task.team_id)
     comment = PlanInlineComment(
@@ -894,9 +1055,7 @@ async def edit_task_plan(
     user: dict = Depends(require_auth)
 ):
     """Edit the plan markdown directly (admin inline edit). Resets status to awaiting_approval."""
-    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
 
     task.implementation_plan = body.plan_markdown
     task.plan_status = "awaiting_approval"
@@ -927,9 +1086,7 @@ async def update_task_todos_api(
     user: dict = Depends(require_auth)
 ):
     """Update the interactive todo checklist for a task (admin-triggered toggle or full reset)."""
-    task = (await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))).scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
 
     from core.tools.task_tools import task_tools
     result_msg = await task_tools.update_task_todos(
@@ -1101,7 +1258,7 @@ _UPLOAD_DIR = str(_CAROLE_HOME_DIR / "uploads")
 os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
 @router.post("/upload")
-async def upload_file(request: Request, file: UploadFile = File(...), team_id: Optional[str] = None, user: dict = Depends(require_auth)):
+async def upload_file(request: Request, file: UploadFile = File(...), team_id: Optional[str] = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Handles file uploads for multimodal chat support, organizing them by workspace."""
     import uuid
     import os
@@ -1134,31 +1291,19 @@ async def upload_file(request: Request, file: UploadFile = File(...), team_id: O
     url_path = f"/api/uploads/{filename}"
     
     if team_id:
-        from core.memory.database import async_session
-        from core.memory.models import Team, Project
-        from sqlalchemy import select
-        
-        async with async_session() as db:
-            try:
-                stmt = select(Team).where(Team.id == uuid.UUID(team_id))
-                res = await db.execute(stmt)
-                team = res.scalar_one_or_none()
-                if team:
-                    stmt = select(Project).where(Project.id == team.project_id)
-                    res = await db.execute(stmt)
-                    project = res.scalar_one_or_none()
-                    if project:
-                        import re
-                        proj_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
-                        team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-')
-                        from core.tools.file_tools import file_tools
-                        team_carole_dir = await file_tools.get_team_carole_dir(team_id)
-                        upload_dir = str(team_carole_dir / "Chat_Media")
-                        os.makedirs(upload_dir, exist_ok=True)
-                        url_path = f"/api/media/{proj_slug}/{team_slug}/{filename}"
-            except Exception as e:
-                import logging as _log
-                _log.getLogger("carole.upload").warning("Error resolving workspace for upload: %s", e)
+        team = await _assert_team_access(db, team_id, user["sub"])
+        stmt = select(Project).where(Project.id == team.project_id)
+        res = await db.execute(stmt)
+        project = res.scalar_one_or_none()
+        if project:
+            import re
+            proj_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
+            team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-')
+            from core.tools.file_tools import file_tools
+            team_carole_dir = await file_tools.get_team_carole_dir(team_id)
+            upload_dir = str(team_carole_dir / "Chat_Media")
+            os.makedirs(upload_dir, exist_ok=True)
+            url_path = f"/api/media/{proj_slug}/{team_slug}/{filename}"
                 
     file_path = os.path.join(upload_dir, filename)
     
@@ -1236,10 +1381,7 @@ class MessageEdit(BaseModel):
 @router.put("/messages/{message_id}")
 async def edit_message(message_id: str, body: MessageEdit, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Edit a single message's text only. No deletion, no rollback."""
-    msg = await db.get(Message, uuid.UUID(message_id))
-    if not msg:
-        from fastapi import HTTPException
-        raise HTTPException(404, "Message not found")
+    msg = await _assert_message_access(db, message_id, user["sub"])
     msg.text = body.text.strip()
     await db.commit()
     return {"ok": True, "id": message_id, "text": msg.text}
@@ -1248,10 +1390,7 @@ async def edit_message(message_id: str, body: MessageEdit, db: AsyncSession = De
 @router.delete("/messages/{message_id}")
 async def delete_message(message_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Delete a single message only. No rollback, no cascade to later messages."""
-    msg = await db.get(Message, uuid.UUID(message_id))
-    if not msg:
-        from fastapi import HTTPException
-        raise HTTPException(404, "Message not found")
+    msg = await _assert_message_access(db, message_id, user["sub"])
     team_id = str(msg.team_id)
     await db.delete(msg)
     await db.commit()
@@ -1266,15 +1405,15 @@ async def delete_message(message_id: str, db: AsyncSession = Depends(get_db), us
 
 @router.delete("/teams/{team_id}/messages")
 async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    """Delete all messages for a team permanently."""
+    """Delete all messages for a team permanently and cascade to memory & compactions."""
     from sqlalchemy import delete, update
     import shutil
     from core.tools.file_tools import file_tools
+    from core.memory.models import Learning, EntityMemory, GraphTriple, CompactionEvent, FileBackup
+    from core.memory.lancedb_client import lancedb_client
     
-    try:
-        team_uuid = uuid.UUID(team_id)
-    except (ValueError, AttributeError):
-        raise HTTPException(status_code=400, detail="Invalid team_id")
+    await _assert_team_access(db, team_id, user["sub"])
+    team_uuid = uuid.UUID(team_id)
 
     # 1. Unlink message_id on FileBackup records to ensure foreign key safety
     try:
@@ -1290,9 +1429,22 @@ async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db), user
     # 2. Delete DB Messages
     stmt = delete(Message).where(Message.team_id == team_uuid)
     await db.execute(stmt)
+
+    # 3. Cascade delete CompactionEvents, Learnings, EntityMemory, and GraphTriples for this team
+    try:
+        await db.execute(delete(CompactionEvent).where(CompactionEvent.team_id == team_uuid))
+        await db.execute(delete(Learning).where(Learning.team_id == team_uuid))
+        await db.execute(delete(EntityMemory).where(EntityMemory.team_id == team_uuid))
+        await db.execute(delete(GraphTriple).where(GraphTriple.team_id == team_uuid))
+        # Purge from LanceDB vector store as well
+        await lancedb_client.delete_by_team(str(team_uuid))
+    except Exception as mem_err:
+        import logging as _log
+        _log.getLogger("carole.chat").warning(f"Failed to clear memories for team {team_id}: {mem_err}")
+
     await db.commit()
 
-    # 3. Delete Chat Media from Disk
+    # 4. Delete Chat Media from Disk
     try:
         team_carole_dir = await file_tools.get_team_carole_dir(team_id)
         chat_media_dir = team_carole_dir / "Chat_Media"
@@ -1312,20 +1464,28 @@ async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db), user
 @router.delete("/messages/{message_id}/rollback")
 async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """
-    Rollback: delete this message AND all messages that came after it in the
-    same team, then replay FileBackup records in reverse to restore the workspace.
+    Rollback: checkpoint restoration.
+    1. Delete target message AND all messages that came after it in the same team.
+    2. Replay FileBackup records to restore workspace files and unlink newly created files.
+    3. Delete Tasks created >= pivot_time, delete their plan files and comments; reset modified tasks.
+    4. Delete Learnings, EntityMemories, GraphTriples, and CompactionEvents created >= pivot_time.
+    5. Delete associated vectors from LanceDB.
+    6. Broadcast file_change, task_deleted, task_update, and message_rewind events.
     """
     from fastapi import HTTPException
-    from sqlalchemy import delete as sa_delete
+    from sqlalchemy import delete as sa_delete, select, update, or_
     from pathlib import Path
-    from core.config import CAROLE_HOME_DIR
     import shutil
     import logging as _rlog
     _rollback_log = _rlog.getLogger("carole.rollback")
+    from core.memory.models import (
+        FileBackup, Task, TaskComment, PlanInlineComment,
+        Learning, EntityMemory, GraphTriple, CompactionEvent
+    )
+    from core.memory.lancedb_client import lancedb_client
+    from core.chat.event_bus import event_bus
 
-    msg = await db.get(Message, uuid.UUID(message_id))
-    if not msg:
-        raise HTTPException(404, "Message not found")
+    msg = await _assert_message_access(db, message_id, user["sub"])
 
     team_id_uuid = msg.team_id
     team_id_str = str(team_id_uuid)
@@ -1342,12 +1502,6 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
     later_ids = [m.id for m in later_msgs]
 
     # 2. Collect file backups for those messages/team within the rollback window.
-    # We query all backups linked to these messages OR created in this team >= pivot_time.
-    # We order by created_at.asc() (oldest first) so we restore the TRUE original state
-    # before any rolled-back changes took place.
-    from core.memory.models import FileBackup
-    from sqlalchemy import or_
-
     backup_query = select(FileBackup).where(
         or_(
             FileBackup.message_id.in_(later_ids),
@@ -1363,7 +1517,6 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
     seen_paths = set()
     for bk in backups:
         if bk.file_path in seen_paths:
-            # Only restore the OLDEST backup per file path (original state before rollback)
             continue
         seen_paths.add(bk.file_path)
         p = Path(bk.file_path)
@@ -1396,14 +1549,85 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
             sa_delete(FileBackup).where(FileBackup.id.in_(backup_ids))
         )
 
-    # 5. Delete the messages themselves
+    # 5. Rollback Tasks created during or after pivot_time
+    deleted_task_ids = []
+    newly_created_tasks = (await db.execute(
+        select(Task)
+        .where(Task.team_id == team_id_uuid)
+        .where(Task.created_at >= pivot_time)
+    )).scalars().all()
+
+    for t in newly_created_tasks:
+        task_id_str = str(t.id)
+        deleted_task_ids.append(task_id_str)
+        # Remove plan file if generated
+        if t.plan_file_path:
+            try:
+                plan_p = Path(t.plan_file_path)
+                if plan_p.exists():
+                    plan_p.unlink()
+            except Exception as pe:
+                _rollback_log.warning("Failed to delete plan file %s: %s", t.plan_file_path, pe)
+
+        # Delete comments and inline plan comments
+        await db.execute(sa_delete(TaskComment).where(TaskComment.task_id == t.id))
+        await db.execute(sa_delete(PlanInlineComment).where(PlanInlineComment.task_id == t.id))
+        await db.delete(t)
+
+    # Reset tasks that were created before pivot_time but updated after pivot_time
+    modified_older_tasks = (await db.execute(
+        select(Task)
+        .where(Task.team_id == team_id_uuid)
+        .where(Task.created_at < pivot_time)
+        .where(Task.updated_at >= pivot_time)
+    )).scalars().all()
+
+    for ot in modified_older_tasks:
+        ot.status = "todo"
+        ot.plan_status = "draft"
+        await event_bus.publish(f"team:{team_id_str}", {
+            "type": "task_update",
+            "task_id": str(ot.id),
+            "status": "todo",
+            "plan_status": "draft",
+        })
+
+    # 6. Delete Learnings, EntityMemories, GraphTriples, and CompactionEvents
+    rolled_back_learnings = (await db.execute(
+        select(Learning)
+        .where(Learning.team_id == team_id_uuid)
+        .where(Learning.created_at >= pivot_time)
+    )).scalars().all()
+    learning_ids_to_purge = [str(l.id) for l in rolled_back_learnings]
+
+    if learning_ids_to_purge:
+        await lancedb_client.delete_learnings_batch(learning_ids_to_purge)
+        await db.execute(
+            sa_delete(Learning).where(Learning.id.in_([l.id for l in rolled_back_learnings]))
+        )
+
+    await db.execute(
+        sa_delete(EntityMemory)
+        .where(EntityMemory.team_id == team_id_uuid)
+        .where(EntityMemory.created_at >= pivot_time)
+    )
+    await db.execute(
+        sa_delete(GraphTriple)
+        .where(GraphTriple.team_id == team_id_uuid)
+        .where(GraphTriple.created_at >= pivot_time)
+    )
+    await db.execute(
+        sa_delete(CompactionEvent)
+        .where(CompactionEvent.team_id == team_id_uuid)
+        .where(CompactionEvent.created_at >= pivot_time)
+    )
+
+    # 7. Delete the messages themselves
     for m in later_msgs:
         await db.delete(m)
     await db.commit()
 
-    from core.chat.event_bus import event_bus
-    
-    # 6. Broadcast file_change events so the diff panel updates immediately
+    # 8. Broadcast file_change events
     for fp in restored:
         await event_bus.publish(f"team:{team_id_str}", {
             "type": "file_change",
@@ -1419,19 +1643,27 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
             "diff": None,
         })
 
+    # Broadcast task_deleted events
+    for tid in deleted_task_ids:
+        await event_bus.publish(f"team:{team_id_str}", {
+            "type": "task_deleted",
+            "task_id": tid,
+        })
+
     pivot_time_iso = (
         (pivot_time.isoformat() + "Z")
         if pivot_time and "+" not in pivot_time.isoformat() and not pivot_time.isoformat().endswith("Z")
         else (pivot_time.isoformat() if pivot_time else None)
     )
 
-    # 7. Broadcast rewind event
+    # 9. Broadcast rewind event
     await event_bus.publish(f"team:{team_id_str}", {
         "type": "message_rewind",
         "from_message_id": message_id,
         "from_timestamp": pivot_time_iso,
         "restored_files": restored,
         "deleted_files": deleted_files,
+        "deleted_task_ids": deleted_task_ids,
     })
 
     return {
@@ -1439,7 +1671,43 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
         "deleted_count": len(later_msgs),
         "restored_files": restored,
         "deleted_files": deleted_files,
+        "deleted_task_ids": deleted_task_ids,
     }
+
+
+@router.delete("/projects/{project_id}/memory")
+async def purge_project_memory(project_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    """Purge all long-term memory (learnings, entity facts, graph triples) for a project."""
+    from sqlalchemy import delete, select
+    from core.memory.models import Learning, EntityMemory, GraphTriple, CompactionEvent, Team
+    from core.memory.lancedb_client import lancedb_client
+
+    await _assert_project_access(db, project_id, user["sub"])
+    proj_uuid = uuid.UUID(project_id)
+
+    # Find team IDs belonging to this project
+    team_rows = (await db.execute(select(Team.id).where(Team.project_id == proj_uuid))).scalars().all()
+    team_uuids = list(team_rows)
+
+    # Delete SQLite memories
+    if team_uuids:
+        await db.execute(delete(Learning).where((Learning.project_id == proj_uuid) | (Learning.team_id.in_(team_uuids))))
+        await db.execute(delete(EntityMemory).where((EntityMemory.project_id == proj_uuid) | (EntityMemory.team_id.in_(team_uuids))))
+        await db.execute(delete(GraphTriple).where((GraphTriple.project_id == proj_uuid) | (GraphTriple.team_id.in_(team_uuids))))
+        await db.execute(delete(CompactionEvent).where(CompactionEvent.team_id.in_(team_uuids)))
+    else:
+        await db.execute(delete(Learning).where(Learning.project_id == proj_uuid))
+        await db.execute(delete(EntityMemory).where(EntityMemory.project_id == proj_uuid))
+        await db.execute(delete(GraphTriple).where(GraphTriple.project_id == proj_uuid))
+    await db.commit()
+
+    # Delete LanceDB vectors
+    await lancedb_client.delete_by_project(str(proj_uuid))
+    for tid in team_uuids:
+        await lancedb_client.delete_by_team(str(tid))
+
+    return {"ok": True, "message": "Project memory successfully purged from SQLite and LanceDB"}
+
 
 
 
@@ -1448,25 +1716,27 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
 # ============================================================
 
 @router.post("/agents/{agent_id}/stop")
-async def stop_agent(agent_id: str, cancel_all: bool = False, user: dict = Depends(require_auth)):
+async def stop_agent(agent_id: str, cancel_all: bool = False, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """
     Cancel the currently executing agent loop.
     If cancel_all=true, also drains the entire queue so no further
     queued tasks will execute.
     """
+    await _assert_agent_access(db, agent_id, user["sub"])
     from core.chat.message_router import message_router
     cancelled = message_router.cancel_agent(agent_id, cancel_all=cancel_all)
     return {"ok": True, "cancelled_tasks": cancelled, "queue_cleared": cancel_all}
 
 
 @router.get("/agents/{agent_id}/queue")
-async def get_agent_queue(agent_id: str, user: dict = Depends(require_auth)):
+async def get_agent_queue(agent_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """
     Return the current queue status for an agent:
     - queue_depth: number of tasks waiting
     - is_running: whether the agent is actively executing a loop right now
     - pending: list of pending prompt strings
     """
+    await _assert_agent_access(db, agent_id, user["sub"])
     from core.chat.message_router import message_router
     return message_router.get_queue_status(agent_id)
 
@@ -1479,14 +1749,75 @@ async def get_agent_queue(agent_id: str, user: dict = Depends(require_auth)):
 async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.chat.event_bus import event_bus
     from core.chat.message_router import message_router
+    from core.agent.workflow_dag import workflow_dag, DAGCycleError
+
+    if body.team_id:
+        await _assert_team_access(db, body.team_id, user["sub"])
+
+    team_uuid = uuid.UUID(body.team_id) if body.team_id else None
+
+    # Fetch existing tasks to validate DAG acyclicity
+    existing_tasks = []
+    if team_uuid:
+        stmt_all = select(Task).where(Task.team_id == team_uuid)
+        existing_tasks = (await db.execute(stmt_all)).scalars().all()
+
+    # Normalize dependencies
+    clean_deps: List[str] = []
+    if body.depends_on:
+        for d in body.depends_on:
+            norm_d = str(d).strip().lower()
+            if norm_d and norm_d not in clean_deps:
+                clean_deps.append(norm_d)
+
+    if body.blocked_by_task_id:
+        norm_b = str(body.blocked_by_task_id).strip().lower()
+        if norm_b and norm_b not in clean_deps:
+            clean_deps.append(norm_b)
+
+    task_id_uuid = uuid.uuid4()
+    task_id_str = str(task_id_uuid)
+
+    # Validate DAG acyclicity
+    try:
+        workflow_dag.validate_acyclic(
+            tasks=existing_tasks,
+            new_or_updated_task_id=task_id_str,
+            new_dependencies=clean_deps,
+        )
+    except DAGCycleError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Initial status: if has prerequisite tasks not yet 'done', mark blocked
+    initial_status = "todo"
+    primary_blocked_by = None
+    if clean_deps and existing_tasks:
+        status_map = {str(t.id).lower(): t.status for t in existing_tasks}
+        all_done = all(status_map.get(d) == "done" for d in clean_deps if d in status_map)
+        if not all_done:
+            initial_status = "blocked"
+            try:
+                primary_blocked_by = uuid.UUID(clean_deps[0])
+            except (ValueError, AttributeError):
+                pass
+    elif body.blocked_by_task_id:
+        initial_status = "blocked"
+        try:
+            primary_blocked_by = uuid.UUID(body.blocked_by_task_id)
+        except (ValueError, AttributeError):
+            pass
 
     task = Task(
-        team_id=uuid.UUID(body.team_id) if body.team_id else None,
+        id=task_id_uuid,
+        team_id=team_uuid,
         title=body.title,
         description=body.description,
         priority=body.priority,
+        status=initial_status,
         assigned_agent_id=uuid.UUID(body.assigned_agent_id) if body.assigned_agent_id else None,
         parent_task_id=uuid.UUID(body.parent_task_id) if body.parent_task_id else None,
+        blocked_by_task_id=primary_blocked_by,
+        depends_on=clean_deps,
         created_by=body.created_by,
     )
     db.add(task)
@@ -1509,6 +1840,7 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user
                 "id": str(task.id), "title": task.title, "description": task.description,
                 "status": task.status, "priority": task.priority,
                 "assigned_to": assignee_name,
+                "depends_on": clean_deps,
             },
         })
         if body.created_by == "human" or not body.created_by:
@@ -1517,8 +1849,8 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user
             creator = body.created_by
         if agent:
             # Task was assigned — notify assignee
-            if task.blocked_by_task_id:
-                assign_text = f"[TASK_ASSIGN] @{agent.name} a new task '{task.title}' was created and assigned to you by {creator}. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet."
+            if task.status == "blocked":
+                assign_text = f"[TASK_ASSIGN] @{agent.name} a new task '{task.title}' was created and assigned to you by {creator}. However, it is currently BLOCKED by prerequisite dependencies ({', '.join(clean_deps[:3])}). You will be notified when it is unblocked. Do not start work yet."
             else:
                 assign_text = f"[TASK_ASSIGN] @{agent.name} a new task '{task.title}' was created and assigned to you by {creator}. Please start working on it."
             await message_router.route_message(
@@ -1561,14 +1893,15 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user
                     attachments=[]
                 )
 
-    if agent and not task.blocked_by_task_id:
+    if agent and task.status != "blocked":
         prompt = f"The human just assigned a new task to you on the Kanban board: '{task.title}'. Description: {task.description or 'No description provided.'}. Please review it and start working."
         await message_router._trigger_agent(agent, prompt, db)
 
-    return {"id": str(task.id), "title": task.title, "status": task.status}
+    return {"id": str(task.id), "title": task.title, "status": task.status, "depends_on": task.depends_on or []}
 
 @router.get("/tasks/{team_id}")
 async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_team_access(db, team_id, user["sub"])
     stmt = select(Task).where(Task.team_id == uuid.UUID(team_id))
     if status:
         stmt = stmt.where(Task.status == status)
@@ -1580,6 +1913,8 @@ async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSessio
             "status": t.status, "priority": t.priority,
             "assigned_agent_id": str(t.assigned_agent_id) if t.assigned_agent_id else None,
             "parent_task_id": str(t.parent_task_id) if t.parent_task_id else None,
+            "blocked_by_task_id": str(t.blocked_by_task_id) if t.blocked_by_task_id else None,
+            "depends_on": t.depends_on or [],
             "created_by": t.created_by,
             "created_at": t.created_at.isoformat() if t.created_at else None,
             "plan_status": t.plan_status,
@@ -1588,12 +1923,63 @@ async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSessio
         for t in result.scalars().all()
     ]
 
+@router.get("/tasks/dag/{team_id}")
+async def get_team_task_dag(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    """Returns the DAG graph structure, nodes, edges, cycle status, and execution waves."""
+    await _assert_team_access(db, team_id, user["sub"])
+    from core.agent.workflow_dag import workflow_dag
+    stmt = select(Task).where(Task.team_id == uuid.UUID(team_id))
+    team_tasks = (await db.execute(stmt)).scalars().all()
+    return workflow_dag.build_dag_summary(team_tasks)
+
 @router.put("/tasks/{task_id}")
 async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
+    from core.agent.workflow_dag import workflow_dag, DAGCycleError
+    from core.chat.message_router import message_router
+    from core.memory.models import Agent
+    from core.chat.event_bus import event_bus
+
+    old_status = task.status
+    team_id_str = str(task.team_id)
+
+    # Validate and update dependencies if requested
+    if body.depends_on is not None or body.blocked_by_task_id is not None:
+        stmt_all = select(Task).where(Task.team_id == task.team_id)
+        team_tasks = (await db.execute(stmt_all)).scalars().all()
+
+        new_deps: List[str] = []
+        if body.depends_on is not None:
+            for d in body.depends_on:
+                norm_d = str(d).strip().lower()
+                if norm_d and norm_d not in new_deps:
+                    new_deps.append(norm_d)
+        else:
+            new_deps = list(task.depends_on or [])
+
+        if body.blocked_by_task_id is not None:
+            if body.blocked_by_task_id:
+                norm_b = str(body.blocked_by_task_id).strip().lower()
+                if norm_b and norm_b not in new_deps:
+                    new_deps.append(norm_b)
+                try:
+                    task.blocked_by_task_id = uuid.UUID(body.blocked_by_task_id)
+                except (ValueError, AttributeError):
+                    pass
+            else:
+                task.blocked_by_task_id = None
+
+        try:
+            workflow_dag.validate_acyclic(
+                tasks=team_tasks,
+                new_or_updated_task_id=str(task.id),
+                new_dependencies=new_deps,
+            )
+        except DAGCycleError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        task.depends_on = new_deps
+
     if body.status is not None:
         task.status = body.status
     if body.priority is not None:
@@ -1610,8 +1996,6 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
     task.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
-    from core.chat.message_router import message_router
-    from core.memory.models import Agent
     human_name = await _get_human_name(db, task.team_id)
     sys_text = f"[TASK_UPDATE] '{task.title}' moved to {task.status} by {human_name}"
     if task.assigned_agent_id:
@@ -1620,38 +2004,97 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
         if agent:
             # Wake agent if assignment changed or task moved to in_progress
             if body.assigned_agent_id:
-                if task.blocked_by_task_id:
+                if task.status == "blocked":
                     assign_text = f"[TASK_ASSIGN] @{agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet. DO NOT create a new task — this task already exists on the board."
                 else:
                     assign_text = f"[TASK_ASSIGN] @{agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. Description: {task.description or 'No description provided.'}. Please begin work now. IMPORTANT: DO NOT use create_task — this task already exists on the board with the ID above. Use update_task(task_id='{task.id}', status='in_progress') to start it, then update_task(task_id='{task.id}', status='done') when finished."
                 await message_router.route_message(
                     text=assign_text,
                     sender_id="system",
-                    team_id=str(task.team_id),
+                    team_id=team_id_str,
                     sender_name="System",
                     attachments=[]
                 )
-                if not task.blocked_by_task_id:
+                if task.status != "blocked":
                     await message_router._enqueue_agent(agent, assign_text, db)
             elif body.status == "in_progress":
-                if task.blocked_by_task_id:
+                if task.status == "blocked":
                     update_text = f"[TASK_UPDATE] @{agent.name} your task '{task.title}' has been moved to 'In Progress'. However, it is currently BLOCKED. You may investigate it, but wait for the blocking task to complete before making major changes."
                 else:
                     update_text = f"[TASK_UPDATE] @{agent.name} your task '{task.title}' has been moved to 'In Progress'. Description: {task.description or 'No description provided.'}. Please continue work."
                 await message_router.route_message(
                     text=update_text,
                     sender_id="system",
-                    team_id=str(task.team_id),
+                    team_id=team_id_str,
                     sender_name="System",
                     attachments=[]
                 )
-                if not task.blocked_by_task_id:
+                if task.status != "blocked":
                     await message_router._enqueue_agent(agent, update_text, db)
+
+    # DAG MULTI-DEPENDENCY UNBLOCK & CASCADE ENGINE
+    stmt_all = select(Task).where(Task.team_id == task.team_id)
+    all_team_tasks = (await db.execute(stmt_all)).scalars().all()
+
+    if task.status == "done" and old_status != "done":
+        unblocked = workflow_dag.propagate_task_completion(all_team_tasks, str(task.id))
+        for b_task in unblocked:
+            b_task.blocked_by_task_id = None
+            b_task.status = "todo"
+            b_task.updated_at = datetime.now(timezone.utc)
+            await event_bus.publish(f"team:{team_id_str}", {
+                "type": "task_update",
+                "action": "updated",
+                "task": {
+                    "id": str(b_task.id),
+                    "title": b_task.title,
+                    "status": "todo",
+                    "priority": b_task.priority,
+                    "depends_on": b_task.depends_on or [],
+                }
+            })
+            if b_task.assigned_agent_id:
+                agent_res = await db.execute(select(Agent).where(Agent.id == b_task.assigned_agent_id))
+                b_agent = agent_res.scalar_one_or_none()
+                if b_agent:
+                    unblock_msg = f"[TASK_UNBLOCKED] @{b_agent.name} all prerequisite tasks for '{b_task.title}' are now complete. You may begin work."
+                    await message_router.route_message(
+                        text=unblock_msg,
+                        sender_id="system",
+                        team_id=team_id_str,
+                        sender_name="System",
+                        attachments=[]
+                    )
+                    await message_router._enqueue_agent(b_agent, unblock_msg, db)
+        if unblocked:
+            await db.commit()
+
+    elif task.status == "blocked" and old_status != "blocked":
+        cascade = workflow_dag.propagate_cascade_failure(
+            all_team_tasks, str(task.id), f"Upstream prerequisite '{task.title}' is blocked"
+        )
+        for c_task, _ in cascade:
+            if c_task.status != "blocked":
+                c_task.status = "blocked"
+                c_task.updated_at = datetime.now(timezone.utc)
+                await event_bus.publish(f"team:{team_id_str}", {
+                    "type": "task_update",
+                    "action": "updated",
+                    "task": {
+                        "id": str(c_task.id),
+                        "title": c_task.title,
+                        "status": "blocked",
+                        "priority": c_task.priority,
+                        "depends_on": c_task.depends_on or [],
+                    }
+                })
+        if cascade:
+            await db.commit()
 
     await message_router.route_message(
         text=sys_text,
         sender_id="system",
-        team_id=str(task.team_id),
+        team_id=team_id_str,
         sender_name="System",
         attachments=[]
     )
@@ -1659,14 +2102,35 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
     return {"status": "updated", "id": task_id}
 
 
+# ============================================================
+# Memory Dream Cycle Routes
+# ============================================================
+
+@router.post("/memory/dream/run")
+async def trigger_dream_cycle(
+    team_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """Triggers an on-demand memory consolidation (Dream) cycle immediately."""
+    from core.memory.auto_dream import dream_worker
+    if team_id:
+        await _assert_team_access(db, team_id, user["sub"])
+    return await dream_worker.run_once(team_id=team_id)
+
+
+@router.get("/memory/dream/status")
+async def get_dream_status(user: dict = Depends(require_auth)):
+    """Returns operational metrics and telemetry for the background Dream worker."""
+    from core.memory.auto_dream import dream_worker
+    return dream_worker.get_status()
+
+
 from core.memory.models import TaskComment
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
     from core.memory.models import Agent
     from core.chat.message_router import message_router
 
@@ -1704,10 +2168,7 @@ async def delete_task(task_id: str, db: AsyncSession = Depends(get_db), user: di
 
 @router.post("/tasks/{task_id}/comments")
 async def create_task_comment(task_id: str, body: TaskCommentCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _assert_task_access(db, task_id, user["sub"])
         
     comment = TaskComment(
         task_id=uuid.UUID(task_id),
@@ -1747,6 +2208,7 @@ async def create_task_comment(task_id: str, body: TaskCommentCreate, db: AsyncSe
 
 @router.get("/tasks/{task_id}/comments")
 async def list_task_comments(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_task_access(db, task_id, user["sub"])
     stmt = select(TaskComment).where(TaskComment.task_id == uuid.UUID(task_id)).order_by(TaskComment.created_at.asc())
     result = await db.execute(stmt)
     comments = result.scalars().all()
@@ -1894,11 +2356,12 @@ async def get_role_template(role: str):
 # ============================================================
 
 @router.post("/audio/transcribe/{team_id}")
-async def transcribe_audio_upload(team_id: str, file: UploadFile = File(...), user: dict = Depends(require_auth)):
+async def transcribe_audio_upload(team_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """
     Accepts an audio file upload, transcribes it via OpenAI Whisper,
     and broadcasts the transcription to the team EventBus.
     """
+    await _assert_team_access(db, team_id, user["sub"])
     from core.tools.meeting_tool import meeting_tool
 
     audio_data = await file.read()
@@ -2037,6 +2500,9 @@ async def upload_knowledge(
     """
     Ingests an uploaded file (PDF, TXT, MD) into the learnings table (pgvector).
     """
+    await _assert_project_access(db, project_id, user["sub"])
+    if team_id:
+        await _assert_team_access(db, team_id, user["sub"])
     from core.knowledge.knowledge_ingestor import ingest_file
 
     data = await file.read()
@@ -2044,6 +2510,121 @@ async def upload_knowledge(
     if "error" in res:
         raise HTTPException(status_code=400, detail=res["error"])
     return res
+
+
+@router.get("/knowledge/symbols/{project_id}")
+async def get_project_symbols(
+    project_id: str,
+    name: Optional[str] = None,
+    kind: Optional[str] = None,
+    file_path: Optional[str] = None,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """
+    Returns AST symbol definitions and metadata for a project.
+    Supports filtering by symbol name, symbol kind, and file path.
+    """
+    await _assert_project_access(db, project_id, user["sub"])
+    from core.knowledge.code_graph import code_graph
+    try:
+        if name:
+            defs = await code_graph.get_symbol_definitions(name, project_id)
+        else:
+            chunks = await code_graph.get_all_chunks(project_id)
+            defs = [c.to_dict() for c in chunks]
+
+        if kind:
+            defs = [d for d in defs if d.get("kind", "").lower() == kind.lower()]
+
+        if file_path:
+            norm_fp = file_path.replace("\\", "/")
+            defs = [d for d in defs if norm_fp in d.get("file_path", "").replace("\\", "/")]
+
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "total": len(defs),
+            "symbols": defs[:limit]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch symbols: {str(e)}")
+
+
+@router.get("/knowledge/graph/{project_id}")
+async def get_project_code_graph(
+    project_id: str,
+    file_path: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """
+    Returns code dependency graph information:
+    - If file_path is specified: returns imports, dependents, and symbol outline.
+    - If file_path is omitted: returns graph node/edge counts and top central files by PageRank.
+    """
+    await _assert_project_access(db, project_id, user["sub"])
+    from core.knowledge.code_graph import code_graph
+    try:
+        graph = await code_graph.get_graph(project_id)
+        if file_path:
+            norm_fp = file_path.replace("\\", "/").strip("/")
+            deps = await code_graph.get_module_dependencies(norm_fp, project_id)
+            outline = await code_graph.get_file_outline(norm_fp, project_id)
+            return {
+                "status": "success",
+                "project_id": project_id,
+                "file_path": norm_fp,
+                "dependencies": deps.get("dependencies", []),
+                "dependents": deps.get("dependents", []),
+                "symbols": outline
+            }
+        else:
+            import networkx as nx
+            pagerank = {}
+            if len(graph) > 1 and graph.number_of_edges() > 0:
+                try:
+                    pagerank = nx.pagerank(graph, alpha=0.85, max_iter=100)
+                except Exception:
+                    pagerank = {n: 1.0 / len(graph) for n in graph.nodes()}
+            top_nodes = sorted(graph.nodes(), key=lambda n: pagerank.get(n, 0.0), reverse=True)[:25]
+            return {
+                "status": "success",
+                "project_id": project_id,
+                "node_count": graph.number_of_nodes(),
+                "edge_count": graph.number_of_edges(),
+                "top_central_files": [
+                    {"file": n, "pagerank": round(pagerank.get(n, 0.0), 5)}
+                    for n in top_nodes
+                ]
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch code graph: {str(e)}")
+
+
+@router.get("/knowledge/hierarchy/{project_id}")
+async def get_project_class_hierarchy(
+    project_id: str,
+    class_name: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """
+    Returns class inheritance hierarchy (superclasses, subclasses, and ancestry) for a class.
+    """
+    await _assert_project_access(db, project_id, user["sub"])
+    from core.knowledge.code_graph import code_graph
+    try:
+        hierarchy = await code_graph.get_class_hierarchy(class_name, project_id)
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "hierarchy": hierarchy
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch hierarchy: {str(e)}")
+
 
 
 # ============================================================
@@ -2055,6 +2636,7 @@ async def get_project_usage(project_id: str, db: AsyncSession = Depends(get_db),
     """
     Returns estimated token usage and cost for all agents in the project.
     """
+    await _assert_project_access(db, project_id, user["sub"])
     from core.memory.models import TokenUsage
     import uuid
 
@@ -2113,7 +2695,11 @@ async def get_mcp_status():
     safe_statuses = {}
     for k, v in mcp_manager.statuses.items():
         key_str = f"{k[0]}::{k[1]}::{k[2]}"
-        safe_statuses[key_str] = v
+        entry = dict(v)
+        # Include attempt progress if present (set during retries)
+        if "attempt" in entry or "max_attempts" in entry:
+            pass  # already included via dict(v)
+        safe_statuses[key_str] = entry
     return safe_statuses
 
 @router.get("/mcp/templates")
@@ -2701,6 +3287,9 @@ async def resolve_mcp_logo_endpoint(body: dict):
 
 @router.post("/mcp")
 async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_team_access(db, body.team_id, user["sub"])
+    if body.agent_id:
+        await _assert_agent_access(db, body.agent_id, user["sub"])
     from core.memory.models import McpServer
     from core.tools.mcp_client import mcp_manager
     import asyncio
@@ -2792,52 +3381,150 @@ async def list_global_mcps():
         })
     return results
 
-@router.post("/mcp/global/{server_name}/toggle")
-async def toggle_global_mcp(server_name: str, user: dict = Depends(require_auth)):
-    import json
-    import asyncio
+@router.post("/mcp/reload")
+async def reload_global_mcps(user: dict = Depends(require_auth)):
+    """Hot-reload all enabled global MCP servers without a full server restart.
+
+    - Unregisters tools and clears status for any currently errored/disconnected global MCPs.
+    - Re-launches them with the 300 s timeout and retry logic.
+    - Already-connected servers are left untouched (idempotent).
+    """
+    import asyncio as _asyncio
     from core.config import GLOBAL_MCPS, DISABLED_GLOBAL_MCPS_FILE
     from core.tools.mcp_client import mcp_manager
-    
-    mcp_config = next((m for m in GLOBAL_MCPS if m["server_name"] == server_name), None)
-    if not mcp_config:
-        raise HTTPException(404, "Global MCP not found")
-        
-    disabled_mcps = []
+
+    disabled_mcps: list = []
     if DISABLED_GLOBAL_MCPS_FILE.exists():
         try:
             with open(DISABLED_GLOBAL_MCPS_FILE, "r") as f:
                 disabled_mcps = json.load(f)
         except Exception:
             pass
-            
+
+    async def _retry(mcp_cfg: dict, max_attempts: int = 3, backoff: float = 5.0):
+        name = mcp_cfg["server_name"]
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await mcp_manager.connect_stdio_server(
+                    server_name=name,
+                    command=mcp_cfg["command"],
+                    args=mcp_cfg["args"],
+                    team_id=None,
+                    agent_id=None,
+                    init_timeout=300.0,
+                )
+                return
+            except Exception as exc:
+                if attempt < max_attempts:
+                    await _asyncio.sleep(backoff * attempt)
+                else:
+                    logger.error("[MCP reload] '%s' gave up after %d attempts: %s", name, max_attempts, exc)
+
+    reloading = []
+    for mcp in GLOBAL_MCPS:
+        name = mcp["server_name"]
+        if name in disabled_mcps:
+            continue
+
+        key = ("None", "global", name)
+        current_status = mcp_manager.statuses.get(key, {})
+
+        # Skip servers that are already successfully connected
+        if current_status.get("status") == "connected":
+            continue
+
+        # Clear stale error/loading state so the UI shows "loading" immediately
+        mcp_manager.statuses.pop(key, None)
+        old_stack = mcp_manager.exit_stacks.pop(key, None)
+        if old_stack:
+            _asyncio.create_task(mcp_manager._close_stack(old_stack, name))
+
+        # Unregister any orphaned tools from a previous failed attempt
+        prefix = f"{name}_"
+        from core.tools.tool_registry import ToolRegistry
+        for tool_name in list(ToolRegistry.list_names()):
+            if tool_name.startswith(prefix):
+                ToolRegistry.unregister(tool_name)
+
+        _asyncio.create_task(
+            _retry(mcp),
+            name=f"{name}_mcp_reload",
+        )
+        reloading.append(name)
+        logger.info("[MCP reload] Re-launching '%s'", name)
+
+    return {"ok": True, "reloading": reloading}
+
+
+@router.post("/mcp/global/{server_name}/toggle")
+async def toggle_global_mcp(server_name: str, user: dict = Depends(require_auth)):
+    import asyncio as _asyncio
+    from core.config import GLOBAL_MCPS, DISABLED_GLOBAL_MCPS_FILE
+    from core.tools.mcp_client import mcp_manager
+
+    mcp_config = next((m for m in GLOBAL_MCPS if m["server_name"] == server_name), None)
+    if not mcp_config:
+        raise HTTPException(404, "Global MCP not found")
+
+    disabled_mcps: list = []
+    if DISABLED_GLOBAL_MCPS_FILE.exists():
+        try:
+            with open(DISABLED_GLOBAL_MCPS_FILE, "r") as f:
+                disabled_mcps = json.load(f)
+        except Exception:
+            pass
+
     is_disabling = server_name not in disabled_mcps
-    
+
     if is_disabling:
         disabled_mcps.append(server_name)
         key = ("None", "global", server_name)
-        if key in mcp_manager.sessions:
-            mcp_manager.sessions.pop(key, None)
+        mcp_manager.statuses.pop(key, None)
+        old_stack = mcp_manager.exit_stacks.pop(key, None)
+        if old_stack:
+            _asyncio.create_task(mcp_manager._close_stack(old_stack, server_name))
+        mcp_manager.sessions.pop(key, None)
+        # Unregister tools
+        prefix = f"{server_name}_"
+        from core.tools.tool_registry import ToolRegistry
+        for tool_name in list(ToolRegistry.list_names()):
+            if tool_name.startswith(prefix):
+                ToolRegistry.unregister(tool_name)
     else:
         disabled_mcps.remove(server_name)
-        asyncio.create_task(
-            mcp_manager.connect_stdio_server(
-                server_name=mcp_config["server_name"],
-                command=mcp_config["command"],
-                args=mcp_config["args"],
-                team_id=None,
-                agent_id=None,
-            ),
+
+        async def _retry_enable(mcp_cfg: dict, max_attempts: int = 3, backoff: float = 5.0):
+            name = mcp_cfg["server_name"]
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    await mcp_manager.connect_stdio_server(
+                        server_name=name,
+                        command=mcp_cfg["command"],
+                        args=mcp_cfg["args"],
+                        team_id=None,
+                        agent_id=None,
+                        init_timeout=300.0,
+                    )
+                    return
+                except Exception as exc:
+                    if attempt < max_attempts:
+                        await _asyncio.sleep(backoff * attempt)
+                    else:
+                        logger.error("[MCP toggle] '%s' gave up after %d attempts: %s", name, max_attempts, exc)
+
+        _asyncio.create_task(
+            _retry_enable(mcp_config),
             name=f"{server_name}_mcp_server",
         )
-        
+
     with open(DISABLED_GLOBAL_MCPS_FILE, "w") as f:
         json.dump(disabled_mcps, f)
-        
+
     return {"ok": True, "server_name": server_name, "is_disabled": is_disabling}
 
 @router.get("/mcp/{team_id}")
 async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_team_access(db, team_id, user["sub"])
     from core.memory.models import McpServer
     stmt = select(McpServer).where(McpServer.team_id == uuid.UUID(team_id))
     result = await db.execute(stmt)
@@ -2873,13 +3560,18 @@ async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db), 
         result = await db.execute(stmt)
         server = result.scalars().first()
 
-    server_name = server.server_name if server else server_id
-    team_id_str = str(server.team_id) if (server and server.team_id) else None
-    agent_id_str = str(server.agent_id) if (server and server.agent_id) else None
+    if not server:
+        raise HTTPException(status_code=404, detail="MCP server not found")
 
-    if server:
-        await db.delete(server)
-        await db.commit()
+    if server.team_id:
+        await _assert_team_access(db, str(server.team_id), user["sub"])
+
+    server_name = server.server_name
+    team_id_str = str(server.team_id) if server.team_id else None
+    agent_id_str = str(server.agent_id) if server.agent_id else None
+
+    await db.delete(server)
+    await db.commit()
 
     # Fully disconnect from mcp_manager (sessions, statuses, ToolRegistry)
     await mcp_manager.disconnect_server(
@@ -2994,8 +3686,9 @@ async def save_settings(body: AppSettings, user: dict = Depends(require_auth)):
 
     new_keys = dict(current.get("api_keys", {}))
     for k, v in body.api_keys.items():
-        # Skip masked placeholder values sent back from the UI
-        if v and not all(c == "*" for c in v.replace("-", "").replace("_", "")):
+        if v == "":
+            new_keys[k] = ""
+        elif v and not all(c == "*" for c in v.replace("-", "").replace("_", "")):
             new_keys[k] = v.strip()
 
     new_providers = {**current.get("providers", {}), **body.providers}
@@ -3006,7 +3699,9 @@ async def save_settings(body: AppSettings, user: dict = Depends(require_auth)):
     new_ba = {**current_ba, **body.browser_automation}
     new_ba_keys = dict(current_ba.get("api_keys", {}))
     for k, v in body.browser_automation.get("api_keys", {}).items():
-        if v and not all(c == "*" for c in v.replace("-", "").replace("_", "")):
+        if v == "":
+            new_ba_keys[k] = ""
+        elif v and not all(c == "*" for c in v.replace("-", "").replace("_", "")):
             new_ba_keys[k] = v.strip()
     new_ba["api_keys"] = new_ba_keys
 
@@ -3060,11 +3755,23 @@ async def list_entity_memories(
         return []
     
     stmt = select(EntityMemory)
-    if team_id:
-        stmt = stmt.where(EntityMemory.team_id == uuid.UUID(team_id))
-    if project_id:
-        stmt = stmt.where(EntityMemory.project_id == uuid.UUID(project_id))
+    has_filter = False
+    if team_id and team_id not in ("undefined", "null", ""):
+        try:
+            stmt = stmt.where(EntityMemory.team_id == uuid.UUID(team_id))
+            has_filter = True
+        except (ValueError, TypeError):
+            pass
+    if project_id and project_id not in ("undefined", "null", ""):
+        try:
+            stmt = stmt.where(EntityMemory.project_id == uuid.UUID(project_id))
+            has_filter = True
+        except (ValueError, TypeError):
+            pass
         
+    if not has_filter:
+        return []
+
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -3074,9 +3781,22 @@ async def create_entity_memory(
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(require_auth)
 ):
+    t_uuid = None
+    if body.team_id and body.team_id not in ("undefined", "null", ""):
+        try:
+            t_uuid = uuid.UUID(body.team_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid team_id format.")
+    p_uuid = None
+    if body.project_id and body.project_id not in ("undefined", "null", ""):
+        try:
+            p_uuid = uuid.UUID(body.project_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid project_id format.")
+
     mem = EntityMemory(
-        team_id=uuid.UUID(body.team_id) if body.team_id else None,
-        project_id=uuid.UUID(body.project_id) if body.project_id else None,
+        team_id=t_uuid,
+        project_id=p_uuid,
         key=body.key,
         value=body.value
     )
@@ -3091,7 +3811,13 @@ async def delete_entity_memory(
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(require_auth)
 ):
-    stmt = delete(EntityMemory).where(EntityMemory.id == uuid.UUID(memory_id))
+    if not memory_id or memory_id in ("undefined", "null", ""):
+        raise HTTPException(status_code=400, detail="Invalid memory_id.")
+    try:
+        m_uuid = uuid.UUID(memory_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid memory_id format.")
+    stmt = delete(EntityMemory).where(EntityMemory.id == m_uuid)
     await db.execute(stmt)
     await db.commit()
     return {"status": "deleted"}
@@ -3154,15 +3880,8 @@ async def compact_team_conversation(
     from core.chat.event_bus import event_bus
     import json
 
-    try:
-        t_uuid = uuid.UUID(team_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid team_id")
-
-    # Verify team exists
-    team = (await db.execute(select(Team).where(Team.id == t_uuid))).scalar_one_or_none()
-    if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+    team = await _assert_team_access(db, team_id, user["sub"])
+    t_uuid = team.id
 
     # Load all non-intermediate messages since the last compaction checkpoint
     from datetime import timezone
@@ -3262,10 +3981,8 @@ async def get_team_compaction_events(
     Return all compaction events for a team so the UI can re-render
     compaction dividers after a page reload.
     """
-    try:
-        t_uuid = uuid.UUID(team_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid team_id")
+    team = await _assert_team_access(db, team_id, user["sub"])
+    t_uuid = team.id
 
     events = (
         await db.execute(

@@ -461,6 +461,7 @@ export default function BrowserSettings({ onToast }: Props) {
                   <option value="inherit">Inherit Calling Agent's Active Model</option>
                   <option value="gpt-4o">OpenAI GPT-4o (High-Accuracy Vision)</option>
                   <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (Best Reasoning &amp; DOM)</option>
+                  <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (Fast &amp; Accurate Vision)</option>
                   <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Massive Context)</option>
                 </select>
                 <span className="caption text-mute" style={{ fontSize: 10 }}>

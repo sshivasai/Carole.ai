@@ -3,6 +3,9 @@ import subprocess
 
 from core.auth.auth_middleware import require_auth
 from core.tools.file_tools import file_tools
+from core.memory.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from core.api.crud_routes import _assert_project_access
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -10,8 +13,11 @@ router = APIRouter(prefix="/api/search", tags=["search"])
 async def search_files(
     q: str = Query(..., description="The search string or pattern"),
     project_id: str | None = Query(None, description="Project ID"),
+    db: AsyncSession = Depends(get_db),
     user: dict = Depends(require_auth)
 ):
+    if project_id:
+        await _assert_project_access(db, project_id, user["sub"])
     try:
         workspace_root = await file_tools.get_workspace_root(project_id)
         
@@ -47,5 +53,61 @@ async def search_files(
                     })
         
         return {"status": "success", "results": results}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+
+class CodeSearchRequest(BaseModel):
+    query: str
+    project_id: Optional[str] = None
+    top_k: int = 10
+    file_filter: Optional[str] = None
+    kind: Optional[str] = None
+
+@router.post("/code")
+async def search_code(
+    req: CodeSearchRequest,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    """
+    Hybrid semantic (Model2Vec) and lexical (BM25Okapi) code retrieval
+    with Reciprocal Rank Fusion and cross-encoder reranking.
+    """
+    if req.project_id:
+        await _assert_project_access(db, req.project_id, user["sub"])
+
+    try:
+        from core.knowledge.hybrid_search import hybrid_code_search
+        from core.knowledge.code_graph import code_graph
+
+        p_idx = hybrid_code_search.get_project_index(req.project_id)
+        if not p_idx.file_chunks:
+            chunks = await code_graph.get_all_chunks(req.project_id)
+            hybrid_code_search.index_workspace_chunks(chunks, project_id=req.project_id)
+
+        results = await hybrid_code_search.search(
+            query=req.query,
+            project_id=req.project_id,
+            top_k=req.top_k,
+            file_filter=req.file_filter,
+            kind=req.kind
+        )
+
+        return {
+            "status": "success",
+            "query": req.query,
+            "project_id": req.project_id,
+            "total": len(results),
+            "results": results
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Code search error: {str(e)}")
+

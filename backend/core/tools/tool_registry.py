@@ -71,8 +71,17 @@ class ToolRegistry:
         for p_name, p_info in spec.parameters.items():
             if not isinstance(p_name, str) or not isinstance(p_info, dict):
                 raise ValueError(f"Tool '{spec.name}' parameter '{p_name}' must be a dict specification")
-            if "type" not in p_info:
-                raise ValueError(f"Tool '{spec.name}' parameter '{p_name}' must declare a 'type'")
+            # Accept both explicit 'type' and valid JSON Schema composition keywords
+            # (anyOf, oneOf, allOf, $ref) which are common in MCP server schemas.
+            has_type_decl = (
+                "type" in p_info
+                or "anyOf" in p_info
+                or "oneOf" in p_info
+                or "allOf" in p_info
+                or "$ref" in p_info
+            )
+            if not has_type_decl:
+                raise ValueError(f"Tool '{spec.name}' parameter '{p_name}' must declare a 'type', 'anyOf', 'oneOf', 'allOf', or '$ref'")
         if not callable(spec.handler):
             raise ValueError(f"Handler for '{spec.name}' is not callable")
 

@@ -134,29 +134,33 @@ async def _launch_locked() -> None:
 
     import os
     from playwright.async_api import async_playwright
-    from core.llm.config_manager import load_config
+    from core.llm.config_manager import load_config, get_browser_key, has_user_configured_keys
 
-    cfg = (load_config() or {}).get("browser_automation") or {}
-    keys = cfg.get("api_keys") or {}
+    raw_cfg = load_config() or {}
+    cfg = raw_cfg.get("browser_automation") or {}
     infrastructure = (
         cfg.get("infrastructure") or cfg.get("provider") or "local"
     )
 
-    env = os.getenv("HEADLESS")
-    if env is None:
-        env = os.getenv("BROWSER_HEADLESS")
-
     if _headless_override is not None:
         headless = _headless_override
-    elif env is not None:
-        headless = env.strip().lower() not in {
-            "0", "false", "no", "headed", "windowed"
-        }
     else:
-        headless = (
-            cfg.get("display_mode", "headless") != "windowed"
-            and cfg.get("headless", True) is not False
-        )
+        cfg_display = cfg.get("display_mode")
+        cfg_headless = cfg.get("headless")
+        if cfg_display is not None or cfg_headless is not None:
+            headless = (cfg_display != "windowed" and cfg_headless is not False)
+        elif not has_user_configured_keys(raw_cfg):
+            env = os.getenv("HEADLESS")
+            if env is None:
+                env = os.getenv("BROWSER_HEADLESS")
+            if env is not None:
+                headless = env.strip().lower() not in {
+                    "0", "false", "no", "headed", "windowed"
+                }
+            else:
+                headless = True
+        else:
+            headless = True
 
     try:
         _playwright = await async_playwright().start()
@@ -164,24 +168,39 @@ async def _launch_locked() -> None:
         if infrastructure == "browserbase":
             from urllib.parse import urlencode
 
-            key = keys.get("browserbase")
+            key = get_browser_key(raw_cfg, "browserbase", "BROWSERBASE_API_KEY")
             if not key:
                 raise RuntimeError("Browserbase API key is not configured")
 
-            # Fail explicitly instead of silently changing infrastructure.
+            params = {"apiKey": key}
+            project_id = cfg.get("project_id") or os.getenv("BROWSERBASE_PROJECT_ID")
+            if project_id and str(project_id).strip():
+                params["projectId"] = str(project_id).strip()
+
             endpoint = (
                 "wss://connect.browserbase.com?"
-                + urlencode({"apiKey": key})
+                + urlencode(params)
             )
-            _browser = await _playwright.chromium.connect_over_cdp(
-                endpoint, timeout=30_000
-            )
+            # Fail explicitly instead of silently changing infrastructure; retry transient connect blips
+            last_conn_err = None
+            for attempt in range(2):
+                try:
+                    _browser = await _playwright.chromium.connect_over_cdp(
+                        endpoint, timeout=30_000
+                    )
+                    break
+                except Exception as conn_err:
+                    last_conn_err = conn_err
+                    if attempt == 0:
+                        await asyncio.sleep(0.5)
+            if _browser is None and last_conn_err:
+                raise last_conn_err
         else:
             proxy = None
             provider = cfg.get("proxy_provider") or infrastructure
 
             if provider == "scraperapi":
-                key = keys.get("scraperapi")
+                key = get_browser_key(raw_cfg, "scraperapi", "SCRAPERAPI_KEY")
                 if not key:
                     raise RuntimeError("ScraperAPI key is not configured")
                 proxy = {
@@ -190,7 +209,7 @@ async def _launch_locked() -> None:
                     "password": key,
                 }
             elif provider == "zenrows":
-                key = keys.get("zenrows")
+                key = get_browser_key(raw_cfg, "zenrows", "ZENROWS_KEY")
                 if not key:
                     raise RuntimeError("ZenRows key is not configured")
                 proxy = {
@@ -244,8 +263,11 @@ async def _install_network_guard(context: Any, cfg: Dict[str, Any]) -> None:
 
     async def guard(route: Any) -> None:
         try:
+            from core.llm.config_manager import load_config
+            cur_cfg = (load_config() or {}).get("browser_automation") or {}
+            cur_allow_local = allow_local or (cur_cfg.get("allow_local_urls") is True)
             assert_safe_public_url(
-                route.request.url, allow_local=allow_local
+                route.request.url, allow_local=cur_allow_local
             )
         except Exception:
             await route.abort("blockedbyclient")
@@ -299,8 +321,12 @@ async def _get_session_locked(agent_id: str) -> _Session:
     )
 
     try:
-        context.set_default_timeout(10_000)
-        context.set_default_navigation_timeout(30_000)
+        t1 = context.set_default_timeout(10_000)
+        if inspect.isawaitable(t1):
+            await t1
+        t2 = context.set_default_navigation_timeout(30_000)
+        if inspect.isawaitable(t2):
+            await t2
         await _install_network_guard(context, cfg)
     except BaseException:
         await _safe_close(context)
@@ -312,12 +338,20 @@ async def _get_session_locked(agent_id: str) -> _Session:
     def on_page(page: Any) -> None:
         # New tabs/popups become the active page.
         session.page = page
-        page.on(
+        err_res = page.on(
             "pageerror",
             lambda exc: logger.debug("Page JavaScript error: %s", type(exc).__name__),
         )
+        if inspect.isawaitable(err_res):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(err_res)
+            except RuntimeError:
+                pass
 
-    context.on("page", on_page)
+    res_on = context.on("page", on_page)
+    if inspect.isawaitable(res_on):
+        await res_on
     return session
 
 
@@ -406,6 +440,17 @@ async def close_agent_browser(agent_id: str) -> bool:
 async def get_active_agents() -> list:
     async with _get_lock():
         return list(_sessions)
+
+
+async def get_cdp_session(agent_id: str) -> Any:
+    """
+    Create and return a new Chrome DevTools Protocol (CDP) session for the active page.
+    Enables low-level CDP screencasting, network tracing, and debugging.
+    """
+    page = await get_page(agent_id)
+    if hasattr(page, "context") and hasattr(page.context, "new_cdp_session"):
+        return await page.context.new_cdp_session(page)
+    return None
 
 
 async def close_all() -> None:

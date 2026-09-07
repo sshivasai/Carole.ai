@@ -36,6 +36,9 @@ class EventBus:
 
     async def subscribe(self, topic: str) -> asyncio.Queue:
         """Subscribe to a topic. Returns a bounded queue to read streamed events from."""
+        if not topic or not isinstance(topic, str) or not topic.strip():
+            raise ValueError("Topic must be a non-empty string")
+        topic = topic.strip()
         queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         async with self._lock:
             if topic not in self._subscribers:
@@ -60,6 +63,9 @@ class EventBus:
         NOTE: history is intentionally kept so that a client reconnecting
         immediately after the last subscriber leaves still gets a replay.
         """
+        if not topic or not isinstance(topic, str):
+            return
+        topic = topic.strip()
         async with self._lock:
             if topic in self._subscribers:
                 self._subscribers[topic].discard(queue)
@@ -69,9 +75,10 @@ class EventBus:
 
     async def subscribe_to_topics(self, topics: List[str]) -> asyncio.Queue:
         """Subscribe a single queue to multiple topics. Replays history of all topics."""
+        valid_topics = [t.strip() for t in topics if isinstance(t, str) and t.strip()]
         queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         async with self._lock:
-            for topic in topics:
+            for topic in valid_topics:
                 if topic not in self._subscribers:
                     self._subscribers[topic] = set()
                 if topic not in self._history:
@@ -88,8 +95,9 @@ class EventBus:
 
     async def unsubscribe_from_topics(self, topics: List[str], queue: asyncio.Queue):
         """Unsubscribe a queue from multiple topics."""
+        valid_topics = [t.strip() for t in topics if isinstance(t, str) and t.strip()]
         async with self._lock:
-            for topic in topics:
+            for topic in valid_topics:
                 if topic in self._subscribers:
                     self._subscribers[topic].discard(queue)
                     if not self._subscribers[topic]:
@@ -102,6 +110,13 @@ class EventBus:
         concurrent unsubscribes) and the actual queue.put() calls happen
         *outside* the lock so that a slow consumer never blocks the publisher.
         """
+        if not topic or not isinstance(topic, str) or not topic.strip():
+            logger.warning("EventBus: dropped publish to invalid or empty topic: %s", topic)
+            return
+        if not isinstance(message, dict):
+            logger.warning("EventBus: message must be a dict, got %s", type(message))
+            return
+        topic = topic.strip()
         async with self._lock:
             # Record in history (skip high-frequency noise events)
             if message.get("type") not in ("thought_delta", "typing"):
@@ -142,7 +157,9 @@ class EventBus:
 
     def get_history(self, topic: str) -> List[dict]:
         """Returns the event history for a topic."""
-        return list(self._history.get(topic, []))
+        if not topic or not isinstance(topic, str):
+            return []
+        return list(self._history.get(topic.strip(), []))
 
 
 # Global singleton

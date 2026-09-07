@@ -1,66 +1,88 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   FileCode, Terminal, Globe, ShieldAlert, Check, X, 
-  Loader2, Eye, EyeOff, FileText, Bot, Scale 
+  Loader2, Eye, EyeOff, FileText, Bot, Scale, AlertOctagon,
+  Copy, MessageSquareQuote, ChevronDown, ChevronUp, CornerDownLeft
 } from "lucide-react";
 import type { ChatMessage } from "@/lib/types";
 import { DiffViewer } from "./DiffViewer";
 
 interface AgentPermissionCardProps {
   msg: ChatMessage;
-  onDecide: (approved: boolean) => Promise<void>;
+  onDecide: (approved: boolean, feedback?: string) => Promise<void>;
   loading?: boolean;
 }
 
 export default function AgentPermissionCard({ msg, onDecide, loading = false }: AgentPermissionCardProps) {
   const [showDiff, setShowDiff] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [showFeedbackInput, setShowFeedbackInput] = useState(false);
+
   const toolName = msg.pending_approval?.tool_name || msg.tool_name || "";
   const args = msg.pending_approval?.arguments || msg.arguments || {};
   const reason = (msg.pending_approval as any)?.reason || msg.reason || "";
-  
-  // status resolved below with localDecision
   const agentName = msg.sender_name || "Agent";
 
-  // Derive human-readable permission intent title (e.g. "Nova wants to edit this file")
+  // Derive target summary string
+  const targetSummary = useMemo(() => {
+    if (["write_file", "edit_file", "read_file", "append_file", "delete_file"].includes(toolName)) {
+      const p = args.relative_path || args.path || args.TargetFile || args.file_path || "file";
+      const content = args.content || args.CodeContent || "";
+      const lineCount = content ? content.split('\n').length : 0;
+      return lineCount > 1 ? `${p} (${lineCount} lines)` : p;
+    }
+    if (["execute_command", "run_command", "bash", "shell"].includes(toolName)) {
+      return args.command || args.cmd || args.CommandLine || JSON.stringify(args);
+    }
+    if (["web_search", "web_fetch", "browser_navigate"].includes(toolName)) {
+      return args.query || args.url || JSON.stringify(args);
+    }
+    return typeof args === "object" ? JSON.stringify(args, null, 2) : String(args);
+  }, [toolName, args]);
+
+  // Derive Risk Tier (0, 1, 2, 3)
+  const riskTier = useMemo(() => {
+    const rawTier = (msg.pending_approval as any)?.risk_tier ?? (msg as any).risk_tier;
+    if (typeof rawTier === "number") return rawTier;
+
+    const lowerTarget = targetSummary.toLowerCase();
+    const isCriticalFile = [".env", "id_rsa", ".pem", ".ssh", "credentials", "secret", "token"].some(k => lowerTarget.includes(k));
+    const isDestructiveCmd = ["rm -rf", "rmdir /s", "drop database", "drop table", "truncate", "format ", "taskkill /f /pid 1", "chmod 777"].some(k => lowerTarget.includes(k));
+
+    if (isCriticalFile || isDestructiveCmd) return 3;
+    if (["execute_command", "run_command", "bash", "delete_file"].includes(toolName)) return 2;
+    if (["write_file", "edit_file", "append_file", "git_push"].includes(toolName)) return 1;
+    return 0;
+  }, [toolName, targetSummary, msg]);
+
+  // Derive Human-readable intent title
   const getActionTitle = () => {
     switch (toolName) {
       case "read_file":
-        return `${agentName} wants to read this file`;
+        return `${agentName} wants to inspect a file`;
       case "write_file":
       case "edit_file":
-        return `${agentName} wants to edit this file`;
+      case "append_file":
+        return `${agentName} wants to modify workspace code`;
+      case "delete_file":
+        return `${agentName} requests file deletion`;
       case "execute_command":
       case "run_command":
       case "bash":
-        return `${agentName} wants to run a shell command`;
+        return `${agentName} requests terminal command execution`;
       case "web_search":
       case "web_fetch":
       case "browser_navigate":
-        return `${agentName} wants to access the web`;
+        return `${agentName} requests external web access`;
       case "hire_subagent":
       case "spawn_agent":
-        return `${agentName} wants to spawn a worker subagent`;
+        return `${agentName} wants to spawn a specialist subagent`;
       default:
-        return `${agentName} wants to run ${toolName || "action"}`;
+        return `${agentName} requests permission for ${toolName || "action"}`;
     }
-  };
-
-  // Derive target summary (e.g. "backend/core/agent/react_agent.py (up to 2000 lines)")
-  const getTargetSummary = () => {
-    if (toolName === "write_file" || toolName === "edit_file" || toolName === "read_file") {
-      const p = args.relative_path || args.path || args.TargetFile || "target file";
-      const lineCount = (args.content || args.CodeContent || "").split('\n').length;
-      return lineCount > 1 ? `${p} (${lineCount} lines)` : p;
-    }
-    if (toolName === "execute_command" || toolName === "run_command" || toolName === "bash") {
-      return args.command || args.cmd || args.CommandLine || JSON.stringify(args);
-    }
-    if (toolName === "web_search" || toolName === "web_fetch" || toolName === "browser_navigate") {
-      return args.query || args.url || JSON.stringify(args);
-    }
-    return JSON.stringify(args, null, 2);
   };
 
   const getToolIcon = () => {
@@ -68,34 +90,38 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
       case "write_file":
       case "edit_file":
       case "read_file":
-        return <FileCode size={16} color="#38bdf8" />;
+      case "append_file":
+      case "delete_file":
+        return <FileCode size={15} color="#38bdf8" />;
       case "execute_command":
       case "run_command":
       case "bash":
-        return <Terminal size={16} color="#34d399" />;
+        return <Terminal size={15} color="#34d399" />;
       case "web_search":
       case "web_fetch":
       case "browser_navigate":
-        return <Globe size={16} color="#f59e0b" />;
+        return <Globe size={15} color="#f59e0b" />;
       case "hire_subagent":
       case "spawn_agent":
-        return <Bot size={16} color="#a78bfa" />;
+        return <Bot size={15} color="#a78bfa" />;
       default:
-        return <ShieldAlert size={16} color="#fbbf24" />;
+        return <ShieldAlert size={15} color="#fbbf24" />;
     }
   };
 
   const targetContent = args.content || args.CodeContent || "";
-  const hasDiffContent = Boolean(targetContent || args.diff || args.Instruction);
-    const diffString = args.diff || (targetContent ? targetContent.split('\n').map((l: string) => `+ ${l}`).join('\n') : "");
+  const hasDiffContent = Boolean(targetContent || args.diff || args.Instruction || args.ReplacementContent);
+  const diffString = args.diff || (targetContent ? targetContent.split('\n').map((l: string) => `+ ${l}`).join('\n') : "");
 
   const [localDecision, setLocalDecision] = useState<"approved" | "denied" | null>(null);
+  const [localFeedback, setLocalFeedback] = useState<string>("");
   const [timeLeft, setTimeLeft] = useState<number>(60);
 
   const approvalId = msg.pending_approval?.tx_id || msg.tx_id || msg.id;
 
   useEffect(() => {
     setLocalDecision(null);
+    setLocalFeedback("");
   }, [approvalId]);
 
   const rawStatus = msg.pending_approval?.status || msg.status || (msg.type?.includes("approved") ? "approved" : msg.type?.includes("denied") ? "denied" : "pending");
@@ -123,10 +149,10 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
 
   const handleDecide = async (approved: boolean) => {
     setLocalDecision(approved ? "approved" : "denied");
+    setLocalFeedback(feedbackText.trim());
     try {
-      await onDecide(approved);
+      await onDecide(approved, feedbackText.trim() || undefined);
     } catch (e: any) {
-      // If already resolved or 404, keep decision as approved/denied
       if (e?.message?.includes("already resolved") || e?.message?.includes("not found") || e?.status === 404) {
         setLocalDecision(approved ? "approved" : "denied");
       } else {
@@ -135,19 +161,34 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
     }
   };
 
+  const copyPayload = () => {
+    navigator.clipboard.writeText(targetSummary);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
     <div
       style={{
-        margin: "10px 0",
-        borderRadius: "12px",
-        background: "#141419",
-        border: "1px solid rgba(255, 255, 255, 0.1)",
+        margin: "12px 0",
+        borderRadius: "14px",
+        background: "linear-gradient(145deg, rgba(20, 20, 38, 0.88), rgba(12, 12, 24, 0.94))",
+        backdropFilter: "blur(20px)",
+        WebkitBackdropFilter: "blur(20px)",
+        border: riskTier === 3 
+          ? "1px solid rgba(239, 68, 68, 0.35)" 
+          : riskTier === 2 
+          ? "1px solid rgba(245, 158, 11, 0.3)" 
+          : "1px solid rgba(99, 102, 241, 0.25)",
+        boxShadow: riskTier === 3
+          ? "0 12px 32px rgba(0, 0, 0, 0.5), 0 0 24px rgba(239, 68, 68, 0.12)"
+          : "0 12px 32px rgba(0, 0, 0, 0.45), 0 0 20px rgba(99, 102, 241, 0.08)",
         overflow: "hidden",
-        boxShadow: "0 8px 24px rgba(0, 0, 0, 0.4)",
-        maxWidth: "540px",
+        maxWidth: "600px",
         width: "100%",
         fontFamily: "var(--font-sans, system-ui, -apple-system, sans-serif)",
-        color: "#f1f5f9"
+        color: "#f1f5f9",
+        transition: "all 0.25s cubic-bezier(0.16, 1, 0.3, 1)"
       }}
     >
       {/* Header */}
@@ -155,172 +196,274 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
         style={{
           display: "flex",
           alignItems: "center",
-          gap: "10px",
+          justifyContent: "space-between",
           padding: "12px 16px",
           borderBottom: "1px solid rgba(255, 255, 255, 0.06)",
           background: "rgba(255, 255, 255, 0.02)"
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 28,
-            height: 28,
-            borderRadius: "6px",
-            background: "rgba(255, 255, 255, 0.05)"
-          }}
-        >
-          {getToolIcon()}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 28,
+              height: 28,
+              borderRadius: "8px",
+              background: "rgba(255, 255, 255, 0.06)",
+              border: "1px solid rgba(255, 255, 255, 0.08)"
+            }}
+          >
+            {getToolIcon()}
+          </div>
+          <span style={{ fontSize: "13px", fontWeight: 700, letterSpacing: "-0.2px", color: "var(--color-ink, #ffffff)" }}>
+            {getActionTitle()}
+          </span>
         </div>
-        <span style={{ fontSize: "13.5px", fontWeight: 700, letterSpacing: "-0.2px" }}>
-          {getActionTitle()}
-        </span>
+
+        {/* Risk Tier Badge */}
+        <div>
+          {riskTier === 3 && (
+            <span className="antigravity-badge-tier3">
+              <AlertOctagon size={11} /> Tier 3 • Critical
+            </span>
+          )}
+          {riskTier === 2 && (
+            <span className="antigravity-badge-tier2">
+              <ShieldAlert size={11} /> Tier 2 • Sensitive
+            </span>
+          )}
+          {riskTier === 1 && (
+            <span className="antigravity-badge-tier1">
+              <Scale size={11} /> Tier 1 • Audited
+            </span>
+          )}
+          {riskTier === 0 && (
+            <span className="antigravity-badge-tier0">
+              <Check size={11} /> Tier 0 • Safe
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Target Preview Box */}
+      {/* Main Body */}
       <div style={{ padding: "14px 16px" }}>
+        {/* Monospace Target Preview */}
         <div
           style={{
-            background: "#1e1e24",
-            border: "1px solid #2e2e38",
-            borderRadius: "8px",
+            background: "rgba(10, 10, 20, 0.75)",
+            border: "1px solid rgba(255, 255, 255, 0.08)",
+            borderRadius: "10px",
             padding: "10px 14px",
-            fontFamily: "var(--font-mono, monospace)",
+            fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
             fontSize: "12px",
             color: "#e2e8f0",
             wordBreak: "break-all",
             lineHeight: 1.5,
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-start",
             justifyContent: "space-between",
-            gap: "8px"
+            gap: "10px"
           }}
         >
-          <span>{getTargetSummary()}</span>
-          {hasDiffContent && (
+          <span style={{ flex: 1 }}>{targetSummary}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
             <button
-              onClick={() => setShowDiff(s => !s)}
-              className="btn btn-sm"
+              onClick={copyPayload}
+              title="Copy arguments"
               style={{
-                background: showDiff ? "rgba(167, 139, 250, 0.2)" : "rgba(255, 255, 255, 0.08)",
-                border: "1px solid rgba(255, 255, 255, 0.12)",
-                color: showDiff ? "#c4b5fd" : "#cbd5e1",
-                fontSize: "10.5px",
-                padding: "2px 8px",
-                height: "24px",
-                borderRadius: "5px",
+                background: "transparent",
+                border: "none",
+                color: copied ? "#34d399" : "var(--color-mute, #94a3b8)",
+                cursor: "pointer",
+                padding: "2px 4px",
                 display: "inline-flex",
-                alignItems: "center",
-                gap: "4px",
-                flexShrink: 0
+                alignItems: "center"
               }}
             >
-              {showDiff ? <EyeOff size={11} /> : <Eye size={11} />}
-              {showDiff ? "Hide Changes" : "View Changes"}
+              {copied ? <Check size={13} /> : <Copy size={13} />}
             </button>
-          )}
+            {hasDiffContent && (
+              <button
+                onClick={() => setShowDiff(s => !s)}
+                className="antigravity-pill-btn"
+                style={{ height: "24px", padding: "2px 8px" }}
+              >
+                {showDiff ? <EyeOff size={11} /> : <Eye size={11} />}
+                <span>{showDiff ? "Hide Diff" : "View Diff"}</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* View Proposed Diff Container */}
         {showDiff && hasDiffContent && (
-          <div style={{ marginTop: "10px", maxHeight: "240px", overflowY: "auto", borderRadius: "6px" }}>
+          <div style={{ marginTop: "10px", maxHeight: "240px", overflowY: "auto", borderRadius: "8px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
             <DiffViewer diff={diffString} path={args.relative_path || args.path} maxLinesVisible={30} />
           </div>
         )}
 
-        {/* Decision Buttons (Bright Blue Approve vs Dark Slate Deny) */}
-        {status === "pending" ? (
-          timeLeft <= 0 ? (
-            <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "8px", padding: "8px 12px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid rgba(255, 255, 255, 0.08)", fontSize: "12px", color: "#94a3b8" }}>
-              <Scale size={14} color="#a78bfa" />
-              <span>Approval window elapsed • Action evaluated by Judge AI / settled</span>
-            </div>
-          ) : (
-          <div style={{ marginTop: "14px" }}>
-            <div style={{
-              display: "flex", 
-              justifyContent: "space-between", 
+        {/* Judge AI Security Rationale */}
+        {reason && (
+          <div
+            style={{
+              marginTop: "12px",
+              padding: "8px 12px",
+              background: "rgba(99, 102, 241, 0.07)",
+              border: "1px solid rgba(99, 102, 241, 0.2)",
+              borderRadius: "8px",
+              fontSize: "12px",
+              color: "#cbd5e1",
+              display: "flex",
               alignItems: "flex-start",
-              marginBottom: "10px",
-              fontSize: "11.5px",
-              color: "#94a3b8",
-              gap: "12px"
-            }}>
-              <span style={{ display: "flex", alignItems: "flex-start", gap: "6px", whiteSpace: "pre-line", lineHeight: 1.4, flex: 1 }}>
-                <Loader2 size={12} className="animate-spin" style={{ marginTop: "2px", flexShrink: 0 }} />
-                <span>{msg.pending_approval?.text || msg.text || "Judge AI evaluating..."}</span>
-              </span>
-              <span style={{ flexShrink: 0, fontWeight: 600 }}>{timeLeft}s</span>
-            </div>
-            
-            <div style={{ height: "3px", background: "rgba(255,255,255,0.06)", borderRadius: "2px", marginBottom: "12px", overflow: "hidden" }}>
-              <div style={{ height: "100%", background: "#a78bfa", width: `${(timeLeft / 60) * 100}%`, transition: "width 1s linear" }} />
-            </div>
-
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button
-                onClick={() => handleDecide(true)}
-                disabled={loading}
-                style={{
-                  flex: 1,
-                  height: "36px",
-                  borderRadius: "8px",
-                  background: "#0078d4",
-                  border: "none",
-                  color: "#ffffff",
-                  fontSize: "12.5px",
-                  fontWeight: 600,
-                  cursor: loading ? "not-allowed" : "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "6px",
-                  boxShadow: "0 2px 8px rgba(0, 120, 212, 0.35)",
-                  transition: "background 0.15s, transform 0.1s"
-                }}
-                className="hover:bg-[#106ebe] active:scale-[0.99]"
-              >
-                {loading ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
-                Approve
-              </button>
-              <button
-                onClick={() => handleDecide(false)}
-                disabled={loading}
-                style={{
-                  flex: 1,
-                  height: "36px",
-                  borderRadius: "8px",
-                  background: "#27272a",
-                  border: "1px solid #3f3f46",
-                  color: "#e4e4e7",
-                  fontSize: "12.5px",
-                  fontWeight: 600,
-                  cursor: loading ? "not-allowed" : "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "6px",
-                  transition: "background 0.15s"
-                }}
-                className="hover:bg-[#3f3f46] hover:text-white"
-              >
-                <X size={14} />
-                Deny
-              </button>
+              gap: "8px"
+            }}
+          >
+            <ShieldAlert size={14} color="#a5b4fc" style={{ marginTop: "2px", flexShrink: 0 }} />
+            <div style={{ flex: 1, lineHeight: 1.45 }}>
+              <strong style={{ color: "#e0e7ff" }}>Judge LLM Assessment:</strong> {reason}
             </div>
           </div>
+        )}
+
+        {/* Status Pending: Countdown & Action Controls */}
+        {status === "pending" ? (
+          timeLeft <= 0 ? (
+            <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "8px", padding: "10px 14px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid rgba(255, 255, 255, 0.08)", fontSize: "12px", color: "#94a3b8" }}>
+              <Scale size={14} color="#a78bfa" />
+              <span>Approval window elapsed • Action settled by Autonomous Judge AI</span>
+            </div>
+          ) : (
+            <div style={{ marginTop: "14px" }}>
+              {/* Timer Bar */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", fontSize: "11px", color: "var(--color-mute, #94a3b8)" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <Loader2 size={12} className="animate-spin" style={{ color: "var(--color-primary-soft, #6366f1)" }} />
+                  <span>Awaiting human decision</span>
+                </span>
+                <span style={{ fontWeight: 600, fontFamily: "var(--font-mono, monospace)" }}>{timeLeft}s remaining</span>
+              </div>
+              
+              <div style={{ height: "3px", background: "rgba(255,255,255,0.06)", borderRadius: "2px", marginBottom: "14px", overflow: "hidden" }}>
+                <div style={{ height: "100%", background: riskTier === 3 ? "#f87171" : "#6366f1", width: `${(timeLeft / 60) * 100}%`, transition: "width 1s linear" }} />
+              </div>
+
+              {/* Feedback toggle & input */}
+              <div style={{ marginBottom: "12px" }}>
+                <button
+                  onClick={() => setShowFeedbackInput(f => !f)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--color-mute, #94a3b8)",
+                    fontSize: "11px",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "4px",
+                    cursor: "pointer",
+                    padding: 0,
+                    marginBottom: showFeedbackInput ? "6px" : 0
+                  }}
+                >
+                  <MessageSquareQuote size={12} />
+                  <span>{showFeedbackInput ? "Hide instructions for agent" : "+ Add instructions or feedback..."}</span>
+                </button>
+
+                {showFeedbackInput && (
+                  <input
+                    className="input input-sm"
+                    style={{
+                      width: "100%",
+                      fontSize: "12px",
+                      background: "rgba(10, 10, 20, 0.75)",
+                      borderColor: "rgba(255, 255, 255, 0.12)",
+                      borderRadius: "6px"
+                    }}
+                    placeholder="Provide guidance if declining or approving with changes..."
+                    value={feedbackText}
+                    onChange={e => setFeedbackText(e.target.value)}
+                  />
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button
+                  onClick={() => handleDecide(true)}
+                  disabled={loading}
+                  style={{
+                    flex: 1.2,
+                    height: "38px",
+                    borderRadius: "8px",
+                    background: "linear-gradient(135deg, #10b981, #059669)",
+                    border: "none",
+                    color: "#ffffff",
+                    fontSize: "12.5px",
+                    fontWeight: 600,
+                    cursor: loading ? "not-allowed" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "6px",
+                    boxShadow: "0 4px 14px rgba(16, 185, 129, 0.35)",
+                    transition: "all 0.15s ease"
+                  }}
+                  title="Approve action (Ctrl+Enter)"
+                >
+                  {loading ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
+                  <span>Approve</span>
+                  <span style={{ fontSize: "10px", opacity: 0.75, fontFamily: "var(--font-mono, monospace)" }}>↵</span>
+                </button>
+
+                <button
+                  onClick={() => handleDecide(false)}
+                  disabled={loading}
+                  style={{
+                    flex: 1,
+                    height: "38px",
+                    borderRadius: "8px",
+                    background: "rgba(248, 113, 113, 0.08)",
+                    border: "1px solid rgba(248, 113, 113, 0.25)",
+                    color: "#fca5a5",
+                    fontSize: "12.5px",
+                    fontWeight: 600,
+                    cursor: loading ? "not-allowed" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "6px",
+                    transition: "all 0.15s ease"
+                  }}
+                  className="hover:bg-[rgba(248,113,113,0.18)]"
+                >
+                  <X size={14} />
+                  <span>Decline</span>
+                </button>
+              </div>
+            </div>
           )
         ) : (
-          <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "6px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11.5px", color: status === "approved" ? "#34d399" : "#f87171" }}>
-              {status === "approved" ? <Check size={13} /> : <X size={13} />}
-              <span style={{ fontWeight: 600 }}>{status === "approved" ? "Request Approved" : "Request Denied"}</span>
+          /* Resolved State */
+          <div
+            style={{
+              marginTop: "12px",
+              padding: "10px 14px",
+              borderRadius: "8px",
+              background: status === "approved" ? "rgba(52, 211, 153, 0.08)" : "rgba(248, 113, 113, 0.08)",
+              border: status === "approved" ? "1px solid rgba(52, 211, 153, 0.25)" : "1px solid rgba(248, 113, 113, 0.25)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "4px"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", fontWeight: 600, color: status === "approved" ? "#34d399" : "#f87171" }}>
+              {status === "approved" ? <Check size={14} /> : <X size={14} />}
+              <span>{status === "approved" ? "Action Approved by User" : "Action Declined by User"}</span>
             </div>
-            {status === "denied" && reason && (
-              <div style={{ fontSize: "11px", color: "#f87171", background: "rgba(248, 113, 113, 0.1)", padding: "6px 8px", borderRadius: "4px", border: "1px solid rgba(248, 113, 113, 0.2)", wordBreak: "break-word" }}>
-                <strong>Reason:</strong> {reason}
+            {localFeedback && (
+              <div style={{ fontSize: "11px", color: "var(--color-mute, #94a3b8)", marginTop: "2px" }}>
+                User Note: &quot;{localFeedback}&quot;
               </div>
             )}
           </div>
@@ -329,4 +472,3 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
     </div>
   );
 }
-

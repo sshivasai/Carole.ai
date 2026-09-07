@@ -49,11 +49,11 @@ def force_local_browser(monkeypatch):
 
     monkeypatch.setattr(config_manager, "load_config", mock_load)
 
-    # Clean any Mock browser left behind by unit tests
+    # Clean any Mock browser or stale sessions left behind by unit tests
     if isinstance(bp._browser, Mock):
         bp._browser = None
         bp._playwright = None
-        bp._contexts.clear()
+    bp._sessions.clear()
 
 
 @pytest.fixture(scope="module")
@@ -61,7 +61,7 @@ def local_bench_server():
     """Starts a background HTTP server serving the interactive test bench."""
     import time
     handler = partial(http.server.SimpleHTTPRequestHandler, directory=FIXTURES_DIR)
-    httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     port = httpd.server_port
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -337,7 +337,7 @@ async def test_real_browser_autonomous_agent_openrouter_free(local_bench_server)
         if submitted:
             assert data["success"] is True
         else:
-            assert data["status"] in {"invalid_decision", "step_limit", "stuck", "browser_error"}
+            assert data["status"] in {"invalid_decision", "step_limit", "stuck", "browser_error", "blocked"}
     finally:
         await bp.close_agent_browser(agent_id)
 

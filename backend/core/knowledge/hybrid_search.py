@@ -9,6 +9,8 @@ fused via Reciprocal Rank Fusion (RRF).
 
 import re
 import logging
+import hashlib
+import fnmatch
 import numpy as np
 from collections import defaultdict
 from typing import List, Dict, Any, Optional, Tuple
@@ -143,18 +145,175 @@ class StaticCodeEmbedder:
 # Hybrid Search Engine (BM25 + Static Embeddings + RRF)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Incremental Project Index (Semble Pattern)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ProjectIndex:
+    """
+    Project-scoped cache of AST chunks, BM25 index, and static Model2Vec embeddings.
+    Tracks file hashes to enable sub-5ms incremental re-indexing without full re-embedding.
+    """
+
+    def __init__(self, project_id: str):
+        self.project_id = project_id
+        self.file_hashes: Dict[str, str] = {}
+        self.file_chunks: Dict[str, List[ASTChunk]] = {}
+        self.file_embeddings: Dict[str, np.ndarray] = {}
+        self.bm25: BM25Index = BM25Index()
+        self.combined_chunks: List[ASTChunk] = []
+        self.combined_embeddings: Optional[np.ndarray] = None
+        self._dirty: bool = False
+
+    def _compute_hash(self, content: Optional[str], chunks: List[ASTChunk]) -> str:
+        if content is not None:
+            return hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
+        h = hashlib.sha256()
+        for c in chunks:
+            h.update(f"{c.file_path}:{c.name}:{c.start_line}:{c.end_line}:{c.code[:100]}".encode("utf-8"))
+        return h.hexdigest()
+
+    def update_file(self, file_path: str, chunks: List[ASTChunk], content: Optional[str] = None) -> bool:
+        """
+        Incrementally updates chunks for a single file.
+        Returns True if embeddings were recomputed, False if cached/unchanged.
+        """
+        norm_path = file_path.replace("\\", "/")
+        new_hash = self._compute_hash(content, chunks)
+        if norm_path in self.file_hashes and self.file_hashes[norm_path] == new_hash:
+            return False
+
+        self.file_hashes[norm_path] = new_hash
+        self.file_chunks[norm_path] = chunks
+
+        if chunks:
+            texts = [
+                f"{c.file_path} {c.kind} {c.name}({', '.join(c.params)}) {c.docstring or ''} {c.code[:200]}"
+                for c in chunks
+            ]
+            vecs = StaticCodeEmbedder.encode(texts)
+            if vecs is not None:
+                self.file_embeddings[norm_path] = vecs
+            elif norm_path in self.file_embeddings:
+                del self.file_embeddings[norm_path]
+        else:
+            self.file_embeddings.pop(norm_path, None)
+
+        self._dirty = True
+        return True
+
+    def remove_file(self, file_path: str) -> bool:
+        """Removes a file from the index."""
+        norm_path = file_path.replace("\\", "/")
+        removed = False
+        if norm_path in self.file_chunks:
+            del self.file_chunks[norm_path]
+            removed = True
+        if norm_path in self.file_embeddings:
+            del self.file_embeddings[norm_path]
+            removed = True
+        if norm_path in self.file_hashes:
+            del self.file_hashes[norm_path]
+            removed = True
+        if removed:
+            self._dirty = True
+        return removed
+
+    def sync_index(self) -> None:
+        """Reassembles BM25 and combined embeddings if marked dirty."""
+        if not self._dirty and self.combined_chunks:
+            return
+
+        all_chunks: List[ASTChunk] = []
+        embedding_blocks: List[np.ndarray] = []
+
+        for fpath, chunks in self.file_chunks.items():
+            if not chunks:
+                continue
+            all_chunks.extend(chunks)
+            vecs = self.file_embeddings.get(fpath)
+            if vecs is not None and len(vecs) == len(chunks):
+                embedding_blocks.append(vecs)
+            elif vecs is not None and len(vecs) > 0:
+                embedding_blocks.append(vecs[:len(chunks)])
+
+        self.combined_chunks = all_chunks
+        self.bm25.index_chunks(all_chunks)
+
+        if embedding_blocks and len(all_chunks) > 0:
+            try:
+                self.combined_embeddings = np.vstack(embedding_blocks)
+            except Exception as e:
+                logger.debug("Failed to vstack embeddings: %s", e)
+                self.combined_embeddings = None
+        else:
+            self.combined_embeddings = None
+
+        self._dirty = False
+
+    def search_vectors(self, query: str, top_k: int = 20) -> List[Tuple[int, float]]:
+        """Performs fast cosine similarity search over static code embeddings."""
+        if self.combined_embeddings is None or not self.combined_chunks:
+            return []
+
+        query_vec = StaticCodeEmbedder.encode([query])
+        if query_vec is None:
+            return []
+
+        norm_q = np.linalg.norm(query_vec[0])
+        if norm_q == 0:
+            return []
+
+        if self.combined_embeddings.shape[0] != len(self.combined_chunks):
+            return []
+
+        norm_docs = np.linalg.norm(self.combined_embeddings, axis=1)
+        norm_docs = np.where(norm_docs == 0, 1e-9, norm_docs)
+
+        scores = np.dot(self.combined_embeddings, query_vec[0]) / (norm_docs * norm_q)
+        scored_pairs = [(idx, float(score)) for idx, score in enumerate(scores)]
+        scored_pairs.sort(key=lambda x: x[1], reverse=True)
+        return scored_pairs[:top_k]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hybrid Search Engine (BM25 + Static Embeddings + RRF)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class HybridCodeSearch:
     """
     Dual Retrieval Pipeline combining BM25 exact symbol matching with
     static code vectors fused via Reciprocal Rank Fusion (RRF).
+    Supports project-isolated incremental caching and filtering.
     """
 
     def __init__(self):
-        self.bm25 = BM25Index()
-        self.chunks: List[ASTChunk] = []
-        self.embeddings: Optional[np.ndarray] = None
+        self._project_indices: Dict[str, ProjectIndex] = {}
         self._ranker = None
         self._ranker_loaded = False
+
+    def get_project_index(self, project_id: Optional[str] = None) -> ProjectIndex:
+        pid = project_id or "default"
+        if pid not in self._project_indices:
+            self._project_indices[pid] = ProjectIndex(pid)
+        return self._project_indices[pid]
+
+    @property
+    def chunks(self) -> List[ASTChunk]:
+        return self.get_project_index("default").combined_chunks
+
+    @chunks.setter
+    def chunks(self, val: List[ASTChunk]):
+        idx = self.get_project_index("default")
+        idx.combined_chunks = val
+
+    @property
+    def bm25(self) -> BM25Index:
+        return self.get_project_index("default").bm25
+
+    @property
+    def embeddings(self) -> Optional[np.ndarray]:
+        return self.get_project_index("default").combined_embeddings
 
     def _get_ranker(self):
         if not self._ranker_loaded:
@@ -168,42 +327,44 @@ class HybridCodeSearch:
             self._ranker_loaded = True
         return self._ranker
 
-    def index_workspace_chunks(self, chunks: List[ASTChunk]) -> None:
-        """Indexes workspace AST chunks for both BM25 and static embeddings."""
-        self.chunks = chunks
-        self.bm25.index_chunks(chunks)
+    def update_file_chunks(
+        self,
+        project_id: Optional[str],
+        file_path: str,
+        chunks: List[ASTChunk],
+        content: Optional[str] = None
+    ) -> bool:
+        """Incrementally update a single file's AST chunks."""
+        idx = self.get_project_index(project_id)
+        return idx.update_file(file_path, chunks, content)
 
-        # Generate lightweight embeddings for code signatures + docstrings
-        if chunks:
-            texts = [
-                f"{c.file_path} {c.kind} {c.name}({', '.join(c.params)}) {c.docstring or ''} {c.code[:200]}"
-                for c in chunks
-            ]
-            self.embeddings = StaticCodeEmbedder.encode(texts)
-        else:
-            self.embeddings = None
+    def remove_file(self, project_id: Optional[str], file_path: str) -> bool:
+        """Remove a file from the project index."""
+        idx = self.get_project_index(project_id)
+        return idx.remove_file(file_path)
 
-    def search_vectors(self, query: str, top_k: int = 20) -> List[Tuple[int, float]]:
+    def index_workspace_chunks(self, chunks: List[ASTChunk], project_id: Optional[str] = None) -> None:
+        """Indexes workspace AST chunks using incremental per-file caching."""
+        idx = self.get_project_index(project_id)
+        by_file: Dict[str, List[ASTChunk]] = defaultdict(list)
+        for c in chunks:
+            by_file[c.file_path].append(c)
+
+        current_files = set(by_file.keys())
+        for existing in list(idx.file_chunks.keys()):
+            if existing not in current_files:
+                idx.remove_file(existing)
+
+        for fpath, fchunks in by_file.items():
+            idx.update_file(fpath, fchunks)
+
+        idx.sync_index()
+
+    def search_vectors(self, query: str, top_k: int = 20, project_id: Optional[str] = None) -> List[Tuple[int, float]]:
         """Performs fast cosine similarity search over static code embeddings."""
-        if self.embeddings is None or not self.chunks:
-            return []
-
-        query_vec = StaticCodeEmbedder.encode([query])
-        if query_vec is None:
-            return []
-
-        # Cosine similarity
-        norm_q = np.linalg.norm(query_vec[0])
-        if norm_q == 0:
-            return []
-
-        norm_docs = np.linalg.norm(self.embeddings, axis=1)
-        norm_docs = np.where(norm_docs == 0, 1e-9, norm_docs)
-
-        scores = np.dot(self.embeddings, query_vec[0]) / (norm_docs * norm_q)
-        scored_pairs = [(idx, float(score)) for idx, score in enumerate(scores)]
-        scored_pairs.sort(key=lambda x: x[1], reverse=True)
-        return scored_pairs[:top_k]
+        idx = self.get_project_index(project_id)
+        idx.sync_index()
+        return idx.search_vectors(query, top_k=top_k)
 
     def reciprocal_rank_fusion(
         self,
@@ -229,35 +390,38 @@ class HybridCodeSearch:
     async def search(
         self,
         query: str,
+        project_id: Optional[str] = None,
         top_k: int = 10,
-        vector_search_fn: Optional[Any] = None
+        vector_search_fn: Optional[Any] = None,
+        file_filter: Optional[str] = None,
+        kind: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Dual Hybrid Retrieval:
-        1. BM25 lexical ranking (exact identifiers, stack traces).
-        2. Static vector ranking (CPU Model2Vec / dense embeddings).
-        3. Fused with Reciprocal Rank Fusion (RRF).
+        Dual Hybrid Retrieval with incremental index synchronization and metadata filtering.
         """
-        if not self.chunks:
+        idx = self.get_project_index(project_id)
+        idx.sync_index()
+
+        if not idx.combined_chunks:
             return []
 
         # 1. BM25 Lexical Ranking
-        bm25_results = self.bm25.search(query, top_k=top_k * 2)
+        bm25_results = idx.bm25.search(query, top_k=top_k * 3)
 
-        # 2. Vector Ranking (prefer custom vector fn or built-in static Model2Vec)
+        # 2. Vector Ranking
         if vector_search_fn is not None:
             try:
-                vector_results = await vector_search_fn(query, top_k=top_k * 2)
+                vector_results = await vector_search_fn(query, top_k=top_k * 3)
             except Exception:
-                vector_results = self.search_vectors(query, top_k=top_k * 2)
+                vector_results = idx.search_vectors(query, top_k=top_k * 3)
         else:
-            vector_results = self.search_vectors(query, top_k=top_k * 2)
+            vector_results = idx.search_vectors(query, top_k=top_k * 3)
 
         # 3. Reciprocal Rank Fusion
         if vector_results:
             fused = self.reciprocal_rank_fusion(bm25_results, vector_results, k=60)
         else:
-            fused = [(idx, score) for idx, score in bm25_results]
+            fused = [(doc_i, score) for doc_i, score in bm25_results]
 
         # 4. Neural Cross-Encoder Re-ranking via FlashRank (if available)
         ranker = self._get_ranker()
@@ -270,7 +434,7 @@ class HybridCodeSearch:
                 passages = [
                     {
                         "id": doc_idx,
-                        "text": f"{self.chunks[doc_idx].file_path} {self.chunks[doc_idx].name} ({self.chunks[doc_idx].kind}): {self.chunks[doc_idx].code[:600]}"
+                        "text": f"{idx.combined_chunks[doc_idx].file_path} {idx.combined_chunks[doc_idx].name} ({idx.combined_chunks[doc_idx].kind}): {idx.combined_chunks[doc_idx].code[:600]}"
                     }
                     for doc_idx, _ in candidate_pool
                 ]
@@ -280,14 +444,28 @@ class HybridCodeSearch:
                     final_ranked.append((item["id"], float(item["score"])))
             except Exception as e:
                 logger.debug("FlashRank rerank error, using RRF: %s", e)
-                final_ranked = fused[:top_k]
+                final_ranked = fused
         else:
-            final_ranked = fused[:top_k]
+            final_ranked = fused
 
-        # 5. Assemble Top Snippets
+        # 5. Assemble Top Snippets with optional file/kind filtering
         results = []
-        for doc_idx, score in final_ranked[:top_k]:
-            chunk = self.chunks[doc_idx]
+        for doc_idx, score in final_ranked:
+            if doc_idx >= len(idx.combined_chunks):
+                continue
+            chunk = idx.combined_chunks[doc_idx]
+
+            # Apply file_filter
+            if file_filter:
+                norm_filter = file_filter.replace("\\", "/")
+                norm_chunk_path = chunk.file_path.replace("\\", "/")
+                if not fnmatch.fnmatch(norm_chunk_path, f"*{norm_filter}*") and norm_filter not in norm_chunk_path:
+                    continue
+
+            # Apply kind filter
+            if kind and chunk.kind.lower() != kind.lower():
+                continue
+
             results.append({
                 "file_path": chunk.file_path,
                 "name": chunk.name,
@@ -297,8 +475,12 @@ class HybridCodeSearch:
                 "code": chunk.code,
                 "params": chunk.params,
                 "docstring": chunk.docstring,
+                "parent_symbol": chunk.parent_symbol,
+                "bases": getattr(chunk, "bases", []),
                 "score": round(score, 4),
             })
+            if len(results) >= top_k:
+                break
 
         return results
 

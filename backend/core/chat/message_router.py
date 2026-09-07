@@ -27,6 +27,7 @@ from core.chat.event_bus import event_bus
 from core.memory.models import Agent, Message, Team, Project, User
 from core.memory.database import async_session
 from core.tools.context import CancellationToken
+from core.config import MAX_QUEUE_SIZE
 
 # Type alias for a queue item: (prompt_text, attachments)
 _QueueItem = Tuple[str, List[Dict]]
@@ -91,7 +92,10 @@ class MessageRouter:
                         q.task_done()
                     except asyncio.QueueEmpty:
                         break
-            self._pending[agent_id] = []
+            if agent_id in self._pending:
+                self._pending[agent_id].clear()
+            else:
+                self._pending[agent_id] = []
             logger.info("Cleared queue for agent %s", agent_id)
 
         logger.info("Cancelled %d running task(s) for agent %s (cancel_all=%s)",
@@ -146,12 +150,27 @@ class MessageRouter:
                 logger.error("Invalid team_id in route_message: %s", team_id)
                 return
 
-            # Verify the team actually exists in the database
-            stmt = select(Team.id).where(Team.id == team_uuid)
+            # Verify the team actually exists in the database and capture project_id
+            stmt = select(Team.id, Team.project_id).where(Team.id == team_uuid)
             result = await db.execute(stmt)
-            if result.scalar_one_or_none() is None:
+            team_row = result.first()
+            if team_row is None:
                 logger.warning("Team %s not found. Dropping message from %s.", team_id, sender_id)
                 return
+            project_id = str(team_row.project_id) if team_row.project_id else ""
+
+            # If sender_id is an agent UUID, verify that the agent belongs to this team
+            if sender_id not in ("human", "system"):
+                try:
+                    sender_uuid = uuid.UUID(sender_id)
+                    stmt = select(Agent.id).where(Agent.id == sender_uuid, Agent.team_id == team_uuid)
+                    agent_res = await db.execute(stmt)
+                    if agent_res.scalar_one_or_none() is None:
+                        logger.warning("Sender agent %s does not belong to team %s. Dropping message.", sender_id, team_id)
+                        return
+                except ValueError:
+                    # Non-UUID sender (e.g. test sender names like 'coder')
+                    pass
 
             # OPTIMIZATION: Resolve all mentioned agents in a single query
             # System broadcasts (e.g. member joined, task done) are informational logs and NEVER wake agents.
@@ -291,7 +310,11 @@ class MessageRouter:
             if sender_id != "system":
                 trigger_message_id = str(db_msg.id)
                 for agent in target_agents:
-                    await self._enqueue_agent(agent, text, db, attachments, trigger_message_id=trigger_message_id)
+                    await self._enqueue_agent(
+                        agent, text, db, attachments,
+                        trigger_message_id=trigger_message_id,
+                        project_id=project_id,
+                    )
 
     # ------------------------------------------------------------------
     # Queue machinery  (internal)
@@ -307,6 +330,7 @@ class MessageRouter:
         parent_coordinator_id: Optional[str] = None,
         task_id: Optional[str] = None,
         parent_message_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ):
         """
         Enqueue a prompt into the agent's personal FIFO queue.
@@ -324,19 +348,19 @@ class MessageRouter:
         agent_id = str(agent.id)
         team_id = str(agent.team_id)
 
-        # Deduplication — avoid enqueuing identical back-to-back wakeups
-        pending = self._pending.setdefault(agent_id, [])
-        if prompt_text in pending:
-            logger.debug("Deduplicated duplicate wakeup for agent %s", agent.name)
-            return
-
         async with self._get_enqueue_lock(agent_id):
+            # Deduplication — avoid enqueuing identical back-to-back wakeups inside lock
+            pending = self._pending.setdefault(agent_id, [])
+            if prompt_text in pending:
+                logger.debug("Deduplicated duplicate wakeup for agent %s", agent.name)
+                return
+
             # Ensure queue + worker exist
             if agent_id not in self._queues:
-                self._queues[agent_id] = asyncio.Queue()
+                self._queues[agent_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
                 self._pending[agent_id] = []
                 # Build context snapshot for the worker (avoids closing over db_session)
-                agent_snapshot = _AgentSnapshot(agent, db_session)
+                agent_snapshot = _AgentSnapshot(agent, db_session, project_id=project_id)
                 worker_task = asyncio.create_task(
                     self._agent_worker(agent_id, agent_snapshot),
                     name=f"worker:{agent.name}",
@@ -356,16 +380,23 @@ class MessageRouter:
 
                 worker_task.add_done_callback(_on_worker_done)
 
-            # Enqueue the work item
-            self._pending[agent_id].append(prompt_text)
-            await self._queues[agent_id].put({
-                "prompt_text": prompt_text,
-                "attachments": attachments or [],
-                "trigger_msg_id": trigger_message_id,
-                "parent_coordinator_id": parent_coordinator_id,
-                "task_id": task_id,
-                "parent_message_id": parent_message_id,
-            })
+            # Enqueue the work item safely with capacity check
+            try:
+                self._queues[agent_id].put_nowait({
+                    "prompt_text": prompt_text,
+                    "attachments": attachments or [],
+                    "trigger_msg_id": trigger_message_id,
+                    "parent_coordinator_id": parent_coordinator_id,
+                    "task_id": task_id,
+                    "parent_message_id": parent_message_id,
+                })
+                self._pending[agent_id].append(prompt_text)
+            except asyncio.QueueFull:
+                logger.warning(
+                    "Queue full for agent '%s' (maxsize=%d). Dropping prompt.",
+                    agent.name, self._queues[agent_id].maxsize
+                )
+                return
 
         # Broadcast queue depth change to UI
         depth = self._queues[agent_id].qsize()
@@ -447,10 +478,11 @@ class MessageRouter:
                     snapshot.name, exc, exc_info=exc
                 )
             finally:
-                # Remove from pending snapshot
-                pending = self._pending.get(agent_id, [])
-                if prompt_text in pending:
-                    pending.remove(prompt_text)
+                # Remove from pending snapshot safely under lock
+                async with self._get_enqueue_lock(agent_id):
+                    pending = self._pending.get(agent_id, [])
+                    if prompt_text in pending:
+                        pending.remove(prompt_text)
 
                 queue.task_done()
 
@@ -552,9 +584,10 @@ class MessageRouter:
         prompt_text: str,
         db_session: AsyncSession,
         attachments: Optional[List[Dict]] = None,
+        project_id: Optional[str] = None,
     ):
         """Thin shim — delegates to _enqueue_agent for sequential execution."""
-        await self._enqueue_agent(agent, prompt_text, db_session, attachments)
+        await self._enqueue_agent(agent, prompt_text, db_session, attachments, project_id=project_id)
 
 
 class _AgentSnapshot:
@@ -569,7 +602,7 @@ class _AgentSnapshot:
         "model", "system_prompt", "fallback_model", "reasoning_effort",
     )
 
-    def __init__(self, agent: Agent, db_session: AsyncSession):
+    def __init__(self, agent: Agent, db_session: Optional[AsyncSession] = None, project_id: Optional[str] = None):
         self.agent_id = str(agent.id)
         self.team_id = str(agent.team_id)
         self.name = agent.name
@@ -578,8 +611,7 @@ class _AgentSnapshot:
         self.system_prompt = agent.system_prompt
         self.fallback_model = getattr(agent, "fallback_model", None)
         self.reasoning_effort = getattr(agent, "reasoning_effort", "none") or "none"
-        # project_id is resolved lazily inside _execute_agent_loop
-        self.project_id = ""
+        self.project_id = str(project_id) if project_id else ""
 
 
 # Singleton

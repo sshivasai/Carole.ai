@@ -28,6 +28,7 @@ import {
   PerplexityLogo,
 } from "@/components/icons/IntegrationLogos";
 import { Network } from "lucide-react";
+import { useTheme } from "@/hooks/useTheme";
 
 interface IntegrationItem {
   id: string;
@@ -215,6 +216,8 @@ const WORKFLOWS = [
 ];
 
 export default function IntegrationsAnimation() {
+  const { theme } = useTheme();
+  const isLight = theme === "light";
   const [workflowIdx, setWorkflowIdx] = useState(0);
   const [isBlinking, setIsBlinking] = useState(false);
 
@@ -276,7 +279,7 @@ export default function IntegrationsAnimation() {
       >
         {[0, 1, 2, 3].map((i) => {
           const x = 96 + i * 96;
-          const strokeColor = "rgba(93, 111, 247, 0.35)";
+          const strokeColor = isLight ? "rgba(99, 102, 241, 0.22)" : "rgba(93, 111, 247, 0.35)";
           const strokeWidth = 1.5;
 
           return (
@@ -430,14 +433,17 @@ export default function IntegrationsAnimation() {
                     width: 60,
                     height: 60,
                     borderRadius: "14px",
-                    background: "var(--color-canvas-raised, #ffffff)",
-                    border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.12))",
+                    background: isLight ? "rgba(255, 255, 255, 0.95)" : "rgba(18, 18, 35, 0.78)",
+                    border: isLight ? "1px solid rgba(0, 0, 0, 0.08)" : "1px solid rgba(255, 255, 255, 0.12)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    boxShadow: `0 4px 16px rgba(0,0,0,0.06), 0 0 16px ${tool.glowColor}`,
-                    backdropFilter: "blur(12px)",
-                    color: "var(--color-ink-strong, #ffffff)",
+                    boxShadow: isLight
+                      ? `0 4px 16px rgba(0,0,0,0.06), 0 0 16px ${tool.glowColor}`
+                      : `0 4px 16px rgba(0,0,0,0.2), 0 0 16px ${tool.glowColor}`,
+                    backdropFilter: "blur(14px)",
+                    WebkitBackdropFilter: "blur(14px)",
+                    color: isLight ? "#0f172a" : "var(--color-ink-strong, #ffffff)",
                     flexShrink: 0,
                   }}
                 >
@@ -448,8 +454,8 @@ export default function IntegrationsAnimation() {
                 <span
                   style={{
                     fontSize: 11.5,
-                    fontWeight: 500,
-                    color: "var(--color-mute, #94a3b8)",
+                    fontWeight: isLight ? 600 : 500,
+                    color: isLight ? "#334155" : "var(--color-mute, #94a3b8)",
                     letterSpacing: "0.01em",
                     textAlign: "center",
                     whiteSpace: "nowrap",
@@ -470,8 +476,8 @@ export default function IntegrationsAnimation() {
           position: "absolute",
           left: OBJECTIVE_X - 220,
           top: OBJECTIVE_Y - 50,
-          background: "var(--color-canvas-raised, #ffffff)",
-          border: "1px solid var(--color-hairline, rgba(255, 255, 255, 0.12))",
+          background: isLight ? "rgba(255, 255, 255, 0.95)" : "rgba(14, 14, 26, 0.82)",
+          border: isLight ? "1px solid rgba(0, 0, 0, 0.08)" : "1px solid rgba(255, 255, 255, 0.12)",
           borderRadius: 16,
           padding: "16px 20px",
           width: "440px",
@@ -480,7 +486,10 @@ export default function IntegrationsAnimation() {
           gap: 8,
           zIndex: 10,
           backdropFilter: "blur(16px)",
-          boxShadow: "0 8px 30px rgba(0, 0, 0, 0.08), 0 0 16px var(--color-primary-glow-sm)",
+          WebkitBackdropFilter: "blur(16px)",
+          boxShadow: isLight
+            ? "0 8px 30px rgba(0, 0, 0, 0.06), 0 0 16px rgba(99, 102, 241, 0.08)"
+            : "0 8px 30px rgba(0, 0, 0, 0.25), 0 0 16px var(--color-primary-glow-sm)",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -498,7 +507,7 @@ export default function IntegrationsAnimation() {
               fontSize: 10.5,
               fontWeight: 700,
               letterSpacing: "0.08em",
-              color: "#10b981",
+              color: isLight ? "#059669" : "#10b981",
               textTransform: "uppercase",
             }}
           >
@@ -525,8 +534,8 @@ export default function IntegrationsAnimation() {
                 margin: 0,
                 fontSize: 12.5,
                 lineHeight: "18px",
-                fontWeight: 450,
-                color: "var(--color-body, #94a3b8)",
+                fontWeight: isLight ? 550 : 450,
+                color: isLight ? "#1e293b" : "var(--color-body, #94a3b8)",
                 textAlign: "center",
               }}
             >

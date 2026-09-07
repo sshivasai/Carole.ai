@@ -178,6 +178,23 @@ async def init_db(force_recreate: bool = False):
         # 3. Create all tables (additive — won't modify existing columns)
         await conn.run_sync(Base.metadata.create_all)
 
+        # 3b. Additive SQLite column check for existing local databases
+        if _is_sqlite:
+            try:
+                res = await conn.execute(text("PRAGMA table_info(projects)"))
+                existing_cols = {row[1] for row in res.fetchall()}
+                if "custom_workspace_path" not in existing_cols:
+                    await conn.execute(text("ALTER TABLE projects ADD COLUMN custom_workspace_path VARCHAR(1024)"))
+                    logger.info("Added 'custom_workspace_path' column to projects table.")
+
+                task_res = await conn.execute(text("PRAGMA table_info(tasks)"))
+                existing_task_cols = {row[1] for row in task_res.fetchall()}
+                if "depends_on" not in existing_task_cols:
+                    await conn.execute(text("ALTER TABLE tasks ADD COLUMN depends_on JSON DEFAULT '[]'"))
+                    logger.info("Added 'depends_on' column to tasks table.")
+            except Exception as e:
+                logger.debug("Column addition notice: %s", e)
+
     # 4. Versioned schema migrations via Alembic
     try:
         await asyncio.to_thread(_run_alembic_upgrade)

@@ -40,6 +40,21 @@ _DEFAULT_CONFIG = {
     "providers": {
         "ollama_base_url": "http://localhost:11434/v1",
     },
+    "default_models": {
+        "DEFAULT_FAST_MODEL": "",
+        "DEFAULT_SMART_MODEL": "",
+        "DEFAULT_CODER_MODEL": "",
+        "DEFAULT_JUDGE_MODEL": "",
+        "DEFAULT_EMBEDDING_MODEL": "",
+    },
+    "agent_settings": {
+        "MAX_LOOPS": 25,
+        "APPROVAL_TIMEOUT_SECS": 60,
+        "MAX_QUEUE_SIZE": 500,
+        "DREAM_INTERVAL_MINUTES": 15,
+        "MEMORY_RETRIEVAL_LIMIT": 5,
+        "CONTEXT_COMPACTION_THRESHOLD": 15,
+    },
     "compaction": {
         "max_observation_chars": 4000,
         "token_trigger_ratio": 0.80,
@@ -139,10 +154,16 @@ def _resolve_config(raw: dict) -> dict:
     for section_name, keys in (
         ("api_keys", resolved["api_keys"]),
         ("browser_automation.api_keys", resolved["browser_automation"]["api_keys"]),
+        ("default_models", resolved.get("default_models", {})),
     ):
         for name, value in keys.items():
             if not isinstance(value, str):
                 raise ConfigError(f"{section_name}.{name} must be a string")
+
+    for name, value in resolved.get("agent_settings", {}).items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 1:
+            raise ConfigError(f"agent_settings.{name} must be a positive number")
+        resolved["agent_settings"][name] = int(value)
 
     compaction = resolved["compaction"]
     if compaction["max_observation_chars"] < 1:
@@ -323,8 +344,35 @@ def save_config(config: dict) -> None:
         logger.info("Configuration saved")
 
 
-def get_key(config: dict, config_key: str, env_var: str) -> Optional[str]:
-    """Resolve a key using configuration first, then the environment."""
+def has_user_configured_keys(config: dict) -> bool:
+    """
+    Check if the user has configured at least one API key in ~/.carole/config.json.
+    Inspects both `api_keys` and `browser_automation.api_keys`.
+
+    When True: The application must use ONLY the user's config keys and NEVER
+    fall back to host environment variables.
+    When False (zero keys in cfg): Graceful fallback to host environment variables is permitted.
+    """
+    api_keys = config.get("api_keys", {})
+    if isinstance(api_keys, dict):
+        if any(isinstance(v, str) and v.strip() for v in api_keys.values()):
+            return True
+
+    ba_keys = config.get("browser_automation", {}).get("api_keys", {})
+    if isinstance(ba_keys, dict):
+        if any(isinstance(v, str) and v.strip() for v in ba_keys.values()):
+            return True
+
+    return False
+
+
+def get_key(config: dict, config_key: str, env_var: Optional[str] = None) -> Optional[str]:
+    """
+    Resolve an API key.
+    - If user provided keys in ~/.carole/config.json (has_user_configured_keys is True):
+      returns only the key from config.json (or None if not set). Never falls back to host environment.
+    - Only falls back to host environment variable if NO keys were found anywhere in cfg.
+    """
     keys = config.get("api_keys", {})
     if not isinstance(keys, dict):
         raise ConfigError("api_keys must be an object")
@@ -333,4 +381,50 @@ def get_key(config: dict, config_key: str, env_var: str) -> Optional[str]:
     if not isinstance(value, str):
         raise ConfigError(f"api_keys.{config_key} must be a string")
 
-    return value.strip() or os.getenv(env_var, "").strip() or None
+    stripped = value.strip()
+    if stripped:
+        return stripped
+
+    # If the user has configured keys in config.json, do not leak host environment variables!
+    if has_user_configured_keys(config):
+        return None
+
+    # Only fallback to host environment variable if no keys were found in cfg at all
+    if env_var:
+        env_val = os.getenv(env_var, "").strip()
+        if env_val:
+            return env_val
+
+    return None
+
+
+def get_browser_key(config: dict, provider_key: str, env_var: Optional[str] = None) -> Optional[str]:
+    """
+    Resolve a browser automation API key (browserbase, scraperapi, zenrows).
+    Checks config["browser_automation"]["api_keys"] and config["api_keys"].
+    - If user provided keys in ~/.carole/config.json, only uses keys from config.json.
+    - Only falls back to host environment if no keys were found in cfg at all.
+    """
+    ba_keys = config.get("browser_automation", {}).get("api_keys", {})
+    if isinstance(ba_keys, dict):
+        val = ba_keys.get(provider_key, "")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+
+    # Also check top-level api_keys
+    api_keys = config.get("api_keys", {})
+    if isinstance(api_keys, dict):
+        val = api_keys.get(provider_key, "")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+
+    if has_user_configured_keys(config):
+        return None
+
+    if env_var:
+        env_val = os.getenv(env_var, "").strip()
+        if env_val:
+            return env_val
+
+    return None
+

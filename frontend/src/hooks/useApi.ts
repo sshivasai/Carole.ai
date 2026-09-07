@@ -12,10 +12,34 @@ export function getApiBase(): string {
   return "http://localhost:8000";
 }
 
+function isInvalidId(id: any): boolean {
+  if (id === undefined || id === null) return true;
+  if (typeof id === "string") {
+    const s = id.trim().toLowerCase();
+    return s === "" || s === "undefined" || s === "null" || s === "[object object]";
+  }
+  return false;
+}
+
 // Simple in-flight deduplication map for GET requests
 const _inflight = new Map<string, Promise<any>>();
 
 async function apiFetch<T>(path: string, options?: RequestInit, retry = 1): Promise<T> {
+  // Guard against uninitialized undefined/null path components or query parameters
+  const [pathname, search] = path.split("?");
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.some(s => s === "undefined" || s === "null" || s === "[object Object]")) {
+    return [] as any;
+  }
+  if (search) {
+    const searchParams = new URLSearchParams(search);
+    for (const [_, val] of searchParams.entries()) {
+      if (val === "undefined" || val === "null" || val === "[object Object]") {
+        return [] as any;
+      }
+    }
+  }
+
   const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : null;
   const isFormData = options?.body instanceof FormData;
   const headers: Record<string, string> = {
@@ -116,14 +140,17 @@ export const api = {
 
   // ── Projects ──
   listProjects: () => apiFetch<any[]>("/api/projects"),
-  getProject: (projectId: string) => apiFetch<any>(`/api/projects/single/${projectId}`),
+  getProject: (projectId: string) =>
+    isInvalidId(projectId) ? Promise.resolve(null) : apiFetch<any>(`/api/projects/single/${projectId}`),
   createProject: (name: string, ownerId?: string) =>
     apiFetch<any>("/api/projects", { method: "POST", body: JSON.stringify({ name, owner_id: ownerId }) }),
   deleteProject: (projectId: string, deleteContent?: boolean) => apiFetch<any>(`/api/projects/${projectId}${deleteContent ? '?delete_content=true' : ''}`, { method: "DELETE" }),
 
   // ── Teams ──
-  listTeams: (projectId: string) => apiFetch<any[]>(`/api/teams/${projectId}`),
-  getTeam: (teamId: string) => apiFetch<any>(`/api/teams/single/${teamId}`),
+  listTeams: (projectId: string) =>
+    isInvalidId(projectId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/teams/${projectId}`),
+  getTeam: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve(null) : apiFetch<any>(`/api/teams/single/${teamId}`),
   createTeam: (name: string, projectId: string) =>
     apiFetch<any>("/api/teams", { method: "POST", body: JSON.stringify({ name, project_id: projectId }) }),
   deleteTeam: (teamId: string, deleteContent?: boolean) => apiFetch<any>(`/api/teams/${teamId}${deleteContent ? '?delete_content=true' : ''}`, { method: "DELETE" }),
@@ -135,7 +162,8 @@ export const api = {
   clearAllNotifications: () => apiFetch<any>("/api/notifications", { method: "DELETE" }),
 
   // ── Scheduled Tasks (Cron) ──
-  listScheduledTasks: (teamId: string) => apiFetch<any[]>(`/api/cron/${teamId}`),
+  listScheduledTasks: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/cron/${teamId}`),
   createScheduledTask: (teamId: string, task: { name: string; agent_id: string; cron_expression: string; prompt: string }) =>
     apiFetch<any>(`/api/cron/${teamId}`, { method: "POST", body: JSON.stringify(task) }),
   updateScheduledTask: (taskId: string, task: { name?: string; cron_expression?: string; prompt?: string; is_active?: boolean }) =>
@@ -170,7 +198,8 @@ export const api = {
     apiFetch<Record<string, any>>("/api/settings", { method: "POST", body: JSON.stringify(data) }),
 
   // ── Agents ──
-  listAgents: (teamId: string) => apiFetch<any[]>(`/api/agents/${teamId}`),
+  listAgents: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/agents/${teamId}`),
   createAgent: (data: any) => apiFetch<any>("/api/agents", { method: "POST", body: JSON.stringify(data) }),
   updateAgent: (agentId: string, data: any) =>
     apiFetch<any>(`/api/agents/${agentId}`, { method: "PUT", body: JSON.stringify(data) }),
@@ -185,12 +214,13 @@ export const api = {
     return apiFetch<any>(`/api/upload${qs}`, { method: "POST", body: formData });
   },
   listMessages: (teamId: string, opts?: { limit?: number; before?: string }) => {
+    if (isInvalidId(teamId)) return Promise.resolve([]);
     const params = new URLSearchParams({ limit: String(opts?.limit ?? 100) });
     if (opts?.before) params.set("before", opts.before);
     return apiFetch<any[]>(`/api/messages/${teamId}?${params}`);
   },
   searchMessages: (teamId: string, query: string, limit = 10) =>
-    apiFetch<any[]>(`/api/messages/search/${teamId}?q=${encodeURIComponent(query)}&limit=${limit}`),
+    isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/messages/search/${teamId}?q=${encodeURIComponent(query)}&limit=${limit}`),
   editMessage: (messageId: string, text: string) =>
     apiFetch<any>(`/api/messages/${messageId}`, { method: "PUT", body: JSON.stringify({ text }) }),
   deleteMessage: (messageId: string) =>
@@ -202,12 +232,15 @@ export const api = {
 
   // ── Tasks ──
   listTasks: (teamId: string, status?: string) =>
-    apiFetch<any[]>(`/api/tasks/${teamId}${status ? `?status=${status}` : ""}`),
+    isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/tasks/${teamId}${status ? `?status=${status}` : ""}`),
+  getTaskDag: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve({ nodes: [], edges: [], is_cyclic: false, cycle_nodes: [], execution_waves: [] }) : apiFetch<any>(`/api/tasks/dag/${teamId}`),
   createTask: (data: any) => apiFetch<any>("/api/tasks", { method: "POST", body: JSON.stringify(data) }),
   updateTask: (taskId: string, data: any) =>
     apiFetch<any>(`/api/tasks/${taskId}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteTask: (taskId: string) => apiFetch<any>(`/api/tasks/${taskId}`, { method: "DELETE" }),
-  getTaskComments: (taskId: string) => apiFetch<any[]>(`/api/tasks/${taskId}/comments`),
+  getTaskComments: (taskId: string) =>
+    isInvalidId(taskId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/tasks/${taskId}/comments`),
   addTaskComment: (taskId: string, authorId: string, authorName: string, text: string) =>
     apiFetch<any>(`/api/tasks/${taskId}/comments`, {
       method: "POST",
@@ -215,7 +248,8 @@ export const api = {
     }),
 
   // ── Implementation Plans ──
-  getTaskPlan: (taskId: string) => apiFetch<any>(`/api/tasks/${taskId}/plan`),
+  getTaskPlan: (taskId: string) =>
+    isInvalidId(taskId) ? Promise.resolve(null) : apiFetch<any>(`/api/tasks/${taskId}/plan`),
   approvePlan: (taskId: string) =>
     apiFetch<any>(`/api/tasks/${taskId}/plan/approve`, { method: "POST" }),
   rejectPlan: (taskId: string, feedback?: string) =>
@@ -240,9 +274,10 @@ export const api = {
     }),
 
   // ── Memory / Learning ──
-  listLearnings: (projectId: string, teamId?: string) => {
+  listLearnings: (projectId?: string, teamId?: string) => {
+    if (!projectId || projectId === "undefined" || projectId === "null") return Promise.resolve([]);
     const qs = new URLSearchParams({ project_id: projectId });
-    if (teamId) qs.set("team_id", teamId);
+    if (teamId && teamId !== "undefined" && teamId !== "null") qs.set("team_id", teamId);
     return apiFetch<any[]>(`/api/learnings?${qs}`);
   },
   createLearning: (data: { project_id: string; task_summary: string; lesson_rule: string; team_id?: string }) =>
@@ -253,19 +288,30 @@ export const api = {
     apiFetch<any>(`/api/learnings/${learningId}`, { method: "DELETE" }),
 
   listEntityMemories: (projectId?: string, teamId?: string) => {
+    const validProj = projectId && projectId !== "undefined" && projectId !== "null";
+    const validTeam = teamId && teamId !== "undefined" && teamId !== "null";
+    if (!validProj && !validTeam) return Promise.resolve([]);
     const qs = new URLSearchParams();
-    if (projectId) qs.set("project_id", projectId);
-    if (teamId) qs.set("team_id", teamId);
+    if (validProj) qs.set("project_id", projectId!);
+    if (validTeam) qs.set("team_id", teamId!);
     return apiFetch<any[]>(`/api/memories/entities?${qs}`);
   },
   createEntityMemory: (data: { project_id?: string; team_id?: string; key: string; value: string }) =>
     apiFetch<any>("/api/memories/entities", { method: "POST", body: JSON.stringify(data) }),
   deleteEntityMemory: (memoryId: string) =>
     apiFetch<any>(`/api/memories/entities/${memoryId}`, { method: "DELETE" }),
+  purgeProjectMemory: (projectId: string) =>
+    apiFetch<any>(`/api/projects/${projectId}/memory`, { method: "DELETE" }),
+  runDream: (teamId?: string) =>
+    apiFetch<any>("/api/memory/dream/run", {
+      method: "POST",
+      body: JSON.stringify(teamId ? { team_id: teamId } : {}),
+    }),
+  getDreamStatus: () => apiFetch<any>("/api/memory/dream/status"),
 
   // ── Scratchpads ──
   listScratchpads: (teamId: string) =>
-    apiFetch<import("../lib/types").ScratchpadItem[]>(`/api/scratchpad/${teamId}`),
+    isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<import("../lib/types").ScratchpadItem[]>(`/api/scratchpad/${teamId}`),
   readScratchpad: (teamId: string, target: "team" | "personal", agentName: string) =>
     apiFetch<import("../lib/types").ScratchpadItem>(
       `/api/scratchpad/${teamId}/${target}${target === "personal" ? `?agent_name=${encodeURIComponent(agentName)}` : ""}`,
@@ -279,7 +325,8 @@ export const api = {
 
   // ── Tools & Plugins ──
   listTools: () => apiFetch<any[]>("/api/tools"),
-  listPendingApprovals: (teamId: string) => apiFetch<any[]>(`/api/tools/approvals/pending/${teamId}`),
+  listPendingApprovals: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/tools/approvals/pending/${teamId}`),
   approveToolExecution: (txId: string, approved: boolean) =>
     apiFetch<any>(`/api/tools/approve/${txId}`, { method: "POST", body: JSON.stringify({ approved }) }),
   registerTool: (data: { name: string; description: string; parameters: any; endpoint_url: string }) =>
@@ -293,7 +340,35 @@ export const api = {
     apiFetch<any>("/api/plugins/action/generate", { method: "POST", body: JSON.stringify({ prompt }) }),
 
   // ── Skills ──
-  listSkills: (teamId: string) => apiFetch<any[]>(`/api/skills/${teamId}`),
+  listSkills: (teamId?: string) =>
+    !teamId || teamId === "undefined" || teamId === "null" ? Promise.resolve([]) : apiFetch<any[]>(`/api/skills/${teamId}`),
+  listDiscoveredSkills: (workspacePath?: string, teamId?: string) => {
+    const params = new URLSearchParams();
+    if (workspacePath) params.set("workspace_path", workspacePath);
+    if (teamId && teamId !== "undefined" && teamId !== "null") params.set("team_id", teamId);
+    const qs = params.toString();
+    return apiFetch<any[]>(`/api/skills/discovered${qs ? `?${qs}` : ""}`);
+  },
+  toggleSkillState: (name: string, isActive: boolean) =>
+    apiFetch<any>("/api/skills/toggle", { method: "POST", body: JSON.stringify({ name, is_active: isActive }) }),
+  createDiscoveredSkill: (data: { name: string; content: string; target_location?: string; workspace_path?: string }) =>
+    apiFetch<any>("/api/skills/discovered", { method: "POST", body: JSON.stringify(data) }),
+  uploadDiscoveredSkill: (file: File, targetLocation = "project", skillName?: string, workspacePath?: string) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("target_location", targetLocation);
+    if (skillName) formData.append("skill_name", skillName);
+    if (workspacePath) formData.append("workspace_path", workspacePath);
+    return apiFetch<any>("/api/skills/discovered/upload", { method: "POST", body: formData });
+  },
+  getDiscoveredSkillContent: (skillName: string, workspacePath?: string) => {
+    const qs = workspacePath ? `?workspace_path=${encodeURIComponent(workspacePath)}` : "";
+    return apiFetch<{ name: string; path: string; content: string }>(`/api/skills/discovered/${encodeURIComponent(skillName)}/content${qs}`);
+  },
+  deleteDiscoveredSkill: (skillName: string, workspacePath?: string) => {
+    const qs = workspacePath ? `?workspace_path=${encodeURIComponent(workspacePath)}` : "";
+    return apiFetch<{ status: string; deleted: string }>(`/api/skills/discovered/${encodeURIComponent(skillName)}${qs}`, { method: "DELETE" });
+  },
   createSkill: (data: { team_id: string; name: string; description?: string; system_prompt_addendum?: string; tools?: string[]; mcp_servers?: string[] }) =>
     apiFetch<any>("/api/skills", { method: "POST", body: JSON.stringify(data) }),
   updateSkill: (skillId: string, data: { name?: string; description?: string; system_prompt_addendum?: string; tools?: string[]; mcp_servers?: string[]; is_active?: boolean }) =>
@@ -313,12 +388,14 @@ export const api = {
   listGlobalMcpServers: () => apiFetch<any[]>("/api/mcp/global"),
   toggleGlobalMcpServer: (serverName: string) =>
     apiFetch<any>(`/api/mcp/global/${serverName}/toggle`, { method: "POST" }),
-  listMcpServers: (teamId: string) => apiFetch<any[]>(`/api/mcp/${teamId}`),
+  listMcpServers: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/mcp/${teamId}`),
   createMcpServer: (data: { team_id: string; server_name: string; command: string; args: string; agent_id?: string; env_vars?: Record<string, string> }) =>
     apiFetch<any>("/api/mcp", { method: "POST", body: JSON.stringify(data) }),
   deleteMcpServer: (serverId: string) =>
     apiFetch<any>(`/api/mcp/${serverId}`, { method: "DELETE" }),
   getMcpStatus: () => apiFetch<Record<string, any>>("/api/mcp/status"),
+  reloadMcpServers: () => apiFetch<any>("/api/mcp/reload", { method: "POST" }),
   getMcpTemplates: () => apiFetch<any[]>("/api/mcp/templates"),
   resolveMcpLogo: (data: { server_name: string; command?: string; args?: string }) =>
     apiFetch<{ slug: string; logo_url: string; cached: boolean }>("/api/mcp/resolve-logo", {
@@ -356,8 +433,10 @@ export const api = {
   },
 
   // ── Usage & Health ──
-  getProjectUsage: (projectId: string) => apiFetch<any>(`/api/usage/${projectId}`),
-  wsStatus: (teamId: string) => apiFetch<any>(`/api/ws/status/${teamId}`),
+  getProjectUsage: (projectId: string) =>
+    isInvalidId(projectId) ? Promise.resolve({ total_tokens: 0, total_cost: 0, agents: [] }) : apiFetch<any>(`/api/usage/${projectId}`),
+  wsStatus: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve({ status: "disconnected" }) : apiFetch<any>(`/api/ws/status/${teamId}`),
   healthCheck: () => apiFetch<any>("/health"),
   seedDemo: () => apiFetch<any>("/api/seed", { method: "POST" }),
 
@@ -422,7 +501,8 @@ export const api = {
     window.URL.revokeObjectURL(downloadUrl);
     document.body.removeChild(a);
   },
-  getFileLogs: (teamId: string) => apiFetch<any[]>(`/api/files/logs/${teamId}`),
+  getFileLogs: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/files/logs/${teamId}`),
   deleteFileLog: (logId: string) => apiFetch<any>(`/api/files/logs/${logId}`, { method: "DELETE" }),
 
   // File Version History (Wave 2.3)
@@ -513,4 +593,20 @@ export const api = {
     apiFetch<any>(`/api/observability/traces${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`),
   emitSampleTrace: () => apiFetch<any>("/api/observability/emit-sample", { method: "POST" }),
   clearObservability: () => apiFetch<any>("/api/observability/clear", { method: "POST" }),
+  getWorkflowDAG: (teamId?: string) => {
+    if (isInvalidId(teamId)) return Promise.resolve({ nodes: [], edges: [] });
+    return apiFetch<any>(`/api/observability/dag?team_id=${teamId}`);
+  },
+  getCodeGraph: (projectId?: string, refresh?: boolean) => {
+    if (isInvalidId(projectId)) return Promise.resolve({ nodes: [], edges: [] });
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    if (refresh) params.set("refresh", "true");
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return apiFetch<any>(`/api/observability/code-graph${qs}`);
+  },
+  reindexCodeGraph: (projectId?: string) => {
+    const qs = projectId && !isInvalidId(projectId) ? `?project_id=${projectId}` : "";
+    return apiFetch<any>(`/api/observability/code-graph/reindex${qs}`, { method: "POST" });
+  },
 };

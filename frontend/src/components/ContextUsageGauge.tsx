@@ -109,14 +109,30 @@ export default function ContextUsageGauge({
     return () => document.removeEventListener("mousedown", handleDocClick);
   }, [open]);
 
-  // Model-aware context window lookup helper
+  // Model-aware context window lookup helper (aligned with backend multi_model_router)
   const getContextWindow = useCallback((modelStr: string): number => {
     const m = (modelStr || "").toLowerCase();
     if (m.includes("gemini")) return 1000000;
     if (m.includes("claude") || m.includes("anthropic")) return 200000;
-    if (m.includes("gpt-4") || m.includes("o1") || m.includes("o3") || m.includes("o4") || m.includes("llama-3") || m.includes("deepseek") || m.includes("mistral-large")) return 128000;
-    if (m.includes("mistral") || m.includes("qwen") || m.includes("free") || m.includes("auto")) return 32768;
+    if (
+      m.includes("gpt-4") ||
+      m.includes("o1") ||
+      m.includes("o3") ||
+      m.includes("o4") ||
+      m.includes("llama-3") ||
+      m.includes("deepseek") ||
+      m.includes("qwen") ||
+      m.includes("mistral-large") ||
+      m.includes("free") ||
+      m.includes("auto") ||
+      m.includes("128k")
+    ) {
+      return 128000;
+    }
+    if (m.includes("32k") || m.includes("mistral")) return 32768;
     if (m.includes("gpt-3.5") || m.includes("phi") || m.includes("16k")) return 16384;
+    if (m.includes("8k")) return 8192;
+    if (m.includes("4k")) return 4096;
     return 128000;
   }, []);
 
@@ -129,7 +145,17 @@ export default function ContextUsageGauge({
   }, [selectedAgentId, agents]);
 
   const currentModel = selectedAgent?.model || activeModel;
-  const windowLimit = contextWindow && contextWindow > 0 ? contextWindow : getContextWindow(currentModel);
+
+  const windowLimit = useMemo(() => {
+    if (selectedAgent) {
+      const agentLimit = getContextWindow(selectedAgent.model);
+      if (contextWindow && contextWindow > 0 && (!selectedAgentId || selectedAgent.model === activeModel)) {
+        return contextWindow;
+      }
+      return agentLimit;
+    }
+    return contextWindow && contextWindow > 0 ? contextWindow : getContextWindow(currentModel);
+  }, [selectedAgent, selectedAgentId, contextWindow, activeModel, currentModel, getContextWindow]);
 
   // Compute active context load (tokens currently loaded in prompt/memory)
   const currentTokens = useMemo(() => {
@@ -148,7 +174,7 @@ export default function ContextUsageGauge({
     return 0;
   }, [estimatedTokens, lastTokenEvent, messages]);
 
-  const pct = usagePercent !== undefined && usagePercent > 0
+  const pct = usagePercent !== undefined && usagePercent > 0 && (!selectedAgentId || selectedAgent?.model === activeModel)
     ? usagePercent
     : windowLimit > 0
     ? Math.min(100, Math.round((currentTokens / windowLimit) * 1000) / 10)
@@ -173,7 +199,10 @@ export default function ContextUsageGauge({
     })).sort((a, b) => a.limit - b.limit);
   }, [agents, getContextWindow]);
 
-  const bottleneck = teamWindows.length > 1 ? teamWindows[0] : null;
+  const maxTeamLimit = teamWindows.length > 0 ? teamWindows[teamWindows.length - 1].limit : 0;
+  const bottleneck = teamWindows.length > 1 && teamWindows[0].limit < maxTeamLimit && teamWindows[0].limit < 100000
+    ? teamWindows[0]
+    : null;
 
   // Rotating Agent calculations for top-bar pill
   const activeCycleAgent = useMemo(() => {

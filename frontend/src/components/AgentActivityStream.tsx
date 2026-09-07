@@ -177,57 +177,34 @@ export default function AgentActivityStream({ steps, isStreaming = false, elapse
         width: "100%"
       }}
     >
-      {/* Antigravity Pill Header: "Worked for 24s ⌄" */}
+      {/* Antigravity Thinking Pill: "Thinking... (4s)" or "Thought for 12s" */}
       <button
         onClick={() => setIsTimelineOpen(o => !o)}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: "8px",
-          padding: "4px 10px",
-          borderRadius: "20px",
-          background: isTimelineOpen ? "rgba(255, 255, 255, 0.08)" : "rgba(255, 255, 255, 0.04)",
-          border: "1px solid rgba(255, 255, 255, 0.1)",
-          color: "var(--color-ink, #e2e8f0)",
-          fontSize: "11px",
-          fontWeight: 600,
-          cursor: "pointer",
-          transition: "all 0.15s ease"
-        }}
-        className="hover:bg-[rgba(255,255,255,0.08)]"
+        className="antigravity-thinking-pill"
       >
-        <span style={{ color: "var(--color-primary-soft, #a78bfa)" }}>
-          Worked for {elapsedSecs > 0 ? `${elapsedSecs}s` : `${Math.max(1, validSteps.length * 4)}s`}
+        {isStreaming ? (
+          <span className="antigravity-pulse-dot" />
+        ) : (
+          <Sparkles size={12} color="var(--color-primary-soft, #6366f1)" />
+        )}
+        <span style={{ color: "var(--color-primary-soft, #6366f1)" }}>
+          {isStreaming
+            ? `Thinking... (${elapsedSecs}s)`
+            : `Thought for ${elapsedSecs > 0 ? `${elapsedSecs}s` : `${Math.max(1, validSteps.length * 3)}s`}`}
         </span>
         {validSteps.length > 0 && (
-          <span style={{ fontSize: "10px", color: "var(--color-mute, #64748b)", fontWeight: 500 }}>
+          <span style={{ fontSize: "10px", color: "var(--color-mute, #94a3b8)", fontWeight: 500, opacity: 0.8 }}>
             • {validSteps.length} {validSteps.length === 1 ? "step" : "steps"}
           </span>
         )}
-        <span style={{ color: "var(--color-mute, #64748b)", display: "flex", alignItems: "center" }}>
+        <span style={{ color: "var(--color-mute, #94a3b8)", display: "flex", alignItems: "center", marginLeft: 2 }}>
           {isTimelineOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
       </button>
 
       {/* Expanded Antigravity Activity Timeline */}
       {isTimelineOpen && (
-        <div
-          style={{
-            marginTop: "8px",
-            background: "#111116",
-            border: "1px solid rgba(255, 255, 255, 0.08)",
-            borderRadius: "10px",
-            padding: "6px 8px",
-            maxHeight: "360px",
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column",
-            gap: "4px",
-            position: "relative",
-            width: "100%",
-            boxSizing: "border-box"
-          }}
-        >
+        <div className="antigravity-thinking-drawer">
           {validSteps.map((step, idx) => {
             const isObs = step.type === "thought" && isObservationStep(step.text);
             const { icon: StepIcon, color: iconColor } = getStepIcon(step);

@@ -10,6 +10,8 @@ from pydantic import BaseModel
 
 from core.tools.file_tools import file_tools
 from core.auth.auth_middleware import require_auth
+from sqlalchemy.ext.asyncio import AsyncSession
+from core.memory.database import get_db
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -50,6 +52,32 @@ class BatchMoveRequest(BaseModel):
 class BatchDeleteRequest(BaseModel):
     paths: List[str]
     project_id: str | None = None
+
+
+async def _assert_file_project_access(project_id: Optional[str], user_id: str, db: Optional[AsyncSession] = None) -> None:
+    """Enforces that the requesting user owns the specified project if project_id is given."""
+    if not project_id:
+        return
+    from core.api.crud_routes import _assert_project_access
+    if db is not None:
+        await _assert_project_access(db, project_id, user_id)
+    else:
+        from core.memory.database import async_session
+        async with async_session() as session:
+            await _assert_project_access(session, project_id, user_id)
+
+
+async def _assert_file_team_access(team_id: Optional[str], user_id: str, db: Optional[AsyncSession] = None) -> None:
+    """Enforces that the requesting user owns the specified team if team_id is given."""
+    if not team_id:
+        return
+    from core.api.crud_routes import _assert_team_access
+    if db is not None:
+        await _assert_team_access(db, team_id, user_id)
+    else:
+        from core.memory.database import async_session
+        async with async_session() as session:
+            await _assert_team_access(session, team_id, user_id)
 
 
 async def _broadcast_file_event(action: str, paths: List[str], project_id: Optional[str] = None, team_id: Optional[str] = None, diff: Optional[str] = None, user: Optional[dict] = None):
@@ -122,7 +150,13 @@ async def _broadcast_file_event(action: str, paths: List[str], project_id: Optio
 
 
 @router.get("/list")
-async def list_files(path: str = Query(".", description="Relative path to directory"), project_id: str | None = Query(None, description="Project ID"), user: dict = Depends(require_auth)) -> List[Dict[str, Any]]:
+async def list_files(
+    path: str = Query(".", description="Relative path to directory"),
+    project_id: str | None = Query(None, description="Project ID"),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    await _assert_file_project_access(project_id, user["sub"], db=db)
     try:
         safe_path = await file_tools._resolve_safe_path(path, project_id)
         
@@ -161,7 +195,13 @@ async def list_files(path: str = Query(".", description="Relative path to direct
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/read")
-async def read_file(path: str = Query(..., description="Relative path to file"), project_id: str | None = Query(None, description="Project ID"), user: dict = Depends(require_auth)) -> dict:
+async def read_file(
+    path: str = Query(..., description="Relative path to file"),
+    project_id: str | None = Query(None, description="Project ID"),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(project_id, user["sub"], db=db)
     try:
         safe_path = await file_tools._resolve_safe_path(path, project_id)
         if not safe_path.is_file():
@@ -172,6 +212,8 @@ async def read_file(path: str = Query(..., description="Relative path to file"),
             raise HTTPException(status_code=400, detail=content)
 
         return {"content": content}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
@@ -182,7 +224,7 @@ async def get_raw_file(
     path: str = Query(..., description="Relative path to file"),
     project_id: Optional[str] = Query(None, description="Project ID"),
     token: Optional[str] = Query(None, description="Auth token via query parameter"),
-    authorization: Optional[str] = Header(None, description="Auth token via Header")
+    authorization: Optional[str] = Header(None, description="Auth token via Header"),
 ):
     # Check auth header first, fall back to query token
     auth_token = None
@@ -194,10 +236,16 @@ async def get_raw_file(
     if not auth_token:
         raise HTTPException(status_code=401, detail="Unauthorized")
         
-    from core.auth.auth_service import _decode_jwt
-    payload = _decode_jwt(auth_token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    from core.auth.auth_service import auth_service
+    from core.memory.database import async_session
+    async with async_session() as db:
+        user = await auth_service.get_current_user(db, auth_token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        if project_id:
+            user_id = (user.get("id") or user.get("sub", "")) if isinstance(user, dict) else str(user.id)
+            from core.api.crud_routes import _assert_project_access
+            await _assert_project_access(db, project_id, user_id)
         
     try:
         safe_path = await file_tools._resolve_safe_path(path, project_id)
@@ -208,6 +256,8 @@ async def get_raw_file(
             raise HTTPException(status_code=404, detail="File not found")
             
         return FileResponse(path=safe_path)
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
@@ -223,8 +273,15 @@ _TREE_MAX_FILES = 2000
 
 
 @router.get("/tree")
-async def file_tree(project_id: str | None = Query(None, description="Project ID"), team_id: str | None = Query(None, description="Team ID"), user: dict = Depends(require_auth)) -> dict:
+async def file_tree(
+    project_id: str | None = Query(None, description="Project ID"),
+    team_id: str | None = Query(None, description="Team ID"),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """Return a flat list of all file paths in the project workspace."""
+    await _assert_file_project_access(project_id, user["sub"], db=db)
+    await _assert_file_team_access(team_id, user["sub"], db=db)
     try:
         root = await file_tools.get_workspace_root(project_id)
         if not root.exists():
@@ -261,52 +318,80 @@ async def file_tree(project_id: str | None = Query(None, description="Project ID
                             return {"files": files, "truncated": True}
 
         return {"files": files, "truncated": False}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/write")
-async def write_file_endpoint(req: WriteFileRequest, user: dict = Depends(require_auth)) -> dict:
+async def write_file_endpoint(
+    req: WriteFileRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(req.project_id, user["sub"], db=db)
     try:
         res = await file_tools.write_file(req.path, req.content, agent_name="User", project_id=req.project_id)
         if res.message.startswith("Error"):
             raise HTTPException(status_code=400, detail=res.message)
         await _broadcast_file_event("write", [req.path], project_id=req.project_id, diff=res.diff, user=user)
         return {"status": "success", "message": res.message}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/create_folder")
-async def create_folder_endpoint(req: CreateFolderRequest, user: dict = Depends(require_auth)) -> dict:
+async def create_folder_endpoint(
+    req: CreateFolderRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(req.project_id, user["sub"], db=db)
     try:
         res = await file_tools.create_directory(req.path, project_id=req.project_id)
         if res.startswith("Error"):
             raise HTTPException(status_code=400, detail=res)
         await _broadcast_file_event("create_folder", [req.path], project_id=req.project_id, user=user)
         return {"status": "success", "message": res}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/rename")
-async def rename_endpoint(req: RenameRequest, user: dict = Depends(require_auth)) -> dict:
+async def rename_endpoint(
+    req: RenameRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(req.project_id, user["sub"], db=db)
     try:
         res = await file_tools.move_file(req.source, req.destination, project_id=req.project_id)
         if res.startswith("Error"):
             raise HTTPException(status_code=400, detail=res)
         await _broadcast_file_event("rename", [req.source, req.destination], project_id=req.project_id, user=user)
         return {"status": "success", "message": res}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/copy")
-async def copy_endpoint(req: CopyRequest, user: dict = Depends(require_auth)) -> dict:
+async def copy_endpoint(
+    req: CopyRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(req.project_id, user["sub"], db=db)
     try:
         src = await file_tools._resolve_safe_path(req.source, req.project_id)
         dst = await file_tools._resolve_safe_path(req.destination, req.project_id)
@@ -327,7 +412,12 @@ async def copy_endpoint(req: CopyRequest, user: dict = Depends(require_auth)) ->
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/duplicate")
-async def duplicate_endpoint(req: DuplicateRequest, user: dict = Depends(require_auth)) -> dict:
+async def duplicate_endpoint(
+    req: DuplicateRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(req.project_id, user["sub"], db=db)
     try:
         safe_path = await file_tools._resolve_safe_path(req.path, req.project_id)
         if not safe_path.exists():
@@ -353,13 +443,20 @@ async def duplicate_endpoint(req: DuplicateRequest, user: dict = Depends(require
             
         await _broadcast_file_event("duplicate", [dst_rel], project_id=req.project_id, user=user)
         return {"status": "success", "new_path": dst_rel}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/batch/copy")
-async def batch_copy_endpoint(req: BatchCopyRequest, user: dict = Depends(require_auth)) -> dict:
+async def batch_copy_endpoint(
+    req: BatchCopyRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(req.project_id, user["sub"], db=db)
     try:
         copied = []
         root = await file_tools.get_workspace_root(req.project_id)
@@ -386,13 +483,20 @@ async def batch_copy_endpoint(req: BatchCopyRequest, user: dict = Depends(requir
             
         await _broadcast_file_event("batch_copy", copied, project_id=req.project_id, user=user)
         return {"status": "success", "copied": copied}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/batch/move")
-async def batch_move_endpoint(req: BatchMoveRequest, user: dict = Depends(require_auth)) -> dict:
+async def batch_move_endpoint(
+    req: BatchMoveRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(req.project_id, user["sub"], db=db)
     try:
         moved = []
         root = await file_tools.get_workspace_root(req.project_id)
@@ -412,13 +516,20 @@ async def batch_move_endpoint(req: BatchMoveRequest, user: dict = Depends(requir
             
         await _broadcast_file_event("batch_move", moved, project_id=req.project_id, user=user)
         return {"status": "success", "moved": moved}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/batch/delete")
-async def batch_delete_endpoint(req: BatchDeleteRequest, user: dict = Depends(require_auth)) -> dict:
+async def batch_delete_endpoint(
+    req: BatchDeleteRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(req.project_id, user["sub"], db=db)
     try:
         deleted = []
         import stat
@@ -443,6 +554,8 @@ async def batch_delete_endpoint(req: BatchDeleteRequest, user: dict = Depends(re
                 
         await _broadcast_file_event("batch_delete", deleted, project_id=req.project_id, user=user)
         return {"status": "success", "deleted": deleted}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
@@ -452,8 +565,10 @@ async def batch_delete_endpoint(req: BatchDeleteRequest, user: dict = Depends(re
 async def download_zip(
     paths: Optional[str] = Query(None, description="Comma-separated relative paths to include, or empty for all"),
     project_id: Optional[str] = Query(None, description="Project ID"),
-    user: dict = Depends(require_auth)
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
 ):
+    await _assert_file_project_access(project_id, user["sub"], db=db)
     try:
         root = await file_tools.get_workspace_root(project_id)
         if not root.exists():
@@ -495,13 +610,21 @@ async def download_zip(
             media_type="application/zip",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/delete")
-async def delete_file_endpoint(path: str = Query(...), project_id: str | None = Query(None), user: dict = Depends(require_auth)) -> dict:
+async def delete_file_endpoint(
+    path: str = Query(...),
+    project_id: str | None = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_file_project_access(project_id, user["sub"], db=db)
     try:
         safe_path = await file_tools._resolve_safe_path(path, project_id)
         if safe_path.is_file():
@@ -524,13 +647,12 @@ async def delete_file_endpoint(path: str = Query(...), project_id: str | None = 
             
         await _broadcast_file_event("delete", [path], project_id=project_id, user=user)
         return {"status": "success", "message": res}
+    except HTTPException:
+        raise
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-from sqlalchemy.ext.asyncio import AsyncSession
-from core.memory.database import get_db
 
 def _valid_uuid(value: str) -> bool:
     import uuid as _uuid
@@ -547,6 +669,7 @@ async def get_file_logs(team_id: str, db: AsyncSession = Depends(get_db), user: 
     Hardened: validates the team_id UUID (returns 400 — not a 500 stack trace —
     for malformed input) and never raises on per-row read failures.
     """
+    await _assert_file_team_access(team_id, user["sub"], db=db)
     if not _valid_uuid(team_id):
         raise HTTPException(status_code=400, detail=f"Invalid team id '{team_id}'.")
     try:
@@ -629,6 +752,9 @@ async def delete_file_log(log_id: str, db: AsyncSession = Depends(get_db), user:
     if not backup:
         raise HTTPException(status_code=404, detail="Log not found")
 
+    if backup.team_id:
+        await _assert_file_team_access(str(backup.team_id), user["sub"], db=db)
+
     # Delete the physical backup file if it exists
     if backup.backup_file_name:
         from core.tools.file_tools import file_tools
@@ -662,6 +788,7 @@ async def list_file_history(
     Returns entries in reverse-chronological order (newest first).
     Each entry has enough metadata to render a history list in the UI.
     """
+    await _assert_file_project_access(project_id, user["sub"], db=db)
     from core.memory.models import FileBackup
     from sqlalchemy import select
     import pathlib
@@ -725,10 +852,13 @@ async def get_backup_content(
     if not backup:
         raise HTTPException(status_code=404, detail="Backup not found")
 
+    if backup.team_id:
+        await _assert_file_team_access(str(backup.team_id), user["sub"], db=db)
+
     if not backup.backup_file_name:
         return {"content": "", "note": "No backup file recorded for this entry (create operation)."}
 
-    team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id))
+    team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id), db=db)
     history_dir = team_carole_dir / "file-history"
     backup_path = history_dir / backup.backup_file_name
 
@@ -767,10 +897,14 @@ async def restore_backup(
     if not backup:
         raise HTTPException(status_code=404, detail="Backup not found")
 
+    if backup.team_id:
+        await _assert_file_team_access(str(backup.team_id), user["sub"], db=db)
+    await _assert_file_project_access(project_id, user["sub"], db=db)
+
     if not backup.backup_file_name:
         raise HTTPException(status_code=400, detail="No backup content available for this entry")
 
-    team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id))
+    team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id), db=db)
     history_dir = team_carole_dir / "file-history"
     backup_path = history_dir / backup.backup_file_name
 

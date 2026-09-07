@@ -34,6 +34,7 @@ if sys.platform == "win32":
         pass
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -151,7 +152,8 @@ async def lifespan(app: FastAPI):
                         args=server.args,
                         team_id=str(server.team_id) if server.team_id else None,
                         agent_id=str(server.agent_id) if server.agent_id else None,
-                        env_vars=server.env_vars
+                        env_vars=server.env_vars,
+                        init_timeout=300.0,
                     )
                 )
     except Exception as e:
@@ -170,22 +172,47 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to read disabled global MCPs config: {e}")
 
+    async def _boot_global_mcp_with_retry(mcp_cfg: dict, max_attempts: int = 3, backoff: float = 5.0):
+        """Boot a global MCP server with retry + exponential backoff.
+
+        npx/uvx may need to download packages on first run, which can exceed
+        the default 120-second timeout. We pass 300s directly to avoid any
+        os.environ race when multiple MCPs start concurrently.
+        """
+        name = mcp_cfg["server_name"]
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await mcp_manager.connect_stdio_server(
+                    server_name=name,
+                    command=mcp_cfg["command"],
+                    args=mcp_cfg["args"],
+                    team_id=None,
+                    agent_id=None,
+                    init_timeout=300.0,
+                )
+                logger.info(f"✓ [MCP] Global server '{name}' connected successfully (attempt {attempt})")
+                return
+            except Exception as exc:
+                logger.warning(f"⚠ [MCP] Global server '{name}' failed (attempt {attempt}/{max_attempts}): {exc}")
+                if attempt < max_attempts:
+                    wait = backoff * attempt
+                    logger.info(f"  Retrying '{name}' in {wait:.0f}s...")
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(f"✗ [MCP] Global server '{name}' gave up after {max_attempts} attempts.")
+
+    mcp_boot_tasks = []
     for mcp in GLOBAL_MCPS:
         if mcp["server_name"] in disabled_mcps:
             logger.info(f"⏸️ [Lifespan] Global MCP server '{mcp['server_name']}' is disabled. Skipping.")
             continue
-            
+
         logger.info(f"🌐 [Lifespan] Starting global {mcp['server_name']} MCP server...")
-        asyncio.create_task(
-            mcp_manager.connect_stdio_server(
-                server_name=mcp["server_name"],
-                command=mcp["command"],
-                args=mcp["args"],
-                team_id=None,
-                agent_id=None,
-            ),
+        task = asyncio.create_task(
+            _boot_global_mcp_with_retry(mcp),
             name=f"{mcp['server_name']}_mcp_server",
         )
+        mcp_boot_tasks.append(task)
 
     # Start background Dream Worker and Cron Worker
     # FIX B1: Store strong reference in app.state so asyncio cannot garbage-collect the task.
@@ -215,8 +242,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("OpenLLMetry initialization warning: %s", e)
 
-    # Store all background task references in app.state
-    app.state.background_tasks = [dream_task, sweeper_task, cron_task]
+    # Store all background task references in app.state (MCP boot tasks + workers + sweeper)
+    app.state.background_tasks = [dream_task, sweeper_task, cron_task] + mcp_boot_tasks
 
     yield  # Server is now running
 
@@ -300,6 +327,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+ 
+@app.exception_handler(ValueError)
+async def value_error_handler(request: StarletteRequest, exc: ValueError):
+    err_str = str(exc)
+    logger.warning("Invalid parameter on %s %s: %s", request.method, request.url.path, err_str)
+    return JSONResponse(
+        status_code=400,
+        content={"detail": f"Invalid parameter: {err_str}"}
+    )
 
 # ── CORS (Finding #14 — tightened from any port to specific ports) ────────────
 _raw_origins = os.getenv(
@@ -401,23 +437,31 @@ async def websocket_endpoint(
         logger.warning("Chat WS rejected — missing or invalid ticket for team %s", team_id)
         return
 
-    await websocket.accept()
-    
-    # Resolve project_id for this team to listen to file explorer updates
-    project_id = None
-    try:
-        from core.memory.database import async_session
-        from core.memory.models import Team
-        from sqlalchemy import select
-        import uuid
-        
-        async with async_session() as db:
+    from core.memory.database import async_session
+    from core.memory.models import Team, Project
+    from sqlalchemy import select
+    import uuid
+
+    async with async_session() as db:
+        user = await auth_service.get_active_user(db, user_id)
+        if not user:
+            await websocket.close(code=4001)
+            return
+        try:
             team_uuid = uuid.UUID(team_id)
-            team = (await db.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
-            if team:
-                project_id = str(team.project_id)
-    except Exception as e:
-        logger.warning("Failed to resolve project_id for team %s: %s", team_id, e)
+        except ValueError:
+            await websocket.close(code=4003)
+            return
+        project_id = (await db.execute(
+            select(Team.project_id).join(Project, Team.project_id == Project.id)
+            .where(Team.id == team_uuid, Project.owner_id == user.id)
+        )).scalar_one_or_none()
+        if project_id is None:
+            await websocket.close(code=4003)
+            return
+        project_id = str(project_id)
+
+    await websocket.accept()
 
     topics = [f"team:{team_id}"]
     if project_id:
@@ -441,16 +485,28 @@ async def websocket_endpoint(
 
                 # Basic validation to avoid injection/spoofing
                 text = payload.get("text", data if isinstance(data, str) else "")
-                sender_id = payload.get("sender_id", "human")
-                sender_name = payload.get("sender_name")
+                raw_sender_name = payload.get("sender_name")
                 attachments = payload.get("attachments")
+
+                # The WebSocket connection is authenticated as a human user via ticket.
+                # Force sender_id to "human" to prevent clients from spoofing "system" or agent UUIDs.
+                sender_id = "human"
+
+                user_display_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "You"
+                if isinstance(raw_sender_name, str) and raw_sender_name.strip():
+                    cleaned_name = raw_sender_name.strip()[:100]
+                    # Disallow impersonating "system"
+                    if cleaned_name.lower() in ("system", "coordinator"):
+                        sender_name = user_display_name
+                    else:
+                        sender_name = cleaned_name
+                else:
+                    sender_name = user_display_name
 
                 if not isinstance(text, str) or len(text) == 0 or len(text) > 10000:
                     logger.warning("Dropping invalid websocket message for team %s: text invalid", team_id)
                     continue
-                if not isinstance(sender_id, str) or len(sender_id) > 100:
-                    logger.warning("Dropping invalid websocket message for team %s: sender_id invalid", team_id)
-                    continue
+
                 # Sanitize attachments: must be a list of small dicts. Caps the
                 # count and per-attachment text size to prevent abuse. File-ref
                 # attachments (@file:path) carry only a path string, so they're tiny.
@@ -463,7 +519,7 @@ async def websocket_endpoint(
                 # Route the message through our MessageRouter (persists + triggers agents)
                 try:
                     await message_router.route_message(
-                        text.strip(), sender_id.strip(), team_id, sender_name,
+                        text.strip(), sender_id, team_id, sender_name,
                         attachments=clean_attachments or None,
                     )
                 except Exception as e:
@@ -497,6 +553,8 @@ async def websocket_endpoint(
         done, pending = await asyncio.wait([task1, task2], return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
     finally:
         await event_bus.unsubscribe_from_topics(topics, event_queue)
 
@@ -525,6 +583,11 @@ async def notifications_ws(
         await websocket.close(code=4001)
         logger.warning("Notifications WS rejected — missing or invalid ticket")
         return
+
+    async with async_session() as db:
+        if not await auth_service.get_active_user(db, user_id):
+            await websocket.close(code=4001)
+            return
 
     await websocket.accept()
 
@@ -600,6 +663,8 @@ async def notifications_ws(
         done, pending = await asyncio.wait([task1, task2], return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
     finally:
         await event_bus.unsubscribe(topic, event_queue)
 
@@ -619,7 +684,7 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision, user: d
     Called by the frontend when the user clicks Approve or Deny.
     Idempotent: if already resolved, returns status 'already_resolved' with 200 OK.
     """
-    from core.tools.tool_executor import pending_approvals, approval_results, resolved_approvals
+    from core.tools.tool_executor import pending_approvals, approval_results, resolved_approvals, pending_approval_details
 
     if tx_id not in pending_approvals:
         res_info = resolved_approvals.get(tx_id)
@@ -637,6 +702,14 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision, user: d
             "message": f"Transaction '{tx_id}' not found or already resolved."
         }
 
+    # Verify team ownership if team_id is known for this transaction
+    details = pending_approval_details.get(tx_id)
+    if details and details.get("team_id"):
+        from core.memory.database import async_session
+        from core.api.crud_routes import _assert_team_access
+        async with async_session() as db:
+            await _assert_team_access(db, details["team_id"], user["sub"])
+
     # Store the decision and signal the waiting agent coroutine
     approval_results[tx_id] = decision.approved
     pending_approvals[tx_id].set()
@@ -652,6 +725,11 @@ async def list_pending_approvals(team_id: str, user: dict = Depends(require_auth
     Returns active in-memory pending approvals for the specified team.
     Enables the frontend to verify whether a cached approval is still waiting.
     """
+    from core.memory.database import async_session
+    from core.api.crud_routes import _assert_team_access
+    async with async_session() as db:
+        await _assert_team_access(db, team_id, user["sub"])
+
     from core.tools.tool_executor import pending_approval_details
 
     active = [
@@ -675,10 +753,17 @@ async def answer_agent_question(question_id: str, body: QuestionAnswer, user: di
     Resolves a pending ask_user question from an agent.
     Called by the frontend when the user types an answer.
     """
-    from core.tools.interaction_tools import pending_questions, question_answers
+    from core.tools.interaction_tools import pending_questions, question_answers, pending_question_details
 
     if question_id not in pending_questions:
         raise HTTPException(status_code=404, detail=f"Question '{question_id}' not found or already answered.")
+
+    details = pending_question_details.get(question_id)
+    if details and details.get("team_id"):
+        from core.memory.database import async_session
+        from core.api.crud_routes import _assert_team_access
+        async with async_session() as db:
+            await _assert_team_access(db, details["team_id"], user["sub"])
 
     question_answers[question_id] = body.answer
     pending_questions[question_id].set()

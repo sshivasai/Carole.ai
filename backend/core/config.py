@@ -97,7 +97,7 @@ _PROMPT_ALIASES = {
 
 _MODEL_DEFAULTS = {
     "DEFAULT_FAST_MODEL": "openrouter/free",
-    "DEFAULT_SMART_MODEL": "openrouter/free",
+    "DEFAULT_SMART_MODEL": "openrouter/auto",
     "DEFAULT_CODER_MODEL": "openrouter/free",
     "DEFAULT_JUDGE_MODEL": "openrouter/free",
     "DEFAULT_EMBEDDING_MODEL": "auto",
@@ -112,46 +112,114 @@ _AGENT_SETTINGS_DEFAULTS = {
     "CONTEXT_COMPACTION_THRESHOLD": 15,
 }
 
+
+def _get_default_model(key: str, cfg: dict | None = None) -> str:
+    from core.llm.config_manager import load_config, get_key
+
+    cfg = cfg or load_config()
+
+    # 1. Check user-configured default models in config.json
+    configured = cfg.get("default_models", {}).get(key)
+    if configured and isinstance(configured, str) and configured.strip():
+        return configured.strip()
+
+    # 2. Resolve active API keys (respecting config isolation: no host env leak if cfg has keys)
+    google_key = get_key(cfg, "google", "GOOGLE_API_KEY")
+    openai_key = get_key(cfg, "openai", "OPENAI_API_KEY")
+    anthropic_key = get_key(cfg, "anthropic", "ANTHROPIC_API_KEY")
+    openrouter_key = get_key(cfg, "openrouter", "OPENROUTER_API_KEY")
+
+    if key == "DEFAULT_CODER_MODEL":
+        if anthropic_key:
+            return "claude-3-5-sonnet-latest"
+        if openai_key:
+            return "openai/gpt-4o"
+        if google_key:
+            return "gemini-2.0-flash"
+        if openrouter_key:
+            return "openrouter/free"
+        return _MODEL_DEFAULTS.get("DEFAULT_CODER_MODEL", "openrouter/free")
+
+    elif key in ("DEFAULT_FAST_MODEL", "DEFAULT_JUDGE_MODEL"):
+        if google_key:
+            return "gemini-2.0-flash"
+        if openai_key:
+            return "openai/gpt-4o-mini"
+        if anthropic_key:
+            return "claude-3-5-haiku-latest"
+        if openrouter_key:
+            return "openrouter/free"
+        return _MODEL_DEFAULTS.get(key, "openrouter/free")
+
+    elif key == "DEFAULT_EMBEDDING_MODEL":
+        if openai_key:
+            return "openai/text-embedding-3-small"
+        if google_key:
+            return "models/text-embedding-004"
+        return _MODEL_DEFAULTS.get("DEFAULT_EMBEDDING_MODEL", "auto")
+
+    else:  # DEFAULT_SMART_MODEL
+        if openai_key:
+            return "openai/gpt-4o"
+        if anthropic_key:
+            return "claude-3-5-sonnet-latest"
+        if google_key:
+            return "gemini-2.0-flash"
+        if openrouter_key:
+            return "openrouter/auto"
+        return _MODEL_DEFAULTS.get("DEFAULT_SMART_MODEL", "openrouter/auto")
+
+
 def __getattr__(name: str):
     """
-    Module-level __getattr__ so old-style `from core.config import JUDGE_SYSTEM_PROMPT`
-    still works — it now reads from prompts.json instead of a hardcoded string.
+    Module-level __getattr__ so settings are dynamically resolved on every access:
+    - User config (~/.carole/config.json) always takes precedence.
+    - Host environment variables are only used as fallback if no keys exist in cfg.
+    - Hardcoded fallback model names and agent defaults are guaranteed.
     """
     if name in _PROMPT_ALIASES:
         from core.prompts import get_prompt
         return get_prompt(_PROMPT_ALIASES[name])
-    
+
     if name in _MODEL_DEFAULTS:
-        from core.llm.config_manager import load_config
+        from core.llm.config_manager import load_config, has_user_configured_keys
         cfg = load_config()
         # 1. Check user config file (~/.carole/config.json)
         from_cfg = cfg.get("default_models", {}).get(name)
-        if from_cfg:
-            return from_cfg
-        # 2. Check environment variable
-        from_env = os.getenv(name)
-        if from_env:
-            return from_env
-        # 3. Fallback
-        return _MODEL_DEFAULTS[name]
+        if from_cfg and isinstance(from_cfg, str) and from_cfg.strip():
+            return from_cfg.strip()
+        # 2. Check host environment variable ONLY if no keys were found in cfg
+        if not has_user_configured_keys(cfg):
+            from_env = os.getenv(name)
+            if from_env and from_env.strip():
+                return from_env.strip()
+        # 3. Dynamic smart detection based on active API keys / hardcoded fallback
+        return _get_default_model(name, cfg)
 
     if name in _AGENT_SETTINGS_DEFAULTS:
-        from core.llm.config_manager import load_config
+        from core.llm.config_manager import load_config, has_user_configured_keys
         cfg = load_config()
         # 1. Check user config file
         from_cfg = cfg.get("agent_settings", {}).get(name)
         if from_cfg is not None:
-            return int(from_cfg)
-        # 2. Check env variables (for some)
-        env_map = {
-            "MAX_LOOPS": "MAX_AGENT_LOOPS",
-            "APPROVAL_TIMEOUT_SECS": "APPROVAL_TIMEOUT_SECS",
-            "MAX_QUEUE_SIZE": "MAX_EVENT_QUEUE_SIZE"
-        }
-        if name in env_map:
-            from_env = os.getenv(env_map[name])
-            if from_env is not None:
-                return int(from_env)
+            try:
+                return int(from_cfg)
+            except (ValueError, TypeError):
+                pass
+        # 2. Check env variables ONLY if no keys were found in cfg
+        if not has_user_configured_keys(cfg):
+            env_map = {
+                "MAX_LOOPS": "MAX_AGENT_LOOPS",
+                "APPROVAL_TIMEOUT_SECS": "APPROVAL_TIMEOUT_SECS",
+                "MAX_QUEUE_SIZE": "MAX_EVENT_QUEUE_SIZE"
+            }
+            if name in env_map:
+                from_env = os.getenv(env_map[name])
+                if from_env is not None:
+                    try:
+                        return int(from_env)
+                    except (ValueError, TypeError):
+                        pass
         # 3. Fallback
         return int(_AGENT_SETTINGS_DEFAULTS[name])
 

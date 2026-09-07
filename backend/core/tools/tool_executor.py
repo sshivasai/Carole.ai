@@ -178,9 +178,9 @@ def register_builtin_tools():
                   "directory": {"type": "string", "required": False}}, "human", _wrap_git_clone),
 
         # ---- Filesystem extras ----
-        ToolSpec("copy_file", "Copy a file to a new location", "filesystem",
-                 {"source": {"type": "string", "required": True},
-                  "destination": {"type": "string", "required": True}}, "judge", _wrap_copy_file),
+        ToolSpec("copy_file", "Copy a file or directory into or within the workspace. Source can be a workspace-relative path or an absolute external path on disk (e.g. to copy an external project or file into the current workspace for editing). Destination must be within the project workspace.", "filesystem",
+                 {"source": {"type": "string", "required": True, "description": "Source file or directory path (relative or absolute)"},
+                  "destination": {"type": "string", "required": True, "description": "Destination file or directory path relative to workspace root"}}, "judge", _wrap_copy_file),
         ToolSpec("move_file", "Move or rename a file", "filesystem",
                  {"source": {"type": "string", "required": True},
                   "destination": {"type": "string", "required": True}}, "judge", _wrap_move_file),
@@ -222,7 +222,11 @@ def register_builtin_tools():
                  {"file_path": {"type": "string", "required": True}}, "safe", _wrap_get_module_dependencies),
         ToolSpec("hybrid_code_search", "Dual BM25 and vector code retrieval fused via Reciprocal Rank Fusion", "code_analysis",
                  {"query": {"type": "string", "required": True},
-                  "top_k": {"type": "number", "required": False}}, "safe", _wrap_hybrid_code_search),
+                  "top_k": {"type": "number", "required": False},
+                  "file_filter": {"type": "string", "required": False},
+                  "kind": {"type": "string", "required": False}}, "safe", _wrap_hybrid_code_search),
+        ToolSpec("get_class_hierarchy", "Inspect superclasses, subclasses, and inheritance tree for a class", "code_analysis",
+                 {"class_name": {"type": "string", "required": True}}, "safe", _wrap_get_class_hierarchy),
 
         # ---- Web ----
         ToolSpec("web_search", "Search the web using Tavily API. Returns search result summaries with titles, URLs, and content snippets. Use for quick research, fact-checking, or finding resources. If direct links from a known static page are needed, prefer web_extract_links before launching a full browser. ALWAYS include a 'Sources:' section at the end of your response listing URLs as markdown hyperlinks [Title](URL).", "web",
@@ -420,7 +424,9 @@ def register_builtin_tools():
 
         # ---- Browser Use (Agent Provider) ----
         ToolSpec("browser_use_task", "Delegates a complex browsing task to the external browser-use library, forcing that engine regardless of the configured provider. The agent navigates, interacts, and completes the task on its own. Provide a clear, detailed task description. NOTE: requires the 'browser-use' Python package.", "browser",
-                 {"task": {"type": "string", "required": True}},
+                 {"task": {"type": "string", "required": True, "description": "The natural-language browsing task to execute"},
+                  "start_url": {"type": "string", "required": False, "description": "Optional starting URL for the task"},
+                  "model": {"type": "string", "required": False, "description": "Optional model override (e.g. gpt-4o, claude-3-5-sonnet-latest)"}},
                  "judge", _wrap_browser_use_task),
 
         # ---- Browser Human Takeover (HIL) ----
@@ -473,6 +479,7 @@ def register_builtin_tools():
                   "priority": {"type": "string", "required": False},
                   "assignee": {"type": "string", "required": False},
                   "blocked_by_task_id": {"type": "string", "required": False, "description": "ID of a task that must be completed before this task can start"},
+                  "depends_on": {"type": "array", "required": False, "description": "List of task IDs or titles that must be completed before this task can start (DAG)"},
                   "target_files": {"type": "array", "required": False, "description": "Optional list of files/directories scoped to this task"},
                   "contract_spec": {"type": "string", "required": False, "description": "Optional shared interface, types, or API models to implement"},
                   "verification_command": {"type": "string", "required": False, "description": "Optional command to verify completion (e.g. pytest tests/test_planner.py)"}},
@@ -485,7 +492,8 @@ def register_builtin_tools():
                   "status": {"type": "string", "required": False},
                   "notes": {"type": "string", "required": False},
                   "assignee_name": {"type": "string", "required": False, "description": "Name of the agent to assign the task to"},
-                  "blocked_by_task_id": {"type": "string", "required": False, "description": "ID of a task that must be completed before this task can start"}},
+                  "blocked_by_task_id": {"type": "string", "required": False, "description": "ID of a task that must be completed before this task can start"},
+                  "depends_on": {"type": "array", "required": False, "description": "Updated list of task IDs that must be completed before this task can start"}},
                  "safe", _wrap_update_task),
         ToolSpec("comment_on_task", "Add a comment to a task", "task",
                  {"task_id": {"type": "string", "required": True},
@@ -934,7 +942,7 @@ async def _wrap_browser_task(args: Dict[str, Any], team_id: str) -> str:
     from core.llm.config_manager import load_config
     provider = load_config().get("browser_automation", {}).get("provider", "local")
     if provider == "browseruse":
-        return await _wrap_browser_use_task({"task": task, "_agent_id": agent_id}, team_id)
+        return await _wrap_browser_use_task({"task": task, "_agent_id": agent_id, "start_url": start_url}, team_id)
 
     from core.tools.browser_agent import BrowserAgent
     agent = BrowserAgent(model=model)
@@ -951,15 +959,22 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
     from core.memory.models import Agent as DbAgent
     from sqlalchemy import select
     import asyncio
-    
-    task = args.get("task", "")
-    if not task:
+    import os
+
+    task = args.get("task") or args.get("prompt") or args.get("command") or args.get("instruction") or ""
+    if not task or not str(task).strip():
         return "Error: task is required."
+
+    start_url = args.get("start_url") or args.get("url")
+    if start_url and str(start_url) not in str(task):
+        task = f"Navigate to {start_url} and then: {task}"
 
     agent_id = args.get("_agent_id")
     import core.config
-    model_name = getattr(core.config, "DEFAULT_SMART_MODEL", "gpt-4o")
-    if agent_id:
+
+    # 1. Model priority: explicit argument -> database agent -> configured default
+    model_name = args.get("model")
+    if not model_name and agent_id:
         try:
             import uuid
             agent_uuid = uuid.UUID(str(agent_id))
@@ -971,31 +986,76 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
             pass
 
     try:
-        from core.llm.config_manager import load_config
-        cfg = load_config()
-        
+        from core.llm.config_manager import load_config, get_key, get_browser_key
+        cfg = load_config() or {}
+
         ba_cfg = cfg.get("browser_automation", {})
         provider = ba_cfg.get("provider", "local")
-        keys = ba_cfg.get("api_keys", {})
-        
-        try:
-            from browser_use import Browser
-            if provider == "browserbase" and keys.get("browserbase"):
-                browser_instance = Browser(cdp_url=f"wss://connect.browserbase.com?apiKey={keys['browserbase']}")
+
+        # Consolidate API keys strictly using config isolation (no host env leak if cfg has keys)
+        keys = {
+            "openai": get_key(cfg, "openai", "OPENAI_API_KEY"),
+            "anthropic": get_key(cfg, "anthropic", "ANTHROPIC_API_KEY"),
+            "google": get_key(cfg, "google", "GOOGLE_API_KEY") or get_key(cfg, "google", "GEMINI_API_KEY"),
+            "openrouter": get_key(cfg, "openrouter", "OPENROUTER_API_KEY"),
+            "browserbase": get_browser_key(cfg, "browserbase", "BROWSERBASE_API_KEY"),
+        }
+
+        if not model_name:
+            if keys.get("openai"):
+                model_name = "gpt-4o"
+            elif keys.get("anthropic"):
+                model_name = "claude-3-5-sonnet-latest"
+            elif keys.get("google"):
+                model_name = "gemini-2.0-flash"
+            elif keys.get("openrouter"):
+                model_name = "openrouter/auto"
             else:
-                browser_instance = Browser()
+                model_name = getattr(core.config, "DEFAULT_SMART_MODEL", "gpt-4o")
+
+        try:
+            from browser_use import Browser, BrowserProfile
+            from urllib.parse import urlencode
+            bb_key = keys.get("browserbase")
+            project_id = ba_cfg.get("project_id") or cfg.get("project_id")
+            if (provider == "browserbase" or ba_cfg.get("infrastructure") == "browserbase") and bb_key:
+                params = {"apiKey": bb_key}
+                if project_id and str(project_id).strip():
+                    params["projectId"] = str(project_id).strip()
+                browser_instance = Browser(cdp_url="wss://connect.browserbase.com?" + urlencode(params))
+            else:
+                headless = ba_cfg.get("display_mode") != "windowed" and ba_cfg.get("headless") is not False
+                try:
+                    browser_instance = Browser(browser_profile=BrowserProfile(headless=headless))
+                except Exception:
+                    browser_instance = Browser()
         except Exception:
             browser_instance = None
-        
-        keys = cfg.get("api_keys", {})
-        
+
         llm = None
-        model_lower = model_name.lower()
+        model_lower = str(model_name).lower()
+
+        # Adaptive provider resolution: if requested provider lacks an API key, switch to an available one
+        if "gemini" in model_lower and not (keys.get("google") or keys.get("browseruse")):
+            if keys.get("openai"):
+                model_name, model_lower = "gpt-4o", "gpt-4o"
+            elif keys.get("openrouter"):
+                model_name, model_lower = "openrouter/auto", "openrouter/auto"
+            elif keys.get("anthropic"):
+                model_name, model_lower = "claude-3-5-sonnet-latest", "claude-3-5-sonnet-latest"
+        elif "claude" in model_lower and not (keys.get("anthropic") or keys.get("browseruse")):
+            if keys.get("openai"):
+                model_name, model_lower = "gpt-4o", "gpt-4o"
+            elif keys.get("google"):
+                model_name, model_lower = "gemini-2.0-flash", "gemini-2.0-flash"
+        elif "openrouter" in model_lower and not (keys.get("openrouter") or keys.get("browseruse")):
+            if keys.get("openai"):
+                model_name, model_lower = "gpt-4o", "gpt-4o"
+
         if "openrouter" in model_lower:
             from langchain_openai import ChatOpenAI
             api_key = keys.get("openrouter") or keys.get("browseruse")
             if not api_key: return "Error: OpenRouter API key is missing. Required for this agent."
-            # Remove openrouter/ prefix if present
             actual_model = model_name[11:] if model_lower.startswith("openrouter/") else model_name
             llm = ChatOpenAI(
                 model=actual_model,
@@ -1016,22 +1076,22 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
             from langchain_openai import ChatOpenAI
             api_key = keys.get("openai") or keys.get("browseruse")
             if not api_key: return "Error: OpenAI API key is missing. Required for browser-use."
-            
-            # ensure model string is valid for openai
+
             if "/" in model_name: 
                 model_name = model_name.split("/")[-1]
-                
+
             llm = ChatOpenAI(model=model_name, api_key=api_key)
-            
+
         agent = BrowserUseAgent(task=task, llm=llm, browser=browser_instance)
-        result = await agent.run()
-        
         try:
-            await browser_instance.close()
-        except Exception:
-            pass
-            
-        return f"Browser Use Agent finished. Result:\n{result}"
+            result = await agent.run()
+            return f"Browser Use Agent finished. Result:\n{result}"
+        finally:
+            if browser_instance is not None:
+                try:
+                    await browser_instance.close()
+                except Exception:
+                    pass
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)
@@ -1170,6 +1230,34 @@ class ToolExecutor:
         if _is_doc_write(tool_name, arguments):
             logger.info("📝 [Executor] Frictionless doc write for '%s' (tool=%s).", agent_name, tool_name)
             return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
+
+        # ── Implementation Plan Approval Guard ────────────────────────────────
+        # If the agent has a task currently awaiting human plan approval, block
+        # mutating file actions and shell execution until approved.
+        if tool_name in ("write_file", "edit_file", "append_file", "delete_file", "execute_command"):
+            try:
+                from core.memory.database import async_session
+                from core.memory.models import Task
+                from sqlalchemy import select
+                agent_uuid = uuid.UUID(agent_id) if isinstance(agent_id, str) else agent_id
+                async with async_session() as db:
+                    stmt_plan = select(Task).where(
+                        Task.assigned_agent_id == agent_uuid,
+                        Task.plan_status == "awaiting_approval"
+                    ).limit(1)
+                    pending_plan_task = (await db.execute(stmt_plan)).scalar_one_or_none()
+                    if pending_plan_task:
+                        logger.warning(
+                            "🛑 [Executor] Action '%s' paused for agent '%s': task '%s' plan is awaiting human approval.",
+                            tool_name, agent_name, pending_plan_task.title
+                        )
+                        return (
+                            f"🛑 Action Paused: The implementation plan for task '{pending_plan_task.title}' is currently "
+                            f"AWAITING HUMAN APPROVAL. You cannot modify code files or execute shell commands until "
+                            f"an administrator reviews and approves your plan via the UI."
+                        )
+            except Exception as e:
+                logger.debug("[Executor] Plan approval guard notice: %s", e)
 
         # ── Gate dispatch ─────────────────────────────────────────────────────
         # 1. Safe — instant execution
@@ -1875,14 +1963,33 @@ async def _wrap_execute_command(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Cannot resolve workspace directory for team."
 
     # Allow agent to specify a subdirectory relative to workspace root (Recommendation 7.E)
+    # or an existing absolute directory on disk
     sub_cwd = args.get("cwd")
     if sub_cwd:
         from pathlib import Path
-        root = Path(base_cwd).resolve()
-        candidate = (root / sub_cwd).resolve()
-        if not candidate.is_relative_to(root):
-            return f"Error: cwd '{sub_cwd}' escapes the workspace root."
-        cwd = str(candidate)
+        raw = Path(sub_cwd)
+        if raw.is_absolute():
+            candidate = raw.resolve()
+            if not candidate.is_dir():
+                return f"Error: Specified cwd directory '{sub_cwd}' does not exist."
+            cwd = str(candidate)
+        else:
+            root = Path(base_cwd).resolve()
+            candidate = (root / sub_cwd).resolve()
+            is_inside = False
+            try:
+                candidate.relative_to(root)
+                is_inside = True
+            except ValueError:
+                if os.name == 'nt':
+                    try:
+                        Path(str(candidate).lower()).relative_to(Path(str(root).lower()))
+                        is_inside = True
+                    except ValueError:
+                        is_inside = False
+            if not is_inside:
+                return f"Error: cwd '{sub_cwd}' escapes the workspace root."
+            cwd = str(candidate)
     else:
         cwd = base_cwd
     return await shell_tools.execute_command(command, team_id, timeout, context=context, cwd=cwd, background=background)
@@ -2496,6 +2603,7 @@ async def _wrap_create_task(args: Dict[str, Any], team_id: str) -> str:
     priority = args.get("priority", "medium")
     assignee = args.get("assignee")
     blocked_by_task_id = args.get("blocked_by_task_id")
+    depends_on = args.get("depends_on")
     target_files = args.get("target_files")
     contract_spec = args.get("contract_spec")
     verification_command = args.get("verification_command")
@@ -2512,7 +2620,8 @@ async def _wrap_create_task(args: Dict[str, Any], team_id: str) -> str:
         creator_agent_name=agent_name,
         target_files=target_files,
         contract_spec=contract_spec,
-        verification_command=verification_command
+        verification_command=verification_command,
+        depends_on=depends_on,
     )
 
 async def _wrap_list_tasks(args: Dict[str, Any], team_id: str) -> str:
@@ -2527,10 +2636,20 @@ async def _wrap_update_task(args: Dict[str, Any], team_id: str) -> str:
     notes = args.get("notes")
     assignee_name = args.get("assignee_name")
     blocked_by_task_id = args.get("blocked_by_task_id")
+    depends_on = args.get("depends_on")
     agent_name = args.get("_agent_name")
     if not task_id:
         return "Error: Missing 'task_id'."
-    return await task_tools.update_task(task_id, status, notes, assignee_name, agent_name, blocked_by_task_id)
+    return await task_tools.update_task(
+        task_id=task_id,
+        status=status,
+        notes=notes,
+        assignee_name=assignee_name,
+        agent_name=agent_name,
+        blocked_by_task_id=blocked_by_task_id,
+        team_id=team_id,
+        depends_on=depends_on,
+    )
 
 async def _wrap_comment_on_task(args: Dict[str, Any], team_id: str) -> str:
     from core.tools.task_tools import task_tools
@@ -2540,7 +2659,7 @@ async def _wrap_comment_on_task(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'task_id' or 'text'."
     agent_id = args.get("_agent_id", "unknown")
     agent_name = args.get("_agent_name", "Agent")
-    return await task_tools.comment_on_task(task_id, text, agent_id, agent_name)
+    return await task_tools.comment_on_task(task_id, text, agent_id, agent_name, team_id=team_id)
 
 
 async def _wrap_write_task_plan(args: Dict[str, Any], team_id: str) -> str:
@@ -2785,8 +2904,8 @@ tool_executor = ToolExecutor()
 # ---- New Filesystem Wrappers ----
 
 async def _wrap_copy_file(args: Dict[str, Any], team_id: str) -> str:
-    src = args.get("source", "")
-    dst = args.get("destination", "")
+    src = args.get("source") or args.get("src") or ""
+    dst = args.get("destination") or args.get("dst") or args.get("dest") or ""
     if not src or not dst:
         return "Error: Missing 'source' or 'destination'."
     project_id = await _team_project_id(team_id)
@@ -2921,19 +3040,41 @@ async def _wrap_hybrid_code_search(args: Dict[str, Any], team_id: str) -> str:
     if not query:
         return "Error: Missing parameter 'query'."
     top_k = int(args.get("top_k", 10))
+    file_filter = args.get("file_filter") or args.get("file_path")
+    kind = args.get("kind")
     from core.knowledge.hybrid_search import hybrid_code_search
     from core.knowledge.code_graph import code_graph
     project_id = await _team_project_id(team_id)
-    chunks = await code_graph.get_all_chunks(project_id)
-    hybrid_code_search.index_workspace_chunks(chunks)
-    results = await hybrid_code_search.search(query, top_k=top_k)
+
+    # Lazily initialize project index from code_graph chunks only if empty
+    p_idx = hybrid_code_search.get_project_index(project_id)
+    if not p_idx.file_chunks:
+        chunks = await code_graph.get_all_chunks(project_id)
+        hybrid_code_search.index_workspace_chunks(chunks, project_id=project_id)
+
+    results = await hybrid_code_search.search(
+        query,
+        project_id=project_id,
+        top_k=top_k,
+        file_filter=file_filter,
+        kind=kind
+    )
     if not results:
         return f"No code snippets found matching '{query}'."
     output = [f"Hybrid Search Results for '{query}':"]
     for r in results:
-        output.append(f"\n[{r['file_path']} L{r['start_line']}-L{r['end_line']}] ({r['kind']}) {r['name']} (score: {r['score']})")
+        bases_info = f" : {', '.join(r['bases'])}" if r.get('bases') else ""
+        parent_info = f" (inside {r['parent_symbol']})" if r.get('parent_symbol') else ""
+        output.append(f"\n[{r['file_path']} L{r['start_line']}-L{r['end_line']}] ({r['kind']}) {r['name']}{bases_info}{parent_info} (score: {r['score']})")
         output.append("```\n" + r['code'][:500] + ("\n..." if len(r['code']) > 500 else "") + "\n```")
     return "\n".join(output)
+
+async def _wrap_get_class_hierarchy(args: Dict[str, Any], team_id: str) -> str:
+    class_name = args.get("class_name", "")
+    if not class_name:
+        return "Error: Missing parameter 'class_name'."
+    project_id = await _team_project_id(team_id)
+    return await code_analysis_tools.get_class_hierarchy(class_name, project_id)
 
 # ---- Memory Wrappers ----
 
@@ -3106,7 +3247,19 @@ async def _wrap_extract_document(args: Dict[str, Any], team_id: str) -> str:
             else:
                 target_path = target_path.resolve()
 
-            if not target_path.is_relative_to(root_dir):
+            is_inside = False
+            try:
+                target_path.relative_to(root_dir)
+                is_inside = True
+            except ValueError:
+                if os.name == 'nt':
+                    try:
+                        Path(str(target_path).lower()).relative_to(Path(str(root_dir).lower()))
+                        is_inside = True
+                    except ValueError:
+                        is_inside = False
+
+            if not is_inside:
                 return f"Error: Path '{path_or_url}' is outside workspace boundaries."
 
             if not target_path.exists() or not target_path.is_file():

@@ -46,10 +46,88 @@ class AutoDreamWorker:
         self._task: Optional[asyncio.Task] = None
         self._in_flight_message_ids: Set[str] = set()
         self._in_flight_lock = asyncio.Lock()
+        self._cycle_lock = asyncio.Lock()
+        self._last_run_at: Optional[str] = None
+        self._last_cycle_duration_secs: float = 0.0
+        self._total_consolidated_learnings: int = 0
+        self._total_entity_facts: int = 0
+        self._last_error: Optional[str] = None
 
     @property
     def interval(self):
+        # Dynamically evaluate agent_settings DREAM_INTERVAL_MINUTES from active config
+        try:
+            from core.llm.config_manager import load_config
+            cfg = load_config()
+            cfg_interval = cfg.get("agent_settings", {}).get("DREAM_INTERVAL_MINUTES")
+            if cfg_interval is not None and int(cfg_interval) > 0:
+                return int(cfg_interval)
+        except Exception:
+            pass
         return self._interval_minutes if self._interval_minutes > 0 else core.config.DREAM_INTERVAL_MINUTES
+
+    def get_status(self) -> dict:
+        """Returns operational telemetry for observability and monitoring."""
+        return {
+            "is_running": self._running,
+            "running": self._running,
+            "interval_minutes": self.interval,
+            "interval_seconds": self.interval * 60,
+            "last_run_at": self._last_run_at,
+            "last_cycle_duration_secs": round(self._last_cycle_duration_secs, 2),
+            "total_consolidated_learnings": self._total_consolidated_learnings,
+            "total_entity_facts": self._total_entity_facts,
+            "in_flight_messages": len(self._in_flight_message_ids),
+            "last_error": self._last_error,
+        }
+
+    async def run_once(self, team_id: Optional[str] = None) -> dict:
+        """Runs an immediate on-demand consolidation pass without waiting for background timer."""
+        async with self._cycle_lock:
+            start_time = time.monotonic()
+            cycle_ts = datetime.now(timezone.utc).isoformat()
+            self._last_run_at = cycle_ts
+            self._last_error = None
+            consolidated_teams = 0
+
+            try:
+                if team_id:
+                    import uuid
+                    team_uuid = uuid.UUID(str(team_id))
+                    async with async_session() as db:
+                        stmt = select(Team).where(Team.id == team_uuid)
+                        team = (await db.execute(stmt)).scalar_one_or_none()
+                        if not team:
+                            return {"status": "error", "message": f"Team '{team_id}' not found"}
+                        await self._consolidate_team(db, team)
+                        consolidated_teams = 1
+                else:
+                    await self.consolidate_all_teams()
+                    async with async_session() as db:
+                        stmt = select(Team)
+                        teams = (await db.execute(stmt)).scalars().all()
+                        consolidated_teams = len(teams)
+
+                duration = time.monotonic() - start_time
+                self._last_cycle_duration_secs = duration
+                return {
+                    "status": "success",
+                    "teams_processed": consolidated_teams,
+                    "duration_secs": round(duration, 2),
+                    "total_consolidated_learnings": self._total_consolidated_learnings,
+                    "total_entity_facts": self._total_entity_facts,
+                    "timestamp": cycle_ts,
+                }
+            except Exception as e:
+                self._last_error = str(e)
+                duration = time.monotonic() - start_time
+                self._last_cycle_duration_secs = duration
+                logger.exception("✗ [Dream Worker] Manual consolidation error: %s", e)
+                return {
+                    "status": "error",
+                    "message": str(e),
+                    "duration_secs": round(duration, 2),
+                }
 
     async def start(self):
         """Starts the periodic consolidation loop as a background coroutine."""
@@ -156,6 +234,8 @@ class AutoDreamWorker:
         await asyncio.gather(*[_bounded_consolidate(team) for team in teams])
 
         elapsed = time.monotonic() - cycle_start
+        self._last_run_at = datetime.now(timezone.utc).isoformat()
+        self._last_cycle_duration_secs = elapsed
         logger.info("💤 [Dream] Consolidation cycle complete. Processed %d team(s) in %.2fs.", team_count, elapsed)
 
     async def _consolidate_team(self, db: AsyncSession, team):
@@ -341,6 +421,8 @@ class AutoDreamWorker:
 
             # Atomic commit of DB changes
             await db.commit()
+            self._total_consolidated_learnings += stored_lessons
+            self._total_entity_facts += stored_facts
             logger.info(
                 "💤 [Dream] Team '%s': Successfully consolidated %d lessons and %d entity facts.",
                 team.name, stored_lessons, stored_facts,
@@ -442,3 +524,4 @@ class AutoDreamWorker:
 
 # Singleton
 dream_worker = AutoDreamWorker()
+auto_dream_worker = dream_worker

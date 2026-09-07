@@ -7,6 +7,9 @@ from typing import Optional, List
 from core.auth.auth_middleware import require_auth
 from core.tools.file_tools import file_tools
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from core.memory.database import get_db
+
 router = APIRouter(prefix="/api/git", tags=["git"])
 
 class GitCommitRequest(BaseModel):
@@ -19,8 +22,65 @@ class GitActionRequest(BaseModel):
     project_id: Optional[str] = None
     slug: Optional[str] = None
 
+async def _assert_git_project_access(project_id_or_slug: Optional[str], user_id: str, db: Optional[AsyncSession] = None) -> None:
+    if not project_id_or_slug:
+        return
+    import uuid
+    import re
+    from core.memory.models import Project
+    from sqlalchemy import select
+    from core.api.crud_routes import _assert_project_access
+
+    if db is not None:
+        session = db
+        try:
+            uuid.UUID(str(project_id_or_slug))
+            await _assert_project_access(session, str(project_id_or_slug), user_id)
+            return
+        except ValueError:
+            pass
+
+        res = await session.execute(select(Project))
+        projects = res.scalars().all()
+        matched_proj = None
+        for p in projects:
+            slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', p.name).strip('-')
+            if slug.lower() == str(project_id_or_slug).lower() or p.name.lower() == str(project_id_or_slug).lower():
+                matched_proj = p
+                break
+        if matched_proj:
+            await _assert_project_access(session, str(matched_proj.id), user_id)
+    else:
+        from core.memory.database import async_session
+        try:
+            uuid.UUID(str(project_id_or_slug))
+            async with async_session() as session:
+                await _assert_project_access(session, str(project_id_or_slug), user_id)
+            return
+        except ValueError:
+            pass
+
+        async with async_session() as session:
+            res = await session.execute(select(Project))
+            projects = res.scalars().all()
+            matched_proj = None
+            for p in projects:
+                slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', p.name).strip('-')
+                if slug.lower() == str(project_id_or_slug).lower() or p.name.lower() == str(project_id_or_slug).lower():
+                    matched_proj = p
+                    break
+            if matched_proj:
+                await _assert_project_access(session, str(matched_proj.id), user_id)
+
+
 @router.post("/init")
-async def init_repository(slug: Optional[str] = Query(None), project_id: Optional[str] = Query(None), user: dict = Depends(require_auth)):
+async def init_repository(
+    slug: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(project_id or slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(project_id or slug)
         res = subprocess.run(
@@ -48,11 +108,19 @@ async def init_repository(slug: Optional[str] = Query(None), project_id: Optiona
                 f.write(f"{prefix}# Carole.ai internal directory\n.carole/\n")
                 
         return {"status": "success", "message": "Repository initialized and .gitignore updated."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/status")
-async def get_git_status(slug: Optional[str] = Query(None), project_id: Optional[str] = Query(None), user: dict = Depends(require_auth)):
+async def get_git_status(
+    slug: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(project_id or slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(project_id or slug)
         
@@ -108,11 +176,18 @@ async def get_git_status(slug: Optional[str] = Query(None), project_id: Optional
             })
             
         return {"status": "success", "changes": changes}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/stage")
-async def stage_file(req: GitActionRequest, user: dict = Depends(require_auth)):
+async def stage_file(
+    req: GitActionRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
         res = subprocess.run(
@@ -124,11 +199,18 @@ async def stage_file(req: GitActionRequest, user: dict = Depends(require_auth)):
         if res.returncode != 0:
             return {"status": "error", "message": res.stderr or "Failed to stage file"}
         return {"status": "success", "message": f"Staged {req.file}"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/unstage")
-async def unstage_file(req: GitActionRequest, user: dict = Depends(require_auth)):
+async def unstage_file(
+    req: GitActionRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
         # Check if HEAD exists (if not, we reset using git rm --cached)
@@ -151,11 +233,18 @@ async def unstage_file(req: GitActionRequest, user: dict = Depends(require_auth)
         if res.returncode != 0:
             return {"status": "error", "message": res.stderr or "Failed to unstage file"}
         return {"status": "success", "message": f"Unstaged {req.file}"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/discard")
-async def discard_changes(req: GitActionRequest, user: dict = Depends(require_auth)):
+async def discard_changes(
+    req: GitActionRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
         
@@ -191,11 +280,18 @@ async def discard_changes(req: GitActionRequest, user: dict = Depends(require_au
             if res.returncode != 0:
                 return {"status": "error", "message": res.stderr or "Failed to discard changes"}
             return {"status": "success", "message": f"Discarded changes for {req.file}"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/ignore")
-async def add_to_gitignore(req: GitActionRequest, user: dict = Depends(require_auth)):
+async def add_to_gitignore(
+    req: GitActionRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
         gitignore_path = os.path.join(workspace_root, ".gitignore")
@@ -204,11 +300,20 @@ async def add_to_gitignore(req: GitActionRequest, user: dict = Depends(require_a
             f.write(f"\n{req.file}\n")
             
         return {"status": "success", "message": f"Added {req.file} to .gitignore"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/commit")
-async def commit_changes(req: GitCommitRequest, slug: Optional[str] = Query(None), project_id: Optional[str] = Query(None), user: dict = Depends(require_auth)):
+async def commit_changes(
+    req: GitCommitRequest,
+    slug: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(req.project_id or req.slug or project_id or slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug or project_id or slug)
         
@@ -235,11 +340,20 @@ async def commit_changes(req: GitCommitRequest, slug: Optional[str] = Query(None
             return {"status": "success", "message": "Changes committed successfully (staged all first)."}
             
         return {"status": "success", "message": "Staged changes committed successfully."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/show")
-async def show_git_file(file: str, slug: Optional[str] = Query(None), project_id: Optional[str] = Query(None), user: dict = Depends(require_auth)):
+async def show_git_file(
+    file: str,
+    slug: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(project_id or slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(project_id or slug)
         res = subprocess.run(
@@ -252,11 +366,20 @@ async def show_git_file(file: str, slug: Optional[str] = Query(None), project_id
             # File might be untracked or HEAD doesn't exist
             return {"status": "success", "content": ""}
         return {"status": "success", "content": res.stdout}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/log")
-async def get_commit_history(slug: Optional[str] = Query(None), project_id: Optional[str] = Query(None), limit: int = Query(50), user: dict = Depends(require_auth)):
+async def get_commit_history(
+    slug: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    limit: int = Query(50),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(project_id or slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(project_id or slug)
         
@@ -298,6 +421,96 @@ async def get_commit_history(slug: Optional[str] = Query(None), project_id: Opti
                 })
                 
         return {"status": "success", "commits": commits}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class GitCheckpointCreateRequest(BaseModel):
+    message: Optional[str] = "Manual Checkpoint"
+    project_id: Optional[str] = None
+    slug: Optional[str] = None
+
+
+class GitCheckpointRollbackRequest(BaseModel):
+    checkpoint_id: str
+    project_id: Optional[str] = None
+    slug: Optional[str] = None
+
+
+@router.post("/checkpoint/create")
+async def create_checkpoint(
+    req: GitCheckpointCreateRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
+    try:
+        from core.tools.git_tools import git_tools
+        workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
+        result = await git_tools.create_checkpoint(name=req.message or "Manual Checkpoint", cwd=str(workspace_root))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/checkpoints")
+async def list_checkpoints(
+    slug: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(project_id or slug, user["sub"], db=db)
+    try:
+        from core.tools.git_tools import git_tools
+        workspace_root = await file_tools.get_workspace_root(project_id or slug)
+        checkpoints = await git_tools.list_checkpoints(cwd=str(workspace_root))
+        return {"status": "success", "checkpoints": checkpoints}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/checkpoint/rollback")
+async def rollback_checkpoint(
+    req: GitCheckpointRollbackRequest,
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
+    try:
+        from core.tools.git_tools import git_tools
+        workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
+        result = await git_tools.rollback_checkpoint(req.checkpoint_id, cwd=str(workspace_root))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/checkpoint/diff")
+async def diff_checkpoint(
+    checkpoint_id: str = Query(...),
+    slug: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_git_project_access(project_id or slug, user["sub"], db=db)
+    try:
+        from core.tools.git_tools import git_tools
+        workspace_root = await file_tools.get_workspace_root(project_id or slug)
+        result = await git_tools.diff_checkpoint(checkpoint_id, cwd=str(workspace_root))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 

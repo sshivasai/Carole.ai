@@ -359,16 +359,35 @@ ROLE_TEMPLATES = [
 ]
 
 
+def _resolve_recommended_model(role: str) -> str:
+    import core.config
+    coder_roles = {"software engineer", "full stack developer", "frontend developer", "backend developer", "devops engineer", "debugger", "swe", "coder"}
+    fast_roles = {"qa tester", "documenter", "customer support", "executive assistant"}
+    r = role.lower()
+    if any(cr in r for cr in coder_roles):
+        return getattr(core.config, "DEFAULT_CODER_MODEL", "openrouter/free")
+    if any(fr in r for fr in fast_roles):
+        return getattr(core.config, "DEFAULT_FAST_MODEL", "openrouter/free")
+    return getattr(core.config, "DEFAULT_SMART_MODEL", "openrouter/auto")
+
+
 def get_all_templates() -> list:
-    """Returns all role templates."""
-    return ROLE_TEMPLATES
+    """Returns all role templates with dynamically resolved recommended models."""
+    res = []
+    for t in ROLE_TEMPLATES:
+        copy_t = dict(t)
+        copy_t["recommended_model"] = _resolve_recommended_model(t["role"])
+        res.append(copy_t)
+    return res
 
 
 def get_template_by_role(role: str) -> dict | None:
-    """Returns a specific template by role name (case-insensitive)."""
+    """Returns a specific template by role name (case-insensitive) with dynamic recommended model."""
     for t in ROLE_TEMPLATES:
         if t["role"].lower() == role.lower():
-            return t
+            copy_t = dict(t)
+            copy_t["recommended_model"] = _resolve_recommended_model(t["role"])
+            return copy_t
     if role.lower() == "coordinator":
         return get_template_by_role("orchestrator")
     if role.lower() == "orchestrator":

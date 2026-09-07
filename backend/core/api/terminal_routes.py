@@ -15,6 +15,11 @@ class TerminalExecuteRequest(BaseModel):
 
 @router.post("/execute")
 async def execute_command(req: TerminalExecuteRequest, user: dict = Depends(require_auth)):
+    if req.project_id:
+        from core.memory.database import async_session
+        from core.api.crud_routes import _assert_project_access
+        async with async_session() as db:
+            await _assert_project_access(db, req.project_id, user["sub"])
     try:
         # Use project_id as team_id for websocket streaming
         team_id = req.project_id or "default"
@@ -29,6 +34,8 @@ async def execute_command(req: TerminalExecuteRequest, user: dict = Depends(requ
         )
 
         return {"status": "success", "output": result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -36,6 +43,11 @@ async def execute_command(req: TerminalExecuteRequest, user: dict = Depends(requ
 @router.get("/processes")
 async def list_processes(project_id: Optional[str] = None, user: dict = Depends(require_auth)):
     """List active and recently executed background processes."""
+    if project_id:
+        from core.memory.database import async_session
+        from core.api.crud_routes import _assert_project_access
+        async with async_session() as db:
+            await _assert_project_access(db, project_id, user["sub"])
     return process_registry.list_processes(team_id=project_id)
 
 

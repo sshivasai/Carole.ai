@@ -1,14 +1,33 @@
 import logging
+import re
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.memory.database import get_db
 from core.auth.auth_middleware import require_auth
 from core.skills.skill_manager import SkillManager
 
+from core.api.crud_routes import _assert_team_access
+from core.memory.models import Skill
+from sqlalchemy import select
+import uuid
+
 logger = logging.getLogger("carole.skill_routes")
 router = APIRouter()
+
+async def _assert_skill_access(db: AsyncSession, skill_id: str, user_id: str) -> Skill:
+    try:
+        s_uuid = uuid.UUID(skill_id)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid skill_id")
+    stmt = select(Skill).where(Skill.id == s_uuid)
+    res = await db.execute(stmt)
+    skill = res.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    await _assert_team_access(db, str(skill.team_id), user_id)
+    return skill
 
 class SkillCreateReq(BaseModel):
     team_id: str
@@ -38,6 +57,169 @@ class SkillRes(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class DiscoveredSkillRes(BaseModel):
+    name: str
+    description: str = ""
+    tools: List[str] = []
+    dependencies: List[str] = []
+    is_active: bool = True
+    author: str = ""
+    version: str = "1.0.0"
+    source: str = "project"
+    skill_dir: Optional[str] = None
+    skill_file: Optional[str] = None
+    instructions: str = ""
+    scripts: List[str] = []
+    references: List[str] = []
+
+class DiscoveredSkillCreateReq(BaseModel):
+    name: str
+    content: str
+    target_location: Optional[str] = "project"
+    workspace_path: Optional[str] = None
+
+class SkillToggleReq(BaseModel):
+    name: str
+    is_active: bool
+
+@router.get("/discovered", response_model=List[DiscoveredSkillRes])
+async def list_discovered_skills(
+    workspace_path: Optional[str] = None,
+    team_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    user_context: dict = Depends(require_auth)
+):
+    """
+    Discovers all skills from the filesystem (.agents/skills/, .carole/skills/, ~/.carole/skills/)
+    and optionally from the database for the given team.
+    """
+    from pathlib import Path
+    w_path = Path(workspace_path) if workspace_path else None
+    clean_team_id = None
+    if team_id and str(team_id).strip().lower() not in ("undefined", "null", "none", ""):
+        try:
+            uuid.UUID(str(team_id).strip())
+            clean_team_id = str(team_id).strip()
+        except (ValueError, TypeError, AttributeError):
+            clean_team_id = None
+
+    discovered = await SkillManager.discover_all_skills(
+        workspace_root=w_path,
+        team_id=clean_team_id,
+        db=db
+    )
+    return [s.to_dict() for s in discovered]
+
+@router.post("/discovered", response_model=DiscoveredSkillRes)
+async def create_discovered_skill(
+    req: DiscoveredSkillCreateReq,
+    user_context: dict = Depends(require_auth)
+):
+    """
+    Creates or updates a SKILL.md file in .agents/skills/<name>/ or ~/.carole/skills/<name>/.
+    Immediately hot-loads the skill into the active catalog.
+    """
+    try:
+        from pathlib import Path
+        w_path = Path(req.workspace_path) if req.workspace_path else None
+        skill_def = SkillManager.save_skill_package(
+            name=req.name,
+            content=req.content,
+            target=req.target_location or "project",
+            workspace_root=w_path
+        )
+        return skill_def.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to save discovered skill")
+        raise HTTPException(status_code=500, detail=f"Failed to save skill: {e}")
+
+@router.post("/discovered/upload", response_model=DiscoveredSkillRes)
+async def upload_discovered_skill(
+    file: UploadFile = File(...),
+    target_location: str = Form("project"),
+    skill_name: Optional[str] = Form(None),
+    workspace_path: Optional[str] = Form(None),
+    user_context: dict = Depends(require_auth)
+):
+    """
+    Uploads a .md skill file and saves it as <target_location>/skills/<skill_name>/SKILL.md.
+    """
+    try:
+        if not file.filename.lower().endswith((".md", ".txt", ".markdown")):
+            raise HTTPException(status_code=400, detail="Only markdown (.md) files are accepted.")
+
+        raw_bytes = await file.read()
+        content = raw_bytes.decode("utf-8", errors="replace")
+
+        # Determine skill name
+        inferred_name = skill_name
+        if not inferred_name:
+            stem = Path(file.filename).stem
+            if stem.lower() not in ("skill", "skills", "readme"):
+                inferred_name = stem
+            else:
+                match = re.search(r"name:\s*([a-zA-Z0-9_-]+)", content)
+                if match:
+                    inferred_name = match.group(1)
+                else:
+                    inferred_name = "uploaded-skill"
+
+        from pathlib import Path
+        w_path = Path(workspace_path) if workspace_path else None
+        skill_def = SkillManager.save_skill_package(
+            name=inferred_name,
+            content=content,
+            target=target_location or "project",
+            workspace_root=w_path
+        )
+        return skill_def.to_dict()
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to upload discovered skill")
+        raise HTTPException(status_code=500, detail=f"Failed to upload skill: {e}")
+
+@router.get("/discovered/{skill_name}/content")
+async def get_discovered_skill_content(
+    skill_name: str,
+    workspace_path: Optional[str] = None,
+    user_context: dict = Depends(require_auth)
+):
+    """Returns raw text content of a discovered SKILL.md file."""
+    from pathlib import Path
+    w_path = Path(workspace_path) if workspace_path else None
+    info = SkillManager.get_skill_content(skill_name, workspace_root=w_path)
+    if not info:
+        raise HTTPException(status_code=404, detail="Skill content not found.")
+    return info
+
+@router.delete("/discovered/{skill_name}")
+async def delete_discovered_skill(
+    skill_name: str,
+    workspace_path: Optional[str] = None,
+    user_context: dict = Depends(require_auth)
+):
+    """Deletes a discovered skill package from the filesystem."""
+    from pathlib import Path
+    w_path = Path(workspace_path) if workspace_path else None
+    deleted = SkillManager.delete_filesystem_skill(skill_name, workspace_root=w_path)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Skill not found or already deleted.")
+    return {"status": "ok", "deleted": skill_name}
+
+@router.post("/toggle")
+async def toggle_skill(
+    req: SkillToggleReq,
+    user_context: dict = Depends(require_auth)
+):
+    """Toggles active state of a discovered skill in-memory."""
+    SkillManager.toggle_skill_state(req.name, req.is_active)
+    return {"status": "ok", "name": req.name, "is_active": req.is_active}
+
 @router.get("/{team_id}", response_model=List[SkillRes])
 async def list_skills(
     team_id: str,
@@ -45,6 +227,7 @@ async def list_skills(
     db: AsyncSession = Depends(get_db),
     user_context: dict = Depends(require_auth)
 ):
+    await _assert_team_access(db, team_id, user_context["sub"])
     try:
         skills = await SkillManager.get_team_skills(db, team_id, active_only=active_only)
         # Convert to Pydantic objects or dicts
@@ -61,6 +244,8 @@ async def list_skills(
                 "is_active": s.is_active
             })
         return res
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Failed to list skills")
         raise HTTPException(status_code=500, detail=str(e))
@@ -71,6 +256,7 @@ async def create_skill(
     db: AsyncSession = Depends(get_db),
     user_context: dict = Depends(require_auth)
 ):
+    await _assert_team_access(db, req.team_id, user_context["sub"])
     try:
         new_skill = await SkillManager.create_skill(
             db=db,
@@ -91,6 +277,8 @@ async def create_skill(
             "mcp_servers": new_skill.mcp_servers or [],
             "is_active": new_skill.is_active
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Failed to create skill")
         raise HTTPException(status_code=500, detail=str(e))
@@ -102,6 +290,7 @@ async def update_skill(
     db: AsyncSession = Depends(get_db),
     user_context: dict = Depends(require_auth)
 ):
+    await _assert_skill_access(db, skill_id, user_context["sub"])
     try:
         updated = await SkillManager.update_skill(
             db=db,
@@ -138,6 +327,7 @@ async def delete_skill(
     db: AsyncSession = Depends(get_db),
     user_context: dict = Depends(require_auth)
 ):
+    await _assert_skill_access(db, skill_id, user_context["sub"])
     try:
         success = await SkillManager.delete_skill(db, skill_id)
         if not success:

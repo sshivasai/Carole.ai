@@ -21,7 +21,7 @@ async def test_role_templates(client: AsyncClient):
     res = await client.get("/api/role-templates/Coder")
     assert res.status_code == 200
     template = res.json()
-    assert "claude-sonnet-4" in template["recommended_model"] or "gpt-4o" in template["recommended_model"] or "openrouter/free" in template["recommended_model"]
+    assert any(m in template["recommended_model"] for m in ("claude", "gpt-4o", "gemini", "openrouter"))
     assert "skills" in template
 
 

@@ -11,6 +11,9 @@ JWT-based authentication service for Carole.ai.
 import os
 import uuid
 import base64
+import binascii
+import asyncio
+import math
 import hashlib
 import hmac
 import json
@@ -19,6 +22,7 @@ import time
 from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from core.memory.models import User
 
@@ -81,6 +85,8 @@ def _verify_password(password: str, stored_hash: str) -> bool:
       2. <salt_hex>$<sha256_hex>        (legacy — single-round SHA-256)
       3. raw plaintext                  (ancient seed data — always rejected)
     """
+    if not isinstance(stored_hash, str):
+        return False
     if "$" not in stored_hash:
         # Legacy plain-text: NEVER accept — log a security warning
         logger.warning("⚠️  Plain-text password detected in database. Rejecting login; account needs password reset.")
@@ -88,16 +94,23 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
     if stored_hash.startswith(_PBKDF2_PREFIX):
         # Current PBKDF2 format
-        remainder = stored_hash[len(_PBKDF2_PREFIX):]
-        salt_b64, hash_b64 = remainder.split("$", 1)
-        salt = base64.b64decode(salt_b64)
-        expected = base64.b64decode(hash_b64)
+        try:
+            remainder = stored_hash[len(_PBKDF2_PREFIX):]
+            salt_b64, hash_b64 = remainder.split("$", 1)
+            salt = base64.b64decode(salt_b64, validate=True)
+            expected = base64.b64decode(hash_b64, validate=True)
+        except (ValueError, binascii.Error):
+            return False
+        if len(salt) != 16 or len(expected) != 32:
+            return False
         dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERATIONS)
         return hmac.compare_digest(dk, expected)
 
     # Legacy SHA-256 format — verify but log deprecation warning
     salt, hashed = stored_hash.split("$", 1)
     check = hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
+    if not hashed.isascii():
+        return False
     if hmac.compare_digest(check, hashed):
         logger.warning("⚠️  User authenticated with legacy SHA-256 hash. Hash should be upgraded on next password change.")
         return True
@@ -114,7 +127,7 @@ def _b64url_decode(s: str) -> bytes:
     padding = 4 - len(s) % 4
     if padding != 4:
         s += "=" * padding
-    return base64.urlsafe_b64decode(s)
+    return base64.b64decode(s, altchars=b"-_", validate=True)
 
 
 def _create_jwt(payload: dict) -> str:
@@ -129,29 +142,38 @@ def _create_jwt(payload: dict) -> str:
 
 
 def _decode_jwt(token: str) -> Optional[dict]:
-    """Decodes and verifies a JWT token. Returns payload or None."""
-    parts = token.split(".")
-    if len(parts) != 3:
+    """Verify the signature and claims shared by access tokens and WS tickets."""
+    if not isinstance(token, str):
         return None
-
-    h, p, s = parts
-    signing_input = f"{h}.{p}"
-    expected_sig = hmac.new(JWT_SECRET.encode(), signing_input.encode(), hashlib.sha256).digest()
-    actual_sig = _b64url_decode(s)
-
-    if not hmac.compare_digest(expected_sig, actual_sig):
-        return None
-
     try:
+        h, p, s = token.split(".")
+        signing_input = f"{h}.{p}".encode("ascii")
+        expected_sig = hmac.new(JWT_SECRET.encode(), signing_input, hashlib.sha256).digest()
+        if not hmac.compare_digest(expected_sig, _b64url_decode(s)):
+            return None
+        header = json.loads(_b64url_decode(h))
         payload = json.loads(_b64url_decode(p))
-    except Exception as _e:
-        logger.debug("JWT payload decode failed: %s", _e)
+        if not isinstance(header, dict) or header.get("alg") != JWT_ALGORITHM:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        expiry = payload.get("exp")
+        if type(expiry) not in (int, float) or not math.isfinite(expiry) or expiry <= time.time():
+            return None
+        subject = payload.get("sub")
+        if not isinstance(subject, str):
+            return None
+        uuid.UUID(subject)
+    except (ValueError, TypeError, binascii.Error, OverflowError, RecursionError):
         return None
+    return payload
 
-    # Check expiry
-    if payload.get("exp") and payload["exp"] < time.time():
+
+def _decode_access_jwt(token: str) -> Optional[dict]:
+    """Existing access tokens have no purpose claim; WS tickets are not HTTP credentials."""
+    payload = _decode_jwt(token)
+    if payload is None or "type" in payload:
         return None
-
     return payload
 
 
@@ -168,14 +190,24 @@ class AuthService:
 
         user = User(
             email=email,
-            hashed_password=_hash_password(password),
+            hashed_password=await asyncio.to_thread(_hash_password, password),
             first_name=first_name,
             last_name=last_name,
             is_verified=True,
             is_active=True,
         )
         db.add(user)
-        await db.flush()
+        try:
+            await db.flush()
+            await db.commit()
+        except IntegrityError:
+            # The pre-check cannot serialize concurrent signups. Recover the
+            # session, and translate only a confirmed email collision.
+            await db.rollback()
+            existing = (await db.execute(stmt)).scalar_one_or_none()
+            if existing:
+                return {"error": "A user with this email already exists."}
+            raise
 
         token = self._generate_token(user)
         return {
@@ -196,7 +228,7 @@ class AuthService:
 
         # Constant-time verification to prevent user enumeration timing attacks
         target_hash = user.hashed_password if user and user.hashed_password else _DUMMY_PBKDF2_HASH
-        valid_password = _verify_password(password, target_hash)
+        valid_password = await asyncio.to_thread(_verify_password, password, target_hash)
 
         if not user or not valid_password:
             return {"error": "Invalid email or password."}
@@ -204,31 +236,35 @@ class AuthService:
         if not user.is_active:
             return {"error": "Account is deactivated."}
 
-        # Finding #6 — transparently upgrade legacy SHA-256 hashes to PBKDF2 on
-        # successful login so old accounts are progressively secured without
-        # requiring a forced password reset.
-        if user.hashed_password and not user.hashed_password.startswith(_PBKDF2_PREFIX):
-            try:
-                user.hashed_password = _hash_password(password)
-                await db.commit()
-                logger.info("Upgraded legacy password hash to PBKDF2 for user %s", user.email)
-            except Exception as upgrade_err:
-                logger.warning("Failed to upgrade password hash for %s: %s", user.email, upgrade_err)
-
-        token = self._generate_token(user)
-        return {
+        # Snapshot before commit/rollback: rollback expires ORM attributes even
+        # when expire_on_commit=False. A best-effort upgrade must not break login.
+        response = {
             "user": {
                 "id": str(user.id),
                 "email": user.email,
                 "first_name": user.first_name,
                 "last_name": user.last_name,
             },
-            "token": token,
+            "token": self._generate_token(user),
         }
+
+        # Finding #6 — transparently upgrade legacy SHA-256 hashes to PBKDF2 on
+        # successful login so old accounts are progressively secured without
+        # requiring a forced password reset.
+        if user.hashed_password and not user.hashed_password.startswith(_PBKDF2_PREFIX):
+            try:
+                user.hashed_password = await asyncio.to_thread(_hash_password, password)
+                await db.commit()
+                logger.info("Upgraded legacy password hash to PBKDF2 for user %s", email)
+            except Exception as upgrade_err:
+                await db.rollback()
+                logger.warning("Failed to upgrade password hash for %s: %s", email, upgrade_err)
+
+        return response
 
     async def get_current_user(self, db: AsyncSession, token: str) -> Optional[dict]:
         """Resolves the current user from a JWT token."""
-        payload = _decode_jwt(token)
+        payload = _decode_access_jwt(token)
         if not payload:
             return None
 
@@ -236,9 +272,7 @@ class AuthService:
         if not user_id:
             return None
 
-        stmt = select(User).where(User.id == uuid.UUID(user_id))
-        result = await db.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = await self.get_active_user(db, user_id)
         if not user:
             return None
 
@@ -249,6 +283,15 @@ class AuthService:
             "last_name": user.last_name,
             "is_active": user.is_active,
         }
+
+    async def get_active_user(self, db: AsyncSession, user_id: str) -> Optional[User]:
+        """Resolve a live account for HTTP requests and WebSocket handshakes."""
+        try:
+            user_uuid = uuid.UUID(user_id)
+        except (ValueError, TypeError, AttributeError):
+            return None
+        result = await db.execute(select(User).where(User.id == user_uuid, User.is_active.is_(True)))
+        return result.scalar_one_or_none()
 
     def _generate_token(self, user: User) -> str:
         """Generates a JWT token for the given user."""

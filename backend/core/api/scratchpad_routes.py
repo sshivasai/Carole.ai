@@ -21,9 +21,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.auth.auth_middleware import require_auth
 from core.memory.database import get_db
 from core.memory.models import Agent
 from core.memory.scratchpad import scratchpad_store
+from core.api.crud_routes import _assert_team_access
 
 router = APIRouter(prefix="/api", tags=["scratchpad"])
 
@@ -52,8 +54,13 @@ async def _agent_roster(team_id: str, db: AsyncSession) -> List[dict]:
 
 
 @router.get("/scratchpad/{team_id}")
-async def list_scratchpads(team_id: str, db: AsyncSession = Depends(get_db)):
+async def list_scratchpads(
+    team_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
     """List the team pad plus one personal pad per agent (empty pads included)."""
+    await _assert_team_access(db, team_id, user["sub"])
     agents = await _agent_roster(team_id, db)
     return await scratchpad_store.list_pads(team_id, agents)
 
@@ -63,7 +70,10 @@ async def read_scratchpad(
     team_id: str,
     target: str,
     agent_name: str = Query("", description="Required when target != 'team'"),
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
 ):
+    await _assert_team_access(db, team_id, user["sub"])
     if target not in ("team", "personal"):
         raise HTTPException(status_code=400, detail="target must be 'team' or 'personal'")
     if target == "personal" and not agent_name:
@@ -72,7 +82,13 @@ async def read_scratchpad(
 
 
 @router.post("/scratchpad/{team_id}")
-async def write_scratchpad(team_id: str, body: ScratchpadWriteBody):
+async def write_scratchpad(
+    team_id: str,
+    body: ScratchpadWriteBody,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    await _assert_team_access(db, team_id, user["sub"])
     return await scratchpad_store.write(
         team_id, body.target, body.agent_name, body.content,
         mode=body.mode, agent_id=body.agent_id or "", author=body.author,
@@ -80,7 +96,13 @@ async def write_scratchpad(team_id: str, body: ScratchpadWriteBody):
 
 
 @router.put("/scratchpad/{team_id}")
-async def update_scratchpad(team_id: str, body: ScratchpadWriteBody):
+async def update_scratchpad(
+    team_id: str,
+    body: ScratchpadWriteBody,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
+):
+    await _assert_team_access(db, team_id, user["sub"])
     return await scratchpad_store.update(
         team_id, body.target, body.agent_name, body.content,
         agent_id=body.agent_id or "", author=body.author,
@@ -92,7 +114,10 @@ async def delete_scratchpad(
     team_id: str,
     target: str = Query("personal"),
     agent_name: str = Query(""),
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_auth)
 ):
+    await _assert_team_access(db, team_id, user["sub"])
     if target not in ("team", "personal"):
         raise HTTPException(status_code=400, detail="target must be 'team' or 'personal'")
     if target == "personal" and not agent_name:
