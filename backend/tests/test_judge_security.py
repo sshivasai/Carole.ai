@@ -5,7 +5,7 @@ from core.judge.judge_evaluator import judge_evaluator, JudgeEvaluationResult
 
 def test_assess_risk_tiers():
     # Tier 0: Read-only safe tools
-    tier0_tools = ["read_file", "list_directory", "grep_search", "web_search", "browser_navigate"]
+    tier0_tools = ["read_file", "list_directory", "grep_search", "web_search", "browser_snapshot"]
     for t in tier0_tools:
         tier, desc = judge_evaluator.assess_risk(t, {"path": "src/main.py"})
         assert tier == 0

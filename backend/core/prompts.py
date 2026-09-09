@@ -13,14 +13,14 @@ Usage:
     text = get_prompt("personality.professional", name="Nova", role="Coder")
     text = get_prompt("system.judge")
 
-Variable substitution uses Python str.format_map(), so {braces} in the
-prompt template are replaced with keyword arguments. Use {{ }} to escape
-a literal brace in the prompt text.
+Variable substitution replaces only supplied plain {name} placeholders.
+JSON braces, attribute expressions, and unknown placeholders remain literal.
 """
 
 import json
 import logging
-from collections import defaultdict
+import os
+import tempfile
 from pathlib import Path
 from typing import Dict
 
@@ -72,7 +72,7 @@ def load_prompts() -> Dict[str, str]:
 
     current_key = _get_mtimes()
     if current_key == _prompt_cache_key and _prompt_cache:
-        return _prompt_cache
+        return dict(_prompt_cache)
 
     prompts: Dict[str, str] = {}
 
@@ -81,6 +81,8 @@ def load_prompts() -> Dict[str, str]:
         with open(_DEFAULTS_PATH, "r", encoding="utf-8") as f:
             raw = json.load(f)
         # Strip meta keys that start with _
+        if not isinstance(raw, dict) or any(not isinstance(v, str) for k, v in raw.items() if not k.startswith("_")):
+            raise RuntimeError("Default prompts must be a string-valued object")
         prompts = {k: v for k, v in raw.items() if not k.startswith("_")}
     except (OSError, json.JSONDecodeError) as e:
         logger.error("Failed to load default prompts: %s", e)
@@ -100,26 +102,38 @@ def load_prompts() -> Dict[str, str]:
         try:
             with open(_USER_PATH, "r", encoding="utf-8") as f:
                 user_raw = json.load(f)
+            if not isinstance(user_raw, dict):
+                raise ValueError("Prompt overrides must be an object")
             for k, v in user_raw.items():
-                if not k.startswith("_"):
+                if not k.startswith("_") and isinstance(v, str):
                     prompts[k] = v
             logger.debug("Merged user prompts from %s", _USER_PATH)
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             logger.warning("Failed to load user prompt overrides: %s", e)
 
     # Store in cache
     _prompt_cache = prompts
     _prompt_cache_key = current_key
-    return prompts
+    return dict(prompts)
 
 
 def save_prompts(prompts: Dict[str, str]) -> None:
     """
     Saves prompts to ~/.carole/prompts.json (user override file).
     """
-    _USER_PATH.parent.mkdir(exist_ok=True)
-    with open(_USER_PATH, "w", encoding="utf-8") as f:
-        json.dump(prompts, f, indent=2, ensure_ascii=False)
+    if not isinstance(prompts, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in prompts.items()):
+        raise ValueError("Prompts must map string names to string templates")
+    _USER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=_USER_PATH.parent, prefix=".prompts-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(prompts, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, _USER_PATH)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     _invalidate_prompt_cache()  # Force cache refresh on next get_prompt call
     logger.info("Saved user prompts to %s", _USER_PATH)
 
@@ -159,7 +173,8 @@ def get_prompt(slug: str, **kwargs) -> str:
     if not kwargs:
         return template
     try:
-        return template.format_map(defaultdict(str, kwargs))
+        from core.agent.prompt_safety import render_template
+        return render_template(template, kwargs)
     except Exception as e:
         logger.warning("get_prompt('%s') format error: %s — returning raw template", slug, e)
         return template
@@ -231,4 +246,3 @@ def build_agent_system_prompt(name: str, role: str, personality: str = "professi
 
 # Backward compatibility alias
 build_system_prompt = build_agent_system_prompt
-

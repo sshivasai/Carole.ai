@@ -74,7 +74,13 @@ def _load_overrides() -> dict[str, dict]:
     """Load user overrides from ~/.carole/config.json prompt_blocks section."""
     try:
         cfg = load_config()
-        return cfg.get("prompt_blocks", {})
+        raw = cfg.get("prompt_blocks", {})
+        if not isinstance(raw, dict):
+            return {}
+        return {key: {field: value for field, value in entry.items()
+                      if (field == "content" and isinstance(value, str)) or
+                         (field == "enabled" and isinstance(value, bool))}
+                for key, entry in raw.items() if key in BLOCK_META and isinstance(entry, dict)}
     except Exception as e:
         logger.warning("[PromptBlocks] Could not load config overrides: %s", e)
         return {}
@@ -133,6 +139,8 @@ def save_blocks(updates: list[dict]) -> None:
         default_content = defaults.get(key, "")
         new_content = item.get("content", default_content)
         new_enabled = item.get("enabled", True)
+        if not isinstance(new_content, str) or not isinstance(new_enabled, bool):
+            raise ValueError("Prompt block content must be a string and enabled must be a boolean")
 
         # Store the override (even if content matches default, enabled flag may differ)
         overrides[key] = {
@@ -172,14 +180,15 @@ def get_block(key: str, **template_vars) -> Optional[str]:
     if not enabled:
         return None
 
-    content = override.get("content") or defaults.get(key, "")
+    content = override.get("content", defaults.get(key, ""))
     if not content:
         return None
 
     # Substitute runtime variables safely
     if template_vars:
         try:
-            content = content.format_map(template_vars)
+            from core.agent.prompt_safety import render_template
+            content = render_template(content, template_vars)
         except (KeyError, ValueError):
             pass  # Leave unresolved placeholders as-is
 
