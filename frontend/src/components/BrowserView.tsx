@@ -22,6 +22,7 @@ import {
   Wifi,
 } from "lucide-react";
 import { api } from "@/hooks/useApi";
+import { getWsBase } from "@/hooks/useWebSocket";
 
 interface Props {
   screenshots: BrowserScreenshotEvent[];
@@ -58,18 +59,16 @@ export default function BrowserView({ screenshots }: Props) {
 
   // Connect to WebSocket CDP Screencast
   useEffect(() => {
-    const agentId = active?.sender_id || "global";
-    if (typeof window === "undefined") return;
-
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
-    // Map dev frontend port 3000 -> backend port 8000
-    const backendHost = host.includes(":3000") ? host.replace(":3000", ":8000") : host;
-    const wsUrl = `${protocol}//${backendHost}/api/browser/stream?agent_id=${encodeURIComponent(agentId)}`;
-
+    const agentId = active?.sender_id;
+    if (typeof window === "undefined" || !agentId) return;
+    let disposed = false;
     let ws: WebSocket | null = null;
-    try {
-      ws = new WebSocket(wsUrl);
+    setCurrentLiveShot(null);
+    const connect = async () => {
+      try {
+        const { ticket } = await api.getWsTicket();
+        if (disposed) return;
+        ws = new WebSocket(`${getWsBase()}/api/browser/stream?agent_id=${encodeURIComponent(agentId)}&ticket=${encodeURIComponent(ticket)}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -100,9 +99,15 @@ export default function BrowserView({ screenshots }: Props) {
       ws.onerror = () => {
         setWsConnected(false);
       };
-    } catch {}
+      } catch {
+        if (!disposed) setWsConnected(false);
+      }
+    };
+    void connect();
 
     return () => {
+      disposed = true;
+      wsRef.current = null;
       if (ws) {
         try {
           ws.close();

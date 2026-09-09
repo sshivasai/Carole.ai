@@ -215,7 +215,7 @@ export default function SkillsStudio({
   const handleToggleDiscoveredSkill = async (skillName: string, currentActive: boolean) => {
     setTogglingSkill(skillName);
     try {
-      await api.toggleSkillState(skillName, !currentActive);
+      await api.toggleSkillState(skillName, !currentActive, teamId || undefined);
       setDiscoveredSkills(prev =>
         prev.map(s => s.name === skillName ? { ...s, is_active: !currentActive } : s)
       );
@@ -332,7 +332,7 @@ export default function SkillsStudio({
   const handleOpenEditDiscoveredSkill = async (skill: any) => {
     try {
       setSavingDiscovered(true);
-      const info = await api.getDiscoveredSkillContent(skill.name);
+      const info = await api.getDiscoveredSkillContent(skill.name, undefined, teamId || undefined);
       setDiscoveredEditorMode("edit");
       setDiscName(skill.name);
       setDiscoveredTargetLocation(skill.source === "global" ? "global" : "project");
@@ -400,6 +400,7 @@ export default function SkillsStudio({
         name: nameToSave,
         content: contentToSave,
         target_location: discoveredTargetLocation,
+        team_id: teamId || undefined,
       });
 
       const destPath = discoveredTargetLocation === "project" ? ".carole/skills/" : "~/.carole/skills/";
@@ -416,7 +417,7 @@ export default function SkillsStudio({
   const handleDeleteDiscoveredSkill = async () => {
     if (!skillToDelete) return;
     try {
-      await api.deleteDiscoveredSkill(skillToDelete);
+      await api.deleteDiscoveredSkill(skillToDelete, undefined, teamId || undefined);
       onToast(`Skill package '${skillToDelete}' deleted from disk`, "success");
       setDeleteDiscoveredConfirmOpen(false);
       setSkillToDelete(null);
@@ -462,7 +463,9 @@ export default function SkillsStudio({
       await api.uploadDiscoveredSkill(
         uploadFile,
         uploadTargetLocation,
-        uploadSkillName.trim() || undefined
+        uploadSkillName.trim() || undefined,
+        undefined,
+        teamId || undefined
       );
       const destPath = uploadTargetLocation === "project" ? ".carole/skills/" : "~/.carole/skills/";
       onToast(`Skill uploaded and hot-loaded into ${destPath}`, "success");

@@ -28,12 +28,16 @@ interface PrettyAvatarProps {
 }
 
 function stringToHash(str: string): number {
-  let hash = 0;
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
   for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
   }
-  return Math.abs(hash);
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return ((h1 ^ h2) >>> 0);
 }
 
 // 12 curated vibrant dual-tone dark gradients
@@ -63,11 +67,31 @@ const HAIR_TYPES = ["stylish", "curly", "sleek", "wavy", "bun", "pompadour", "sp
 const EYE_TYPES = ["tech", "focused", "human", "laser", "robot", "curious", "sharp"];
 const ACCESSORIES = ["headphones", "glasses", "visor", "monocle", "antenna", "badge", "none"];
 
+export function getCanonicalAgentKey(name?: string, role?: string, seed?: string): string {
+  // Prefer name over seed, strip leading '@'
+  let cleanName = (name || seed || "agent")
+    .replace(/^@/, "")
+    .trim()
+    .toLowerCase();
+
+  // Normalize role: strip generic transport/turn roles
+  let cleanRole = (role || "").trim().toLowerCase();
+  if (["assistant", "user", "agent", "active agent", "active", "system", "model"].includes(cleanRole)) {
+    if (cleanName.includes("archer")) cleanRole = "orchestrator";
+    else if (cleanName.includes("nova") || cleanName.includes("coder")) cleanRole = "coder";
+    else if (cleanName.includes("judge") || cleanName.includes("judy") || cleanName.includes("sentinel")) cleanRole = "judge";
+    else cleanRole = "";
+  }
+
+  // Canonical format: "name:role" if role is known, else "name"
+  return cleanRole ? `${cleanName}:${cleanRole}` : cleanName;
+}
+
 export function getAvatarTheme(name?: string, role?: string, seed?: string, preset?: string) {
   const n = (name || "agent").toLowerCase().trim();
   const r = (role || "").toLowerCase().trim();
 
-  // Special Singleton Presets
+  // Special System / Human Singleton Presets
   if (preset === "admin" || n === "admin" || n === "human" || r === "human") {
     return {
       bgGrad: ["#2563eb", "#1e1b4b"] as [string, string],
@@ -77,10 +101,11 @@ export function getAvatarTheme(name?: string, role?: string, seed?: string, pres
       eyes: "human",
       accessory: "badge",
       accentColor: "#38bdf8",
+      hash: 1,
     };
   }
 
-  if (preset === "subagent" || n.startsWith("sub-") || r.includes("subagent")) {
+  if (preset === "subagent" || n.startsWith("sub-") || n.startsWith("subagent-") || r.includes("subagent")) {
     return {
       bgGrad: ["#fbbf24", "#d97706"] as [string, string],
       skin: "#ffedd5",
@@ -89,22 +114,23 @@ export function getAvatarTheme(name?: string, role?: string, seed?: string, pres
       eyes: "robot",
       accessory: "antenna",
       accentColor: "#f59e0b",
+      hash: 2,
     };
   }
 
-  // Deterministic Seed Generation based on name + role
-  const seedKey = `${(seed || name || "agent").toLowerCase().trim()}:${r}`;
-  const hash = stringToHash(seedKey);
+  // Deterministic Seed Generation strictly based on canonical name + role
+  const canonicalKey = getCanonicalAgentKey(name, role, seed);
+  const hash = stringToHash(canonicalKey);
 
   const gradIdx = hash % GRADIENTS.length;
   const bgGrad = GRADIENTS[gradIdx];
-  const accentColor = ACCENTS[gradIdx % ACCENTS.length];
+  const accentColor = ACCENTS[((hash >>> 4) % ACCENTS.length)];
 
-  const skin = SKINS[(hash >> 2) % SKINS.length];
-  const hair = HAIR_COLORS[(hash >> 4) % HAIR_COLORS.length];
-  const hairType = HAIR_TYPES[(hash >> 6) % HAIR_TYPES.length];
-  const eyes = EYE_TYPES[(hash >> 8) % EYE_TYPES.length];
-  const accessory = ACCESSORIES[(hash >> 10) % ACCESSORIES.length];
+  const skin = SKINS[((hash >>> 8) % SKINS.length)];
+  const hair = HAIR_COLORS[((hash >>> 12) % HAIR_COLORS.length)];
+  const hairType = HAIR_TYPES[((hash >>> 16) % HAIR_TYPES.length)];
+  const eyes = EYE_TYPES[((hash >>> 20) % EYE_TYPES.length)];
+  const accessory = ACCESSORIES[((hash >>> 24) % ACCESSORIES.length)];
 
   return {
     bgGrad,
@@ -146,7 +172,7 @@ export default function PrettyAvatar({
     if (preset === "subagent" || n.startsWith("sub-") || r.includes("subagent")) {
       return <Bot size={iconSize} color={cfg.accentColor} />;
     }
-    if (n.includes("archer") || r.includes("orchestrator") || r.includes("coordinator") || r.includes("lead") || r.includes("manager")) {
+    if (r.includes("orchestrator") || r.includes("coordinator") || r.includes("lead") || r.includes("manager") || n.includes("archer")) {
       return <Crown size={iconSize} color={cfg.accentColor} />;
     }
     if (r.includes("coder") || r.includes("developer") || r.includes("engineer") || r.includes("fullstack") || r.includes("backend") || r.includes("frontend")) {
@@ -177,10 +203,11 @@ export default function PrettyAvatar({
       <Palette size={iconSize} color={cfg.accentColor} />,
       <LineChart size={iconSize} color={cfg.accentColor} />,
     ];
-    return icons[(cfg.hash || 0) % icons.length];
+    return icons[((cfg.hash || 0) >>> 27) % icons.length];
   };
 
   const badgeIcon = getBadge();
+  const defId = `av-${cfg.hash || "def"}`;
 
   return (
     <div
@@ -237,18 +264,18 @@ export default function PrettyAvatar({
         }}
       >
         <defs>
-          <radialGradient id={`glow-${preset}`} cx="50%" cy="30%" r="60%">
+          <radialGradient id={`glow-${defId}`} cx="50%" cy="30%" r="60%">
             <stop offset="0%" stopColor="#ffffff" stopOpacity="0.3" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </radialGradient>
-          <linearGradient id={`skin-${preset}`} x1="0%" y1="0%" x2="100%" y2="100%">
+          <linearGradient id={`skin-${defId}`} x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor={cfg.skin} />
             <stop offset="100%" stopColor="#fca5a5" stopOpacity="0.8" />
           </linearGradient>
         </defs>
 
         {/* Ambient Top Light */}
-        <circle cx="50" cy="50" r="50" fill={`url(#glow-${preset})`} />
+        <circle cx="50" cy="50" r="50" fill={`url(#glow-${defId})`} />
 
         {/* Body / Shoulders */}
         <path
@@ -264,10 +291,10 @@ export default function PrettyAvatar({
         />
 
         {/* Neck */}
-        <rect x="43" y="54" width="14" height="16" rx="4" fill={`url(#skin-${preset})`} />
+        <rect x="43" y="54" width="14" height="16" rx="4" fill={`url(#skin-${defId})`} />
 
         {/* Head Base */}
-        <ellipse cx="50" cy="42" rx="22" ry="24" fill={`url(#skin-${preset})`} />
+        <ellipse cx="50" cy="42" rx="22" ry="24" fill={`url(#skin-${defId})`} />
 
         {/* Hair Styles */}
         {cfg.hairType === "stylish" && (

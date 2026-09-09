@@ -6,14 +6,25 @@ Configures an in-memory SQLite database using aiosqlite for speed and isolation,
 overriding the get_db dependency in FastAPI app.
 """
 
+import os
+import tempfile
+from pathlib import Path
 import pytest
 import asyncio
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from httpx import AsyncClient, ASGITransport
 
+_test_data = None
+if os.environ.get("ENV") != "test" or not os.environ.get("CAROLE_HOME_DIR"):
+    _test_data = tempfile.TemporaryDirectory(prefix="carole-pytest-")
+    os.environ["CAROLE_HOME_DIR"] = str(Path(_test_data.name) / ".carole")
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(Path(_test_data.name) / 'tests.db').as_posix()}"
+    os.environ["ENV"] = "test"
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+
 from main import app
-from core.memory.database import get_db, Base
+from core.memory.database import get_db, Base, engine as test_engine, async_session as TestSession
 from core.auth.rate_limiter import limiter, SLOWAPI_AVAILABLE
 
 from sqlalchemy.pool import StaticPool
@@ -24,20 +35,8 @@ if SLOWAPI_AVAILABLE and limiter:
 # Test SQLite in-memory database URL
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
-# Create async engine for testing with StaticPool to keep single in-memory instance
-test_engine = create_async_engine(
-    TEST_DB_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-    echo=False
-)
-
-# Async session factory
-TestSession = async_sessionmaker(
-    bind=test_engine,
-    class_=AsyncSession,
-    expire_on_commit=False
-)
+# Routes and services use the same disposable database. Merely overriding the
+# HTTP dependency leaves background workers writing to a different database.
 
 
 @pytest.fixture(scope="session")
@@ -65,6 +64,8 @@ async def setup_db():
     await test_engine.dispose()
     from core.memory.database import engine as prod_engine
     await prod_engine.dispose()
+    if _test_data is not None:
+        _test_data.cleanup()
 
 
 @pytest.fixture
@@ -95,3 +96,17 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def owned_browser(client):
+    """Real authenticated ownership chain for browser HTTP/WebSocket regressions."""
+    import uuid
+    signup = await client.post("/api/auth/signup", json={"email": f"{uuid.uuid4()}@example.com", "password": "BrowserTest123!"})
+    assert signup.status_code == 200, signup.text
+    account = signup.json()
+    headers = {"Authorization": "Bearer " + account["token"]}
+    project = (await client.post("/api/projects", json={"name": "Browser fixture"}, headers=headers)).json()
+    team = (await client.post("/api/teams", json={"name": "Browser team", "project_id": project["id"]}, headers=headers)).json()
+    agent = (await client.post("/api/agents", json={"name": "Browser agent", "role": "developer", "team_id": team["id"], "model": "openrouter/free"}, headers=headers)).json()
+    return {"headers": headers, "agent_id": agent["id"], "user_id": account["user"]["id"]}

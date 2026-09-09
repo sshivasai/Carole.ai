@@ -228,6 +228,26 @@ class Learning(Base):
     confidence_score = Column(Float, default=1.0, server_default="1.0", nullable=False)
     last_validated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
 
+class MemoryIndexJob(Base):
+    """Durable index invalidation; no FK so deletes survive the source row."""
+    __tablename__ = "memory_index_jobs"
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    learning_id = Column(Uuid, nullable=False, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+from sqlalchemy import event
+from sqlalchemy.orm import Session
+
+
+@event.listens_for(Session, "after_flush")
+def _queue_memory_changes(session, flush_context):
+    for row in set(session.new) | set(session.dirty) | set(session.deleted):
+        if isinstance(row, Learning) and row.id is not None:
+            session.add(MemoryIndexJob(learning_id=row.id))
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -598,5 +618,7 @@ class CompactionEvent(Base):
     # Coverage boundary: explicit watermark of the newest message summarized
     covered_through_message_id = Column(Uuid, nullable=True)
     covered_through_timestamp = Column(DateTime(timezone=True), nullable=True)
+    owner_agent_id = Column(String(100), nullable=True)
+    snapshot = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

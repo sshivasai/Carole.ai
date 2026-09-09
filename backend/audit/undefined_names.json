@@ -1,0 +1,272 @@
+[
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 79,
+      "row": 680
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\agent\\react_agent.py",
+    "fix": null,
+    "location": {
+      "column": 65,
+      "row": 680
+    },
+    "message": "Undefined name `initial_prompt`",
+    "noqa_row": 680,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 51,
+      "row": 1367
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\agent\\react_agent.py",
+    "fix": null,
+    "location": {
+      "column": 46,
+      "row": 1367
+    },
+    "message": "Undefined name `model`",
+    "noqa_row": 1367,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 31,
+      "row": 1474
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\agent\\react_agent.py",
+    "fix": null,
+    "location": {
+      "column": 26,
+      "row": 1474
+    },
+    "message": "Undefined name `model`",
+    "noqa_row": 1474,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 36,
+      "row": 1577
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\agent\\react_agent.py",
+    "fix": null,
+    "location": {
+      "column": 31,
+      "row": 1577
+    },
+    "message": "Undefined name `model`",
+    "noqa_row": 1577,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 19,
+      "row": 502
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\crud_routes.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 502
+    },
+    "message": "Undefined name `logger`",
+    "noqa_row": 502,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 15,
+      "row": 515
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\crud_routes.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 515
+    },
+    "message": "Undefined name `logger`",
+    "noqa_row": 515,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 37,
+      "row": 3400
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\crud_routes.py",
+    "fix": null,
+    "location": {
+      "column": 33,
+      "row": 3400
+    },
+    "message": "Undefined name `json`",
+    "noqa_row": 3400,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 27,
+      "row": 3421
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\crud_routes.py",
+    "fix": null,
+    "location": {
+      "column": 21,
+      "row": 3421
+    },
+    "message": "Undefined name `logger`",
+    "noqa_row": 3421,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 15,
+      "row": 3454
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\crud_routes.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 3454
+    },
+    "message": "Undefined name `logger`",
+    "noqa_row": 3454,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 37,
+      "row": 3473
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\crud_routes.py",
+    "fix": null,
+    "location": {
+      "column": 33,
+      "row": 3473
+    },
+    "message": "Undefined name `json`",
+    "noqa_row": 3473,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 31,
+      "row": 3513
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\crud_routes.py",
+    "fix": null,
+    "location": {
+      "column": 25,
+      "row": 3513
+    },
+    "message": "Undefined name `logger`",
+    "noqa_row": 3513,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 13,
+      "row": 3521
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\crud_routes.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 3521
+    },
+    "message": "Undefined name `json`",
+    "noqa_row": 3521,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 24,
+      "row": 159
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\api\\skill_routes.py",
+    "fix": null,
+    "location": {
+      "column": 20,
+      "row": 159
+    },
+    "message": "Undefined name `Path`",
+    "noqa_row": 159,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 26,
+      "row": 337
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\tools\\memory_tools.py",
+    "fix": null,
+    "location": {
+      "column": 20,
+      "row": 337
+    },
+    "message": "Undefined name `t_uuid`",
+    "noqa_row": 337,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 69,
+      "row": 338
+    },
+    "filename": "C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\core\\tools\\memory_tools.py",
+    "fix": null,
+    "location": {
+      "column": 63,
+      "row": 338
+    },
+    "message": "Undefined name `t_uuid`",
+    "noqa_row": 338,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  }
+]

@@ -57,7 +57,12 @@ def _slugify(name: str) -> str:
 
 def _safe_agent_name(agent_name: str) -> str:
     """Filesystem-safe agent name (matches the legacy sanitisation rule)."""
-    return (agent_name or "agent").replace(" ", "_").replace("/", "_")
+    name = (agent_name or "agent").strip()
+    if any(c in name for c in ("/", "\\", ":", "\x00")) or name in (".", ".."):
+        raise ValueError("Agent name cannot contain a path")
+    if name.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+        raise ValueError("Agent name is reserved by the operating system")
+    return re.sub(r"[^\w.-]", "_", name)[:120] or "agent"
 
 
 class ScratchpadStore:
@@ -116,16 +121,31 @@ class ScratchpadStore:
         return resolved
 
     async def _team_dir(self, team_id: str) -> Path:
-        slugs = await self._resolve_slugs(team_id)
-        path = self.workspaces_dir / slugs["project_slug"] / ".carole" / slugs["team_slug"] / "scratchpads"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        import uuid
+        team_uuid = uuid.UUID(str(team_id))
+        if self._base_dir == CAROLE_HOME_DIR:
+            from core.tools.file_tools import file_tools
+            path = (await file_tools.get_team_carole_dir(str(team_uuid))) / "scratchpads"
+        else:
+            path = self._base_dir / "scratchpads" / str(team_uuid)
+        resolved = path.resolve()
+        if not resolved.is_relative_to(self._base_dir.resolve()):
+            raise ValueError("Scratchpad directory escapes application storage")
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
 
     async def _pad_path(self, team_id: str, target: str, agent_name: str) -> Path:
         base = await self._team_dir(team_id)
+        if target not in {"team", "personal"}:
+            raise ValueError("target must be team or personal")
         if target == "team":
-            return base / TEAM_PAD_FILENAME
-        return base / f"{_safe_agent_name(agent_name)}.md"
+            candidate = base / TEAM_PAD_FILENAME
+        else:
+            candidate = base / f"{_safe_agent_name(agent_name)}.md"
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(base.resolve()):
+            raise ValueError("Scratchpad path escapes its directory")
+        return resolved
 
     async def _lock_for(self, path: Path) -> asyncio.Lock:
         key = str(path)
@@ -242,8 +262,10 @@ class ScratchpadStore:
         `agent_name`) is the name stamped in the append header — useful when a
         human edits an agent's personal pad.
         """
-        if not content:
-            return {"status": "error", "error": "content is required"}
+        if not isinstance(content, str):
+            raise ValueError("content must be text")
+        if mode not in {"append", "overwrite"}:
+            raise ValueError("mode must be append or overwrite")
 
         header_author = author or agent_name
         path = await self._pad_path(team_id, target, agent_name)
@@ -286,8 +308,9 @@ class ScratchpadStore:
         async with lock:
             try:
                 path.unlink(missing_ok=True)
-            except Exception as e:
-                logger.warning("scratchpad delete failed for %s: %s", path, e)
+            except OSError:
+                logger.exception("scratchpad delete failed for %s", path)
+                raise
 
         await self._broadcast(team_id, target, agent_name, agent_id, "", "delete")
         return {"status": "ok", "label": self._label(target, agent_name), "deleted": True}

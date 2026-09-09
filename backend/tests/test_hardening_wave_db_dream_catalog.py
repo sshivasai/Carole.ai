@@ -205,8 +205,13 @@ async def test_dream_worker_confidence_decay_clamped(db_session):
     await db_session.commit()
 
 @pytest.mark.asyncio
-async def test_dream_worker_persistence_failure_rollback(db_session):
-    """Verify that if vector persistence fails, messages are NOT marked processed and DB rolls back."""
+async def test_dream_worker_persists_memory_and_retries_vector_failure(db_session):
+    """Vector outages preserve extracted SQL knowledge and a retryable index job."""
+    from core.memory.models import MemoryIndexJob
+    from core.memory.index_queue import drain_memory_index
+    from sqlalchemy import delete
+    await db_session.execute(delete(MemoryIndexJob))
+    await db_session.commit()
     user = User(email="dreamer@example.com", hashed_password="pw")
     db_session.add(user)
     await db_session.flush()
@@ -248,17 +253,19 @@ async def test_dream_worker_persistence_failure_rollback(db_session):
         # Simulate failure inserting into LanceDB
         mock_insert.side_effect = RuntimeError("LanceDB storage disk error")
 
-        with pytest.raises(RuntimeError, match="LanceDB storage disk error"):
-            await worker._process_claimed_messages(db_session, team, messages, claimed_ids)
-
-        # Check in DB that messages are still processed=False
+        await worker._process_claimed_messages(db_session, team, messages, claimed_ids)
         persisted_msgs = (await db_session.execute(select(Message).where(Message.id.in_(claimed_ids)))).scalars().all()
-        for m in persisted_msgs:
-            assert m.processed is False
-
-        # Verify no learning was persisted to DB
+        assert all(message.processed for message in persisted_msgs)
         learnings = (await db_session.execute(select(Learning).where(Learning.team_id == team_id))).scalars().all()
-        assert len(learnings) == 0
+        assert len(learnings) == 1
+        result = await drain_memory_index()
+        assert result["failed"] == 1
+        job = await db_session.scalar(select(MemoryIndexJob).where(MemoryIndexJob.learning_id == learnings[0].id))
+        assert job is not None and job.attempts == 1
+        mock_insert.side_effect = None
+        result = await drain_memory_index()
+        assert result["completed"] == 1
+        assert await db_session.scalar(select(MemoryIndexJob.id).where(MemoryIndexJob.learning_id == learnings[0].id)) is None
 
 
 # ---------------------------------------------------------------------------

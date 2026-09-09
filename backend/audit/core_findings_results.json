@@ -1,0 +1,166 @@
+{
+  "kind": "source-level diagnostic probes, not end-to-end tests",
+  "findings": [
+    {
+      "probe": "chunk_body_update",
+      "defect_reproduced": true,
+      "observed": {
+        "update_detected": false,
+        "stored_tail": "old"
+      }
+    },
+    {
+      "probe": "lexical_nonmatches",
+      "defect_reproduced": true,
+      "observed": [
+        [
+          0,
+          2.9296327697816262
+        ],
+        [
+          1,
+          1.0986122886681098
+        ]
+      ]
+    },
+    {
+      "probe": "partial_embedding_failure",
+      "defect_reproduced": true,
+      "observed": {
+        "chunks": 2,
+        "vectors": 1,
+        "hits": []
+      }
+    },
+    {
+      "probe": "filter_candidate_starvation",
+      "defect_reproduced": true,
+      "observed": []
+    },
+    {
+      "probe": "history_watermark_loss",
+      "defect_reproduced": true,
+      "observed": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "goal"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "probe": "orphan_result_accepted",
+      "defect_reproduced": true,
+      "observed": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "never-called",
+            "content": "invented result"
+          },
+          {
+            "type": "text",
+            "text": "goal"
+          }
+        ]
+      }
+    },
+    {
+      "probe": "requested_tool_evicted",
+      "defect_reproduced": true,
+      "observed": [
+        "add_memory",
+        "ask_user",
+        "edit_file",
+        "execute_command",
+        "fetch_tool_schemas",
+        "git_commit",
+        "git_diff",
+        "git_status",
+        "read_file",
+        "read_scratchpad",
+        "search_memory",
+        "write_file"
+      ]
+    },
+    {
+      "probe": "search_category_unreachable",
+      "defect_reproduced": true,
+      "observed": [
+        "code_analysis",
+        "coordination",
+        "filesystem",
+        "git",
+        "interaction",
+        "memory",
+        "shell",
+        "task",
+        "web"
+      ]
+    },
+    {
+      "probe": "image_token_estimate",
+      "defect_reproduced": true,
+      "observed": 15
+    },
+    {
+      "probe": "gemini_tool_history_loss",
+      "defect_reproduced": true,
+      "observed": []
+    },
+    {
+      "probe": "missing_dependency_ready",
+      "defect_reproduced": true,
+      "observed": [
+        {
+          "id": "child",
+          "status": "blocked",
+          "depends_on": [
+            "missing"
+          ]
+        }
+      ]
+    },
+    {
+      "probe": "valid_js_regex_rejected",
+      "defect_reproduced": true,
+      "observed": "\u2717 Syntax Error in 'valid.js' on line 1: mismatched bracket ')', expected closing for '[' opened on line 1.\nFile was NOT written to disk. Please fix the delimiter mismatch and retry."
+    },
+    {
+      "probe": "scratchpad_windows_path_escape",
+      "defect_reproduced": true,
+      "observed": "C:\\outside\\note.md"
+    },
+    {
+      "probe": "uuid_memory_lookup",
+      "defect_reproduced": true,
+      "observed": {
+        "uuid_result": [],
+        "string_result": [
+          {
+            "id": "expected-match"
+          }
+        ]
+      }
+    },
+    {
+      "probe": "dream_skipped_input_marked_processed",
+      "defect_reproduced": true,
+      "observed": {
+        "extraction_input": [
+          "conversation="
+        ],
+        "processed_ids": [
+          "0",
+          "1",
+          "2"
+        ]
+      }
+    }
+  ]
+}

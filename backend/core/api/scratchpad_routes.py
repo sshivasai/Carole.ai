@@ -14,10 +14,10 @@ Endpoints (all prefixed with /api):
 """
 
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from fastapi import APIRouter, HTTPException, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,11 +32,18 @@ router = APIRouter(prefix="/api", tags=["scratchpad"])
 
 class ScratchpadWriteBody(BaseModel):
     content: str
-    target: str = "personal"   # 'personal' | 'team'
-    mode: str = "append"       # 'append' | 'overwrite'
+    target: Literal["personal", "team"] = "personal"
+    mode: Literal["append", "overwrite"] = "append"
     agent_name: str = "Agent"
     agent_id: Optional[str] = None
     author: Optional[str] = None  # name stamped in append header (defaults to agent_name)
+
+    @field_validator("agent_name")
+    @classmethod
+    def validate_agent_name(cls, value):
+        from core.memory.scratchpad import _safe_agent_name
+        _safe_agent_name(value)
+        return value
 
 
 async def _agent_roster(team_id: str, db: AsyncSession) -> List[dict]:
@@ -78,6 +85,7 @@ async def read_scratchpad(
         raise HTTPException(status_code=400, detail="target must be 'team' or 'personal'")
     if target == "personal" and not agent_name:
         raise HTTPException(status_code=400, detail="agent_name is required for personal pads")
+    _validate_pad_name(agent_name)
     return await scratchpad_store.read(team_id, target, agent_name)
 
 
@@ -122,4 +130,13 @@ async def delete_scratchpad(
         raise HTTPException(status_code=400, detail="target must be 'team' or 'personal'")
     if target == "personal" and not agent_name:
         raise HTTPException(status_code=400, detail="agent_name is required for personal pads")
+    _validate_pad_name(agent_name)
     return await scratchpad_store.delete(team_id, target, agent_name)
+
+
+def _validate_pad_name(name):
+    from core.memory.scratchpad import _safe_agent_name
+    try:
+        _safe_agent_name(name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc

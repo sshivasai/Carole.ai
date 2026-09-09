@@ -113,51 +113,66 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
   const hasDiffContent = Boolean(targetContent || args.diff || args.Instruction || args.ReplacementContent);
   const diffString = args.diff || (targetContent ? targetContent.split('\n').map((l: string) => `+ ${l}`).join('\n') : "");
 
-  const [localDecision, setLocalDecision] = useState<"approved" | "denied" | null>(null);
+  const [localDecision, setLocalDecision] = useState<"approved" | "denied" | "expired" | null>(null);
   const [localFeedback, setLocalFeedback] = useState<string>("");
-  const [timeLeft, setTimeLeft] = useState<number>(60);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
 
   const approvalId = msg.pending_approval?.tx_id || msg.tx_id || msg.id;
 
   useEffect(() => {
     setLocalDecision(null);
     setLocalFeedback("");
+    setErrorMessage(null);
   }, [approvalId]);
 
   const rawStatus = msg.pending_approval?.status || msg.status || (msg.type?.includes("approved") ? "approved" : msg.type?.includes("denied") ? "denied" : "pending");
   const status = localDecision || (rawStatus === "approved" ? "approved" : rawStatus === "denied" ? "denied" : "pending");
 
+  // Only run countdown if explicit expires_at is provided by server
+  const expiresAt = (msg.pending_approval as any)?.expires_at || (msg as any)?.expires_at;
+
   useEffect(() => {
-    if (status !== "pending") return;
+    if (status !== "pending" || !expiresAt) {
+      setTimeLeft(null);
+      return;
+    }
     
-    let startTime = Date.now();
-    if (msg.timestamp) {
-      const ts = typeof msg.timestamp === "number" ? msg.timestamp : new Date(msg.timestamp).getTime();
-      if (!isNaN(ts)) startTime = ts;
+    const expiryTime = typeof expiresAt === "number" ? expiresAt : new Date(expiresAt).getTime();
+    if (isNaN(expiryTime)) {
+      setTimeLeft(null);
+      return;
     }
     
     const updateTime = () => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      const remaining = Math.max(0, 60 - elapsed);
+      const remaining = Math.max(0, Math.floor((expiryTime - Date.now()) / 1000));
       setTimeLeft(remaining);
+      if (remaining === 0) {
+        setLocalDecision("expired");
+      }
     };
     
     updateTime();
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
-  }, [msg.timestamp, status]);
+  }, [expiresAt, status]);
 
   const handleDecide = async (approved: boolean) => {
-    setLocalDecision(approved ? "approved" : "denied");
-    setLocalFeedback(feedbackText.trim());
+    setIsSubmitting(true);
+    setErrorMessage(null);
     try {
       await onDecide(approved, feedbackText.trim() || undefined);
+      setLocalDecision(approved ? "approved" : "denied");
+      setLocalFeedback(feedbackText.trim());
     } catch (e: any) {
-      if (e?.message?.includes("already resolved") || e?.message?.includes("not found") || e?.status === 404) {
-        setLocalDecision(approved ? "approved" : "denied");
+      if (e?.status === 404 || e?.message?.includes("not found") || e?.message?.includes("expired")) {
+        setLocalDecision("expired");
       } else {
-        setLocalDecision(null);
+        setErrorMessage(e?.message || "Failed to submit decision. Please check connection and try again.");
       }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -329,25 +344,29 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
 
         {/* Status Pending: Countdown & Action Controls */}
         {status === "pending" ? (
-          timeLeft <= 0 ? (
+          timeLeft !== null && timeLeft <= 0 ? (
             <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "8px", padding: "10px 14px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid rgba(255, 255, 255, 0.08)", fontSize: "12px", color: "#94a3b8" }}>
               <Scale size={14} color="#a78bfa" />
               <span>Approval window elapsed • Action settled by Autonomous Judge AI</span>
             </div>
           ) : (
             <div style={{ marginTop: "14px" }}>
-              {/* Timer Bar */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", fontSize: "11px", color: "var(--color-mute, #94a3b8)" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  <Loader2 size={12} className="animate-spin" style={{ color: "var(--color-primary-soft, #6366f1)" }} />
-                  <span>Awaiting human decision</span>
-                </span>
-                <span style={{ fontWeight: 600, fontFamily: "var(--font-mono, monospace)" }}>{timeLeft}s remaining</span>
-              </div>
-              
-              <div style={{ height: "3px", background: "rgba(255,255,255,0.06)", borderRadius: "2px", marginBottom: "14px", overflow: "hidden" }}>
-                <div style={{ height: "100%", background: riskTier === 3 ? "#f87171" : "#6366f1", width: `${(timeLeft / 60) * 100}%`, transition: "width 1s linear" }} />
-              </div>
+              {/* Timer Bar (rendered only if server provided explicit expires_at) */}
+              {timeLeft !== null && (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", fontSize: "11px", color: "var(--color-mute, #94a3b8)" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <Loader2 size={12} className="animate-spin" style={{ color: "var(--color-primary-soft, #6366f1)" }} />
+                      <span>Awaiting human decision</span>
+                    </span>
+                    <span style={{ fontWeight: 600, fontFamily: "var(--font-mono, monospace)" }}>{timeLeft}s remaining</span>
+                  </div>
+                  
+                  <div style={{ height: "3px", background: "rgba(255,255,255,0.06)", borderRadius: "2px", marginBottom: "14px", overflow: "hidden" }}>
+                    <div style={{ height: "100%", background: riskTier === 3 ? "#f87171" : "#6366f1", width: `${(timeLeft / 60) * 100}%`, transition: "width 1s linear" }} />
+                  </div>
+                </>
+              )}
 
               {/* Feedback toggle & input */}
               <div style={{ marginBottom: "12px" }}>
@@ -387,11 +406,37 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
                 )}
               </div>
 
+              {/* Inline Error Message on Failure */}
+              {errorMessage && (
+                <div
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: "6px",
+                    background: "rgba(239, 68, 68, 0.12)",
+                    border: "1px solid rgba(239, 68, 68, 0.3)",
+                    color: "#fca5a5",
+                    fontSize: "12px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "8px"
+                  }}
+                >
+                  <span>{errorMessage}</span>
+                  <button
+                    onClick={() => setErrorMessage(null)}
+                    style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: "11px", fontWeight: 600 }}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div style={{ display: "flex", gap: "10px" }}>
                 <button
                   onClick={() => handleDecide(true)}
-                  disabled={loading}
+                  disabled={loading || isSubmitting}
                   style={{
                     flex: 1.2,
                     height: "38px",
@@ -401,24 +446,24 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
                     color: "#ffffff",
                     fontSize: "12.5px",
                     fontWeight: 600,
-                    cursor: loading ? "not-allowed" : "pointer",
+                    cursor: (loading || isSubmitting) ? "not-allowed" : "pointer",
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
                     gap: "6px",
                     boxShadow: "0 4px 14px rgba(16, 185, 129, 0.35)",
-                    transition: "all 0.15s ease"
+                    transition: "all 0.15s ease",
+                    opacity: (loading || isSubmitting) ? 0.7 : 1
                   }}
-                  title="Approve action (Ctrl+Enter)"
+                  title="Approve action"
                 >
-                  {loading ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
-                  <span>Approve</span>
-                  <span style={{ fontSize: "10px", opacity: 0.75, fontFamily: "var(--font-mono, monospace)" }}>↵</span>
+                  {(loading || isSubmitting) ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
+                  <span>Approve once</span>
                 </button>
 
                 <button
                   onClick={() => handleDecide(false)}
-                  disabled={loading}
+                  disabled={loading || isSubmitting}
                   style={{
                     flex: 1,
                     height: "38px",
@@ -428,17 +473,18 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
                     color: "#fca5a5",
                     fontSize: "12.5px",
                     fontWeight: 600,
-                    cursor: loading ? "not-allowed" : "pointer",
+                    cursor: (loading || isSubmitting) ? "not-allowed" : "pointer",
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
                     gap: "6px",
-                    transition: "all 0.15s ease"
+                    transition: "all 0.15s ease",
+                    opacity: (loading || isSubmitting) ? 0.7 : 1
                   }}
                   className="hover:bg-[rgba(248,113,113,0.18)]"
                 >
                   <X size={14} />
-                  <span>Decline</span>
+                  <span>Deny</span>
                 </button>
               </div>
             </div>
@@ -450,20 +496,41 @@ export default function AgentPermissionCard({ msg, onDecide, loading = false }: 
               marginTop: "12px",
               padding: "10px 14px",
               borderRadius: "8px",
-              background: status === "approved" ? "rgba(52, 211, 153, 0.08)" : "rgba(248, 113, 113, 0.08)",
-              border: status === "approved" ? "1px solid rgba(52, 211, 153, 0.25)" : "1px solid rgba(248, 113, 113, 0.25)",
+              background: status === "approved" 
+                ? "rgba(52, 211, 153, 0.08)" 
+                : status === "expired" 
+                ? "rgba(148, 163, 184, 0.08)" 
+                : "rgba(248, 113, 113, 0.08)",
+              border: status === "approved" 
+                ? "1px solid rgba(52, 211, 153, 0.25)" 
+                : status === "expired"
+                ? "1px solid rgba(148, 163, 184, 0.25)"
+                : "1px solid rgba(248, 113, 113, 0.25)",
               display: "flex",
               flexDirection: "column",
               gap: "4px"
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", fontWeight: 600, color: status === "approved" ? "#34d399" : "#f87171" }}>
-              {status === "approved" ? <Check size={14} /> : <X size={14} />}
-              <span>{status === "approved" ? "Action Approved by User" : "Action Declined by User"}</span>
+            <div style={{ 
+              display: "flex", 
+              alignItems: "center", 
+              gap: "8px", 
+              fontSize: "12px", 
+              fontWeight: 600, 
+              color: status === "approved" ? "#34d399" : status === "expired" ? "var(--color-mute, #94a3b8)" : "#f87171" 
+            }}>
+              {status === "approved" ? <Check size={14} /> : status === "expired" ? <AlertOctagon size={14} /> : <X size={14} />}
+              <span>
+                {status === "approved" 
+                  ? "Action Approved" 
+                  : status === "expired" 
+                  ? "Approval Request Expired or No Longer Valid" 
+                  : "Action Declined"}
+              </span>
             </div>
             {localFeedback && (
               <div style={{ fontSize: "11px", color: "var(--color-mute, #94a3b8)", marginTop: "2px" }}>
-                User Note: &quot;{localFeedback}&quot;
+                Guidance: &quot;{localFeedback}&quot;
               </div>
             )}
           </div>

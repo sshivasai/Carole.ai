@@ -28,20 +28,52 @@ interface Props {
   onWidthChange?: (width: number) => void;
 }
 
-const NAV = [
-  { id: "chat", label: "Chat Room", Icon: MessageSquare },
-  { id: "tasks", label: "Task Board", Icon: LayoutGrid },
-  { id: "agents", label: "Agents", Icon: Zap },
-  { id: "workflow_dag", label: "Swarm Topology", Icon: Network },
-  { id: "code_graph", label: "Code Graph", Icon: GitBranch },
-  { id: "browser", label: "Browser View", Icon: Globe },
-  { id: "memory", label: "Memory & Logs", Icon: Brain },
-  { id: "scratchpad", label: "Scratchpad", Icon: StickyNote },
-  { id: "plugins", label: "Plugin Studio", Icon: Code2 },
-  { id: "skills", label: "Skills Studio", Icon: BookOpen },
-  { id: "mcp", label: "MCP Servers", Icon: Server },
-  { id: "settings", label: "Settings", Icon: Settings },
+interface NavItem {
+  id: string;
+  label: string;
+  Icon: React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
+}
+
+interface NavSection {
+  title: string;
+  items: NavItem[];
+}
+
+const NAV_SECTIONS: NavSection[] = [
+  {
+    title: "Workspace",
+    items: [
+      { id: "chat", label: "Chat Room", Icon: MessageSquare },
+      { id: "tasks", label: "Task Board", Icon: LayoutGrid },
+      { id: "agents", label: "Agents", Icon: Zap },
+      { id: "browser", label: "Browser View", Icon: Globe },
+    ],
+  },
+  {
+    title: "Knowledge",
+    items: [
+      { id: "memory", label: "Memory & Logs", Icon: Brain },
+      { id: "scratchpad", label: "Scratchpad", Icon: StickyNote },
+      { id: "code_graph", label: "Code Graph", Icon: GitBranch },
+    ],
+  },
+  {
+    title: "Extensions",
+    items: [
+      { id: "plugins", label: "Plugin Studio", Icon: Code2 },
+      { id: "skills", label: "Skills Studio", Icon: BookOpen },
+      { id: "mcp", label: "MCP Servers", Icon: Server },
+      { id: "workflow_dag", label: "Swarm Topology", Icon: Network },
+    ],
+  },
+  {
+    title: "Settings",
+    items: [
+      { id: "settings", label: "Settings", Icon: Settings },
+    ],
+  },
 ];
+
 
 function InlineForm({ placeholder, onSubmit, onCancel }: {
   label: string; placeholder: string; onSubmit: (val: string) => Promise<void>; onCancel: () => void;
@@ -83,6 +115,8 @@ export default function Sidebar({
   const { theme } = useTheme();
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddTeam, setShowAddTeam] = useState(false);
+  const [projectFilter, setProjectFilter] = useState("");
+  const [teamFilter, setTeamFilter] = useState("");
   const [internalCollapsed, setInternalCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -193,12 +227,22 @@ export default function Sidebar({
             />
           </button>
         </div>
-        <div className={styles.sidebarNav} style={{ padding: "var(--sp-sm) 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-          {NAV.map(({ id, label, Icon }) => (
-            <button key={id} className={`${styles.navItem} ${activeView === id ? styles.active : ""}`}
-              onClick={() => onViewChange(id)} title={label} style={{ justifyContent: "center", padding: "10px 0", width: 44, borderRadius: "var(--radius-sm)" }}>
-              <Icon size={18} className={styles.navItemIcon} style={{ margin: 0 }} />
-            </button>
+        <div className={styles.sidebarNav} style={{ padding: "var(--sp-sm) 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+          {NAV_SECTIONS.map((section, sIdx) => (
+            <React.Fragment key={section.title}>
+              {sIdx > 0 && <div className={styles.collapsedDivider} />}
+              {section.items.map(({ id, label, Icon }) => (
+                <button
+                  key={id}
+                  className={`${styles.navItem} ${activeView === id ? styles.active : ""}`}
+                  onClick={() => onViewChange(id)}
+                  title={`${section.title}: ${label}`}
+                  style={{ justifyContent: "center", padding: "8px 0", width: 44, borderRadius: "var(--radius-sm)" }}
+                >
+                  <Icon size={17} className={styles.navItemIcon} style={{ margin: 0 }} />
+                </button>
+              ))}
+            </React.Fragment>
           ))}
         </div>
         <div className={styles.sidebarFooter} style={{ padding: "var(--sp-sm) 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
@@ -251,9 +295,19 @@ export default function Sidebar({
       {/* Project Selector */}
       <div className={styles.entityBlock}>
         <div className={styles.entityLabel}>Project</div>
+        {projects.length > 5 && (
+          <input
+            className={styles.entitySearchInput}
+            placeholder="Filter projects..."
+            value={projectFilter}
+            onChange={e => setProjectFilter(e.target.value)}
+          />
+        )}
         <select className={styles.entitySelect} value={projectId || ""}
           onChange={e => onProjectChange(e.target.value)}>
-          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {projects
+            .filter(p => p.name.toLowerCase().includes(projectFilter.toLowerCase()))
+            .map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           {projects.length === 0 && <option value="">No projects</option>}
         </select>
         {showAddProject ? (
@@ -268,9 +322,19 @@ export default function Sidebar({
       {/* Team Selector */}
       <div className={styles.entityBlock}>
         <div className={styles.entityLabel}>Team Room</div>
+        {teams.length > 5 && (
+          <input
+            className={styles.entitySearchInput}
+            placeholder="Filter teams..."
+            value={teamFilter}
+            onChange={e => setTeamFilter(e.target.value)}
+          />
+        )}
         <select className={styles.entitySelect} value={teamId || ""}
           onChange={e => onTeamChange(e.target.value)}>
-          {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          {teams
+            .filter(t => t.name.toLowerCase().includes(teamFilter.toLowerCase()))
+            .map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           {teams.length === 0 && <option value="">No teams</option>}
         </select>
         {showAddTeam ? (
@@ -284,16 +348,24 @@ export default function Sidebar({
 
       {/* Nav */}
       <div className={styles.sidebarNav}>
-        <div className={styles.sidebarSection}>
-          <span className={styles.sidebarSectionLabel}>Workspace</span>
-        </div>
-        {NAV.map(({ id, label, Icon }) => (
-          <button key={id} className={`${styles.navItem} ${activeView === id ? styles.active : ""}`}
-            onClick={() => handleNavClick(id)} title={label}>
-            <Icon size={15} className={styles.navItemIcon} />
-            <span>{label}</span>
-            {activeView === id && <ChevronRight size={12} style={{ marginLeft: "auto", opacity: 0.5 }} />}
-          </button>
+        {NAV_SECTIONS.map((section, sIdx) => (
+          <div key={section.title} style={{ marginBottom: sIdx === NAV_SECTIONS.length - 1 ? 0 : 4 }}>
+            <div className={styles.sidebarSection}>
+              <span className={styles.sidebarSectionLabel}>{section.title}</span>
+            </div>
+            {section.items.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                className={`${styles.navItem} ${activeView === id ? styles.active : ""}`}
+                onClick={() => handleNavClick(id)}
+                title={label}
+              >
+                <Icon size={15} className={styles.navItemIcon} />
+                <span>{label}</span>
+                {activeView === id && <ChevronRight size={12} style={{ marginLeft: "auto", opacity: 0.5 }} />}
+              </button>
+            ))}
+          </div>
         ))}
       </div>
 

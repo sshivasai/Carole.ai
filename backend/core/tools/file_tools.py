@@ -7,6 +7,7 @@ Filesystem tools with sandbox enforcement, diff generation, and search capabilit
 import os
 import re
 from core.config import CAROLE_HOME_DIR
+from core.tools.context import file_read_scope
 import difflib
 import asyncio
 from dataclasses import dataclass
@@ -79,75 +80,15 @@ def _validate_code_syntax(path_str: str, content: str) -> Optional[str]:
                 f"File was NOT written to disk. Please fix the JSON formatting and retry."
             )
 
-    # 3. JavaScript / TypeScript Basic Syntax Checks (delimiter balancer)
     elif ext in (".js", ".jsx", ".ts", ".tsx"):
-        stack = []
-        pairs = {')': '(', ']': '[', '}': '{'}
-        in_string = None
-        escape = False
-        in_line_comment = False
-        in_block_comment = False
-
-        lines = content.splitlines()
-        for lineno, line in enumerate(lines, 1):
-            i = 0
-            while i < len(line):
-                ch = line[i]
-                if in_line_comment:
-                    break
-                if in_block_comment:
-                    if line[i:i+2] == '*/':
-                        in_block_comment = False
-                        i += 2
-                        continue
-                    i += 1
-                    continue
-                if in_string:
-                    if escape:
-                        escape = False
-                    elif ch == '\\':
-                        escape = True
-                    elif ch == in_string:
-                        in_string = None
-                    i += 1
-                    continue
-
-                if line[i:i+2] == '//':
-                    break
-                if line[i:i+2] == '/*':
-                    in_block_comment = True
-                    i += 2
-                    continue
-
-                if ch in ("'", '"', '`'):
-                    in_string = ch
-                    i += 1
-                    continue
-
-                if ch in '([{':
-                    stack.append((ch, lineno))
-                elif ch in ')]}':
-                    expected = pairs[ch]
-                    if not stack:
-                        return (
-                            f"✗ Syntax Error in '{path_str}' on line {lineno}: unexpected closing bracket '{ch}' without matching '{expected}'.\n"
-                            f"File was NOT written to disk. Please fix the delimiter mismatch and retry."
-                        )
-                    open_ch, open_line = stack.pop()
-                    if open_ch != expected:
-                        return (
-                            f"✗ Syntax Error in '{path_str}' on line {lineno}: mismatched bracket '{ch}', expected closing for '{open_ch}' opened on line {open_line}.\n"
-                            f"File was NOT written to disk. Please fix the delimiter mismatch and retry."
-                        )
-                i += 1
-            in_line_comment = False
-
-        if stack and len(lines) > 5:
-            open_ch, open_line = stack[-1]
-            return (
-                f"✗ Syntax Error in '{path_str}': unclosed '{open_ch}' opened on line {open_line}.\n"
-                f"File was NOT written to disk. Please complete all open blocks and retry."
-            )
+        # A delimiter balancer cannot distinguish regex literals, templates, or
+        # JSX. Use the language grammar already used by code indexing.
+        from core.knowledge.ast_parser import _TS_PARSERS
+        language = {".js": "javascript", ".jsx": "javascript",
+                    ".ts": "typescript", ".tsx": "tsx"}[ext]
+        parser = _TS_PARSERS.get(language)
+        if parser is not None and parser.parse(content.encode("utf-8")).root_node.has_error:
+            return f"✗ Syntax Error in '{path_str}'. File was NOT written to disk. Correct the syntax and retry."
 
     return None
 
@@ -266,45 +207,41 @@ class FileTools:
         return root
 
     async def get_team_carole_dir(self, team_id: str, db: Optional[AsyncSession] = None) -> Path:
-        """Resolve a team_id to its hidden .carole directory.
-        
-        Returns workspaces_dir / project_slug / .carole / team_slug
-        """
-        project_slug = team_id
-        team_slug = team_id
-
-        try:
-            import uuid as _uuid
-            from core.memory.models import Team, Project
-            from sqlalchemy import select
-            team_uuid = _uuid.UUID(team_id)
-            if db is not None:
-                team = (await db.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
-                if team:
-                    team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-') or str(team.id)[:8]
-                    project = (await db.execute(select(Project).where(Project.id == team.project_id))).scalar_one_or_none()
-                    if project:
-                        project_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-') or str(project.id)[:8]
-                    else:
-                        project_slug = str(team.project_id)
-            else:
-                from core.memory.database import async_session
-                async with async_session() as session:
-                    team = (await session.execute(select(Team).where(Team.id == team_uuid))).scalar_one_or_none()
-                    if team:
-                        team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-') or str(team.id)[:8]
-                        project = (await session.execute(select(Project).where(Project.id == team.project_id))).scalar_one_or_none()
-                        if project:
-                            project_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-') or str(project.id)[:8]
-                        else:
-                            project_slug = str(team.project_id)
-        except Exception:
-            pass
-
-        workspaces_dir = CAROLE_HOME_DIR / "workspaces"
-        carole_dir = workspaces_dir / project_slug / ".carole" / team_slug
-        carole_dir.mkdir(parents=True, exist_ok=True)
-        return carole_dir
+        """Resolve stable internal storage by project/team IDs; names may collide."""
+        import uuid
+        from core.memory.models import Team, Project
+        from core.memory.database import async_session
+        from sqlalchemy import select
+        team_uuid = uuid.UUID(str(team_id))
+        async def resolve(session):
+            team = await session.get(Team, team_uuid)
+            if team is None:
+                raise ValueError("Team not found")
+            project = await session.get(Project, team.project_id)
+            if project is None:
+                raise ValueError("Project not found")
+            base = (CAROLE_HOME_DIR / "workspaces").resolve()
+            target = (base / str(project.id) / ".carole" / str(team.id)).resolve()
+            if not target.is_relative_to(base):
+                raise ValueError("Internal team directory escapes application storage")
+            if not target.exists():
+                slug = lambda name: re.sub(r'[^a-zA-Z0-9_-]+', '-', name).strip('-')
+                project_slug, team_slug = slug(project.name), slug(team.name)
+                legacy = (base / project_slug / ".carole" / team_slug).resolve()
+                # Copy legacy data only when its old name-based ownership is
+                # unambiguous. Keep the original directory as a recovery copy.
+                if project_slug and team_slug and legacy.is_relative_to(base) and legacy.is_dir():
+                    projects = (await session.scalars(select(Project))).all()
+                    teams = (await session.scalars(select(Team).where(Team.project_id == project.id))).all()
+                    if sum(slug(row.name) == project_slug for row in projects) == 1 and sum(slug(row.name) == team_slug for row in teams) == 1:
+                        import shutil
+                        await asyncio.to_thread(shutil.copytree, legacy, target, symlinks=True, dirs_exist_ok=True)
+            target.mkdir(parents=True, exist_ok=True)
+            return target
+        if db is not None:
+            return await resolve(db)
+        async with async_session() as session:
+            return await resolve(session)
 
     async def _resolve_safe_path(self, relative_path: str, project_id: Optional[str] = None, allow_out_of_bounds: bool = False, db: Optional[AsyncSession] = None) -> Path:
         if not relative_path or not str(relative_path).strip():
@@ -374,13 +311,15 @@ class FileTools:
         relative_path: str,
         project_id: Optional[str] = None,
         team_id: Optional[str] = None,
-        force: bool = False
+        force: bool = False,
+        start_line: int = 1,
+        end_line: Optional[int] = None,
     ) -> str:
         try:
             allow_out_of_bounds = Path(relative_path).is_absolute() if relative_path and str(relative_path).strip() else False
             safe_path = await self._resolve_safe_path(relative_path, project_id, allow_out_of_bounds=allow_out_of_bounds)
             lock = self._get_lock(safe_path)
-            scope = team_id or "global"
+            scope = file_read_scope.get() or team_id or "global"
             norm_path = str(safe_path.resolve())
 
             def _sync_read():
@@ -415,7 +354,7 @@ class FileTools:
                             reader = PyPDF2.PdfReader(f)
                             text = ""
                             for page in reader.pages:
-                                text += page.extract_text() + "\n"
+                                text += (page.extract_text() or "") + "\n"
                             content = text
                     except Exception as e:
                         return f"Error reading pdf file: {str(e)}"
@@ -429,6 +368,10 @@ class FileTools:
                 
                 # Record successful read state
                 self._read_state.setdefault(scope, {})[norm_path] = mtime
+                if start_line != 1 or end_line is not None:
+                    if start_line < 1 or (end_line is not None and end_line < start_line):
+                        return "Error: Invalid line range. Lines are numbered from 1."
+                    return "".join(content.splitlines(keepends=True)[start_line - 1:end_line])
                 return content
 
             async with lock:
@@ -447,7 +390,7 @@ class FileTools:
         try:
             safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
-            scope = team_id or "global"
+            scope = file_read_scope.get() or team_id or "global"
             norm_path = str(safe_path.resolve())
 
             if self.FILE_UNCHANGED_STUB in content or "status=\"unchanged\"" in content:
@@ -504,7 +447,7 @@ class FileTools:
         try:
             safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
-            scope = team_id or "global"
+            scope = file_read_scope.get() or team_id or "global"
             norm_path = str(safe_path.resolve())
 
             if self.FILE_UNCHANGED_STUB in replacement_content or "status=\"unchanged\"" in replacement_content:
@@ -608,7 +551,7 @@ class FileTools:
         try:
             safe_path = await self._resolve_safe_path(relative_path, project_id)
             lock = self._get_lock(safe_path)
-            scope = team_id or "global"
+            scope = file_read_scope.get() or team_id or "global"
             norm_path = str(safe_path.resolve())
 
             if self.FILE_UNCHANGED_STUB in content or "status=\"unchanged\"" in content:

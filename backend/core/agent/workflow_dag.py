@@ -252,7 +252,7 @@ class WorkflowDAG:
 
                 all_done = True
                 for p in prereqs:
-                    if p in status_map and status_map[p] != "done":
+                    if status_map.get(p) != "done":
                         all_done = False
                         break
 

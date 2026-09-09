@@ -18,7 +18,7 @@ import re
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set, Tuple
 from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +58,222 @@ class ObservationNode(ASTNode):
 @dataclass
 class ErrorNode(ASTNode):
     pass
+
+
+# Mode & Role-based tool category mapping (Claude Code / Roo Code architecture)
+# Restricts heavy, specialized tools to agents/modes that actually need them.
+UNIVERSAL_ALLOWED_CATEGORIES: Set[str] = {"filesystem", "search", "interaction", "memory"}
+
+ROLE_ALLOWED_CATEGORIES: Dict[str, Set[str]] = {
+    "orchestrator": {"coordination", "task", "interaction", "web", "filesystem", "memory"},
+    "coordinator": {"coordination", "task", "interaction", "web", "filesystem", "memory"},
+    "architect": {"coordination", "task", "interaction", "web", "filesystem", "memory", "code_analysis"},
+    "coder": {"filesystem", "shell", "git", "task", "coordination", "interaction", "web", "memory", "code_analysis"},
+    "developer": {"filesystem", "shell", "git", "task", "coordination", "interaction", "web", "memory", "code_analysis"},
+    "reviewer": {"filesystem", "git", "task", "coordination", "interaction", "shell", "memory", "code_analysis"},
+    "qa": {"filesystem", "git", "task", "coordination", "interaction", "shell", "browser", "memory"},
+    "researcher": {"web", "filesystem", "coordination", "interaction", "task", "browser", "memory"},
+}
+
+UNIVERSAL_CORE_TOOLS: List[str] = [
+    "read_file",
+    "edit_file",
+    "write_file",
+    "ask_user",
+    "search_memory",
+    "add_memory",
+    "read_scratchpad",
+    "fetch_tool_schemas",
+]
+
+ROLE_DEFAULT_TOOLS: Dict[str, List[str]] = {
+    "orchestrator": ["create_task", "list_tasks", "update_task", "spawn_agent", "hire_subagent"],
+    "coordinator": ["create_task", "list_tasks", "update_task", "spawn_agent", "hire_subagent"],
+    "coder": ["execute_command", "git_status", "git_diff"],
+    "developer": ["execute_command", "git_status", "git_diff"],
+    "reviewer": ["git_status", "git_diff", "git_log", "execute_command"],
+    "qa": ["execute_command", "browser_navigate", "browser_screenshot"],
+    "researcher": ["web_search", "web_fetch"],
+    "architect": ["find_function", "get_file_outline"],
+}
+
+INTENT_TRIGGERS: Dict[str, Dict[str, Any]] = {
+    "browser": {
+        "keywords": (
+            "browser", "website", "navigate", "url", "scrape", "ui", "frontend",
+            "preview", "localhost", "page", "component", "css", "html", "screenshot",
+            "dom", "click", "web page", "view in browser", "render"
+        ),
+        "tools": ("browser_navigate", "browser_screenshot", "browser_click", "browser_snapshot"),
+    },
+    "git": {
+        "keywords": (
+            "git", "commit", "push", "pull", "branch", "pr", "pull request",
+            "merge", "rebase", "diff", "stash", "checkout", "repo", "repos",
+            "repository", "github", "version control", "changes", "modified",
+            "uncommitted", "sync", "remote", "stage", "patch"
+        ),
+        "tools": ("git_status", "git_diff", "git_commit", "git_log"),
+    },
+    "shell": {
+        "keywords": (
+            "run", "exec", "terminal", "bash", "powershell", "cmd", "command",
+            "test", "tests", "pytest", "npm", "pip", "build", "compile",
+            "install", "script", "server", "execute"
+        ),
+        "tools": ("execute_command",),
+    },
+    "code_analysis": {
+        "keywords": (
+            "caller", "callees", "callers", "ast", "syntax", "dependency",
+            "dependencies", "symbol", "import", "imports", "impact", "hierarchy",
+            "outline", "definition", "definitions", "refactor", "signature"
+        ),
+        "tools": ("find_function", "find_symbol_definition", "get_file_outline", "check_syntax"),
+    },
+    "search": {
+        "keywords": (
+            "grep", "search", "find in files", "pattern", "glob", "locate", "where is"
+        ),
+        "tools": ("grep_search", "glob_search"),
+    },
+    "task": {
+        "keywords": (
+            "task", "kanban", "todo", "plan", "checklist", "board", "milestone",
+            "progress", "subtask"
+        ),
+        "tools": ("create_task", "list_tasks", "update_task", "write_task_plan"),
+    },
+    "coordination": {
+        "keywords": (
+            "subagent", "delegate", "teammate", "hire", "spawn", "assign",
+            "team member", "roster", "hand off"
+        ),
+        "tools": ("spawn_agent", "hire_subagent", "send_message"),
+    },
+    "web": {
+        "keywords": (
+            "web", "google", "search the web", "online", "fetch", "http",
+            "api", "docs", "documentation", "latest", "release notes", "internet"
+        ),
+        "tools": ("web_search", "web_fetch", "http_request"),
+    },
+    "scheduler": {
+        "keywords": (
+            "cron", "schedule", "recurring", "daily", "hourly", "every morning",
+            "every minute", "interval", "timer", "periodic"
+        ),
+        "tools": ("create_scheduled_task", "list_scheduled_tasks", "update_scheduled_task"),
+    },
+    "workspace": {
+        "keywords": (
+            "meeting", "email", "mom", "minutes", "calendar", "invite", "agenda",
+            "zoom", "meet", "google meet"
+        ),
+        "tools": ("create_meeting", "send_email", "generate_mom"),
+    },
+    "memory": {
+        "keywords": (
+            "memory", "remember", "recall", "forget", "scratchpad", "fact",
+            "notes", "context", "history", "preference", "learned"
+        ),
+        "tools": ("search_memory", "add_memory", "read_scratchpad", "write_scratchpad"),
+    },
+    "filesystem": {
+        "keywords": (
+            "file", "read", "write", "edit", "create file", "folder", "directory"
+        ),
+        "tools": ("read_file", "edit_file", "write_file", "list_directory"),
+    },
+    "interaction": {
+        "keywords": (
+            "ask", "question", "clarify", "sleep", "pause"
+        ),
+        "tools": ("ask_user", "sleep"),
+    },
+}
+
+
+def resolve_active_tools(
+    role: str,
+    initial_prompt: str = "",
+    dynamically_requested_tools: Optional[Set[str]] = None,
+    max_tools: int = 12,
+) -> Tuple[Set[str], Set[str]]:
+    """Resolves (allowed_categories, selected_tool_names) for an agent turn.
+
+    Ensures:
+    1. Base universal categories (filesystem, interaction, memory) are always available to all agents.
+    2. Role categories are respected as authorization boundaries.
+    3. Intent keywords dynamically activate appropriate category tools (e.g. browser for frontend coder).
+    4. Selected tools are capped at max_tools (default 12) to prevent prompt bloat.
+    """
+    role_key = (role or "").lower().strip()
+    allowed_categories = set(UNIVERSAL_ALLOWED_CATEGORIES)
+    for r_name, cats in ROLE_ALLOWED_CATEGORIES.items():
+        if r_name in role_key:
+            allowed_categories.update(cats)
+            break
+
+    init_lower = (initial_prompt or "").lower()
+    intent_tools: List[str] = []
+
+    for cat, trigger in INTENT_TRIGGERS.items():
+        if any(kw in init_lower for kw in trigger["keywords"]):
+            # Allow coder/developer to use browser when frontend/preview intent is detected
+            if cat == "browser" and ("coder" in role_key or "developer" in role_key):
+                allowed_categories.add("browser")
+            if cat in allowed_categories:
+                intent_tools.extend(trigger["tools"])
+
+    if isinstance(max_tools, bool) or not isinstance(max_tools, int) or max_tools < 3:
+        raise ValueError("max_tools must be an integer of at least 3")
+    # Discovery must actually load requested tools, evicting inactive defaults.
+    selected: List[str] = ["fetch_tool_schemas", "read_file", "ask_user"]
+    for t in sorted(dynamically_requested_tools or ()):
+        if t not in selected:
+            selected.append(t)
+    for t in intent_tools + UNIVERSAL_CORE_TOOLS:
+        if t not in selected:
+            selected.append(t)
+
+    # 2. Role-specific default tools
+    role_defaults = []
+    for r_name, def_tools in ROLE_DEFAULT_TOOLS.items():
+        if r_name in role_key:
+            role_defaults.extend(def_tools)
+            break
+    for t in role_defaults:
+        if t not in selected:
+            selected.append(t)
+
+    # 3. Intent-activated tools
+    for t in intent_tools:
+        if t not in selected:
+            selected.append(t)
+
+    # 4. Dynamically requested tools (via fetch_tool_schemas)
+    if dynamically_requested_tools:
+        for t in dynamically_requested_tools:
+            if t not in selected:
+                selected.append(t)
+
+    # Filter selected tools to those whose ToolSpec category is allowed
+    from core.tools.tool_registry import ToolRegistry
+    valid_selected = []
+    for t_name in selected:
+        spec = ToolRegistry.get(t_name)
+        if spec and (spec.category in allowed_categories or spec.category in UNIVERSAL_ALLOWED_CATEGORIES):
+            valid_selected.append(t_name)
+        elif not spec:
+            valid_selected.append(t_name)
+
+    # Cap at max_tools while prioritizing universal core and intent tools
+    if len(valid_selected) > max_tools:
+        valid_selected = valid_selected[:max_tools]
+
+    return allowed_categories, set(valid_selected)
+
 
 class ReACTAgent:
     def __init__(
@@ -100,6 +316,7 @@ class ReACTAgent:
         self._no_progress_count: int = 0
         self._consecutive_tool_errors: int = 0
         self._modified_files: set = set()
+        self._dynamically_requested_tools: Set[str] = set()
 
     async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20, exclude_msg_id: Optional[str] = None) -> List[Dict[str, str]]:
         """Loads recent team messages from the DB to give the agent conversation context.
@@ -115,44 +332,33 @@ class ReACTAgent:
 
         # --- Check for the most recent compaction checkpoint ---
         compaction_summary_msg = None
+        checkpoint_snapshot = []
         compaction_after_dt = None
         try:
             cp_stmt = (
                 select(CompactionEvent)
                 .where(CompactionEvent.team_id == team_uuid)
+                .where(or_(CompactionEvent.owner_agent_id == self.agent_id, CompactionEvent.owner_agent_id.is_(None)))
                 .order_by(CompactionEvent.created_at.desc())
                 .limit(1)
             )
             cp_result = await db_session.execute(cp_stmt)
             last_compaction = cp_result.scalar_one_or_none()
             if last_compaction:
-                # Use explicit coverage boundary if recorded, else fallback to created_at
-                compaction_after_dt = getattr(last_compaction, "covered_through_timestamp", None) or last_compaction.created_at
-                compaction_summary_msg = {
-                    "role": "user",
-                    "content": (
-                        f"[COMPACTED HISTORY — Context from before {compaction_after_dt.strftime('%Y-%m-%d %H:%M UTC')}]\n"
-                        f"{last_compaction.summary}\n"
-                        f"[/COMPACTED HISTORY]"
-                    )
-                }
-                self._log.info(
-                    "Compaction checkpoint found (covered through %s). Loading only post-compaction messages.",
-                    compaction_after_dt.isoformat()
-                )
+                if last_compaction.snapshot and last_compaction.owner_agent_id == self.agent_id:
+                    checkpoint_snapshot = last_compaction.snapshot
+                    compaction_after_dt = last_compaction.covered_through_timestamp
+                elif last_compaction.triggered_by == "manual":
+                    # Legacy summaries are useful context but do not prove full
+                    # coverage. Never use their creation time to discard messages.
+                    compaction_summary_msg = {"role": "user", "content":
+                        "[HISTORICAL SUMMARY]\n" + last_compaction.summary}
         except Exception as cp_err:
             self._log.warning("Could not check CompactionEvent table: %s", cp_err)
 
         stmt = (
             select(Message)
             .where(Message.team_id == team_uuid)
-            .where(
-                or_(
-                    Message.is_private == False,
-                    Message.recipient_id == self.agent_id,
-                    Message.sender_id == self.agent_id
-                )
-            )
             .where(Message.sender_id != "system")
             # CRITICAL: Exclude intermediate tool-trace rows.
             # is_intermediate=True rows (tool call traces, system corrections)
@@ -161,9 +367,15 @@ class ReACTAgent:
             # consumed and acted on those results in the same run they were created.
             .where(Message.is_intermediate == False)
         )
+        if getattr(self, "is_private_response", False):
+            stmt = stmt.where(or_(Message.is_private == False,
+                                 Message.recipient_id == self.agent_id,
+                                 Message.sender_id == self.agent_id))
+        else:
+            stmt = stmt.where(Message.is_private == False)
         # If there's a compaction checkpoint, only load messages after its coverage boundary
         if compaction_after_dt is not None:
-            stmt = stmt.where(Message.created_at > compaction_after_dt)
+            stmt = stmt.where(Message.created_at >= compaction_after_dt)
 
         if exclude_msg_id:
             try:
@@ -178,13 +390,16 @@ class ReACTAgent:
         result = await db_session.execute(stmt)
         messages = list(reversed(result.scalars().all()))
 
-        history = []
+        history = [dict(message) for message in checkpoint_snapshot]
+        snapshot_ids = {message.get("id") for message in history}
         # Prepend the compaction summary as the first message so the LLM
         # has context for everything that came before the checkpoint.
         if compaction_summary_msg:
             history.append(compaction_summary_msg)
 
         for msg in messages:
+            if str(msg.id) in snapshot_ids:
+                continue
             is_self = msg.sender_id == self.agent_id
 
             content_list = []
@@ -279,16 +494,17 @@ class ReACTAgent:
                 self._log.debug("Could not resolve project owner context: %s", e)
         capabilities_block += human_context
 
-        # 1. Generate search embeddings
-        query_vector = await llm_router.generate_embeddings(current_task)
-
-        # 2. Search LanceDB for semantic memory
-        past_learnings = await lancedb_client.search_learnings(
-            vector=query_vector,
-            project_id=self.project_id,
-            team_id=self.team_id,
-            limit=getattr(core.config, "MEMORY_RETRIEVAL_LIMIT", 3)
-        )
+        # Archival memory is optional; an unavailable embedding service must
+        # never prevent a working chat model from executing the current task.
+        past_learnings = []
+        try:
+            query_vector = await asyncio.wait_for(llm_router.generate_embeddings(current_task), timeout=10)
+            past_learnings = await asyncio.wait_for(lancedb_client.search_learnings(
+                vector=query_vector, project_id=self.project_id, team_id=self.team_id,
+                limit=getattr(core.config, "MEMORY_RETRIEVAL_LIMIT", 3),
+            ), timeout=5)
+        except Exception as exc:
+            self._log.warning("Archival retrieval unavailable: %s", type(exc).__name__)
 
         # 3. Format past learnings
         learnings_block = ""
@@ -335,7 +551,8 @@ class ReACTAgent:
 
         # 3.6 Format Knowledge Graph Triples (Multi-Hop GraphRAG)
         triple_stmt = select(GraphTriple).where(
-            or_(GraphTriple.team_id == team_uuid, GraphTriple.team_id == None)
+            or_(GraphTriple.team_id == team_uuid, GraphTriple.team_id == None),
+            GraphTriple.project_id == proj_uuid,
         ).limit(30)
         triple_result = await db_session.execute(triple_stmt)
         triples = triple_result.scalars().all()
@@ -348,13 +565,16 @@ class ReACTAgent:
         capabilities_block += learnings_block
 
         # 3.7 Structural Repo Map (PageRank Context Map - Aider Pattern)
-        try:
-            from core.knowledge.code_graph import code_graph
-            repo_map = await code_graph.generate_repo_map(project_id=self.project_id, max_tokens=800)
-            if repo_map:
-                capabilities_block += f"REPOSITORY SYMBOL MAP (Top Ranked Interfaces):\n{repo_map}\n\n"
-        except Exception as e:
-            self._log.debug("Could not generate repo map: %s", e)
+        # Only inject for technical roles (coder, developer, architect, reviewer)
+        role_key = (self.role or "").lower().strip()
+        if any(r in role_key for r in ("coder", "developer", "architect", "reviewer")):
+            try:
+                from core.knowledge.code_graph import code_graph
+                repo_map = await code_graph.generate_repo_map(project_id=self.project_id, max_tokens=800)
+                if repo_map:
+                    capabilities_block += f"REPOSITORY SYMBOL MAP (Top Ranked Interfaces):\n{repo_map}\n\n"
+            except Exception as e:
+                self._log.debug("Could not generate repo map: %s", e)
 
         # 4. Dynamic Skills (Antigravity & Claude SKILL.md Standard + DB Skills)
         from core.skills.skill_manager import SkillManager
@@ -373,9 +593,29 @@ class ReACTAgent:
         if skills_block:
             capabilities_block += f"\n{skills_block}\n\n"
 
-        # 5. Tool list
-        tools_block = "AVAILABLE TOOLS:\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n\n"
-        capabilities_block += tools_block
+        # 5. Tool Capabilities Index (Compact ~200 tokens)
+        # Instead of dumping all 120 verbose JSON schemas into system prompt text (costing 12k+ tokens),
+        # we provide a high-level Capability Catalog. The active JSON schemas are sent natively in tools=[...].
+        # Text-only models without native tool-calling receive the full fallback text dump.
+        if self._model_supports_native_tools(self.model):
+            tools_block = (
+                "AVAILABLE TOOL FAMILIES & CAPABILITIES:\n"
+                "- Memory (Universal): search_memory, add_memory, update_memory, read_scratchpad, write_scratchpad, add_fact\n"
+                "- Filesystem (Universal): read_file, edit_file, write_file, copy_file, move_file, delete_file, list_directory\n"
+                "- Code Analysis: find_function, find_symbol_definition, get_file_outline, check_syntax, get_class_hierarchy\n"
+                "- Git: git_status, git_diff, git_commit, git_push, git_pull, git_branch, git_stash, git_log\n"
+                "- Shell: execute_command, run_script\n"
+                "- Web & Browser: web_search, web_fetch, browser_navigate, browser_click, browser_screenshot, browser_snapshot\n"
+                "- Coordination & Tasks: spawn_agent, hire_subagent, create_task, update_task, list_tasks, ask_user\n"
+                "- Discovery: fetch_tool_schemas(family: str, tool_names: list[str])\n\n"
+                "Your active function calling schemas are provided natively in your toolset. "
+                "If you need specialized tools from the catalog above that are not currently loaded, "
+                "call fetch_tool_schemas to activate them dynamically.\n\n"
+            )
+            capabilities_block += tools_block
+        else:
+            tools_block = "AVAILABLE TOOLS:\n" + ToolRegistry.to_llm_prompt(team_id=str(self.team_id), agent_id=str(self.agent_id)) + "\n\n"
+            capabilities_block += tools_block
 
         # 6. Worker reports
         worker_results_block = ""
@@ -443,16 +683,20 @@ class ReACTAgent:
         if _workspace:
             capabilities_block += _workspace
 
+        # Role-guard specialized blocks (only inject if category is allowed)
+        allowed_categories, _ = resolve_active_tools(self.role, current_task or "")
+
         # Scheduler awareness
-        _scheduler = get_block("scheduler")
-        if _scheduler:
-            capabilities_block += _scheduler
+        if "scheduler" in allowed_categories:
+            _scheduler = get_block("scheduler")
+            if _scheduler:
+                capabilities_block += _scheduler
 
         # Browser automation — 3-Tier architecture
-        _browser = get_block("browser")
-        if _browser:
-            capabilities_block += _browser
-
+        if "browser" in allowed_categories:
+            _browser = get_block("browser")
+            if _browser:
+                capabilities_block += _browser
 
         # Reasoning guidelines & Output Efficiency
         identity_rule = f"\n\nCRITICAL IDENTITY RULE: You are {self.name} ({self.role}). You MUST speak in the first person ('I', 'me'). NEVER refer to {self.name} in the third person. NEVER pretend to be someone else."
@@ -461,6 +705,46 @@ class ReACTAgent:
         assembled = f"{self.system_prompt}{identity_rule}\n\n{output_efficiency}\n\n{capabilities_block}"
         self._cached_system_prompt = assembled
         return assembled
+
+    def _model_supports_native_tools(self, model: str) -> bool:
+        """Check if the model supports native function/tool calling."""
+        m = (model or "").lower()
+        if any(legacy in m for legacy in ("instruct", "completion", "embed")):
+            return False
+        return True
+
+    def _build_tools_schema(
+        self,
+        allowed_categories: Set[str],
+        selected_tool_names: Set[str],
+        permissions: Dict[str, Any],
+    ) -> List[dict]:
+        """Compile native tool schemas for the active model provider."""
+        model = self.model
+        if model.startswith("gemini"):
+            all_tools = ToolRegistry.to_gemini_tools(
+                team_id=self.team_id, agent_id=self.agent_id,
+                categories=allowed_categories, include_names=selected_tool_names,
+            )
+            if all_tools and "functionDeclarations" in all_tools[0]:
+                filtered_decls = [
+                    d for d in all_tools[0]["functionDeclarations"]
+                    if permissions.get(d.get("name"), "allow") != "block"
+                ]
+                return [{"functionDeclarations": filtered_decls}]
+            return all_tools
+        elif (model.startswith("claude") or model.startswith("anthropic")) and getattr(llm_router, "anthropic_key", None):
+            all_tools = ToolRegistry.to_anthropic_tools(
+                team_id=self.team_id, agent_id=self.agent_id,
+                categories=allowed_categories, include_names=selected_tool_names,
+            )
+            return [t for t in all_tools if permissions.get(t.get("name"), "allow") != "block"]
+        else:
+            all_tools = ToolRegistry.to_openai_tools(
+                team_id=self.team_id, agent_id=self.agent_id,
+                categories=allowed_categories, include_names=selected_tool_names,
+            )
+            return [t for t in all_tools if permissions.get(t.get("function", {}).get("name"), "allow") != "block"]
 
     def _invalidate_system_prompt_cache(self) -> None:
         """Force a rebuild of the cached system prompt on the next loop iteration.
@@ -561,7 +845,9 @@ class ReACTAgent:
             "recent_messages_to_keep": 4 if model_ctx <= 16384 else 8,
         }
         user_compaction = cfg.get("compaction", {})
-        return {**defaults, **user_compaction}
+        resolved = {**defaults, **user_compaction}
+        resolved["context_window_size"] = min(model_ctx, resolved["context_window_size"])
+        return resolved
 
     def _estimate_tokens(
         self,
@@ -609,6 +895,9 @@ class ReACTAgent:
             for m in messages:
                 text = _extract_text(m.get("content", ""))
                 total += len(enc.encode(text, disallowed_special=())) + 4
+                blocks = m.get("content", [])
+                if isinstance(blocks, list):
+                    total += sum(1600 for block in blocks if isinstance(block, dict) and block.get("type") == "image")
             return total + 2
         except Exception:
             pass
@@ -622,6 +911,9 @@ class ReACTAgent:
 
         for m in messages:
             text = _extract_text(m.get("content", ""))
+            blocks = m.get("content", [])
+            if isinstance(blocks, list):
+                total += sum(1600 for block in blocks if isinstance(block, dict) and block.get("type") == "image")
             if "tool_result" in text or "[OBSERVATION]" in text or "```" in text:
                 total += len(text) // 3
             elif "[COMPACTED HISTORY" in text:
@@ -674,7 +966,8 @@ class ReACTAgent:
                             lines = res_str.splitlines()
                             first_line = lines[0][:100] if lines else "Result"
                             b_copy = dict(b)
-                            b_copy["content"] = f"{first_line} ...[{len(lines)} lines / {len(res_str)} chars compacted]"
+                            refs = re.findall(r"full output saved to: [^\]\n]+", res_str)
+                            b_copy["content"] = f"{first_line} ...[{len(lines)} lines / {len(res_str)} chars compacted]" + ("\n" + "\n".join(refs) if refs else "")
                             new_blocks.append(b_copy)
                             changed = True
                         elif len(res_str) > max_chars:
@@ -871,9 +1164,13 @@ class ReACTAgent:
                         team_id=team_uuid,
                         summary=full_summary,
                         message_count_before=len(messages),
-                        triggered_by=triggered_by,
+                        triggered_by="manual" if triggered_by == "manual" else "auto",
+                        owner_agent_id=self.agent_id,
+                        snapshot=json.loads(json.dumps(compacted, default=str)),
                         covered_through_message_id=cov_uuid,
-                        covered_through_timestamp=covered_ts,
+                        covered_through_timestamp=max(
+                            (datetime.fromisoformat(m["created_at"]) if isinstance(m.get("created_at"), str)
+                             else m["created_at"] for m in messages if m.get("created_at")), default=None),
                     )
                     db_session.add(cp_event)
                     await db_session.commit()
@@ -1034,11 +1331,13 @@ class ReACTAgent:
         from core.agent.context_condenser import ContextCondenser
 
         # ── Reset per-session state ───────────────────────────────────────────
+        model = self.model
         self._cached_system_prompt = None
         self._last_observation = ""
         self._no_progress_count = 0
         self._consecutive_tool_errors = 0
         self._modified_files = set()
+        self._run_id = str(uuid.uuid4())
         self.is_private_response = False
         self.reply_recipient_id = None
         self._current_thought_buffer = ""
@@ -1074,24 +1373,16 @@ class ReACTAgent:
         # ── Build system prompt & tool schemas ───────────────────────────────
         system_prompt = await self.assemble_system_prompt(db_session, initial_prompt)
 
-        # Select the right tool schema format for this model/provider and filter by permissions
-        model = self.model
-        if model.startswith("gemini"):
-            all_tools = ToolRegistry.to_gemini_tools(team_id=self.team_id, agent_id=self.agent_id)
-            if all_tools and "functionDeclarations" in all_tools[0]:
-                filtered_decls = [
-                    d for d in all_tools[0]["functionDeclarations"]
-                    if permissions.get(d.get("name"), "allow") != "block"
-                ]
-                tools = [{"functionDeclarations": filtered_decls}]
-            else:
-                tools = all_tools
-        elif (model.startswith("claude") or model.startswith("anthropic")) and getattr(llm_router, "anthropic_key", None):
-            all_tools = ToolRegistry.to_anthropic_tools(team_id=self.team_id, agent_id=self.agent_id)
-            tools = [t for t in all_tools if permissions.get(t.get("name"), "allow") != "block"]
-        else:
-            all_tools = ToolRegistry.to_openai_tools(team_id=self.team_id, agent_id=self.agent_id)
-            tools = [t for t in all_tools if permissions.get(t.get("function", {}).get("name"), "allow") != "block"]
+        # Mode & Role-based tool scoping (Claude Code / Roo Code style)
+        # Prevents sending 120+ tool schemas (25k-30k tokens) by filtering to role-relevant families and capping at 12 tools
+        self._dynamically_requested_tools.clear()
+        allowed_categories, selected_tool_names = resolve_active_tools(
+            role=self.role,
+            initial_prompt=initial_prompt,
+            dynamically_requested_tools=self._dynamically_requested_tools,
+            max_tools=12,
+        )
+        tools = self._build_tools_schema(allowed_categories, selected_tool_names, permissions)
 
         # ── Load conversation history into MessageHistory ─────────────────────
         from core.llm.multi_model_router import get_model_context_window
@@ -1211,9 +1502,8 @@ class ReACTAgent:
             })
 
             # Enforce cumulative run token budget circuit breaker
-            self._total_run_tokens += estimated_tokens
-            max_budget_tokens = getattr(core.config, "MAX_BUDGET_TOKENS", 150_000)
-            if self._total_run_tokens > max_budget_tokens:
+            max_budget_tokens = getattr(core.config, "MAX_BUDGET_TOKENS", 1_000_000)
+            if self._total_run_tokens + estimated_tokens + 256 > max_budget_tokens:
                 self._log.warning("[native] Run token budget exceeded: %d > %d", self._total_run_tokens, max_budget_tokens)
                 budget_note = f"\n\n*[System: Agent execution halted by Circuit Breaker — cumulative token budget of {max_budget_tokens:,} tokens reached.]*"
                 final_text = (self._current_thought_buffer or "") + budget_note
@@ -1303,6 +1593,26 @@ class ReACTAgent:
                         "sender_id": self.agent_id,
                     })
 
+                request_input_tokens = self._estimate_tokens(messages, system_prompt=system_prompt, tools=tools)
+                request_max_tokens = min(8192, window_size - request_input_tokens - 256,
+                                         max_budget_tokens - self._total_run_tokens - request_input_tokens)
+                if request_max_tokens < 1:
+                    had_error = True
+                    budget_text = "[System: No context or token budget remains. Task completion is unverified.]"
+                    budget_message = Message(team_id=uuid.UUID(str(self.team_id)), sender_id=self.agent_id,
+                                             sender_name=self.name, text=budget_text,
+                                             is_private=self.is_private_response, recipient_id=self.reply_recipient_id)
+                    db_session.add(budget_message)
+                    await db_session.commit()
+                    await event_bus.publish(self.topic, {"type": "message", "id": str(budget_message.id),
+                        "sender_id": self.agent_id, "sender_name": self.name, "text": budget_text,
+                        "is_private": self.is_private_response, "recipient_id": self.reply_recipient_id})
+                    break
+                # Reserve output and input for every attempt, including retries.
+                # Provider usage replaces this conservative reservation on success.
+                reserved_tokens = request_input_tokens + request_max_tokens
+                self._total_run_tokens += reserved_tokens
+                request_usage = {}
                 try:
                     async for event in llm_router.generate_with_tools(
                         model=model,
@@ -1310,7 +1620,7 @@ class ReACTAgent:
                         messages=messages,
                         tools=tools,
                         temperature=0.4,
-                        max_tokens=8192,
+                        max_tokens=request_max_tokens,
                         tool_choice="auto",
                         team_id=self.team_id,
                         agent_id=self.agent_id,
@@ -1351,9 +1661,20 @@ class ReACTAgent:
                         elif etype == "tool_use":
                             tool_uses.append(event)
 
+                        elif etype == "usage":
+                            request_usage.update(event.get("usage", {}))
+
                         elif etype == "message_stop":
                             stop_reason = event.get("stop_reason")
 
+                    if request_usage:
+                        prompt_count = request_usage.get("prompt_tokens", request_usage.get("input_tokens"))
+                        output_count = request_usage.get("completion_tokens", request_usage.get("output_tokens"))
+                        if prompt_count is not None and output_count is not None:
+                            used = max(0, int(prompt_count)) + max(0, int(output_count))
+                            if "input_tokens" in request_usage and "prompt_tokens" not in request_usage:
+                                used += max(0, int(request_usage.get("cache_read_input_tokens", 0))) + max(0, int(request_usage.get("cache_creation_input_tokens", 0)))
+                            self._total_run_tokens += used - reserved_tokens
                     break  # Success — exit retry loop
 
                 except Exception as e:
@@ -1441,7 +1762,8 @@ class ReACTAgent:
 
             # Record this turn in MessageHistory
             tool_use_blocks = [
-                {"type": "tool_use", "id": t["id"], "name": t["name"], "input": t["input"]}
+                {"type": "tool_use", "id": t["id"], "name": t["name"], "input": t["input"],
+                 **({"thoughtSignature": t["thoughtSignature"]} if t.get("thoughtSignature") else {})}
                 for t in tool_uses
             ]
 
@@ -1449,6 +1771,12 @@ class ReACTAgent:
             if not tool_uses:
                 if stop_reason in ("max_tokens", "length"):
                     self._log.warning("[native] Model stopped due to length/max_tokens truncation.")
+                    if loop_count < max_loops - 1:
+                        history.add_assistant_text(text=assistant_text or "[Response truncated]")
+                        history.add_context_note("Your response hit its output limit. Continue from where it stopped; verify the result before reporting completion.")
+                        continue
+                    assistant_text += "\n\n[Output limit reached; task completion is unverified.]"
+
 
                 if not assistant_text.strip():
                     if loop_count < max_loops - 1:
@@ -1458,7 +1786,7 @@ class ReACTAgent:
                         )
                         continue
                     else:
-                        assistant_text = "Task processing completed."
+                        assistant_text = "The model returned no usable response. Task completion could not be verified."
 
                 history.add_assistant_text(text=assistant_text, tool_uses=None)
                 self._log.info("[native] No tool calls in response — agent finished after %d loop(s).", loop_count)
@@ -1579,7 +1907,7 @@ class ReACTAgent:
                         name=tool_name, args=tool_args,
                         permissions=permissions, token=token,
                     )
-                    if str(observation).startswith("✗") or "Error" in str(observation):
+                    if str(observation).lstrip().lower().startswith(("✗", "error:", "error ", "permission denied", "denied:", "execution denied:", "blocked:", "🛑 action paused:", "action paused:")):
                         is_error = True
                     else:
                         if tool_name in ("write_file", "edit_file", "append_file", "delete_file"):
@@ -1616,13 +1944,38 @@ class ReACTAgent:
                 else:
                     self._consecutive_tool_errors = 0
 
-                observation = cache_observation(tool_name, str(observation))
+                # Handle fetch_tool_schemas dynamic discovery
+                if tool_name == "fetch_tool_schemas":
+                    raw_names = tool_args.get("tool_names") or tool_args.get("tool_name") or []
+                    if isinstance(raw_names, str):
+                        raw_names = [raw_names]
+                    for rn in raw_names:
+                        self._dynamically_requested_tools.add(str(rn).strip())
+                    family = (tool_args.get("family") or tool_args.get("category") or "").lower().strip()
+                    if family:
+                        from core.tools.tool_registry import ToolRegistry
+                        for s_name, s_spec in ToolRegistry._tools.items():
+                            if s_spec.category.lower() == family:
+                                self._dynamically_requested_tools.add(s_name)
+
+                # Cache the original result before rendering a bounded preview.
+                observation = cache_observation(tool_name, str(observation), scope=f"{self.team_id}:{self.agent_id}")
                 return tool_id, tool_name, observation, is_error
 
             results = []
             for tc in tool_uses:
                 res = await _exec_single_tool(tc)
                 results.append(res)
+
+            # If any tools were dynamically requested via fetch_tool_schemas, update active tools schema
+            if self._dynamically_requested_tools:
+                allowed_categories, selected_tool_names = resolve_active_tools(
+                    role=self.role,
+                    initial_prompt=initial_prompt,
+                    dynamically_requested_tools=self._dynamically_requested_tools,
+                    max_tools=12,
+                )
+                tools = self._build_tools_schema(allowed_categories, selected_tool_names, permissions)
 
             # Persist and broadcast tool traces
             for tool_id, tool_name, observation, is_err in results:
@@ -1827,8 +2180,7 @@ class ReACTAgent:
             self._last_observation = obs_fp
 
             # Invalidate cached system prompt if new worker results arrived
-            if self._worker_results:
-                self._invalidate_system_prompt_cache()
+            # The notification listener invalidates once when a new result arrives.
 
         # ── Hit max_loops (only if not cleanly terminated) ───────────────────
         if not terminated and loop_count >= max_loops:
@@ -1888,6 +2240,8 @@ class ReACTAgent:
         update_memory. It runs a cheap, fast LLM call to summarize the failure
         and directly writes the result into the vector store.
         """
+        if getattr(self, "is_private_response", False):
+            return
         try:
             # Build a compact summary of the last few messages (tool calls & errors)
             recent = messages[-8:]  # last 8 messages should capture the failure pattern
@@ -1948,55 +2302,44 @@ class ReACTAgent:
                 max_tokens=300,
             )
 
-            if "NO_LESSON" in extraction:
+            if extraction.strip() == "NO_LESSON":
                 self._log.info("Auto-lesson extraction: no useful lesson found.")
                 return
 
             # Parse TASK/LESSON lines
-            task_summary = initial_prompt[:200]
-            lesson_rule = extraction.strip()
+            task_summary = None
+            lesson_rule = None
             for line in extraction.strip().split("\n"):
                 if line.startswith("TASK:"):
                     task_summary = line[5:].strip()
                 elif line.startswith("LESSON:"):
                     lesson_rule = f"[FAILURE-LESSON] {line[7:].strip()}"
 
-            # Generate embedding
-            combined_text = f"{task_summary} | {lesson_rule}"
-            embedding = await llm_router.generate_embeddings(combined_text)
-
-            # Deduplication check — skip if a very similar lesson already exists
-            existing = await lancedb_client.search_learnings(
-                vector=embedding,
-                project_id=self.project_id,
-                team_id=self.team_id,
-                limit=1,
-            )
-            if existing and existing[0].get("_distance", 1.0) < 0.15:
-                self._log.info("Auto-lesson extraction: duplicate lesson already exists, skipping.")
+            if not task_summary or not lesson_rule or lesson_rule == "[FAILURE-LESSON] ":
+                self._log.warning("Ignoring malformed failure lesson extraction")
                 return
 
             # Save to SQLite
             from core.memory.database import async_session as _async_session
             from core.memory.models import Learning
             async with _async_session() as db:
+                project_uuid = uuid.UUID(str(self.project_id))
+                team_uuid = uuid.UUID(str(self.team_id))
+                existing = await db.scalar(select(Learning.id).where(
+                    Learning.project_id == project_uuid, Learning.team_id == team_uuid,
+                    Learning.task_summary == task_summary, Learning.lesson_rule == lesson_rule))
+                if existing:
+                    return
                 learning = Learning(
-                    project_id=uuid.UUID(self.project_id) if isinstance(self.project_id, str) else self.project_id,
-                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                    project_id=project_uuid,
+                    team_id=team_uuid,
                     task_summary=task_summary,
                     lesson_rule=lesson_rule,
                 )
                 db.add(learning)
                 await db.commit()
 
-            # Save to LanceDB vector store
-            await lancedb_client.insert_learning(
-                project_id=str(self.project_id),
-                team_id=str(self.team_id),
-                task_summary=task_summary,
-                lesson_rule=lesson_rule,
-                vector=embedding,
-            )
+            # The SQL transaction also queues a durable, retryable vector job.
 
             self._log.info(
                 "✓ Auto-saved failure lesson: '%s' → '%s'",
@@ -2260,7 +2603,6 @@ class ReACTAgent:
         return tool_name, {"value": raw_args}
 
     def _build_task_notification(self, result_text: str, status: str) -> str:
-        import html
         task_id = html.escape(str(self.task_id or "unknown"))
         agent_name = html.escape(str(self.name))
         status_esc = html.escape(str(status))
@@ -2343,7 +2685,6 @@ class ReACTAgent:
 
     def parse_task_notifications(self, text: str) -> List[Dict[str, str]]:
         """Parses <task-notification> XML blocks from worker messages."""
-        import html
         notifications = []
         pattern = r"<task-notification>(.*?)</task-notification>"
         matches = re.findall(pattern, text, re.DOTALL)
@@ -2386,6 +2727,7 @@ class ReACTAgent:
             agent_name=self.name,
             team_id=self.team_id,
             cancellation_token=token or CancellationToken(),
+            run_id=getattr(self, "_run_id", None),
             emit_progress=emit_progress,
             active_message_id=self.active_message_id,
             agent_role=self.role,

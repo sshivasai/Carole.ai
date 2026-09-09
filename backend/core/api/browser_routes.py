@@ -18,6 +18,15 @@ import logging
 from core.auth.auth_middleware import require_auth
 from core.tools.browser_tool import browser_tool, _get_page, _publish_screenshot
 from core.tools.interaction_tools import pending_questions, question_answers
+from core.memory.database import async_session
+from core.api.crud_routes import _assert_agent_access, _assert_team_access
+
+
+async def _owned_browser(agent_id, user):
+    if not agent_id or agent_id == "global":
+        raise HTTPException(400, "An owned agent is required")
+    async with async_session() as db:
+        await _assert_agent_access(db, agent_id, user["sub"])
 
 logger = logging.getLogger("carole.browser_routes")
 
@@ -50,8 +59,9 @@ async def browser_act_direct(
     Direct interactive browser action dispatcher for frontend Canvas takeover.
     Supports normalized coordinate clicks, element refs, CSS selectors, typing, and navigation.
     """
+    await _owned_browser(body.agent_id, user)
     try:
-        page = await _get_page(body.agent_id or "global")
+        page = await _get_page(body.agent_id)
         kind = body.kind.lower()
 
         if body.ref is not None:
@@ -138,6 +148,7 @@ async def get_browser_screenshot(
     """
     Fetches the current live screenshot of the browser page for an agent.
     """
+    await _owned_browser(agent_id, user)
     try:
         page = await _get_page(agent_id)
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60)
@@ -162,6 +173,12 @@ async def resolve_browser_hil(
     Resolves an active human-in-the-loop takeover request from in-chat card or canvas.
     """
     q_id = body.question_id
+    from core.tools.interaction_tools import pending_question_details
+    details = pending_question_details.get(q_id)
+    if not details or not details.get("team_id"):
+        raise HTTPException(404, "Intervention not found")
+    async with async_session() as db:
+        await _assert_team_access(db, str(details["team_id"]), user["sub"])
     if q_id in pending_questions:
         question_answers[q_id] = body.answer
         pending_questions[q_id].set()
@@ -173,12 +190,27 @@ async def resolve_browser_hil(
 async def browser_stream_websocket(
     websocket: WebSocket,
     agent_id: str = Query("global"),
+    ticket: str = Query(""),
 ):
     """
     High-performance real-time WebSocket screencast stream.
     Leverages Chromium's native CDP Page.startScreencast with drop-oldest frame backpressure,
     and supports bidirectional direct interactive takeover from frontend Canvas.
     """
+    from core.auth.auth_service import auth_service
+    user_id = auth_service.verify_ws_ticket(ticket) if ticket else None
+    if not user_id:
+        await websocket.close(code=4001)
+        return
+    try:
+        async with async_session() as db:
+            user = await auth_service.get_active_user(db, user_id)
+            if not user:
+                raise HTTPException(401, "Inactive user")
+        await _owned_browser(agent_id, {"sub": str(user_id)})
+    except HTTPException:
+        await websocket.close(code=4003)
+        return
     await websocket.accept()
     cdp = None
     screencast_active = False

@@ -10,6 +10,7 @@ asyncio.to_thread() to avoid blocking the FastAPI event loop.
 import uuid
 import asyncio
 import logging
+import threading
 from typing import List, Optional, Dict, Any
 from core.config import CAROLE_HOME_DIR
 
@@ -23,6 +24,7 @@ class LanceDBClient:
             self.uri = uri
         self.table_name = "learnings"
         self._db = None  # lazy-initialise inside to_thread
+        self._write_lock = threading.RLock()
 
     def _get_db(self):
         """Return (and lazily create) the LanceDB connection. Runs in a thread."""
@@ -50,11 +52,12 @@ class LanceDBClient:
         row_id = str(learning_id) if learning_id else str(uuid.uuid4())
         data = [{
             "id": row_id,
-            "project_id": project_id or "",
-            "team_id": team_id or "",
+            "project_id": str(project_id) if project_id else "",
+            "team_id": str(team_id) if team_id else "",
             "task_summary": task_summary,
             "lesson_rule": lesson_rule,
-            "vector": vector,
+            "vector": list(vector),
+            "embedding_model": getattr(vector, "model", "legacy"),
         }]
         await asyncio.to_thread(self._sync_insert, data)
         return row_id
@@ -67,9 +70,27 @@ class LanceDBClient:
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """Search for similar learnings (non-blocking)."""
-        return await asyncio.to_thread(
+        candidates = await asyncio.to_thread(
             self._sync_search, vector, project_id, team_id, limit
         )
+        # SQL is authoritative: stale/deleted vectors must never resurface, even
+        # when an earlier indexing operation or a bulk delete was interrupted.
+        from core.memory.database import async_session
+        from core.memory.models import Learning
+        from sqlalchemy import select, or_
+        if not candidates:
+            return []
+        def as_uuid(value):
+            return uuid.UUID(str(value)) if value else None
+        ids = [as_uuid(row["id"]) for row in candidates]
+        async with async_session() as db:
+            stmt = select(Learning).where(Learning.id.in_(ids),
+                Learning.project_id == as_uuid(project_id),
+                or_(Learning.team_id == as_uuid(team_id), Learning.team_id.is_(None)))
+            current = {str(row.id): row for row in (await db.scalars(stmt)).all()}
+        return [row for row in candidates if row["id"] in current
+                and row["task_summary"] == current[row["id"]].task_summary
+                and row["lesson_rule"] == current[row["id"]].lesson_rule]
 
     async def delete_learning(self, learning_id: str) -> bool:
         """Delete a learning record by id (non-blocking)."""
@@ -90,11 +111,17 @@ class LanceDBClient:
             return False
 
     def _sync_insert(self, data: List[dict]) -> None:
+        with self._write_lock:
+            self._sync_upsert(data)
+
+    def _sync_upsert(self, data: List[dict]) -> None:
         try:
             db = self._get_db()
             if self._has_table(db):
                 table = db.open_table(self.table_name)
-                table.add(data)
+                if "embedding_model" not in table.schema.names:
+                    table.add_columns({"embedding_model": "'legacy'"})
+                table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all().execute(data)
             else:
                 db.create_table(self.table_name, data=data)
         except Exception as e:
@@ -120,12 +147,17 @@ class LanceDBClient:
             # strip any character that isn't alphanumeric, a hyphen, or an
             # underscore.  Valid UUIDs only contain [0-9a-f-], so this is safe.
             import re as _re
-            _safe_id = lambda s: _re.sub(r"[^a-zA-Z0-9_\-]", "", s) if s else ""
+            _safe_id = lambda s: _re.sub(r"[^a-zA-Z0-9_\-]", "", str(s)) if s else ""
             safe_project_id = _safe_id(project_id)
             safe_team_id = _safe_id(team_id) if team_id else None
 
             # Match (exact project OR global) AND (exact team OR project-wide learnings with empty team_id)
-            filter_str = f"(project_id = '{safe_project_id}' OR project_id = '')"
+            filter_str = f"project_id = '{safe_project_id}'"
+            model = getattr(vector, "model", "legacy")
+            if "embedding_model" in table.schema.names:
+                filter_str += " AND embedding_model = '" + model.replace("'", "''") + "'"
+            elif model != "legacy":
+                return []
             if safe_team_id:
                 filter_str += f" AND (team_id = '{safe_team_id}' OR team_id = '')"
             else:
@@ -151,13 +183,13 @@ class LanceDBClient:
                 return False
             db = self._get_db()
             if not self._has_table(db):
-                return False
+                return True
             table = db.open_table(self.table_name)
             table.delete(f"id = '{safe_id}'")
             return True
         except Exception as e:
             logger.error("LanceDB delete failed: %s", e)
-            return False
+            raise
 
     async def delete_by_team(self, team_id: str) -> bool:
         """Delete all learnings associated with a team (non-blocking)."""

@@ -80,7 +80,7 @@ def _register_orm_models():
     import core.memory.models  # noqa: F401
 
 
-def _run_alembic_upgrade() -> None:
+def _run_alembic_upgrade(stamp_only: bool = False) -> None:
     """Run Alembic migrations to head synchronously in a worker thread."""
     from pathlib import Path
     from alembic.config import Config
@@ -96,18 +96,25 @@ def _run_alembic_upgrade() -> None:
     alembic_cfg.set_main_option("script_location", str(backend_dir / "alembic"))
     alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
 
-    try:
+    if stamp_only:
+        command.stamp(alembic_cfg, "head")
+    else:
         command.upgrade(alembic_cfg, "head")
-        logger.info("Alembic migrations upgraded to head successfully.")
-    except Exception as e:
-        logger.warning("Alembic upgrade encountered an issue: %s", e)
-        # If database already had tables created via create_all without alembic_version,
-        # stamp head so future migrations apply incrementally.
-        try:
-            command.stamp(alembic_cfg, "head")
-            logger.info("Stamped existing database schema with Alembic head.")
-        except Exception as stamp_err:
-            logger.warning("Alembic stamp failed: %s", stamp_err)
+    logger.info("Database migrations completed successfully.")
+
+
+def _schema_gaps(connection):
+    from sqlalchemy import inspect
+    inspector = inspect(connection)
+    tables = set(inspector.get_table_names())
+    gaps = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in tables:
+            gaps.append(table.name)
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table.name)}
+        gaps.extend(f"{table.name}.{column.name}" for column in table.columns if column.name not in columns)
+    return gaps
 
 
 async def verify_and_copy_sqlite_table(
@@ -169,7 +176,10 @@ async def init_db(force_recreate: bool = False):
     # 1. Dynamically import all ORM models to register with Base.metadata before creation
     _register_orm_models()
 
+    from sqlalchemy import inspect
     async with engine.begin() as conn:
+        existing_tables = await conn.run_sync(lambda connection: set(inspect(connection).get_table_names()))
+        had_version = "alembic_version" in existing_tables
         # 2. Optionally drop all tables first (explicit dev mode only)
         if force_recreate:
             logger.warning("FORCE_DB_RECREATE enabled — dropping all tables...")
@@ -195,8 +205,26 @@ async def init_db(force_recreate: bool = False):
             except Exception as e:
                 logger.debug("Column addition notice: %s", e)
 
-    # 4. Versioned schema migrations via Alembic
-    try:
+    # Versioned databases must successfully upgrade. Never stamp a failed
+    # migration as applied. Unversioned, fully matching schemas can be adopted.
+    if had_version and not force_recreate:
         await asyncio.to_thread(_run_alembic_upgrade)
-    except Exception as alembic_err:
-        logger.warning("Alembic automatic migration notice: %s", alembic_err)
+    else:
+        if _is_sqlite:
+            # Older local installs used create_all without an Alembic revision.
+            # These nullable additions preserve every existing checkpoint/row.
+            async with engine.begin() as conn:
+                cols = await conn.run_sync(lambda c: {col["name"] for col in inspect(c).get_columns("compaction_events")})
+                if "owner_agent_id" not in cols:
+                    await conn.execute(text("ALTER TABLE compaction_events ADD COLUMN owner_agent_id VARCHAR(100)"))
+                if "snapshot" not in cols:
+                    await conn.execute(text("ALTER TABLE compaction_events ADD COLUMN snapshot JSON"))
+        async with engine.connect() as conn:
+            gaps = await conn.run_sync(_schema_gaps)
+        if gaps:
+            raise RuntimeError("Unversioned database needs an explicit migration; missing columns: " + ", ".join(gaps))
+        await asyncio.to_thread(_run_alembic_upgrade, True)
+    async with engine.connect() as conn:
+        gaps = await conn.run_sync(_schema_gaps)
+    if gaps:
+        raise RuntimeError("Database schema is incomplete after migration: " + ", ".join(gaps))

@@ -66,3 +66,5 @@ agent_tools.diff.txt
 # CODE_REVIEW_REPORT.md
 CODE_REVIEW_REPORT.md
 IMPLEMENTATION_PLAN.md
+backend/audit/BACKEND_REVIEW.md
+backend/audit/REMEDIATION_STATUS.md

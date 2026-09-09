@@ -6,7 +6,7 @@ import pytest
 from httpx import AsyncClient
 
 from core.skills.skill_parser import SkillParser, SkillDefinition
-from core.skills.skill_manager import SkillManager, _SKILL_STATE_OVERRIDES
+from core.skills.skill_manager import SkillManager
 
 
 @pytest.fixture
@@ -94,17 +94,17 @@ def test_skills_prompt_block():
     prompt_block = SkillManager.build_skills_prompt_block(skills)
     assert "<skills>" in prompt_block
     assert "</skills>" in prompt_block
-    assert "**security-audit**" in prompt_block
-    assert "(Tools: grep_search)" in prompt_block
+    assert "security-audit" in prompt_block
+    assert "read_skill" in prompt_block
+    assert "Check .env and private keys." not in prompt_block
     assert "inactive-skill" not in prompt_block
 
 
-def test_toggle_skill_state():
-    SkillManager.toggle_skill_state("test-toggle-skill", False)
-    assert _SKILL_STATE_OVERRIDES.get("test-toggle-skill") is False
-    
-    SkillManager.toggle_skill_state("test-toggle-skill", True)
-    assert _SKILL_STATE_OVERRIDES.get("test-toggle-skill") is True
+def test_toggle_skill_state(temp_skills_workspace):
+    SkillManager.toggle_skill_state("data-analyst", False, temp_skills_workspace)
+    assert not next(s for s in SkillManager.discover_filesystem_skills(temp_skills_workspace) if s.name == "data-analyst").is_active
+    SkillManager.toggle_skill_state("data-analyst", True, temp_skills_workspace)
+    assert next(s for s in SkillManager.discover_filesystem_skills(temp_skills_workspace) if s.name == "data-analyst").is_active
 
 
 @pytest.mark.asyncio
@@ -133,7 +133,7 @@ async def test_skills_discovered_and_toggle_api(client: AsyncClient, temp_skills
     # 3. Call POST /api/skills/toggle
     toggle_res = await client.post(
         "/api/skills/toggle",
-        json={"name": "data-analyst", "is_active": False},
+        json={"name": "data-analyst", "is_active": False, "workspace_path": str(temp_skills_workspace)},
         headers=headers
     )
     assert toggle_res.status_code == 200, toggle_res.text
@@ -172,7 +172,7 @@ async def test_skills_discovered_with_malformed_team_id(client: AsyncClient, tem
 
 @pytest.mark.asyncio
 async def test_observability_dag_and_code_graph_endpoints(client: AsyncClient):
-    """Verify that DAG and code-graph endpoints return 200 even with bad or absent params."""
+    """Missing DAG scope is empty; invalid scope never exposes global project data."""
     signup_payload = {
         "email": "obs.tester@carole.ai",
         "password": "supersecurepassword123"
@@ -189,16 +189,14 @@ async def test_observability_dag_and_code_graph_endpoints(client: AsyncClient):
     assert "edges" in dag_res1.json()
 
     dag_res2 = await client.get("/api/observability/dag?team_id=undefined", headers=headers)
-    assert dag_res2.status_code == 200
+    assert dag_res2.status_code == 400
 
     # 2. Code Graph endpoint with and without params
     cg_res1 = await client.get("/api/observability/code-graph", headers=headers)
-    assert cg_res1.status_code == 200
-    assert "nodes" in cg_res1.json()
-    assert "edges" in cg_res1.json()
+    assert cg_res1.status_code == 400
 
     cg_res2 = await client.get("/api/observability/code-graph?project_id=undefined", headers=headers)
-    assert cg_res2.status_code == 200
+    assert cg_res2.status_code == 400
 
 
 def test_save_and_delete_filesystem_skill(temp_skills_workspace):
@@ -316,4 +314,3 @@ async def test_create_upload_and_delete_discovered_skill_api(client: AsyncClient
     assert del_res2.status_code == 200
     assert del_res2.json()["deleted"] == "uploaded-linter"
     assert not (temp_skills_workspace / ".carole" / "skills" / "uploaded-linter").exists()
-

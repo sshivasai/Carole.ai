@@ -5,8 +5,11 @@ Provides execution context, cancellation tokens, and permission structures for t
 """
 
 import asyncio
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Set, Optional, Callable, Awaitable
+
+file_read_scope: ContextVar[Optional[str]] = ContextVar("file_read_scope", default=None)
 
 class CancellationToken:
     """
@@ -49,3 +52,4 @@ class ToolExecutionContext:
     emit_progress: Optional[Callable[[str], Awaitable[None]]] = None
     active_message_id: Optional[str] = None
     agent_role: Optional[str] = None
+    run_id: Optional[str] = None

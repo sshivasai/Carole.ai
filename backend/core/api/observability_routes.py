@@ -5,7 +5,7 @@ FastAPI API router for OpenLLMetry observability and telemetry.
 Provides endpoints for the Carole.ai frontend Observability panel.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 
@@ -15,6 +15,7 @@ from core.observability.openllmetry_tracer import (
     clear_traces,
 )
 from core.auth.auth_middleware import require_auth
+from core.api.crud_routes import _assert_team_access, _assert_project_access
 from opentelemetry import trace
 import time
 
@@ -115,6 +116,9 @@ async def get_workflow_dag(
     edges = []
 
     async with async_session() as db:
+        if not team_id:
+            return {"nodes": [], "edges": []}
+        await _assert_team_access(db, str(team_id), user["sub"])
         stmt = select(Agent)
         if team_id and str(team_id).strip().lower() not in ("undefined", "null", "none", ""):
             try:
@@ -167,6 +171,11 @@ async def get_code_graph_topology(
     from core.knowledge.code_graph import code_graph
     from pathlib import Path
 
+    from core.memory.database import async_session
+    if not project_id or str(project_id).lower() in ("undefined", "null", "none"):
+        raise HTTPException(400, "Project scope is required")
+    async with async_session() as db:
+        await _assert_project_access(db, str(project_id), user["sub"])
     clean_project_id = None
     if project_id and str(project_id).strip().lower() not in ("undefined", "null", "none", ""):
         clean_project_id = str(project_id).strip()
@@ -215,6 +224,11 @@ async def reindex_code_graph(
     """
     from core.knowledge.code_graph import code_graph
 
+    from core.memory.database import async_session
+    if not project_id or str(project_id).lower() in ("undefined", "null", "none"):
+        raise HTTPException(400, "Project scope is required")
+    async with async_session() as db:
+        await _assert_project_access(db, str(project_id), user["sub"])
     clean_project_id = None
     if project_id and str(project_id).strip().lower() not in ("undefined", "null", "none", ""):
         clean_project_id = str(project_id).strip()

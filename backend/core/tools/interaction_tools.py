@@ -18,7 +18,7 @@ Race-condition fix (v2):
 import asyncio
 import uuid
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from core.chat.event_bus import event_bus
 from core.config import APPROVAL_TIMEOUT_SECS
@@ -36,19 +36,20 @@ pending_question_details: Dict[str, dict] = {}
 class InteractionTools:
     async def ask_user(
         self, question: str, agent_id: str, agent_name: str, team_id: str,
-        options: Optional[List[str]] = None
+        options: Optional[List[str]] = None,
+        questions: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
-        Sends a question to the human and blocks until they reply.
+        Sends question(s) to the human and blocks until they reply.
 
         Args:
-            question: The question text to display.
+            question: Single question text to display (legacy or primary).
             agent_id: UUID of the agent asking.
             agent_name: Display name of the agent.
             team_id: Team context for event routing.
-            options: Optional list of choice strings for multiple-choice UI.
-                     If provided, the frontend renders a clickable option card.
-                     The human may still type a free-form answer.
+            options: Optional list of choice strings for single-question multiple-choice UI.
+            questions: Optional list of question dicts for batching multiple questions:
+                       [{'id': 'q1', 'question': '...', 'options': ['A', 'B'], 'is_multi_select': False}]
 
         The reply comes in via the WebSocket as a message with the question_id.
         Times out after APPROVAL_TIMEOUT_SECS to prevent indefinite blocking.
@@ -58,22 +59,31 @@ class InteractionTools:
         pending_questions[q_id] = event
         pending_question_details[q_id] = {"team_id": team_id, "agent_id": agent_id}
 
-        payload = {
+        display_text = question
+        if questions and len(questions) > 1:
+            q_list_summary = "; ".join(f"{i+1}. {q.get('question', '')}" for i, q in enumerate(questions))
+            display_text = f"❓ {agent_name} asks {len(questions)} questions: {q_list_summary}"
+        else:
+            display_text = f"❓ {agent_name} asks: {question}"
+
+        payload: Dict[str, Any] = {
             "type": "agent_question",
             "question_id": q_id,
             "agent_id": agent_id,
             "agent_name": agent_name,
-            "question": question,
-            "text": f"❓ {agent_name} asks: {question}",
+            "question": question or (questions[0].get("question", "") if questions else ""),
+            "text": display_text,
         }
         if options:
             payload["options"] = [str(o) for o in options]
+        if questions:
+            payload["questions"] = questions
 
         await event_bus.publish(f"team:{team_id}", payload)
 
         logger.info(
-            "❓ [InteractionTools] Agent '%s' asked: %.80s (q_id=%s, options=%s)",
-            agent_name, question, q_id[:8], options
+            "❓ [InteractionTools] Agent '%s' asked: %.80s (q_id=%s, multi=%s)",
+            agent_name, display_text, q_id[:8], bool(questions)
         )
 
         try:
@@ -92,9 +102,24 @@ class InteractionTools:
             pending_questions.pop(q_id, None)
             pending_question_details.pop(q_id, None)
 
-        answer = question_answers.pop(q_id, "")
-        logger.info("[InteractionTools] q_id=%s answered: %.80s", q_id[:8], answer)
-        return f"Human answered: {answer}"
+        raw_answer = question_answers.pop(q_id, "")
+        logger.info("[InteractionTools] q_id=%s answered: %.80s", q_id[:8], raw_answer)
+
+        # Parse structured answer if JSON
+        formatted_answer = raw_answer
+        if raw_answer.strip().startswith("{") and raw_answer.strip().endswith("}"):
+            try:
+                import json
+                parsed_ans = json.loads(raw_answer)
+                if isinstance(parsed_ans, dict):
+                    parts = []
+                    for k, v in parsed_ans.items():
+                        parts.append(f"- **{k}**: {v}")
+                    formatted_answer = "\n".join(parts)
+            except Exception:
+                pass
+
+        return f"Human answered:\n{formatted_answer}"
 
     async def browser_human_takeover(
         self,

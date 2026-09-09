@@ -15,6 +15,7 @@ Enforces canonical Anthropic-compatible message history invariants:
 """
 
 from copy import deepcopy
+import json
 from typing import Any, Dict, List, Optional, Set
 
 
@@ -33,6 +34,7 @@ class MessageHistory:
         """
         self._turns: List[Dict[str, Any]] = []
         self._pending_tool_call_ids: Set[str] = set()
+        self._seen_tool_call_ids: Set[str] = set()
 
         if seed:
             seed_copy = deepcopy(seed)
@@ -53,6 +55,7 @@ class MessageHistory:
                         "content": str(content),
                         "is_error": bool(msg.get("is_error", False)),
                     }])
+                    self._carry_metadata(msg)
                     continue
 
                 if role == "system":
@@ -67,7 +70,7 @@ class MessageHistory:
                         isinstance(b, dict) and b.get("type") == "tool_result"
                         for b in blocks
                     )
-                    if has_tool_results and self._pending_tool_call_ids:
+                    if has_tool_results:
                         # Extract and adopt tool results
                         results = []
                         for b in blocks:
@@ -111,6 +114,14 @@ class MessageHistory:
                         text=combined_text,
                         tool_uses=tool_uses if tool_uses else None,
                     )
+                self._carry_metadata(msg)
+
+    def _carry_metadata(self, message: Dict[str, Any]) -> None:
+        """Retain source boundaries when canonicalization merges adjacent turns."""
+        if self._turns:
+            for key in ("id", "created_at", "is_private", "recipient_id"):
+                if key in message:
+                    self._turns[-1][key] = deepcopy(message[key])
 
     # ─── Public mutators ──────────────────────────────────────────────────────
 
@@ -125,6 +136,10 @@ class MessageHistory:
         blocks = self._to_blocks(content)
         if not blocks:
             return
+        if self._pending_tool_call_ids:
+            raise ValueError("Cannot add user text while tool results are pending")
+        if any(b.get("type") in {"tool_result", "tool_use"} for b in blocks):
+            raise ValueError("Use add_tool_results for paired tool results")
 
         if self._turns and self._turns[-1]["role"] == "user":
             self._merge_user_blocks(self._turns[-1], blocks)
@@ -168,12 +183,20 @@ class MessageHistory:
             content.append({"type": "text", "text": cleaned_text})
 
         incoming_tool_uses = []
+        incoming_ids = set()
         if tool_uses:
             for tc in tool_uses:
-                if not isinstance(tc, dict) or not tc.get("id"):
+                if not isinstance(tc, dict) or not isinstance(tc.get("id"), str) or not tc["id"].strip():
                     raise ValueError(f"Invalid tool_use block: {tc}")
+                if tc["id"] in incoming_ids or tc["id"] in self._seen_tool_call_ids:
+                    raise ValueError("Duplicate tool-call ID")
+                incoming_ids.add(tc["id"])
                 tc_copy = deepcopy(tc)
                 tc_copy["type"] = "tool_use"
+                if isinstance(tc_copy.get("input"), str):
+                    tc_copy["input"] = json.loads(tc_copy["input"])
+                if not isinstance(tc_copy.get("input"), dict):
+                    raise ValueError("Tool input must be an object")
                 incoming_tool_uses.append(tc_copy)
                 content.append(tc_copy)
 
@@ -201,6 +224,7 @@ class MessageHistory:
         # Register pending tool calls
         for tc in incoming_tool_uses:
             self._pending_tool_call_ids.add(tc["id"])
+            self._seen_tool_call_ids.add(tc["id"])
 
     def add_tool_results(self, results: List[Dict[str, Any]]) -> None:
         """
@@ -227,6 +251,8 @@ class MessageHistory:
             t_id = r.get("tool_use_id")
             if not t_id or not isinstance(t_id, str):
                 raise ValueError(f"Tool result missing valid 'tool_use_id': {r}")
+            if t_id not in self._pending_tool_call_ids or t_id in result_ids:
+                raise ValueError("Orphaned or duplicate tool result")
 
             content_val = r.get("content", "")
             is_error = bool(r.get("is_error", False))

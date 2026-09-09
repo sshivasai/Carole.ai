@@ -56,6 +56,22 @@ class MessageRouter:
             self._enqueue_locks[agent_id] = asyncio.Lock()
         return self._enqueue_locks[agent_id]
 
+    async def shutdown(self):
+        """Stop agent work before closing provider clients and the database."""
+        running = [entry[0] for entry in self._running.values() if entry]
+        for agent_id in list(self._running):
+            self.cancel_agent(agent_id, cancel_all=True)
+        workers = list(self._workers.values())
+        for worker in workers:
+            worker.cancel()
+        if workers or running:
+            await asyncio.gather(*workers, *running, return_exceptions=True)
+        self._queues.clear()
+        self._workers.clear()
+        self._running.clear()
+        self._pending.clear()
+        self._enqueue_locks.clear()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -353,7 +369,7 @@ class MessageRouter:
             pending = self._pending.setdefault(agent_id, [])
             if prompt_text in pending:
                 logger.debug("Deduplicated duplicate wakeup for agent %s", agent.name)
-                return
+                return True
 
             # Ensure queue + worker exist
             if agent_id not in self._queues:
@@ -396,7 +412,7 @@ class MessageRouter:
                     "Queue full for agent '%s' (maxsize=%d). Dropping prompt.",
                     agent.name, self._queues[agent_id].maxsize
                 )
-                return
+                return False
 
         # Broadcast queue depth change to UI
         depth = self._queues[agent_id].qsize()
@@ -407,6 +423,7 @@ class MessageRouter:
             "queue_depth": depth,
         })
         logger.info("Enqueued task for agent '%s' (queue depth: %d)", agent.name, depth)
+        return True
 
     async def _agent_worker(self, agent_id: str, snapshot: "_AgentSnapshot"):
         """

@@ -452,3 +452,35 @@
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.85); }
 }
+
+.sidebarSectionDivider {
+  height: 1px;
+  background: var(--color-hairline);
+  margin: 10px 12px 6px;
+  opacity: 0.6;
+}
+
+.collapsedDivider {
+  width: 24px;
+  height: 1px;
+  background: var(--color-hairline);
+  margin: 6px auto;
+  opacity: 0.6;
+}
+
+.entitySearchInput {
+  width: 100%;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-family: var(--font-family-sans, sans-serif);
+  color: var(--color-ink-strong);
+  background: var(--color-canvas-soft);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xs, 6px);
+  outline: none;
+}
+
+.entitySearchInput:focus {
+  border-color: var(--color-primary-soft);
+}

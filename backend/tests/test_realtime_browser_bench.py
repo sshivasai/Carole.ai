@@ -274,7 +274,7 @@ async def test_real_browser_agent_asking_question():
     )
 
     await reply_task
-    assert "Human answered: Deploy to Staging Environment" in answer
+    assert "Human answered: Deploy to Staging Environment" in " ".join(answer.split())
 
 
 @pytest.mark.asyncio

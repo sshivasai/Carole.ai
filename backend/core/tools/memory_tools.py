@@ -63,183 +63,98 @@ class MemoryTools:
         if not topic or not content:
             return "Error: Both 'topic' and 'content' are required."
 
-        combined_text = f"{topic} | {content}"
+        if not topic.strip() or not content.strip():
+            return "Error: A topic and memory content are required."
         try:
-            embedding = await llm_router.generate_embeddings(combined_text)
-        except Exception as e:
-            return f"Error generating embedding: {e}"
-
-        # Deduplication check
-        try:
-            existing = await lancedb_client.search_learnings(
-                vector=embedding,
-                project_id=project_id,
-                team_id=team_id,
-                limit=1,
-            )
-            if existing and existing[0].get("_distance", 1.0) < 0.15:
-                return (
-                    f"✓ Memory not added — a very similar memory already exists: "
-                    f"\"{existing[0].get('task_summary', '')[:100]}\""
-                )
-        except Exception:
-            pass  # If dedup check fails, proceed with insert
-
-        async with async_session() as db:
-            try:
-                p_uuid = uuid.UUID(project_id) if project_id else None
-                t_uuid = uuid.UUID(team_id) if team_id else None
-                a_uuid = uuid.UUID(agent_id) if agent_id else None
-
-                learning = Learning(
-                    project_id=p_uuid,
-                    team_id=t_uuid,
-                    agent_id=a_uuid,
-                    task_summary=topic,
-                    lesson_rule=f"[MANUAL] {content}",
-                )
+            async with async_session() as db:
+                p_uuid, t_uuid = await self._scope(db, project_id, team_id)
+                learning = Learning(project_id=p_uuid, team_id=t_uuid,
+                                    task_summary=topic, lesson_rule=f"[MANUAL] {content}")
                 db.add(learning)
                 await db.commit()
-                await db.refresh(learning)
-                learning_id = str(learning.id)
-            except Exception as e:
-                return f"Error saving memory to database: {e}"
+                return f"✓ Memory saved (id={learning.id}). Semantic indexing is pending."
+        except (ValueError, TypeError) as exc:
+            return f"Error: {exc}"
 
-        try:
-            await lancedb_client.insert_learning(
-                learning_id=learning_id,
-                project_id=project_id or "",
-                team_id=team_id,
-                task_summary=topic,
-                lesson_rule=f"[MANUAL] {content}",
-                vector=embedding,
-            )
-        except Exception as e:
-            logger.warning("LanceDB insert failed for add_memory: %s", e)
+    @staticmethod
+    async def _scope(db, project_id=None, team_id=None):
+        from core.memory.models import Team, Project
+        p_uuid = uuid.UUID(str(project_id)) if project_id else None
+        t_uuid = uuid.UUID(str(team_id)) if team_id else None
+        if t_uuid:
+            team = await db.get(Team, t_uuid)
+            if team is None or (p_uuid is not None and team.project_id != p_uuid):
+                raise ValueError("Team does not belong to the requested project")
+            p_uuid = team.project_id
+        if p_uuid is None or await db.get(Project, p_uuid) is None:
+            raise ValueError("A valid project or team scope is required")
+        return p_uuid, t_uuid
 
-        return f"✓ Memory saved (id={learning_id[:8]}): \"{topic[:60]}\""
-
-    async def search_memory(
-        self,
-        query: str,
-        project_id: Optional[str] = None,
-        team_id: Optional[str] = None,
-        limit: int = 5,
-    ) -> str:
-        """
-        Search long-term memory for relevant past learnings.
-        The agent can call this when it needs to recall past context that
-        has been compacted out of its active conversation window.
-
-        MemGPT equivalent: archival_memory_search()
-
-        Returns the top matching memories ranked by semantic similarity.
-        """
-        if not query:
-            return "Error: 'query' is required."
-
-        try:
-            embedding = await llm_router.generate_embeddings(query)
-        except Exception as e:
-            return f"Error generating search embedding: {e}"
-
-        try:
-            results = await lancedb_client.search_learnings(
-                vector=embedding,
-                project_id=project_id,
-                team_id=team_id,
-                limit=min(limit, 10),
-            )
-        except Exception as e:
-            return f"Error searching memory: {e}"
-
+    async def search_memory(self, query: str, project_id: Optional[str] = None,
+                            team_id: Optional[str] = None, limit: int = 5) -> str:
+        if not query or not isinstance(limit, int) or not 1 <= limit <= 10:
+            return "Error: Query and a limit between 1 and 10 are required."
+        async with async_session() as db:
+            try:
+                p_uuid, t_uuid = await self._scope(db, project_id, team_id)
+            except (ValueError, TypeError) as exc:
+                return f"Error: {exc}"
+            try:
+                import asyncio
+                embedding = await asyncio.wait_for(llm_router.generate_embeddings(query), timeout=10)
+                results = await lancedb_client.search_learnings(
+                    vector=embedding, project_id=p_uuid, team_id=t_uuid, limit=limit)
+            except Exception:
+                results = []
+            if not results:
+                from sqlalchemy import or_
+                # Lexical fallback remains available while semantic indexing is pending.
+                words = query.split()[:8]
+                stmt = select(Learning).where(
+                    Learning.project_id == p_uuid,
+                    or_(Learning.team_id == t_uuid, Learning.team_id.is_(None)),
+                    or_(*[or_(Learning.task_summary.contains(word, autoescape=True),
+                              Learning.lesson_rule.contains(word, autoescape=True)) for word in words])
+                ).order_by(Learning.created_at.desc()).limit(limit)
+                results = [{"id": str(row.id), "task_summary": row.task_summary,
+                            "lesson_rule": row.lesson_rule} for row in (await db.scalars(stmt)).all()]
         if not results:
             return "No relevant memories found."
+        return "\n\n".join(f"[{row['id']}] {row['task_summary']}\n{row['lesson_rule']}" for row in results)
 
-        lines = [f"Found {len(results)} relevant memories:\n"]
-        for i, r in enumerate(results, 1):
-            dist = r.get("_distance", "?")
-            similarity = f"{(1 - float(dist)) * 100:.0f}%" if isinstance(dist, (int, float)) else "?"
-            lines.append(
-                f"{i}. [{similarity} match] Context: {r.get('task_summary', 'N/A')}\n"
-                f"   Lesson: {r.get('lesson_rule', 'N/A')}"
-            )
-
-        return "\n".join(lines)
-
-    async def update_memory(self, memory_id: str, new_lesson: str) -> str:
-        """
-        Updates the lesson_rule of a specific memory record in the database
-        and regenerates its semantic embedding in LanceDB.
-        """
+    async def update_memory(self, memory_id: str, new_lesson: str,
+                            project_id: Optional[str] = None, team_id: Optional[str] = None) -> str:
+        if not new_lesson.strip():
+            return "Error: A nonempty lesson is required."
         try:
-            mem_uuid = uuid.UUID(memory_id)
-        except (ValueError, AttributeError):
-            return f"Error: '{memory_id}' is not a valid memory ID."
+            async with async_session() as db:
+                p_uuid, t_uuid = await self._scope(db, project_id, team_id)
+                learning = await db.scalar(select(Learning).where(
+                    Learning.id == uuid.UUID(str(memory_id)),
+                    Learning.project_id == p_uuid, Learning.team_id == t_uuid))
+                if learning is None:
+                    return "Error: Memory not found in this scope."
+                learning.lesson_rule = new_lesson
+                await db.commit()
+                return f"✓ Memory '{memory_id}' updated. Semantic indexing is pending."
+        except (ValueError, TypeError) as exc:
+            return f"Error: {exc}"
 
-        async with async_session() as db:
-            stmt = select(Learning).where(Learning.id == mem_uuid)
-            result = await db.execute(stmt)
-            learning = result.scalar_one_or_none()
-
-            if not learning:
-                return f"Error: No memory record found with ID '{memory_id}'."
-
-            # Generate new embedding for the updated lesson
-            combined_text = f"{learning.task_summary} | {new_lesson}"
-            try:
-                new_embedding = await llm_router.generate_embeddings(combined_text)
-            except Exception as e:
-                return f"Error generating embedding: {e}"
-
-            # Update SQLite record
-            learning.lesson_rule = new_lesson
-            await db.commit()
-
-            # Update LanceDB record — delete old and re-insert
-            try:
-                await lancedb_client.delete_learning(memory_id)
-                await lancedb_client.insert_learning(
-                    learning_id=memory_id,
-                    project_id=str(learning.project_id),
-                    team_id=str(learning.team_id) if learning.team_id else None,
-                    task_summary=learning.task_summary,
-                    lesson_rule=new_lesson,
-                    vector=new_embedding,
-                )
-            except Exception as e:
-                logger.warning("LanceDB update failed for memory %s: %s", memory_id, e)
-                # SQLite record is already updated — partial success
-
-            return f"✓ Memory '{memory_id[:8]}' updated successfully."
-
-    async def forget_memory(self, memory_id: str) -> str:
-        """
-        Deletes a specific memory record from the long-term database.
-        """
+    async def forget_memory(self, memory_id: str, project_id: Optional[str] = None,
+                            team_id: Optional[str] = None) -> str:
         try:
-            mem_uuid = uuid.UUID(memory_id)
-        except (ValueError, AttributeError):
-            return f"Error: '{memory_id}' is not a valid memory ID."
-
-        async with async_session() as db:
-            stmt = select(Learning).where(Learning.id == mem_uuid)
-            result = await db.execute(stmt)
-            learning = result.scalar_one_or_none()
-
-            if not learning:
-                return f"Error: No memory record found with ID '{memory_id}'."
-
-            await db.delete(learning)
-            await db.commit()
-
-        # Also remove from vector store
-        try:
-            await lancedb_client.delete_learning(memory_id)
-        except Exception as e:
-            logger.warning("LanceDB delete failed for memory %s: %s", memory_id, e)
-
-        return f"✓ Memory '{memory_id[:8]}' has been forgotten."
+            async with async_session() as db:
+                p_uuid, t_uuid = await self._scope(db, project_id, team_id)
+                learning = await db.scalar(select(Learning).where(
+                    Learning.id == uuid.UUID(str(memory_id)),
+                    Learning.project_id == p_uuid, Learning.team_id == t_uuid))
+                if learning is None:
+                    return "Error: Memory not found in this scope."
+                await db.delete(learning)
+                await db.commit()
+                return f"✓ Memory '{memory_id}' has been forgotten."
+        except (ValueError, TypeError) as exc:
+            return f"Error: {exc}"
 
     # ────────────────────────────────────────────────────────────────────────
     # Entity Fact Store — Key=Value facts in EntityMemory
@@ -273,17 +188,11 @@ class MemoryTools:
 
         async with async_session() as db:
             try:
-                t_uuid = uuid.UUID(team_id) if team_id else None
-                p_uuid = uuid.UUID(project_id) if project_id else None
+                p_uuid, t_uuid = await self._scope(db, project_id, team_id)
 
                 # Upsert: check if key already exists for this exact scope
-                stmt = select(EntityMemory).where(EntityMemory.key == key)
-                if t_uuid:
-                    stmt = stmt.where(EntityMemory.team_id == t_uuid)
-                elif p_uuid:
-                    stmt = stmt.where(EntityMemory.project_id == p_uuid)
-                else:
-                    stmt = stmt.where(EntityMemory.team_id.is_(None), EntityMemory.project_id.is_(None))
+                stmt = select(EntityMemory).where(EntityMemory.key == key,
+                    EntityMemory.team_id == t_uuid, EntityMemory.project_id == p_uuid)
 
                 existing = (await db.execute(stmt)).scalar_one_or_none()
 
@@ -333,11 +242,9 @@ class MemoryTools:
 
         async with async_session() as db:
             try:
-                stmt = delete(EntityMemory).where(EntityMemory.key == key)
-                if t_uuid:
-                    stmt = stmt.where(EntityMemory.team_id == t_uuid)
-                else:
-                    stmt = stmt.where(EntityMemory.team_id.is_(None))
+                p_uuid, t_uuid = await self._scope(db, team_id=team_id)
+                stmt = delete(EntityMemory).where(EntityMemory.key == key,
+                    EntityMemory.team_id == t_uuid, EntityMemory.project_id == p_uuid)
 
                 result = await db.execute(stmt)
                 await db.commit()

@@ -162,6 +162,8 @@ class CodeGraph:
         self.call_hierarchy: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         self.inheritance_graph: Dict[str, nx.DiGraph] = {}
         self._lock = asyncio.Lock()
+        self._build_locks: Dict[str, asyncio.Lock] = {}
+        self._disk_versions: Dict[str, Dict[str, tuple]] = {}
         
         self.start_listening_task()
 
@@ -266,6 +268,12 @@ class CodeGraph:
             self.file_chunks[pid] = {}
             self.call_hierarchy[pid] = {}
 
+        project_root = await self.get_project_root(project_id)
+        safe_path = (project_root / relative_path).resolve()
+        if not safe_path.is_relative_to(project_root.resolve()):
+            raise ValueError("Code path must stay inside the project workspace")
+        relative_path = safe_path.relative_to(project_root.resolve()).as_posix()
+
         if not is_tracked_code_file(relative_path):
             graph = await self.get_graph(project_id)
             if graph.has_node(relative_path):
@@ -273,9 +281,6 @@ class CodeGraph:
                 await self._save_graph(project_id)
             return
 
-        project_root = await self.get_project_root(project_id)
-        safe_path = (project_root / relative_path).resolve()
-        
         graph = await self.get_graph(project_id)
         
         if not safe_path.is_file():
@@ -287,16 +292,15 @@ class CodeGraph:
             return
 
         try:
-            with open(safe_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+            content = await asyncio.to_thread(safe_path.read_text, encoding="utf-8", errors="replace")
         except Exception:
             return
 
         # 1. Parse AST Symbols & Imports
-        chunks, raw_imports = parse_file_ast(content, relative_path)
+        chunks, raw_imports = await asyncio.to_thread(parse_file_ast, content, relative_path)
         
-        # 2. Update File Chunks & Symbol Index
-        self._remove_file_from_index(relative_path, pid)
+        # 2. Update symbols while retaining the hybrid hash for unchanged files.
+        self._remove_file_from_index(relative_path, pid, remove_hybrid=False)
         self.file_chunks[pid][relative_path] = chunks
 
         inh_graph = self.get_inheritance_graph(pid)
@@ -355,7 +359,7 @@ class CodeGraph:
             
         await self._save_graph(project_id)
 
-    def _remove_file_from_index(self, relative_path: str, pid: str):
+    def _remove_file_from_index(self, relative_path: str, pid: str, remove_hybrid: bool = True):
         """Clean old AST chunks when a file is re-parsed."""
         old_chunks = self.file_chunks.get(pid, {}).pop(relative_path, [])
         for c in old_chunks:
@@ -384,43 +388,60 @@ class CodeGraph:
 
         try:
             from core.knowledge.hybrid_search import hybrid_code_search
-            hybrid_code_search.remove_file(pid, relative_path)
+            if remove_hybrid:
+                hybrid_code_search.remove_file(pid, relative_path)
         except Exception:
             pass
 
     async def build_graph(self, project_id: Optional[str] = None):
-        """Scans project root and maps all code files into AST index."""
+        """Refresh the full corpus, including edits made by shells and external editors."""
+        pid = project_id or "default"
+        async with self._build_locks.setdefault(pid, asyncio.Lock()):
+            await self._refresh_graph(project_id)
+
+    async def _refresh_graph(self, project_id: Optional[str] = None):
         project_root = await self.get_project_root(project_id)
-        existing_on_disk: Set[str] = set()
-        for root, dirs, files in os.walk(project_root):
-            dirs[:] = [d for d in dirs if not any(ign in d for ign in IGNORE_DIR_SUBSTRINGS) and not d.startswith('.')]
-            for file in files:
-                ext = Path(file).suffix.lower()
-                if ext in CODE_EXTENSIONS:
-                    full_path = Path(root) / file
+        def scan():
+            versions = {}
+            for root, dirs, files in os.walk(project_root):
+                dirs[:] = [d for d in dirs if d not in IGNORE_DIR_SUBSTRINGS and not d.startswith('.')]
+                for file in files:
+                    full = Path(root) / file
+                    if full.suffix.lower() not in CODE_EXTENSIONS:
+                        continue
                     try:
-                        rel = full_path.relative_to(project_root)
-                        rel_str = str(rel).replace("\\", "/")
-                        existing_on_disk.add(rel_str)
-                        await self.parse_file(rel_str, project_id)
-                    except ValueError:
-                        pass
+                        if not full.resolve().is_relative_to(project_root.resolve()):
+                            continue
+                        info = full.stat()
+                        versions[full.relative_to(project_root).as_posix()] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+                    except OSError:
+                        continue
+            return versions
+        versions = await asyncio.to_thread(scan)
+        pid = project_id or "default"
+        previous = self._disk_versions.get(pid, {})
+        corpus_changed = versions.keys() != previous.keys()
+        for path, version in versions.items():
+            if corpus_changed or previous.get(path) != version or path not in self.file_chunks.get(pid, {}):
+                await self.parse_file(path, project_id)
+        existing_on_disk = set(versions)
 
         # Prune any nodes in graph that are no longer on disk
         graph = await self.get_graph(project_id)
         pid = project_id or "default"
-        stale_nodes = [n for n in list(graph.nodes) if n not in existing_on_disk]
+        stale_nodes = (set(graph.nodes) | set(self.file_chunks.get(pid, {}))) - existing_on_disk
         for stale in stale_nodes:
-            graph.remove_node(stale)
+            if graph.has_node(stale):
+                graph.remove_node(stale)
             self._remove_file_from_index(stale, pid)
 
         await self._save_graph(project_id)
+        self._disk_versions[pid] = versions
 
     async def get_symbol_definitions(self, symbol_name: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Instant O(1) AST lookup for symbol definitions (supports simple and qualified names)."""
         pid = project_id or "default"
-        if pid not in self.symbol_index:
-            await self.build_graph(project_id)
+        await self.build_graph(project_id)
         
         # 1. Direct match (simple name or pre-indexed qualified name)
         chunks = self.symbol_index.get(pid, {}).get(symbol_name, [])
@@ -441,8 +462,7 @@ class CodeGraph:
     async def get_class_hierarchy(self, class_name: str, project_id: Optional[str] = None) -> Dict[str, Any]:
         """Returns inheritance hierarchy (superclasses and known subclasses) for a class."""
         pid = project_id or "default"
-        if pid not in self.symbol_index:
-            await self.build_graph(project_id)
+        await self.build_graph(project_id)
 
         inh = self.get_inheritance_graph(pid)
         superclasses: List[str] = []
@@ -469,8 +489,7 @@ class CodeGraph:
         """Returns structural outline of classes, functions, and methods in a file."""
         pid = project_id or "default"
         norm_path = file_path.replace("\\", "/")
-        if pid not in self.file_chunks or norm_path not in self.file_chunks[pid]:
-            await self.parse_file(norm_path, project_id)
+        await self.parse_file(norm_path, project_id)
 
         chunks = self.file_chunks.get(pid, {}).get(norm_path, [])
         return [
@@ -488,8 +507,7 @@ class CodeGraph:
     async def get_symbol_callers(self, symbol_name: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Instant O(1) AST lookup for callers of any function or class."""
         pid = project_id or "default"
-        if pid not in self.call_hierarchy:
-            await self.build_graph(project_id)
+        await self.build_graph(project_id)
 
         callers = self.call_hierarchy.get(pid, {}).get(symbol_name, [])
         if callers:
@@ -528,8 +546,7 @@ class CodeGraph:
         """Finds all function calls invoked within a specific function/class definition."""
         pid = project_id or "default"
         norm_path = file_path.replace("\\", "/")
-        if pid not in self.file_chunks or norm_path not in self.file_chunks[pid]:
-            await self.parse_file(norm_path, project_id)
+        await self.parse_file(norm_path, project_id)
 
         chunks = self.file_chunks.get(pid, {}).get(norm_path, [])
         for c in chunks:
@@ -541,6 +558,7 @@ class CodeGraph:
     async def get_module_dependencies(self, file_path: str, project_id: Optional[str] = None) -> Dict[str, List[str]]:
         """Returns direct imports (dependencies) and modules that import this file (dependents)."""
         norm_path = file_path.replace("\\", "/").strip("/")
+        await self.build_graph(project_id)
         graph = await self.get_graph(project_id)
         if not graph.has_node(norm_path):
             await self.parse_file(norm_path, project_id)
@@ -557,8 +575,7 @@ class CodeGraph:
     async def get_all_chunks(self, project_id: Optional[str] = None) -> List[ASTChunk]:
         """Returns all parsed ASTChunk objects across all workspace files."""
         pid = project_id or "default"
-        if pid not in self.file_chunks:
-            await self.build_graph(project_id)
+        await self.build_graph(project_id)
         all_c = []
         for chunks in self.file_chunks.get(pid, {}).values():
             all_c.extend(chunks)
@@ -578,8 +595,7 @@ class CodeGraph:
         - Enforces a strict token budget (default 800 tokens) so agent context is never flooded.
         """
         pid = project_id or "default"
-        if pid not in self.file_chunks or not self.file_chunks[pid]:
-            await self.build_graph(project_id)
+        await self.build_graph(project_id)
 
         file_chunks_map = self.file_chunks.get(pid, {})
         if not file_chunks_map:

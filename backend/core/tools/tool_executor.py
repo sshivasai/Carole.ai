@@ -105,10 +105,17 @@ def register_builtin_tools():
         return
 
     builtins = [
+        ToolSpec("read_skill", "Load the complete instructions for a relevant skill listed in the skills catalog.", "filesystem",
+                 {"name": {"type": "string", "required": True}}, "safe", _wrap_read_skill),
+        ToolSpec("read_observation", "Retrieve a range of a full cached tool result by its artifact_id.", "filesystem",
+                 {"artifact_id": {"type": "string", "required": True}, "offset": {"type": "integer"},
+                  "limit": {"type": "integer", "description": "Maximum characters, from 1 to 2500"}}, "safe", _wrap_read_observation),
         # ---- Filesystem (Strict Verification Pattern) ----
         ToolSpec("read_file", "Reads a file from the workspace. You MUST call this before edit_file. Returns full file content or an unchanged stub if already read in this conversation.", "filesystem",
                  {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
-                  "force": {"type": "boolean", "required": False, "description": "Set to true to re-read full content even if unchanged"}},
+                  "force": {"type": "boolean", "required": False, "description": "Re-read content even if unchanged (default true)"},
+                  "start_line": {"type": "integer", "required": False, "description": "First line, inclusive, numbered from 1"},
+                  "end_line": {"type": "integer", "required": False, "description": "Last line, inclusive"}},
                  "safe", _wrap_read_file),
         ToolSpec("write_file", "Create a new file or completely overwrite an existing one. WARNING: Replaces ENTIRE file. To modify existing code, use edit_file instead.", "filesystem",
                  {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
@@ -561,14 +568,24 @@ def register_builtin_tools():
 
         # ---- Interaction ----
         ToolSpec("ask_user",
-                 "Ask the human a clarifying question and wait for their answer. "
-                 "Optionally provide 'options' (list of strings) to render a multiple-choice card — "
-                 "the human can click a choice or type a free-form answer.",
+                 "Ask the human clarifying question(s) and wait for their response. "
+                 "Supports either a single 'question' with optional 'options', OR a 'questions' array "
+                 "to ask multiple questions at once with options (single or multi-select) plus custom text. "
+                 "Always batch related questions together in 'questions' to save tokens and roundtrips.",
                  "interaction",
-                 {"question": {"type": "string", "required": True},
-                  "options": {"type": "array", "required": False,
-                              "description": "Optional list of choice strings shown as clickable buttons"}},
+                 {"question": {"type": "string", "required": False, "description": "Single question text"},
+                  "options": {"type": "array", "required": False, "description": "Optional list of choice strings for single question"},
+                  "questions": {"type": "array", "required": False,
+                                "description": "List of question objects: [{'id': 'q1', 'question': '...', 'options': ['opt1', 'opt2'], 'is_multi_select': False}]"}},
                  "safe", _wrap_ask_user),
+        ToolSpec("fetch_tool_schemas",
+                 "On-demand tool discovery. Request and activate full tool schemas for a specific tool family "
+                 "(e.g. 'git', 'browser', 'meetings', 'shell', 'database') or specific tool names. "
+                 "Use this when you need specialized tools outside your initial role toolset.",
+                 "coordination",
+                 {"family": {"type": "string", "required": False, "description": "Tool family name (e.g. 'git', 'browser', 'meetings', 'shell')"},
+                  "tool_names": {"type": "array", "required": False, "description": "Specific tool names to activate"}},
+                 "safe", _wrap_fetch_tool_schemas),
         ToolSpec("sleep", "Pause execution for a number of seconds", "interaction",
                  {"seconds": {"type": "number", "required": True}},
                  "safe", _wrap_sleep),
@@ -1600,6 +1617,9 @@ class ToolExecutor:
         arguments["_team_id"] = team_id
         if context:
             arguments["_context"] = context
+        from core.tools.context import file_read_scope
+        scope_token = file_read_scope.set(
+            f"{team_id}:{agent_id}:{context.run_id}" if context and context.run_id else None)
         try:
             if asyncio.iscoroutinefunction(spec.handler):
                 result = await spec.handler(arguments, team_id)
@@ -1612,8 +1632,13 @@ class ToolExecutor:
             logger.exception("[Executor] Tool '%s' raised: %s", spec.name, e)
             return f"Error: Tool '{spec.name}' raised an exception: {type(e).__name__}: {e}"
 
+        finally:
+            file_read_scope.reset(scope_token)
+
         # If the tool returned a FileChangeResult, emit a file_change & file_system_updated event
         if isinstance(result, FileChangeResult):
+            if not result.action or not result.path:
+                return result.message
             project_id = await _team_project_id(team_id)
             event = {
                 "type": "file_change",
@@ -1698,9 +1723,9 @@ async def _wrap_read_file(args: Dict[str, Any], team_id: str) -> str:
     path = args.get("relative_path") or args.get("path") or args.get("value")
     if not path:
         return "Error: Missing parameter 'relative_path'."
-    force = bool(args.get("force", False))
+    force = bool(args.get("force", True))
     project_id = await _team_project_id(team_id)
-    return await file_tools.read_file(path, project_id=project_id, team_id=team_id, force=force)
+    return await file_tools.read_file(path, project_id=project_id, team_id=team_id, force=force, start_line=args.get("start_line", 1), end_line=args.get("end_line"))
 
 async def _check_active_editor_conflicts(relative_path: str, agent_name: str) -> None:
     try:
@@ -2796,12 +2821,22 @@ async def _wrap_clear_scratchpad(args: Dict[str, Any], team_id: str) -> str:
 
 async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
     question = args.get("question") or args.get("value", "")
-    if not question:
-        return "Error: Missing 'question'."
-    
+    questions = args.get("questions")
+    options = args.get("options")  # optional list of choice strings
     agent_id = args.get("_agent_id", "unknown")
     agent_name = args.get("_agent_name", "Agent")
-    options = args.get("options")  # optional list of choice strings
+
+    # Handle stringified questions array
+    if isinstance(questions, str) and questions.strip().startswith("[") and questions.strip().endswith("]"):
+        import json
+        try:
+            questions = json.loads(questions.strip())
+        except Exception:
+            import ast
+            try:
+                questions = ast.literal_eval(questions.strip())
+            except Exception:
+                pass
 
     # Handle stringified JSON or JS objects passed in question/value
     if isinstance(question, str) and question.strip().startswith("{") and question.strip().endswith("}"):
@@ -2819,6 +2854,8 @@ async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
             question = parsed.get("question") or parsed.get("value") or question
             if "options" in parsed and isinstance(parsed["options"], list):
                 options = parsed["options"]
+            if "questions" in parsed and isinstance(parsed["questions"], list):
+                questions = parsed["questions"]
 
     # Handle stringified list of options
     if isinstance(options, str) and options.strip().startswith("[") and options.strip().endswith("]"):
@@ -2832,7 +2869,45 @@ async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
             except Exception:
                 pass
 
-    return await interaction_tools.ask_user(question, agent_id, agent_name, team_id, options=options)
+    if not question and not questions:
+        return "Error: Missing 'question' or 'questions'."
+
+    return await interaction_tools.ask_user(
+        question=str(question) if question else "",
+        agent_id=agent_id,
+        agent_name=agent_name,
+        team_id=team_id,
+        options=options,
+        questions=questions,
+    )
+
+
+async def _wrap_fetch_tool_schemas(args: Dict[str, Any], team_id: str) -> str:
+    """On-demand dynamic tool schema fetching / discovery."""
+    family = (args.get("family") or args.get("category") or "").lower().strip()
+    raw_names = args.get("tool_names") or args.get("tool_name") or []
+    if isinstance(raw_names, str):
+        tool_names = [raw_names]
+    else:
+        tool_names = list(raw_names)
+
+    from core.tools.tool_registry import ToolRegistry
+    activated = []
+    for spec_name, spec in ToolRegistry._tools.items():
+        matched = False
+        if family and spec.category.lower() == family:
+            matched = True
+        elif spec_name in tool_names:
+            matched = True
+        if matched:
+            param_list = ", ".join(spec.parameters.keys()) if spec.parameters else "none"
+            activated.append(f"- **{spec.name}** ({spec.category}): {spec.description[:120]} (params: {param_list})")
+
+    if not activated:
+        available_families = sorted(list(set(s.category for s in ToolRegistry._tools.values())))
+        return f"No tools found matching family '{family}' or tools '{tool_names}'. Available tool families: {', '.join(available_families)}"
+
+    return f"Successfully discovered and activated {len(activated)} tools for this session:\n" + "\n".join(activated)
 
 
 async def _wrap_sleep(args: Dict[str, Any], team_id: str) -> str:
@@ -3083,13 +3158,13 @@ async def _wrap_update_memory(args: Dict[str, Any], team_id: str) -> str:
     new_lesson = args.get("new_lesson", "")
     if not memory_id or not new_lesson:
         return "Error: Missing 'memory_id' or 'new_lesson'."
-    return await memory_tools.update_memory(memory_id, new_lesson)
+    return await memory_tools.update_memory(memory_id, new_lesson, team_id=team_id)
 
 async def _wrap_forget_memory(args: Dict[str, Any], team_id: str) -> str:
     memory_id = args.get("memory_id", "")
     if not memory_id:
         return "Error: Missing 'memory_id'."
-    return await memory_tools.forget_memory(memory_id)
+    return await memory_tools.forget_memory(memory_id, team_id=team_id)
 
 async def _wrap_add_memory(args: Dict[str, Any], team_id: str) -> str:
     topic = args.get("topic", "")
@@ -3333,3 +3408,30 @@ async def _wrap_extract_document(args: Dict[str, Any], team_id: str) -> str:
             except Exception:
                 pass
 
+
+
+async def _wrap_read_skill(args, team_id):
+    from core.skills.skill_manager import SkillManager
+    from core.memory.database import async_session
+    project_id = await _team_project_id(team_id)
+    if not project_id:
+        return "Error: Skill access requires a valid team project"
+    workspace = await file_tools.get_workspace_root(project_id)
+    async with async_session() as db:
+        skills = await SkillManager.discover_all_skills(workspace, team_id, db)
+    for skill in skills:
+        if skill.name == args.get("name") and skill.is_active:
+            return f"Skill: {skill.name}\n{skill.instructions}"
+    return "Error: Active skill not found in this scope"
+
+
+async def _wrap_read_observation(args, team_id):
+    from core.agent.observation_cache import read_observation
+    agent_id = args.get("_agent_id")
+    if not team_id or not agent_id:
+        return "Error: Observation access requires a team and agent"
+    try:
+        return await asyncio.to_thread(read_observation, args.get("artifact_id", ""),
+                                       f"{team_id}:{agent_id}", args.get("offset", 0), args.get("limit", 2500))
+    except (OSError, ValueError, TypeError) as exc:
+        return f"Error: Cannot read observation: {exc}"

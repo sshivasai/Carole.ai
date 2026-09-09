@@ -14,7 +14,7 @@ from pathlib import Path
 # ==========================================
 # Global Application Data Directory
 # ==========================================
-CAROLE_HOME_DIR = Path.home() / ".carole"
+CAROLE_HOME_DIR = Path(os.environ.get("CAROLE_HOME_DIR", str(Path.home() / ".carole"))).expanduser().resolve()
 CAROLE_HOME_DIR.mkdir(parents=True, exist_ok=True)
 
 PLUGINS_DIR = CAROLE_HOME_DIR / "plugins"
@@ -110,6 +110,7 @@ _AGENT_SETTINGS_DEFAULTS = {
     "DREAM_INTERVAL_MINUTES": 15,
     "MEMORY_RETRIEVAL_LIMIT": 5,
     "CONTEXT_COMPACTION_THRESHOLD": 15,
+    "MAX_BUDGET_TOKENS": int(os.environ.get("MAX_BUDGET_TOKENS", "1000000")),
 }
 
 
@@ -224,5 +225,4 @@ def __getattr__(name: str):
         return int(_AGENT_SETTINGS_DEFAULTS[name])
 
     raise AttributeError(f"module 'core.config' has no attribute {name!r}")
-
 

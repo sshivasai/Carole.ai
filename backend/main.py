@@ -15,6 +15,8 @@ Responsibilities:
 import json
 import asyncio
 import sys
+import time
+from typing import Optional
 
 # Suppress benign Windows asyncio WinError 10054 connection reset noise
 # caused by client browser refresh or abrupt WebSocket disconnection
@@ -71,7 +73,7 @@ from core.api.observability_routes import router as observability_router
 
 import logging
 import importlib
-from typing import Optional, List
+from typing import List
 from core.auth.auth_middleware import require_auth
 
 # Rate limiting (Finding #7)
@@ -102,6 +104,7 @@ async def lifespan(app: FastAPI):
         logger.info("✓ [Lifespan] Database initialized successfully!")
     except Exception as e:
         logger.error("✗ [Lifespan] Error initializing database: %s", e)
+        raise
 
     # Register built-in tools with the dynamic ToolRegistry
     logger.info("🔧 [Lifespan] Registering built-in tools...")
@@ -220,6 +223,8 @@ async def lifespan(app: FastAPI):
     dream_task = asyncio.create_task(dream_worker.start(), name="dream_worker")
     from core.agent.cron_worker import cron_worker
     cron_task = asyncio.create_task(cron_worker.start(), name="cron_worker")
+    from core.memory.index_queue import run_memory_index_worker
+    memory_index_task = asyncio.create_task(run_memory_index_worker(), name="memory_index_worker")
 
     # FIX B4: Periodic EventBus topic sweeper — cleans up inactive topics every 5 min.
     # Prevents the event bus subscriber dict from growing unbounded over a long server uptime.
@@ -243,67 +248,70 @@ async def lifespan(app: FastAPI):
         logger.warning("OpenLLMetry initialization warning: %s", e)
 
     # Store all background task references in app.state (MCP boot tasks + workers + sweeper)
-    app.state.background_tasks = [dream_task, sweeper_task, cron_task] + mcp_boot_tasks
-
-    yield  # Server is now running
-
-    # --- SHUTDOWN ---
-    logger.info("🛑 [Lifespan] Cleaning up resources...")
-    dream_worker.stop()
-    cron_worker.stop()
-
-    # Cancel and await all background tasks gracefully
-    for bg_task in getattr(app.state, "background_tasks", []):
-        if not bg_task.done():
-            bg_task.cancel()
-    _bg_tasks = getattr(app.state, "background_tasks", [])
-    if _bg_tasks:
-        await asyncio.gather(*_bg_tasks, return_exceptions=True)
-        logger.info("✓ [Lifespan] All background tasks stopped.")
-
-    # Close browser contexts
-    try:
-        from core.tools.browser_pool import close_all
-        await close_all()
-    except Exception as e:
-        logger.warning("Browser pool cleanup error: %s", e)
-
-    # Close MCP Manager connections
-    try:
-        from core.tools.mcp_client import mcp_manager
-        await mcp_manager.shutdown()
-    except Exception as e:
-        logger.warning("MCP Manager cleanup error: %s", e)
-
-    # Close shared LLM router httpx connection pool (FIX H3)
-    try:
-        from core.llm.multi_model_router import llm_router
-        await llm_router.aclose()
-        logger.info("✓ [Lifespan] LLM router HTTP client closed.")
-    except Exception as e:
-        logger.warning("LLM router cleanup error: %s", e)
-
-    # Close WebTools and VoiceService connection pools and temp files
-    try:
-        from core.tools.web_tools import web_tools
-        await web_tools.aclose()
-        logger.info("✓ [Lifespan] Web tools closed.")
-    except Exception as e:
-        logger.warning("Web tools cleanup error: %s", e)
+    app.state.background_tasks = [dream_task, sweeper_task, cron_task, memory_index_task] + mcp_boot_tasks
 
     try:
-        from core.tools.voice_stt_tts import voice_service
-        await voice_service.aclose()
-        logger.info("✓ [Lifespan] Voice service closed.")
-    except Exception as e:
-        logger.warning("Voice service cleanup error: %s", e)
+        yield  # Server is now running
+    finally:
 
-    # Close Database connection pool
-    try:
-        from core.memory.database import engine
-        await engine.dispose()
-    except Exception as e:
-        logger.warning("Database dispose error: %s", e)
+        # --- SHUTDOWN ---
+        logger.info("🛑 [Lifespan] Cleaning up resources...")
+        await message_router.shutdown()
+        dream_worker.stop()
+        cron_worker.stop()
+
+        # Cancel and await all background tasks gracefully
+        for bg_task in getattr(app.state, "background_tasks", []):
+            if not bg_task.done():
+                bg_task.cancel()
+        _bg_tasks = getattr(app.state, "background_tasks", [])
+        if _bg_tasks:
+            await asyncio.gather(*_bg_tasks, return_exceptions=True)
+            logger.info("✓ [Lifespan] All background tasks stopped.")
+
+        # Close browser contexts
+        try:
+            from core.tools.browser_pool import close_all
+            await close_all()
+        except Exception as e:
+            logger.warning("Browser pool cleanup error: %s", e)
+
+        # Close MCP Manager connections
+        try:
+            from core.tools.mcp_client import mcp_manager
+            await mcp_manager.shutdown()
+        except Exception as e:
+            logger.warning("MCP Manager cleanup error: %s", e)
+
+        # Close shared LLM router httpx connection pool (FIX H3)
+        try:
+            from core.llm.multi_model_router import llm_router
+            await llm_router.aclose()
+            logger.info("✓ [Lifespan] LLM router HTTP client closed.")
+        except Exception as e:
+            logger.warning("LLM router cleanup error: %s", e)
+
+        # Close WebTools and VoiceService connection pools and temp files
+        try:
+            from core.tools.web_tools import web_tools
+            await web_tools.aclose()
+            logger.info("✓ [Lifespan] Web tools closed.")
+        except Exception as e:
+            logger.warning("Web tools cleanup error: %s", e)
+
+        try:
+            from core.tools.voice_stt_tts import voice_service
+            await voice_service.aclose()
+            logger.info("✓ [Lifespan] Voice service closed.")
+        except Exception as e:
+            logger.warning("Voice service cleanup error: %s", e)
+
+        # Close Database connection pool
+        try:
+            from core.memory.database import engine
+            await engine.dispose()
+        except Exception as e:
+            logger.warning("Database dispose error: %s", e)
 
 
 
@@ -675,6 +683,7 @@ async def notifications_ws(
 
 class ApprovalDecision(BaseModel):
     approved: bool
+    feedback: Optional[str] = None
 
 
 @app.post("/api/tools/approve/{tx_id}")
@@ -693,14 +702,14 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision, user: d
                 "status": "already_resolved",
                 "tx_id": tx_id,
                 "action": res_info.get("action", "APPROVED"),
+                "feedback": res_info.get("feedback"),
                 "message": f"Transaction '{tx_id}' was already resolved."
             }
-        return {
-            "status": "already_resolved",
-            "tx_id": tx_id,
-            "action": "APPROVED" if decision.approved else "DENIED",
-            "message": f"Transaction '{tx_id}' not found or already resolved."
-        }
+        # Authoritative fix: never infer historical resolution from incoming request.
+        raise HTTPException(
+            status_code=404,
+            detail=f"Transaction '{tx_id}' not found or expired."
+        )
 
     # Verify team ownership if team_id is known for this transaction
     details = pending_approval_details.get(tx_id)
@@ -715,8 +724,16 @@ async def approve_tool_execution(tx_id: str, decision: ApprovalDecision, user: d
     pending_approvals[tx_id].set()
 
     action = "APPROVED" if decision.approved else "DENIED"
-    logger.info("Human %s approval '%s' for tx_id=%s", action.lower(), tx_id, user.get("email", "unknown"))
-    return {"status": "ok", "tx_id": tx_id, "action": action}
+    resolved_approvals[tx_id] = {
+        "tx_id": tx_id,
+        "status": "already_resolved",
+        "action": action,
+        "feedback": decision.feedback,
+        "resolved_at": time.time(),
+        "resolved_by": user.get("sub"),
+    }
+    logger.info("Human %s approval '%s' for tx_id=%s (feedback=%s)", action.lower(), tx_id, user.get("email", "unknown"), decision.feedback)
+    return {"status": "ok", "tx_id": tx_id, "action": action, "feedback": decision.feedback}
 
 
 @app.get("/api/tools/approvals/pending/{team_id}")
@@ -767,6 +784,14 @@ async def answer_agent_question(question_id: str, body: QuestionAnswer, user: di
 
     question_answers[question_id] = body.answer
     pending_questions[question_id].set()
+
+    if details and details.get("team_id"):
+        from core.chat.event_bus import event_bus
+        await event_bus.publish(f"team:{details['team_id']}", {
+            "type": "agent_question_answered",
+            "question_id": question_id,
+            "answer": body.answer,
+        })
 
     return {"status": "ok", "question_id": question_id}
 

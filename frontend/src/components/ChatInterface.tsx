@@ -28,7 +28,7 @@ import AskUserQuestionCard from "./AskUserQuestionCard";
 interface Props {
   messages: ChatMessage[];
   agents: AgentConfig[];
-  onSendMessage: (text: string, attachments?: any[]) => void;
+  onSendMessage: (text: string, attachments?: any[]) => { success: boolean; error?: string } | void | Promise<{ success: boolean; error?: string } | void>;
   onDeleteMessage?: (id: string) => void;
   onRollbackMessage?: (id: string) => void;
   onClearChat?: () => void;
@@ -146,14 +146,13 @@ function ApprovalCard({ msg, onFeedback }: { msg: ChatMessage; onFeedback?: (tex
     if (!txId) return;
     setLoading(true);
     try {
-      await api.approveToolExecution(txId, approved);
+      await api.approveToolExecution(txId, approved, feedback);
       if (feedback && onFeedback) {
         onFeedback(`[Guidance on ${msg.pending_approval?.tool_name || msg.tool_name || "action"}]: ${feedback}`);
       }
     } catch (e: any) {
-      if (!e?.message?.includes("already resolved") && !e?.message?.includes("not found") && e?.status !== 404) {
-        console.error("Failed to submit approval decision:", e);
-      }
+      console.error("Failed to submit approval decision:", e);
+      throw e;
     } finally {
       setLoading(false);
     }
@@ -163,6 +162,23 @@ function ApprovalCard({ msg, onFeedback }: { msg: ChatMessage; onFeedback?: (tex
 }
 
 function AskUserCard({ msg, onAnswerSubmit }: { msg: ChatMessage; onAnswerSubmit?: (text: string) => void }) {
+  // Parse questions list if provided
+  const questionsList = useMemo(() => {
+    if (msg.questions && Array.isArray(msg.questions) && msg.questions.length > 0) {
+      return msg.questions;
+    }
+    const trimmed = (msg.question || msg.text || "").trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].question) {
+          return parsed;
+        }
+      } catch { }
+    }
+    return undefined;
+  }, [msg.questions, msg.question, msg.text]);
+
   // Parse question and options from raw message fields
   const { parsedQuestion, parsedOptions } = useMemo(() => {
     let questionText = msg.question || msg.text || "";
@@ -203,9 +219,12 @@ function AskUserCard({ msg, onAnswerSubmit }: { msg: ChatMessage; onAnswerSubmit
   const handleAnswer = async (qId: string, answerText: string) => {
     try {
       await api.answerAgentQuestion(qId, answerText);
+      (msg as any).is_answered = true;
+      (msg as any).answer = answerText;
       if (onAnswerSubmit) onAnswerSubmit(`Answer to ${msg.sender_name}: ${answerText}`);
     } catch (e) {
       console.error("Failed to submit question answer:", e);
+      throw e;
     }
   };
 
@@ -215,10 +234,13 @@ function AskUserCard({ msg, onAnswerSubmit }: { msg: ChatMessage; onAnswerSubmit
       agentName={msg.sender_name || "Agent"}
       question={parsedQuestion}
       options={parsedOptions}
+      questions={questionsList}
       answered={Boolean((msg as any).is_answered)}
       chosenAnswer={(msg as any).answer}
       onAnswer={handleAnswer}
       onSkip={async (qId) => {
+        (msg as any).is_answered = true;
+        (msg as any).answer = "Skipped by user";
         try {
           await api.answerAgentQuestion(qId, "Skipped by user");
         } catch (e) {
@@ -530,7 +552,7 @@ function parseReasoningIntoSections(raw: string): Array<{
     }
 
     const isError = /error|failed|exception|not implemented/i.test(result);
-    
+
     let pid: number | null = null;
     const pidMatch = result.match(/launched in background with PID (\d+)/i);
     if (pidMatch) {
@@ -1002,6 +1024,8 @@ export default function ChatInterface({
   const [searchMode, setSearchMode] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showTeamAgents, setShowTeamAgents] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1174,20 +1198,23 @@ export default function ChatInterface({
     }
   }, []);
 
+  const pendingActions = useMemo(() => {
+    return messages.filter(m => {
+      const isPendingApproval = Boolean(
+        (m.pending_approval && m.pending_approval.status !== "approved" && m.pending_approval.status !== "denied" && m.pending_approval.status !== "expired") ||
+        (m.type === "approval_request" && m.status !== "approved" && m.status !== "denied" && m.status !== "expired")
+      );
+      const isPendingQuestion = Boolean((m.type === "ask_user" || m.type === "agent_question") && !(m as any).is_answered);
+      return isPendingApproval || isPendingQuestion;
+    });
+  }, [messages]);
+
   useEffect(() => {
-    // If there is an active pending approval request or question, prioritize scrolling to bottom immediately
-    const hasPendingApproval = messages.some(
-      m => Boolean(m.pending_approval?.status === "pending" || m.type === "approval_request" || m.type === "ask_user")
-    );
-    if (hasPendingApproval) {
-      scrollToBottom(true);
-      return;
-    }
     // Only auto-scroll to bottom if the user is not reading scrolled-up history
     if (!isUserScrolledUpRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, scrollToBottom]);
+  }, [messages]);
 
   // Reset scroll on room/project change
   useEffect(() => {
@@ -1337,7 +1364,7 @@ export default function ChatInterface({
     }, 10);
   };
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     if (!inputText.trim() && attachments.length === 0) return;
 
     let textToSend = inputText.trim();
@@ -1370,8 +1397,6 @@ export default function ChatInterface({
 
     // Extract @file:path references and pass them as structured file_ref
     // attachments so the backend injects their contents into agent context
-    // (sandboxed to the agent's project). The visible @file:path text is kept
-    // so humans and other agents can see what was referenced.
     const fileRefRegex = /@file:(\S+)/g;
     const seen = new Set<string>();
     const fileRefs: any[] = [];
@@ -1380,10 +1405,24 @@ export default function ChatInterface({
       const p = m[1].replace(/[),.;]+$/, ""); // strip trailing punctuation
       if (!seen.has(p)) { seen.add(p); fileRefs.push({ type: "file_ref", path: p }); }
     }
-    onSendMessage(textToSend, [...attachments, ...fileRefs]);
-    setInputText("");
-    setAttachments([]);
-    setMentionOpen(false);
+
+    setIsSending(true);
+    setSendError(null);
+    try {
+      const res = await onSendMessage(textToSend, [...attachments, ...fileRefs]);
+      if (res && typeof res === "object" && "success" in res && !res.success) {
+        setSendError(res.error || "Message delivery failed. Connection offline.");
+        return; // PRESERVE draft text and attachments!
+      }
+      setInputText("");
+      setAttachments([]);
+      setMentionOpen(false);
+      setSendError(null);
+    } catch (err: any) {
+      setSendError(err?.message || "Failed to dispatch message.");
+    } finally {
+      setIsSending(false);
+    }
   }, [inputText, attachments, onSendMessage, onCompact]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1806,9 +1845,12 @@ export default function ChatInterface({
                 const toolMeta = getToolMeta(toolName);
                 const ToolIcon = toolMeta.icon;
 
+                const traceAgentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
+                const traceRole = traceAgentInfo?.role && traceAgentInfo.role !== "Active Agent" ? traceAgentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
+
                 return (
                   <div key={msg.id} style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-start", marginLeft: 8, marginBottom: 2 }}>
-                    <AgentAvatar name={msg.sender_name || "agent"} id={msg.sender_id} role={msg.role} size={22} isStreaming={isStreaming} />
+                    <AgentAvatar name={msg.sender_name || "agent"} id={traceAgentInfo?.id || msg.sender_id} role={traceRole} size={22} isStreaming={isStreaming} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <button
                         onClick={() => setExpandedTraces(prev => {
@@ -1907,24 +1949,63 @@ export default function ChatInterface({
                   </div>
                 );
               }
-              if (isApproval) return (
-                <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} role={msg.role} size={30} />
-                  <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><ApprovalCard msg={msg} /></div>
-                </div>
-              );
-              if (isQuestion) return (
-                <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} role={msg.role} size={30} />
-                  <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><AskUserCard msg={msg} /></div>
-                </div>
-              );
-              if (isIntervention) return (
-                <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
-                  <AgentAvatar name={msg.sender_name || "Agent"} id={msg.sender_id} role={msg.role} size={30} />
-                  <div><div className="body-sm-strong" style={{ marginBottom: 4 }}>{msg.sender_name}</div><BrowserInterventionCard msg={msg} /></div>
-                </div>
-              );
+              if (isApproval) {
+                const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
+                const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
+                return (
+                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                    <AgentHoverCard agent={agentInfo} name={msg.sender_name} id={msg.sender_id} role={displayRole} onMention={handleDirectMention}>
+                      <AgentAvatar name={msg.sender_name || "Agent"} id={agentInfo?.id || msg.sender_id} role={displayRole} size={32} />
+                    </AgentHoverCard>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 4 }}>
+                        <span className="body-sm-strong">{msg.sender_name}</span>
+                        {displayRole && <span className="caption">{displayRole}</span>}
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
+                      </div>
+                      <ApprovalCard msg={msg} />
+                    </div>
+                  </div>
+                );
+              }
+              if (isQuestion) {
+                const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
+                const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
+                return (
+                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                    <AgentHoverCard agent={agentInfo} name={msg.sender_name} id={msg.sender_id} role={displayRole} onMention={handleDirectMention}>
+                      <AgentAvatar name={msg.sender_name || "Agent"} id={agentInfo?.id || msg.sender_id} role={displayRole} size={32} />
+                    </AgentHoverCard>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 4 }}>
+                        <span className="body-sm-strong">{msg.sender_name}</span>
+                        {displayRole && <span className="caption">{displayRole}</span>}
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
+                      </div>
+                      <AskUserCard msg={msg} />
+                    </div>
+                  </div>
+                );
+              }
+              if (isIntervention) {
+                const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
+                const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
+                return (
+                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                    <AgentHoverCard agent={agentInfo} name={msg.sender_name} id={msg.sender_id} role={displayRole} onMention={handleDirectMention}>
+                      <AgentAvatar name={msg.sender_name || "Agent"} id={agentInfo?.id || msg.sender_id} role={displayRole} size={32} />
+                    </AgentHoverCard>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 4 }}>
+                        <span className="body-sm-strong">{msg.sender_name}</span>
+                        {displayRole && <span className="caption">{displayRole}</span>}
+                        {msg.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(msg.timestamp)}</span>}
+                      </div>
+                      <BrowserInterventionCard msg={msg} />
+                    </div>
+                  </div>
+                );
+              }
 
               if (msg.type === "llm_error" && msg.llm_error) {
                 const err = msg.llm_error;
@@ -2178,131 +2259,131 @@ export default function ChatInterface({
                     {isHuman && msg.timestamp && <div style={{ textAlign: "right", marginBottom: 3 }}><span className="caption">{fmtTime(msg.timestamp)}</span></div>}
 
                     <div style={{
-                        padding: "var(--sp-md) var(--sp-lg)", lineHeight: 1.6,
-                        background: isHuman ? "var(--bg-surface-raised)" : "var(--bg-surface)",
-                        border: isHuman ? "1px solid var(--border-subtle)" : "1px solid var(--border-subtle)",
-                        borderRadius: isHuman ? "var(--radius-md) 2px var(--radius-md) var(--radius-md)" : "2px var(--radius-md) var(--radius-md) var(--radius-md)",
-                        color: "var(--text-primary)",
-                        position: "relative", fontSize: "var(--text-sm)",
-                      }}>
-                        {isThinking ? (
-                          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", color: "var(--color-mute)" }}>
-                            <TypingIndicator />
-                            <span className="body-sm" style={{ opacity: 0.8 }}>Thinking & analyzing...</span>
-                          </div>
-                        ) : isHuman ? (
-                          <div style={{ whiteSpace: "pre-wrap" }}>
-                            {cleanText}
-                            {msg.attachments && msg.attachments.length > 0 && (
-                              <div style={{ display: "flex", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)", flexWrap: "wrap" }}>
-                                {msg.attachments.map((att: any, i: number) => (
-                                  att.type?.startsWith("image/") ? (
-                                    <img key={i} src={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(167, 139, 250, 0.2)" }} />
-                                  ) : (
-                                    <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(167, 139, 250, 0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                      📎 {att.name}
-                                    </a>
-                                  )
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <>
-                            {(!isHuman && (cleanText.includes("# Implementation Plan") || cleanText.includes("[ARTIFACT: implementation_plan]") || cleanText.includes("## User Review Required"))) && (
-                              <div style={{ marginBottom: "12px" }}>
-                                <InChatPlanCard
-                                  planContent={cleanText}
-                                  onProceed={() => onSendMessage("Proceed with the approved plan")}
-                                />
-                              </div>
-                            )}
-                            <div className="markdown-body">
-                              <ReactMarkdown
-                                skipHtml={true}
-                                remarkPlugins={[remarkGfm]}
-                                components={markdownComponents}
-                              >
-                                {markdownText}
-                              </ReactMarkdown>
+                      padding: "var(--sp-md) var(--sp-lg)", lineHeight: 1.6,
+                      background: isHuman ? "var(--bg-surface-raised)" : "var(--bg-surface)",
+                      border: isHuman ? "1px solid var(--border-subtle)" : "1px solid var(--border-subtle)",
+                      borderRadius: isHuman ? "var(--radius-md) 2px var(--radius-md) var(--radius-md)" : "2px var(--radius-md) var(--radius-md) var(--radius-md)",
+                      color: "var(--text-primary)",
+                      position: "relative", fontSize: "var(--text-sm)",
+                    }}>
+                      {isThinking ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", color: "var(--color-mute)" }}>
+                          <TypingIndicator />
+                          <span className="body-sm" style={{ opacity: 0.8 }}>Thinking & analyzing...</span>
+                        </div>
+                      ) : isHuman ? (
+                        <div style={{ whiteSpace: "pre-wrap" }}>
+                          {cleanText}
+                          {msg.attachments && msg.attachments.length > 0 && (
+                            <div style={{ display: "flex", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)", flexWrap: "wrap" }}>
+                              {msg.attachments.map((att: any, i: number) => (
+                                att.type?.startsWith("image/") ? (
+                                  <img key={i} src={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(167, 139, 250, 0.2)" }} />
+                                ) : (
+                                  <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(167, 139, 250, 0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                    📎 {att.name}
+                                  </a>
+                                )
+                              ))}
                             </div>
-                          </>
-                        )}
-                        {isStreaming && <TypingIndicator />}
-                        {/* Stop Generating button — visible while streaming or thinking */}
-                        {(isStreaming || isThinking) && !isHuman && (
-                          <div style={{ marginTop: "var(--sp-sm)", display: "flex", justifyContent: "flex-end" }}>
-                            <button
-                              onClick={() => api.stopAgent(msg.sender_id)}
-                              style={{
-                                display: "inline-flex", alignItems: "center", gap: 6,
-                                padding: "4px 10px", fontSize: 11, cursor: "pointer",
-                                background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)",
-                                borderRadius: "var(--radius-sm)", color: "var(--color-danger)",
-                                transition: "background 0.15s",
-                              }}
-                              onMouseOver={e => (e.currentTarget.style.background = "rgba(239,68,68,0.2)")}
-                              onMouseOut={e => (e.currentTarget.style.background = "rgba(239,68,68,0.1)")}
-                            >
-                              <Square size={11} fill="currentColor" />
-                              Stop generating
-                            </button>
-                          </div>
-                        )}
-                        {/* File Changes Card — associated directly with this assistant message! */}
-                        {!isHuman && !isThinking && (() => {
-                          const fileChanges = extractFileChanges(finalReasoning, msg);
-                          if (fileChanges.length === 0) return null;
-                          return (
-                            <div style={{ marginTop: "var(--sp-sm, 8px)" }}>
-                              <FileChangeCard
-                                files={fileChanges}
-                                senderName={msg.sender_name}
-                                timestamp={msg.timestamp}
-                                onOpenFile={onOpenFile}
-                                onOpenDiffFile={onOpenDiffFile ? (p: string) => onOpenDiffFile(p, msg.diff || "") : undefined}
+                          )}
+                        </div>
+                      ) : (
+                        <>
+                          {(!isHuman && (cleanText.includes("# Implementation Plan") || cleanText.includes("[ARTIFACT: implementation_plan]") || cleanText.includes("## User Review Required"))) && (
+                            <div style={{ marginBottom: "12px" }}>
+                              <InChatPlanCard
+                                planContent={cleanText}
+                                onProceed={() => onSendMessage("Proceed with the approved plan")}
                               />
                             </div>
-                          );
-                        })()}
+                          )}
+                          <div className="markdown-body">
+                            <ReactMarkdown
+                              skipHtml={true}
+                              remarkPlugins={[remarkGfm]}
+                              components={markdownComponents}
+                            >
+                              {markdownText}
+                            </ReactMarkdown>
+                          </div>
+                        </>
+                      )}
+                      {isStreaming && <TypingIndicator />}
+                      {/* Stop Generating button — visible while streaming or thinking */}
+                      {(isStreaming || isThinking) && !isHuman && (
+                        <div style={{ marginTop: "var(--sp-sm)", display: "flex", justifyContent: "flex-end" }}>
+                          <button
+                            onClick={() => api.stopAgent(msg.sender_id)}
+                            style={{
+                              display: "inline-flex", alignItems: "center", gap: 6,
+                              padding: "4px 10px", fontSize: 11, cursor: "pointer",
+                              background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)",
+                              borderRadius: "var(--radius-sm)", color: "var(--color-danger)",
+                              transition: "background 0.15s",
+                            }}
+                            onMouseOver={e => (e.currentTarget.style.background = "rgba(239,68,68,0.2)")}
+                            onMouseOut={e => (e.currentTarget.style.background = "rgba(239,68,68,0.1)")}
+                          >
+                            <Square size={11} fill="currentColor" />
+                            Stop generating
+                          </button>
+                        </div>
+                      )}
+                      {/* File Changes Card — associated directly with this assistant message! */}
+                      {!isHuman && !isThinking && (() => {
+                        const fileChanges = extractFileChanges(finalReasoning, msg);
+                        if (fileChanges.length === 0) return null;
+                        return (
+                          <div style={{ marginTop: "var(--sp-sm, 8px)" }}>
+                            <FileChangeCard
+                              files={fileChanges}
+                              senderName={msg.sender_name}
+                              timestamp={msg.timestamp}
+                              onOpenFile={onOpenFile}
+                              onOpenDiffFile={onOpenDiffFile ? (p: string) => onOpenDiffFile(p, msg.diff || "") : undefined}
+                            />
+                          </div>
+                        );
+                      })()}
 
-                        {/* Thoughts Panel — renders reasoning trace + tool calls */}
-                        {!isHuman && !isThinking && (
-                          <ThoughtsPanel reasoning={finalReasoning} isStreaming={isStreaming} components={markdownComponents} />
-                        )}
+                      {/* Thoughts Panel — renders reasoning trace + tool calls */}
+                      {!isHuman && !isThinking && (
+                        <ThoughtsPanel reasoning={finalReasoning} isStreaming={isStreaming} components={markdownComponents} />
+                      )}
 
-                        {/* Subagent Activities / Worker reports enqueued for this message */}
-                        {!isHuman && !isThinking && (childMessagesByParent[msg.id] || []).some(c => !c.is_intermediate && c.type !== "tool_trace") && (
-                          <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px", borderTop: "1px solid var(--border-glass)", paddingTop: "12px", width: "100%" }}>
-                            {(childMessagesByParent[msg.id] || [])
-                              .filter(c => !c.is_intermediate && c.type !== "tool_trace")
-                              .map(child => {
-                                const isChildTaskNotification = Boolean(child.text?.includes("<task-notification>"));
+                      {/* Subagent Activities / Worker reports enqueued for this message */}
+                      {!isHuman && !isThinking && (childMessagesByParent[msg.id] || []).some(c => !c.is_intermediate && c.type !== "tool_trace") && (
+                        <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px", borderTop: "1px solid var(--border-glass)", paddingTop: "12px", width: "100%" }}>
+                          {(childMessagesByParent[msg.id] || [])
+                            .filter(c => !c.is_intermediate && c.type !== "tool_trace")
+                            .map(child => {
+                              const isChildTaskNotification = Boolean(child.text?.includes("<task-notification>"));
 
-                                if (isChildTaskNotification) {
-                                  const childReasoning = child.reasoning || "";
-                                  return (
-                                    <div key={child.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
-                                      <AgentAvatar name={child.sender_name || "Agent"} id={child.sender_id} role={child.role || "subagent"} size={26} />
-                                      <div style={{ flex: 1, minWidth: 0 }}>
-                                        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
-                                          <span className="body-sm-strong" style={{ fontSize: 12 }}>{child.sender_name}</span>
-                                          <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>WORKER REPORT</span>
-                                          {child.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(child.timestamp)}</span>}
-                                        </div>
-                                        <TaskNotificationCard text={child.text || ""} />
-                                        {childReasoning && (
-                                          <div style={{ marginTop: "8px", borderTop: "1px solid var(--border-glass)", paddingTop: "8px" }}>
-                                            <ThoughtsPanel reasoning={childReasoning} isStreaming={false} components={markdownComponents} />
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  );
-                                }
-
-                                // Fallback for standard child text messages (e.g. permanent teammate outputs)
+                              if (isChildTaskNotification) {
+                                const childReasoning = child.reasoning || "";
                                 return (
+                                  <div key={child.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                                    <AgentAvatar name={child.sender_name || "Agent"} id={child.sender_id} role={child.role || "subagent"} size={26} />
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
+                                        <span className="body-sm-strong" style={{ fontSize: 12 }}>{child.sender_name}</span>
+                                        <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>WORKER REPORT</span>
+                                        {child.timestamp && <span className="caption" style={{ marginLeft: "auto" }}>{fmtTime(child.timestamp)}</span>}
+                                      </div>
+                                      <TaskNotificationCard text={child.text || ""} />
+                                      {childReasoning && (
+                                        <div style={{ marginTop: "8px", borderTop: "1px solid var(--border-glass)", paddingTop: "8px" }}>
+                                          <ThoughtsPanel reasoning={childReasoning} isStreaming={false} components={markdownComponents} />
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              // Fallback for standard child text messages (e.g. permanent teammate outputs)
+                              return (
                                 <div key={child.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
                                   <AgentAvatar name={child.sender_name || "Agent"} id={child.sender_id} role={child.role} size={26} />
                                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -2326,14 +2407,14 @@ export default function ChatInterface({
                                 </div>
                               );
                             })}
-                          </div>
-                        )}
-                        {msg.pending_approval && msg.pending_approval.status !== "approved" && (
-                          <div style={{ marginTop: "var(--sp-md)" }}>
-                            <ApprovalCard msg={{ ...msg, ...msg.pending_approval, type: "approval_request" } as ChatMessage} />
-                          </div>
-                        )}
-                      </div>
+                        </div>
+                      )}
+                      {msg.pending_approval && msg.pending_approval.status !== "approved" && (
+                        <div style={{ marginTop: "var(--sp-md)" }}>
+                          <ApprovalCard msg={{ ...msg, ...msg.pending_approval, type: "approval_request" } as ChatMessage} />
+                        </div>
+                      )}
+                    </div>
 
                     {/* Action Menu Hover — anchored right on top of this message bubble */}
                     {!isThinking && !isStreaming && !isSystem && !isApproval && !isQuestion && (
@@ -2461,6 +2542,38 @@ export default function ChatInterface({
 
         {/* Floating Antigravity Input Bar */}
         <div style={{ flexShrink: 0, padding: "0 var(--sp-md) var(--sp-md)", background: "transparent", zIndex: 10, position: "relative" }}>
+          {/* Needs Your Input Notification Banner */}
+          {pendingActions.length > 0 && (
+            <button
+              onClick={() => scrollToBottom(true)}
+              className="btn btn-sm"
+              style={{
+                position: "absolute",
+                top: isUserScrolledUp ? -72 : -38,
+                left: "50%",
+                transform: "translateX(-50%)",
+                background: "linear-gradient(135deg, rgba(234, 179, 8, 0.25), rgba(249, 115, 22, 0.25))",
+                border: "1px solid rgba(245, 158, 11, 0.5)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 20,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                padding: "4px 14px",
+                fontSize: 11.5,
+                fontWeight: 600,
+                color: "#fbbf24",
+                zIndex: 30,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                cursor: "pointer",
+                animation: "fadeIn 0.15s ease-out",
+              }}
+            >
+              <AlertTriangle size={13} />
+              <span>Needs your input ({pendingActions.length}) · View request</span>
+            </button>
+          )}
+
           {isUserScrolledUp && (
             <button
               onClick={() => scrollToBottom(true)}
@@ -2515,6 +2628,41 @@ export default function ChatInterface({
                 </div>
               )}
             </div>
+
+            {/* Inline Send Error Banner */}
+            {sendError && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "6px 12px",
+                  background: "rgba(239, 68, 68, 0.14)",
+                  border: "1px solid rgba(239, 68, 68, 0.3)",
+                  borderRadius: "6px",
+                  marginBottom: "8px",
+                  fontSize: "12px",
+                  color: "#fca5a5",
+                }}
+              >
+                <span>⚠️ {sendError}</span>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={handleSend}
+                    disabled={isSending}
+                    style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", fontWeight: 600, fontSize: "11px" }}
+                  >
+                    Retry Send
+                  </button>
+                  <button
+                    onClick={() => setSendError(null)}
+                    style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "11px" }}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
               <input
@@ -2640,7 +2788,7 @@ export default function ChatInterface({
               <button
                 className="btn btn-primary btn-sm"
                 onClick={handleSend}
-                disabled={!inputText.trim() && attachments.length === 0}
+                disabled={(!inputText.trim() && attachments.length === 0) || isSending}
                 style={{
                   height: 38,
                   padding: "0 16px",
@@ -2649,11 +2797,13 @@ export default function ChatInterface({
                   boxShadow: "0 4px 14px rgba(79, 70, 229, 0.4)",
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: 6
+                  gap: 6,
+                  opacity: isSending ? 0.7 : 1,
+                  cursor: isSending ? "not-allowed" : "pointer"
                 }}
               >
-                <Send size={14} />
-                <span>Send</span>
+                {isSending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                <span>{isSending ? "Sending..." : "Send"}</span>
               </button>
             </div>
           </div>

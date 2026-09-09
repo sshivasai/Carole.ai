@@ -665,7 +665,7 @@ class TestBrowserRoutes:
     """Tests the canvas takeover and direct browser interaction HTTP endpoints."""
 
     @pytest.mark.asyncio
-    async def test_browser_act_direct_endpoint(self, client):
+    async def test_browser_act_direct_endpoint(self, client, owned_browser):
         """Verify POST /api/browser/act executes coords click and returns updated screenshot."""
         from main import app
         from core.auth.auth_middleware import require_auth
@@ -675,12 +675,12 @@ class TestBrowserRoutes:
         mock_page.title = AsyncMock(return_value="Canvas Demo")
         mock_page.screenshot = AsyncMock(return_value=b"test_screenshot_data")
 
-        app.dependency_overrides[require_auth] = lambda: {"id": "u1", "role": "admin"}
+        app.dependency_overrides[require_auth] = lambda: {"sub": owned_browser["user_id"]}
         try:
             with patch("core.api.browser_routes._get_page", return_value=mock_page):
                 response = await client.post(
                     "/api/browser/act",
-                    json={"agent_id": "global", "kind": "coords", "x": 150.0, "y": 300.0},
+                    json={"agent_id": owned_browser["agent_id"], "kind": "coords", "x": 150.0, "y": 300.0},
                 )
                 assert response.status_code == 200
                 data = response.json()
@@ -693,7 +693,7 @@ class TestBrowserRoutes:
             app.dependency_overrides.pop(require_auth, None)
 
     @pytest.mark.asyncio
-    async def test_browser_screenshot_endpoint(self, client):
+    async def test_browser_screenshot_endpoint(self, client, owned_browser):
         """Verify GET /api/browser/screenshot fetches current screenshot."""
         from main import app
         from core.auth.auth_middleware import require_auth
@@ -703,10 +703,10 @@ class TestBrowserRoutes:
         mock_page.title = AsyncMock(return_value="Status Page")
         mock_page.screenshot = AsyncMock(return_value=b"shot_bytes")
 
-        app.dependency_overrides[require_auth] = lambda: {"id": "u1"}
+        app.dependency_overrides[require_auth] = lambda: {"sub": owned_browser["user_id"]}
         try:
             with patch("core.api.browser_routes._get_page", return_value=mock_page):
-                response = await client.get("/api/browser/screenshot?agent_id=global")
+                response = await client.get(f"/api/browser/screenshot?agent_id={owned_browser['agent_id']}")
                 assert response.status_code == 200
                 data = response.json()
                 assert data["status"] == "success"

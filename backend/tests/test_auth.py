@@ -35,7 +35,11 @@ async def test_signup_login_lifecycle(client: AsyncClient):
     assert res.status_code == 200
     data = res.json()
     assert "token" in data
-    assert data["token"] == token
+    # Login can cross a second boundary and legitimately issue a new JWT.
+    # Verify both credentials authenticate the same user instead of comparing bytes.
+    profile = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {data['token']}"})
+    assert profile.status_code == 200
+    assert profile.json()["id"] == data["user"]["id"]
 
     # 3. Retrieve /me profile with JWT token
     headers = {"Authorization": f"Bearer {token}"}
@@ -128,5 +132,4 @@ async def test_rate_limiting_enforced(client: AsyncClient):
         assert 429 in responses
     finally:
         limiter.enabled = False
-
 

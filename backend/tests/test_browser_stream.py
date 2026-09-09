@@ -82,7 +82,7 @@ async def test_browser_use_task_with_browserbase_project_id():
 
 
 @pytest.mark.asyncio
-async def test_browser_act_direct_ref_action(client):
+async def test_browser_act_direct_ref_action(client, owned_browser):
     """Verify POST /api/browser/act resolves DOM element ref and interacts with element."""
     from main import app
     from core.auth.auth_middleware import require_auth
@@ -97,14 +97,14 @@ async def test_browser_act_direct_ref_action(client):
     mock_target.fill = AsyncMock()
     mock_target.dispose = AsyncMock()
 
-    app.dependency_overrides[require_auth] = lambda: {"id": "u1", "role": "admin"}
+    app.dependency_overrides[require_auth] = lambda: {"sub": owned_browser["user_id"]}
     try:
         with patch("core.api.browser_routes._get_page", return_value=mock_page), \
              patch("core.tools.browser_tool.browser_tool._target", return_value=(mock_target, True)):
 
             response = await client.post(
                 "/api/browser/act",
-                json={"agent_id": "global", "kind": "click", "ref": 42},
+                json={"agent_id": owned_browser["agent_id"], "kind": "click", "ref": 42},
             )
             assert response.status_code == 200
             data = response.json()
@@ -118,18 +118,18 @@ async def test_browser_act_direct_ref_action(client):
 
 
 @pytest.mark.asyncio
-async def test_browser_act_direct_ssrf_blocking(client):
+async def test_browser_act_direct_ssrf_blocking(client, owned_browser):
     """Verify POST /api/browser/act blocks SSRF cloud metadata URLs with HTTP 400."""
     from main import app
     from core.auth.auth_middleware import require_auth
 
     mock_page = AsyncMock()
-    app.dependency_overrides[require_auth] = lambda: {"id": "u1", "role": "admin"}
+    app.dependency_overrides[require_auth] = lambda: {"sub": owned_browser["user_id"]}
     try:
         with patch("core.api.browser_routes._get_page", return_value=mock_page):
             response = await client.post(
                 "/api/browser/act",
-                json={"agent_id": "global", "kind": "navigate", "url": "http://169.254.169.254/latest/meta-data/"},
+                json={"agent_id": owned_browser["agent_id"], "kind": "navigate", "url": "http://169.254.169.254/latest/meta-data/"},
             )
             assert response.status_code == 400
             assert "URL access denied" in response.json()["detail"]
@@ -138,7 +138,7 @@ async def test_browser_act_direct_ssrf_blocking(client):
 
 
 @pytest.mark.asyncio
-async def test_browser_stream_websocket_frame_and_actions():
+async def test_browser_stream_websocket_frame_and_actions(client, owned_browser):
     """Verify WebSocket /api/browser/stream sends frame and executes interactive actions."""
     from starlette.testclient import TestClient
     from main import app
@@ -149,9 +149,10 @@ async def test_browser_stream_websocket_frame_and_actions():
     mock_page.screenshot = AsyncMock(return_value=b"test_ws_frame")
     mock_page.mouse.click = AsyncMock()
 
+    ticket = (await client.post("/api/auth/ws-ticket", headers=owned_browser["headers"])).json()["ticket"]
     with patch("core.api.browser_routes._get_page", return_value=mock_page):
-        client = TestClient(app)
-        with client.websocket_connect("/api/browser/stream?agent_id=global") as websocket:
+        ws_client = TestClient(app)
+        with ws_client.websocket_connect(f"/api/browser/stream?agent_id={owned_browser['agent_id']}&ticket={ticket}") as websocket:
             # First message should be connection confirmation
             conn_msg = websocket.receive_json()
             assert conn_msg["type"] == "connected"

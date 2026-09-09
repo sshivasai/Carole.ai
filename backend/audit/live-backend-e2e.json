@@ -1,0 +1,44 @@
+{
+  "requested_model": "openrouter/free",
+  "status": "failed",
+  "provider_requests": [
+    {
+      "model": "nvidia/nemotron-3-embed-1b:free",
+      "path": "/api/v1/embeddings",
+      "max_tokens": null
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048
+    }
+  ],
+  "checks": {
+    "authenticated_setup": true,
+    "native_tools_executed": false,
+    "tests_unchanged": true,
+    "independent_test_execution": false,
+    "final_message_persisted": false
+  },
+  "event_types": [
+    "agent_created",
+    "agent_queue_update",
+    "agent_status",
+    "context_usage",
+    "llm_error",
+    "message",
+    "typing"
+  ],
+  "tools_used": [],
+  "verification": "test_decimal (test_calculator.AdditionTest.test_decimal) ... FAIL\ntest_identity (test_calculator.AdditionTest.test_identity) ... FAIL\ntest_negative (test_calculator.AdditionTest.test_negative) ... FAIL\ntest_positive (test_calculator.AdditionTest.test_positive) ... FAIL\n\n======================================================================\nFAIL: test_decimal (test_calculator.AdditionTest.test_decimal)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<fixture>\\test_calculator.py\", line 7, in test_decimal\n    def test_decimal(self): self.assertAlmostEqual(add(1.25, 2.5), 3.75)\n                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: -1.25 != 3.75 within 7 places (5.0 difference)\n\n======================================================================\nFAIL: test_identity (test_calculator.AdditionTest.test_identity)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<fixture>\\test_calculator.py\", line 6, in test_identity\n    def test_identity(self): self.assertEqual(add(0, 9), 9)\n                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: -9 != 9\n\n======================================================================\nFAIL: test_negative (test_calculator.AdditionTest.test_negative)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<fixture>\\test_calculator.py\", line 5, in test_negative\n    def test_negative(self): self.assertEqual(add(-2, -3), -5)\n                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != -5\n\n======================================================================\nFAIL: test_positive (test_calculator.AdditionTest.test_positive)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<fixture>\\test_calculator.py\", line 4, in test_positive\n    def test_positive(self): self.assertEqual(add(2, 3), 5)\n                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: -1 != 5\n\n----------------------------------------------------------------------\nRan 4 tests in 0.002s\n\nFAILED (failures=4)\n"
+}

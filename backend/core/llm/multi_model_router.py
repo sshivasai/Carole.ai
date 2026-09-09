@@ -35,7 +35,7 @@ import random
 import httpx
 from contextlib import aclosing
 from urllib.parse import urlparse
-from typing import AsyncGenerator, List, Dict, Optional, Any
+from typing import AsyncGenerator, List, Dict, Optional, Any, Tuple
 from core.llm.config_manager import load_config, get_key, has_user_configured_keys
 
 logger = logging.getLogger("carole.router")
@@ -276,6 +276,30 @@ def clamp_context_for_model(
 
 
 class MultiModelRouter:
+    @staticmethod
+    def _adapt_tool_schemas(tools: List[Dict[str, Any]], provider: str) -> List[Dict[str, Any]]:
+        """Convert portable function specifications at the final provider boundary."""
+        from copy import deepcopy
+        functions = []
+        for spec in tools or []:
+            if "functionDeclarations" in spec:
+                functions.extend(deepcopy(spec["functionDeclarations"]))
+            elif spec.get("type") == "function":
+                functions.append(deepcopy(spec["function"]))
+            else:
+                functions.append({"name": spec["name"], "description": spec.get("description", ""),
+                                  "parameters": deepcopy(spec.get("input_schema", spec.get("parameters", {})))})
+        if provider == "openai":
+            return [{"type": "function", "function": fn} for fn in functions]
+        if provider == "anthropic":
+            return [{"name": fn["name"], "description": fn.get("description", ""),
+                     "input_schema": fn.get("parameters", {"type": "object", "properties": {}})} for fn in functions]
+        if provider == "google":
+            declarations = [{"name": fn["name"], "description": fn.get("description", ""),
+                             "parameters": fn.get("parameters", {"type": "object", "properties": {}})} for fn in functions]
+            return [{"functionDeclarations": declarations}] if declarations else []
+        raise ValueError(f"Unsupported tool schema provider: {provider}")
+
     def __init__(self):
         # FIX H3: Shared persistent httpx client with connection pooling.
         # Previously each LLM call opened a new TCP connection (100-300ms overhead).
@@ -675,7 +699,9 @@ class MultiModelRouter:
         project_id: Optional[str],
         team_id: Optional[str],
         agent_id: Optional[str],
-        agent_name: Optional[str]
+        agent_name: Optional[str],
+        reported_usage: Optional[dict] = None,
+        tools: Optional[list] = None,
     ):
         try:
             def _get_len(c):
@@ -685,9 +711,18 @@ class MultiModelRouter:
                     return sum(len(str(item)) for item in c)
                 return 0
 
-            prompt_chars = len(system_prompt) + sum(_get_len(m.get("content", "")) for m in messages)
+            prompt_chars = len(system_prompt) + sum(_get_len(m.get("content", "")) for m in messages) + len(json.dumps(tools or []))
             prompt_tokens = int(prompt_chars / 4)
             completion_tokens = int(len(response_text) / 4)
+            reported_usage = reported_usage or {}
+            if reported_usage.get("prompt_tokens") is not None:
+                prompt_tokens = max(0, int(reported_usage["prompt_tokens"]))
+            elif reported_usage.get("input_tokens") is not None:
+                prompt_tokens = max(0, int(reported_usage["input_tokens"])) + max(0, int(reported_usage.get("cache_read_input_tokens", 0))) + max(0, int(reported_usage.get("cache_creation_input_tokens", 0)))
+            if reported_usage.get("completion_tokens") is not None:
+                completion_tokens = max(0, int(reported_usage["completion_tokens"]))
+            elif reported_usage.get("output_tokens") is not None:
+                completion_tokens = max(0, int(reported_usage["output_tokens"]))
             total_tokens = prompt_tokens + completion_tokens
 
             # Pricing mappings (per 1M tokens)
@@ -718,6 +753,16 @@ class MultiModelRouter:
                 / Decimal("1000000")
             ).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
 
+            # Missing pricing is unknown, never silently free. OpenRouter may
+            # report the actual billed cost including cache/reasoning discounts.
+            if reported_usage.get("cost") is not None:
+                cost = Decimal(str(reported_usage["cost"]))
+                if not cost.is_finite() or cost < 0:
+                    cost = None
+            elif clean_model not in pricing and model not in pricing and not (
+                provider == "ollama" or (provider == "openrouter" and (model == "openrouter/free" or model.endswith(":free")))):
+                cost = None
+
             from core.memory.database import async_session
             from core.memory.models import TokenUsage, Project
             from sqlalchemy import update
@@ -739,7 +784,7 @@ class MultiModelRouter:
                 session.add(usage)
                 
                 # Update Project total spend
-                if project_id:
+                if project_id and cost is not None:
                     proj_uuid = uuid.UUID(project_id) if isinstance(project_id, str) else project_id
                     # Atomic increment, committed in the same transaction as usage.
                     await session.execute(
@@ -763,7 +808,8 @@ class MultiModelRouter:
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens,
-                        "estimated_cost_usd": f"{cost:.8f}",
+                        "estimated_cost_usd": f"{cost:.8f}" if cost is not None else None,
+                        "usage_source": "provider" if reported_usage else "estimated",
                     })
                 except Exception:
                     pass
@@ -774,6 +820,49 @@ class MultiModelRouter:
     # ================================================================
     # Anthropic (Claude)
     # ================================================================
+
+    @staticmethod
+    def _apply_anthropic_prompt_caching(
+        system_prompt: str,
+        tools: Optional[List[dict]],
+        formatted_messages: List[Dict[str, Any]],
+    ) -> Tuple[Any, Optional[List[dict]], List[Dict[str, Any]]]:
+        """Applies Claude Code & Roo Code multi-breakpoint ephemeral prompt caching.
+
+        Breakpoint 1: System prompt (if >= 1024 chars).
+        Breakpoint 2: The final tool schema in tools list (caches all tool definitions).
+        Breakpoint 3: Penultimate user turn in formatted_messages (rolling history sliding window).
+        """
+        # 1. System Prompt Breakpoint
+        if len(system_prompt) > 1024:
+            system_payload: Any = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+        else:
+            system_payload = system_prompt
+
+        # 2. Tool Definition Breakpoint (on the last tool in the list)
+        cached_tools = None
+        if tools:
+            cached_tools = [dict(t) for t in tools]
+            cached_tools[-1] = dict(cached_tools[-1])
+            cached_tools[-1]["cache_control"] = {"type": "ephemeral"}
+
+        # 3. Rolling History Breakpoint (penultimate user turn)
+        messages_with_cache = [dict(m) for m in formatted_messages]
+        if len(messages_with_cache) >= 2:
+            for i in range(len(messages_with_cache) - 2, -1, -1):
+                m = messages_with_cache[i]
+                if m.get("role") == "user":
+                    c = m.get("content")
+                    if isinstance(c, list) and c:
+                        new_c = [dict(item) if isinstance(item, dict) else item for item in c]
+                        new_c[-1]["cache_control"] = {"type": "ephemeral"}
+                        m["content"] = new_c
+                        break
+                    elif isinstance(c, str):
+                        m["content"] = [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}]
+                        break
+
+        return system_payload, cached_tools, messages_with_cache
 
     async def _stream_anthropic(
         self, model: str, system_prompt: str, messages: List[Dict[str, str]],
@@ -793,18 +882,11 @@ class MultiModelRouter:
         _ANTHROPIC_BUDGETS = {"low": 1024, "medium": 4096, "high": 8192}
 
         formatted_messages = self._format_messages_for_provider(messages, "anthropic")
-
-        # Enable Anthropic Prompt Caching for system instructions > 1024 chars
-        if len(system_prompt) > 1024:
-            system_payload: Any = [
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"}
-                }
-            ]
-        else:
-            system_payload = system_prompt
+        system_payload, _, formatted_messages = self._apply_anthropic_prompt_caching(
+            system_prompt=system_prompt,
+            tools=None,
+            formatted_messages=formatted_messages,
+        )
 
         payload: dict = {
             "model": model,
@@ -1042,12 +1124,20 @@ class MultiModelRouter:
                         if error is not None:
                             raise error
 
-                        if (
-                            parse_format == "anthropic"
-                            and data.get("type") == "message_stop"
-                        ):
-                            terminated = True
-                            break
+                        if parse_format == "anthropic":
+                            if data.get("type") == "message_start":
+                                msg_obj = data.get("message", {})
+                                usage = msg_obj.get("usage", {})
+                                cache_read = usage.get("cache_read_input_tokens", 0)
+                                cache_creation = usage.get("cache_creation_input_tokens", 0)
+                                if cache_read or cache_creation:
+                                    logger.info(
+                                        "[Anthropic Cache] Model %s: read=%d, creation=%d",
+                                        model, cache_read, cache_creation
+                                    )
+                            elif data.get("type") == "message_stop":
+                                terminated = True
+                                break
 
                         content, reasoning = self._extract_text_from_sse(
                             data, parse_format
@@ -1175,6 +1265,7 @@ class MultiModelRouter:
         response_text = ""
         provider = "unknown"
         emitted_event = False
+        reported_usage = {}
 
         try:
             if model.startswith("claude"):
@@ -1186,6 +1277,12 @@ class MultiModelRouter:
                     ):
                         if event["type"] == "text_delta":
                             response_text += event["delta"]
+                        elif event["type"] == "usage":
+                            reported_usage.update(event.get("usage", {}))
+                        elif event["type"] == "tool_use":
+                            response_text += json.dumps(event.get("input", {}))
+                        elif event["type"] == "reasoning_delta":
+                            response_text += event.get("delta", "")
                         emitted_event = True
                         yield event
                 elif self.openrouter_key:
@@ -1201,6 +1298,12 @@ class MultiModelRouter:
                     ):
                         if event["type"] == "text_delta":
                             response_text += event["delta"]
+                        elif event["type"] == "usage":
+                            reported_usage.update(event.get("usage", {}))
+                        elif event["type"] == "tool_use":
+                            response_text += json.dumps(event.get("input", {}))
+                        elif event["type"] == "reasoning_delta":
+                            response_text += event.get("delta", "")
                         emitted_event = True
                         yield event
                 else:
@@ -1211,6 +1314,12 @@ class MultiModelRouter:
                     ):
                         if event["type"] == "text_delta":
                             response_text += event["delta"]
+                        elif event["type"] == "usage":
+                            reported_usage.update(event.get("usage", {}))
+                        elif event["type"] == "tool_use":
+                            response_text += json.dumps(event.get("input", {}))
+                        elif event["type"] == "reasoning_delta":
+                            response_text += event.get("delta", "")
                         emitted_event = True
                         yield event
 
@@ -1221,6 +1330,13 @@ class MultiModelRouter:
                 ):
                     if event["type"] == "text_delta":
                         response_text += event["delta"]
+                    elif event["type"] == "usage":
+                        reported_usage.update(event.get("usage", {}))
+                    elif event["type"] == "tool_use":
+                        response_text += json.dumps(event.get("input", {}))
+                    elif event["type"] == "reasoning_delta":
+                        response_text += event.get("delta", "")
+                    emitted_event = True
                     yield event
 
             elif model.startswith("openrouter/"):
@@ -1238,6 +1354,13 @@ class MultiModelRouter:
                 ):
                     if event["type"] == "text_delta":
                         response_text += event["delta"]
+                    elif event["type"] == "usage":
+                        reported_usage.update(event.get("usage", {}))
+                    elif event["type"] == "tool_use":
+                        response_text += json.dumps(event.get("input", {}))
+                    elif event["type"] == "reasoning_delta":
+                        response_text += event.get("delta", "")
+                    emitted_event = True
                     yield event
 
             elif model.startswith("ollama/") or model.startswith("nvidia/"):
@@ -1271,6 +1394,12 @@ class MultiModelRouter:
                     ):
                         if event["type"] == "text_delta":
                             response_text += event["delta"]
+                        elif event["type"] == "usage":
+                            reported_usage.update(event.get("usage", {}))
+                        elif event["type"] == "tool_use":
+                            response_text += json.dumps(event.get("input", {}))
+                        elif event["type"] == "reasoning_delta":
+                            response_text += event.get("delta", "")
                         emitted_event = True
                         yield event
                 elif self.openrouter_key:
@@ -1284,6 +1413,12 @@ class MultiModelRouter:
                     ):
                         if event["type"] == "text_delta":
                             response_text += event["delta"]
+                        elif event["type"] == "usage":
+                            reported_usage.update(event.get("usage", {}))
+                        elif event["type"] == "tool_use":
+                            response_text += json.dumps(event.get("input", {}))
+                        elif event["type"] == "reasoning_delta":
+                            response_text += event.get("delta", "")
                         emitted_event = True
                         yield event
                 else:
@@ -1296,6 +1431,12 @@ class MultiModelRouter:
                     ):
                         if event["type"] == "text_delta":
                             response_text += event["delta"]
+                        elif event["type"] == "usage":
+                            reported_usage.update(event.get("usage", {}))
+                        elif event["type"] == "tool_use":
+                            response_text += json.dumps(event.get("input", {}))
+                        elif event["type"] == "reasoning_delta":
+                            response_text += event.get("delta", "")
                         emitted_event = True
                         yield event
 
@@ -1325,14 +1466,15 @@ class MultiModelRouter:
                 return
             raise
         finally:
-            if project_id or team_id or agent_id:
-                asyncio.create_task(self._log_usage(
+            if (project_id or team_id or agent_id) and (emitted_event or reported_usage):
+                await self._log_usage(
                     provider=provider, model=model,
                     system_prompt=system_prompt, messages=messages,
                     response_text=response_text,
                     project_id=project_id, team_id=team_id,
                     agent_id=agent_id, agent_name=agent_name,
-                ))
+                    reported_usage=reported_usage, tools=tools,
+                )
 
     async def _anthropic_tool_stream(
         self,
@@ -1357,19 +1499,19 @@ class MultiModelRouter:
             "content-type": "application/json",
         }
 
+        tools = self._adapt_tool_schemas(tools, "anthropic")
         formatted_messages = self._format_messages_for_provider(messages, "anthropic")
-
-        # Prompt caching for large system prompts
-        if len(system_prompt) > 1024:
-            system_payload: Any = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
-        else:
-            system_payload = system_prompt
+        system_payload, cached_tools, formatted_messages = self._apply_anthropic_prompt_caching(
+            system_prompt=system_prompt,
+            tools=tools,
+            formatted_messages=formatted_messages,
+        )
 
         payload: dict = {
             "model": model,
             "system": system_payload,
             "messages": formatted_messages,
-            "tools": tools,
+            "tools": cached_tools if cached_tools is not None else tools,
             "tool_choice": {"type": tool_choice},
             "max_tokens": max_tokens,
             "stream": True,
@@ -1432,7 +1574,19 @@ class MultiModelRouter:
 
                         event_type = data.get("type", "")
 
-                        if event_type == "content_block_start":
+                        if event_type == "message_start":
+                            msg_obj = data.get("message", {})
+                            usage = msg_obj.get("usage", {})
+                            yield {"type": "usage", "usage": usage}
+                            cache_read = usage.get("cache_read_input_tokens", 0)
+                            cache_creation = usage.get("cache_creation_input_tokens", 0)
+                            if cache_read or cache_creation:
+                                logger.info(
+                                    "[Anthropic Tool Cache] Model %s: read=%d, creation=%d",
+                                    model, cache_read, cache_creation
+                                )
+
+                        elif event_type == "content_block_start":
                             block = data.get("content_block", {})
                             if block.get("type") == "tool_use":
                                 current_tool_id = block.get("id")
@@ -1479,6 +1633,8 @@ class MultiModelRouter:
                                 current_json_chunks = []
 
                         elif event_type == "message_delta":
+                            if data.get("usage"):
+                                yield {"type": "usage", "usage": data["usage"]}
                             stop_reason = data.get("delta", {}).get("stop_reason")
 
                         elif event_type == "message_stop":
@@ -1520,6 +1676,7 @@ class MultiModelRouter:
         OpenAI-compatible streaming function calling.
         """
         provider, _ = _provider_from_url(url)
+        tools = self._adapt_tool_schemas(tools, "openai")
         if "api.openai.com" in url and not key:
             raise LLMProviderError(ERROR_MISSING_KEY, "openai", model, env_key_name="OPENAI_API_KEY")
         if "openrouter.ai" in url and not key:
@@ -1550,6 +1707,7 @@ class MultiModelRouter:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
 
         for attempt in range(3):
@@ -1594,6 +1752,8 @@ class MultiModelRouter:
                         if error is not None:
                             raise error
 
+                        if data.get("usage"):
+                            yield {"type": "usage", "usage": data["usage"]}
                         choices = data.get("choices", [])
                         if not choices:
                             continue
@@ -1756,6 +1916,7 @@ class MultiModelRouter:
         if not self.gemini_key:
             raise LLMProviderError(ERROR_MISSING_KEY, "google", model, env_key_name="GOOGLE_API_KEY")
 
+        tools = self._adapt_tool_schemas(tools, "google")
         contents = self._format_messages_for_provider(messages, "google")
 
         payload: dict = {
@@ -1782,12 +1943,19 @@ class MultiModelRouter:
                 )
 
             data = response.json()
+            usage = data.get("usageMetadata", {})
+            if usage:
+                yield {"type": "usage", "usage": {
+                    "prompt_tokens": usage.get("promptTokenCount", 0),
+                    "completion_tokens": usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0)}}
             candidates = data.get("candidates", [])
             if not candidates:
                 yield {"type": "message_stop", "stop_reason": "stop"}
                 return
 
             finish_reason = candidates[0].get("finishReason", "STOP")
+            if finish_reason == "MAX_TOKENS":
+                finish_reason = "max_tokens"
             parts = candidates[0].get("content", {}).get("parts", [])
             for part in parts:
                 if "text" in part and part["text"]:
@@ -1808,6 +1976,7 @@ class MultiModelRouter:
                         "id": f"gemini_{_uuid.uuid4().hex[:12]}",
                         "name": fc.get("name", ""),
                         "input": args,
+                        **({"thoughtSignature": part["thoughtSignature"]} if part.get("thoughtSignature") else {}),
                     }
 
             yield {"type": "message_stop", "stop_reason": finish_reason}
@@ -1913,8 +2082,13 @@ class MultiModelRouter:
                 "content-type": "application/json"
             }
             formatted_msgs = self._format_messages_for_provider(messages, "anthropic")
+            system_payload, _, formatted_msgs = self._apply_anthropic_prompt_caching(
+                system_prompt=system_prompt,
+                tools=None,
+                formatted_messages=formatted_msgs,
+            )
             payload: dict = {
-                "model": mdl, "system": system_prompt, "messages": formatted_msgs,
+                "model": mdl, "system": system_payload, "messages": formatted_msgs,
                 "max_tokens": max_tokens, "stream": True
             }
             thinking_budget = _anthropic_thinking_budget(_effort, max_tokens)
@@ -1996,57 +2170,40 @@ class MultiModelRouter:
     # ================================================================
 
     async def generate_embeddings(self, text: str) -> List[float]:
-        """
-        Generates a vector embedding for the input text.
-        Honors DEFAULT_EMBEDDING_MODEL if configured, otherwise follows waterfall cascade:
-        OpenAI -> Gemini -> OpenRouter -> Ollama.
-        """
+        """Use one identified embedding space; an outage never changes its meaning."""
+        from core.memory.embedding import EmbeddingVector
         import core.config
-        configured = getattr(core.config, "DEFAULT_EMBEDDING_MODEL", "auto")
-
-        # 1. Direct provider routing if user explicitly specified a model
-        if configured and configured != "auto":
-            conf_lower = configured.lower()
-            if "gemini" in conf_lower and self.gemini_key:
-                res = await self._embeddings_gemini(text)
-                if res: return res
-            elif ("openai" in conf_lower or "text-embedding" in conf_lower) and self.openai_key:
-                model_name = "text-embedding-3-large" if "large" in conf_lower else "text-embedding-3-small"
-                res = await self._embeddings_openai(text, model=model_name)
-                if res: return res
-            elif "nemotron" in conf_lower and self.openrouter_key:
-                res = await self._embeddings_openrouter(text)
-                if res: return res
-            elif "ollama" in conf_lower:
-                model_name = conf_lower.replace("ollama/", "") if "/" in conf_lower else conf_lower
-                res = await self._embeddings_ollama(text, model=model_name)
-                if res: return res
-
-        # 2. Fallback waterfall cascade
-        if self.openai_key:
-            result = await self._embeddings_openai(text)
-            if result:
-                return result
-
-        if self.gemini_key:
-            result = await self._embeddings_gemini(text)
-            if result:
-                return result
-
-        if self.openrouter_key:
-            result = await self._embeddings_openrouter(text)
-            if result:
-                return result
-
-        # Try local Ollama if running
-        result = await self._embeddings_ollama(text)
-        if result:
-            return result
-
-        # No keys available or all providers failed — raise explicit error
-        raise RuntimeError(
-            "No embedding provider configured or available. Please configure an OpenAI, Gemini, or OpenRouter API key, or start Ollama."
-        )
+        configured = getattr(core.config, "DEFAULT_EMBEDDING_MODEL", "auto") or "auto"
+        if configured == "auto":
+            if self.openai_key:
+                configured = "openai/text-embedding-3-small"
+            elif self.gemini_key:
+                configured = "gemini/gemini-embedding-001"
+            elif self.openrouter_key:
+                configured = "openrouter/nvidia/nemotron-3-embed-1b:free"
+            else:
+                configured = "ollama/nomic-embed-text"
+        name = configured.lower()
+        if "gemini" in name:
+            model = name.split("/")[-1]
+            values = await self._embeddings_gemini(text, model=model)
+            identity = f"gemini/{model}"
+        elif name.startswith("ollama/"):
+            model = configured.partition("/")[2]
+            values = await self._embeddings_ollama(text, model=model)
+            identity = f"ollama/{model}"
+        elif "nemotron" in name:
+            values = await self._embeddings_openrouter(text)
+            identity = "openrouter/nvidia/nemotron-3-embed-1b:free"
+        elif "text-embedding" in name:
+            model = name.split("/")[-1]
+            values = await self._embeddings_openai(text, model=model)
+            identity = f"openai/{model}"
+        else:
+            raise ValueError(f"Unsupported embedding model: {configured}")
+        if not values:
+            raise RuntimeError(f"Embedding provider unavailable: {identity}")
+        return EmbeddingVector(values, identity + ":1536-v1")
 
     async def _embeddings_openai(self, text: str, model: str = "text-embedding-3-small") -> Optional[List[float]]:
         """OpenAI embeddings (1536 dimensions for small, truncated to 1536 for large)."""
@@ -2076,14 +2233,14 @@ class MultiModelRouter:
             logger.warning("OpenAI Embeddings connection error: %s", e)
             return None
 
-    async def _embeddings_gemini(self, text: str) -> Optional[List[float]]:
+    async def _embeddings_gemini(self, text: str, model: str = "gemini-embedding-001") -> Optional[List[float]]:
         """Google Gemini text-embedding-004 (768 dimensions, zero-padded to 1536)."""
         url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004"
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
             f":embedContent?key={self.gemini_key}"
         )
         payload = {
-            "model": "models/text-embedding-004",
+            "model": f"models/{model}",
             "content": {
                 "parts": [{"text": text[:2048]}]  # Gemini embedding input limit
             }
@@ -2183,6 +2340,13 @@ class MultiModelRouter:
         _log = _logging.getLogger("carole.router.formatter")
 
         formatted = []
+        tool_names = {}
+        for message in messages:
+            blocks = message.get("content", [])
+            if isinstance(blocks, list):
+                for block in blocks:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_names[block.get("id")] = block.get("name")
         for msg in messages:
             # Already formatted Gemini messages must retain functionCall,
             # functionResponse, and thoughtSignature fields.
@@ -2220,7 +2384,19 @@ class MultiModelRouter:
                 role = "user" if msg["role"] == "user" else "model"
                 parts = []
                 for item in content:
-                    if item.get("type") == "text":
+                    if item.get("type") == "tool_use":
+                        part = {"functionCall": {"name": item["name"], "args": item.get("input", {})}}
+                        if item.get("thoughtSignature"):
+                            part["thoughtSignature"] = item["thoughtSignature"]
+                        parts.append(part)
+                    elif item.get("type") == "tool_result":
+                        name = tool_names.get(item.get("tool_use_id"))
+                        if not name:
+                            raise ValueError("Gemini tool result has no matching call")
+                        parts.append({"functionResponse": {"name": name, "response": {
+                            "result": item.get("content", ""), "is_error": bool(item.get("is_error", False)),
+                        }}})
+                    elif item.get("type") == "text":
                         parts.append({"text": item["text"]})
                     elif item.get("type") == "image":
                         local_path = item.get("local_path")
@@ -2317,41 +2493,89 @@ class MultiModelRouter:
 
             else:
                 # OpenAI / OpenRouter format
-                parts = []
-                for item in content:
-                    if item.get("type") in ("image_url", "input_audio", "file"):
-                        parts.append(dict(item))
-                    elif item.get("type") == "text":
-                        parts.append({"type": "text", "text": item["text"]})
-                    elif item.get("type") == "image":
-                        local_path = item.get("local_path")
-                        if local_path and os.path.exists(local_path):
-                            with open(local_path, "rb") as f:
-                                b64 = base64.b64encode(f.read()).decode("utf-8")
-                            mime = item.get("mime_type", "image/jpeg")
-                            parts.append({
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime};base64,{b64}"
+                role = msg.get("role", "user")
+                if role == "assistant":
+                    tool_calls = []
+                    text_parts = []
+                    for item in content:
+                        if item.get("type") == "tool_use":
+                            raw_input = item.get("input", {})
+                            args_str = json.dumps(raw_input) if isinstance(raw_input, (dict, list)) else str(raw_input or "{}")
+                            tool_calls.append({
+                                "id": item.get("id", f"call_{len(tool_calls)}"),
+                                "type": "function",
+                                "function": {
+                                    "name": item.get("name", ""),
+                                    "arguments": args_str,
                                 }
                             })
+                        elif item.get("type") == "text":
+                            text_parts.append(item.get("text", ""))
+
+                    if tool_calls:
+                        comb_text = "\n".join(t for t in text_parts if t.strip())
+                        formatted.append({
+                            "role": "assistant",
+                            "content": comb_text if comb_text else None,
+                            "tool_calls": tool_calls,
+                        })
+                    else:
+                        comb_text = "\n".join(t for t in text_parts if t.strip())
+                        formatted.append({
+                            "role": "assistant",
+                            "content": comb_text,
+                        })
+
+                elif role == "user":
+                    tool_results = [item for item in content if item.get("type") == "tool_result"]
+                    for tr in tool_results:
+                        formatted.append({
+                            "role": "tool",
+                            "tool_call_id": tr.get("tool_use_id", ""),
+                            "content": str(tr.get("content", "")),
+                        })
+
+                    other_parts = []
+                    for item in content:
+                        if item.get("type") == "tool_result":
+                            continue
+                        elif item.get("type") in ("image_url", "input_audio", "file"):
+                            other_parts.append(dict(item))
+                        elif item.get("type") == "text":
+                            other_parts.append({"type": "text", "text": item["text"]})
+                        elif item.get("type") == "image":
+                            local_path = item.get("local_path")
+                            if local_path and os.path.exists(local_path):
+                                with open(local_path, "rb") as f:
+                                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                                mime = item.get("mime_type", "image/jpeg")
+                                other_parts.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{mime};base64,{b64}"
+                                    }
+                                })
+                            else:
+                                _log.warning("Image local_path not found or missing, skipping: %s", local_path)
+                        elif item.get("type") == "document":
+                            local_path = item.get("local_path")
+                            mime = item.get("mime_type", "application/pdf")
+                            if local_path and os.path.exists(local_path):
+                                try:
+                                    from markitdown import MarkItDown
+                                    md = MarkItDown()
+                                    result = md.convert(local_path)
+                                    other_parts.append({"type": "text", "text": f"\n[Extracted Document ({mime})]\n{result.text_content}\n[/Extracted Document]\n"})
+                                except Exception as e:
+                                    other_parts.append({"type": "text", "text": f"[Error extracting {mime}: {e}]"})
+                            else:
+                                _log.warning("Document local_path not found, skipping: %s", local_path)
+
+                    if other_parts:
+                        if len(other_parts) == 1 and other_parts[0].get("type") == "text":
+                            formatted.append({"role": "user", "content": other_parts[0]["text"]})
                         else:
-                            _log.warning("Image local_path not found or missing, skipping: %s", local_path)
-                    elif item.get("type") == "document":
-                        local_path = item.get("local_path")
-                        mime = item.get("mime_type", "application/pdf")
-                        if local_path and os.path.exists(local_path):
-                            try:
-                                from markitdown import MarkItDown
-                                md = MarkItDown()
-                                result = md.convert(local_path)
-                                parts.append({"type": "text", "text": f"\n[Extracted Document ({mime})]\n{result.text_content}\n[/Extracted Document]\n"})
-                            except Exception as e:
-                                parts.append({"type": "text", "text": f"[Error extracting {mime}: {e}]"})
-                        else:
-                            _log.warning("Document local_path not found, skipping: %s", local_path)
-                if parts:
-                    formatted.append({**msg, "content": parts})
+                            formatted.append({"role": "user", "content": other_parts})
 
         return formatted
 

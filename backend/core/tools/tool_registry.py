@@ -23,7 +23,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from typing import Callable, Awaitable, Dict, List, Optional, Any
+from typing import Callable, Awaitable, Dict, List, Optional, Any, Set, Tuple
 
 logger = logging.getLogger("carole.tool_registry")
 
@@ -46,6 +46,7 @@ class ToolRegistry:
     event-loop asyncio server (no concurrent writes from multiple threads)."""
 
     _tools: Dict[str, ToolSpec] = {}
+    _schema_cache: Dict[Tuple, Any] = {}
 
     # ---- core CRUD ----
 
@@ -91,6 +92,7 @@ class ToolRegistry:
         if spec.name in cls._tools and not force:
             raise ValueError(f"Tool '{spec.name}' already registered")
         cls._tools[spec.name] = spec
+        cls._schema_cache.clear()
 
     @classmethod
     def register_batch(cls, specs: List[ToolSpec], force: bool = False) -> None:
@@ -101,9 +103,11 @@ class ToolRegistry:
                 raise ValueError(f"Tool '{spec.name}' already registered")
         for spec in specs:
             cls._tools[spec.name] = spec
+        cls._schema_cache.clear()
 
     @classmethod
     def unregister(cls, name: str) -> bool:
+        cls._schema_cache.clear()
         return cls._tools.pop(name, None) is not None
 
     @classmethod
@@ -165,75 +169,43 @@ class ToolRegistry:
 
     @classmethod
     def to_function_schemas(cls, team_id: str = None, agent_id: str = None) -> List[dict]:
-        """Returns an OpenAI-spec 'tools' array for native function calling.
-
-        Each entry follows the format:
-          {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
-        """
-        schemas = []
-        for spec in cls._tools.values():
-            if spec.team_id is not None and spec.team_id != team_id:
-                continue
-            if spec.agent_id is not None and spec.agent_id != agent_id:
-                continue
-
-            description = spec.description
-            if spec.name == "browser_navigate":
-                try:
-                    from core.llm.config_manager import load_config
-                    provider = load_config().get("browser_automation", {}).get("provider", "local")
-                    if provider != "local":
-                        description += f" (Note: Anti-bot and CAPTCHA bypassing is currently ENABLED via {provider.capitalize()})."
-                except Exception:
-                    pass
-
-            # Build a minimal JSON-Schema object from spec.parameters
-            properties = {}
-            required = []
-            for param_name, param_info in (spec.parameters or {}).items():
-                properties[param_name] = {
-                    "type": param_info.get("type", "string"),
-                    "description": param_info.get("description", ""),
-                }
-                if param_info.get("required", False):
-                    required.append(param_name)
-
-            schemas.append({
-                "type": "function",
-                "function": {
-                    "name": spec.name,
-                    "description": f"{description} [category={spec.category}, permission={spec.permission_default}]",
-                    "parameters": {
-                        "type": "object",
-                        "properties": properties,
-                        "required": required,
-                    },
-                },
-            })
-        return schemas
+        """Returns an OpenAI-spec 'tools' array for native function calling (delegates to to_openai_tools)."""
+        return cls.to_openai_tools(team_id=team_id, agent_id=agent_id)
 
     @classmethod
-    def to_anthropic_tools(cls, team_id: str = None, agent_id: str = None) -> List[dict]:
+    def to_anthropic_tools(
+        cls,
+        team_id: str = None,
+        agent_id: str = None,
+        categories: Optional[Set[str]] = None,
+        include_names: Optional[Set[str]] = None,
+    ) -> List[dict]:
         """Convert ToolSpec registry to Anthropic native tool schema.
 
         Returns a list ready to pass as the ``tools`` parameter of the
-        Anthropic Messages API.  Each entry has the shape::
-
-            {
-                "name": "tool_name",
-                "description": "...",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"arg": {"type": "string", "description": "..."}},
-                    "required": ["arg"],
-                }
-            }
+        Anthropic Messages API. Optional ``categories`` and ``include_names``
+        filter the tools for role-based scoping and intent-based loading.
+        Tools are sorted alphabetically by name for deterministic prompt caching.
         """
+        cache_key = (
+            "anthropic",
+            team_id,
+            agent_id,
+            tuple(sorted(categories)) if categories else None,
+            tuple(sorted(include_names)) if include_names else None,
+        )
+        if cache_key in cls._schema_cache:
+            return [dict(t) for t in cls._schema_cache[cache_key]]
+
         tools = []
-        for spec in cls._tools.values():
+        for spec in sorted(cls._tools.values(), key=lambda s: s.name):
             if spec.team_id is not None and spec.team_id != team_id:
                 continue
             if spec.agent_id is not None and spec.agent_id != agent_id:
+                continue
+            if categories is not None and spec.category not in categories:
+                continue
+            if include_names is not None and spec.name not in include_names:
                 continue
 
             properties: dict = {}
@@ -275,54 +247,79 @@ class ToolRegistry:
                     "required": required,
                 },
             })
-        return tools
+        cls._schema_cache[cache_key] = tools
+        return [dict(t) for t in tools]
 
     @classmethod
-    def to_openai_tools(cls, team_id: str = None, agent_id: str = None) -> List[dict]:
+    def to_openai_tools(
+        cls,
+        team_id: str = None,
+        agent_id: str = None,
+        categories: Optional[Set[str]] = None,
+        include_names: Optional[Set[str]] = None,
+        strict: bool = False,
+    ) -> List[dict]:
         """Convert ToolSpec registry to OpenAI function-calling schema.
 
         Wraps ``to_anthropic_tools()`` in the OpenAI ``{"type": "function", ...}``
         envelope so you can pass the result directly as the ``tools`` parameter of
         the OpenAI Chat Completions API.
         """
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t["name"],
-                    "description": t["description"],
-                    "parameters": t["input_schema"],
-                },
+        cache_key = (
+            "openai",
+            team_id,
+            agent_id,
+            tuple(sorted(categories)) if categories else None,
+            tuple(sorted(include_names)) if include_names else None,
+            strict,
+        )
+        if cache_key in cls._schema_cache:
+            return [dict(t) for t in cls._schema_cache[cache_key]]
+
+        anthropic_tools = cls.to_anthropic_tools(
+            team_id=team_id,
+            agent_id=agent_id,
+            categories=categories,
+            include_names=include_names,
+        )
+        res = []
+        for t in anthropic_tools:
+            params = dict(t["input_schema"])
+            fn_dict: Dict[str, Any] = {
+                "name": t["name"],
+                "description": t["description"],
             }
-            for t in cls.to_anthropic_tools(team_id=team_id, agent_id=agent_id)
-        ]
+            if strict:
+                fn_dict["strict"] = True
+                params["additionalProperties"] = False
+                params["required"] = list(params.get("properties", {}).keys())
+            fn_dict["parameters"] = params
+            res.append({
+                "type": "function",
+                "function": fn_dict,
+            })
+        cls._schema_cache[cache_key] = res
+        return [dict(t) for t in res]
 
     @classmethod
-    def to_gemini_tools(cls, team_id: str = None, agent_id: str = None) -> List[dict]:
-        """Convert ToolSpec registry to Gemini FunctionDeclaration format.
+    def to_gemini_tools(
+        cls,
+        team_id: str = None,
+        agent_id: str = None,
+        categories: Optional[Set[str]] = None,
+        include_names: Optional[Set[str]] = None,
+    ) -> List[dict]:
+        """Convert ToolSpec registry to Gemini FunctionDeclaration format."""
+        cache_key = (
+            "gemini",
+            team_id,
+            agent_id,
+            tuple(sorted(categories)) if categories else None,
+            tuple(sorted(include_names)) if include_names else None,
+        )
+        if cache_key in cls._schema_cache:
+            return [dict(t) for t in cls._schema_cache[cache_key]]
 
-        Returns a list with a single entry (Gemini bundles all tools under one
-        ``Tool`` object with a ``functionDeclarations`` array)::
-
-            [
-                {
-                    "functionDeclarations": [
-                        {
-                            "name": "tool_name",
-                            "description": "...",
-                            "parameters": {
-                                "type": "OBJECT",
-                                "properties": {"arg": {"type": "STRING", "description": "..."}},
-                                "required": ["arg"],
-                            }
-                        },
-                        ...
-                    ]
-                }
-            ]
-
-        Pass this directly as ``tools=`` in a Gemini ``generateContent`` request.
-        """
         # Gemini uses uppercase type names: STRING, INTEGER, BOOLEAN, ARRAY, OBJECT
         _TYPE_MAP = {
             "string": "STRING",
@@ -340,10 +337,14 @@ class ToolRegistry:
         }
 
         declarations = []
-        for spec in cls._tools.values():
+        for spec in sorted(cls._tools.values(), key=lambda s: s.name):
             if spec.team_id is not None and spec.team_id != team_id:
                 continue
             if spec.agent_id is not None and spec.agent_id != agent_id:
+                continue
+            if categories is not None and spec.category not in categories:
+                continue
+            if include_names is not None and spec.name not in include_names:
                 continue
 
             properties: dict = {}
@@ -378,9 +379,9 @@ class ToolRegistry:
 
             declarations.append(decl)
 
-        if not declarations:
-            return []
-        return [{"functionDeclarations": declarations}]
+        result = [{"functionDeclarations": declarations}] if declarations else []
+        cls._schema_cache[cache_key] = result
+        return [dict(t) for t in result]
 
     # ---- plugin loading ----
 

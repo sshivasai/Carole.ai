@@ -152,7 +152,7 @@ export default function AgentAvatar({
   }
 
   if (!isSystem) {
-    const preset = isSubagent ? "subagent" : getPresetFromName(name, role, id || avatarSeed);
+    const preset = isSubagent ? "subagent" : undefined;
     return (
       <PrettyAvatar
         preset={preset}

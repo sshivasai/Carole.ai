@@ -88,34 +88,33 @@ class AgentCronWorker:
 
 
     async def _trigger_agent(self, db: AsyncSession, task: ScheduledTask, trigger_time: datetime):
-        # Update last_run_at
+        from core.chat.message_router import message_router
+        from core.memory.models import Message
+        agent = await db.scalar(select(Agent).where(
+            Agent.id == task.agent_id, Agent.team_id == task.team_id))
+        if agent is None:
+            raise ValueError("Scheduled agent does not belong to its team")
+        text = f"[SYSTEM SCHEDULED TASK: {task.name}]\n{task.prompt}"
+        message = Message(team_id=task.team_id, sender_id="system",
+                          sender_name="System Scheduler", text=text)
+        db.add(message)
+        await db.commit()
+        accepted = await message_router._enqueue_agent(
+            agent=agent, prompt_text=text, db_session=db,
+            trigger_message_id=str(message.id))
+        if not accepted:
+            # Leave last_run_at unchanged so a full queue is retried next cycle.
+            return False
         task.last_run_at = trigger_time
         await db.commit()
-        await db.refresh(task)
+        await event_bus.publish(f"team:{task.team_id}", {
+            "type": "message", "id": str(message.id), "text": text,
+            "sender_id": "system", "sender_name": "System Scheduler", "is_private": False})
 
-        from core.chat.message_router import message_router
-        
-        # We need the agent's name to mention them, or we can just prepend /@agent_name
-        # Wait, if we only have task.agent_id, we can look up the agent.
-        agent_stmt = select(Agent).where(Agent.id == task.agent_id)
-        res = await db.execute(agent_stmt)
-        agent = res.scalar_one_or_none()
-        agent_name_mention = f"/@{agent.name} " if agent else ""
-        
-        text = f"{agent_name_mention}[SYSTEM SCHEDULED TASK: {task.name}]\n{task.prompt}"
-        
-        # Route the message which saves it to the DB and triggers the agent
-        await message_router.route_message(
-            text=text,
-            sender_id="system",
-            team_id=str(task.team_id),
-            sender_name="System Scheduler",
-        )
-        
         # 4. Create a Notification record for the scheduled task
         # We need to find a user_id to notify. 
         # A scheduled task belongs to a team, which belongs to a project, which belongs to a user.
-        from core.memory.models import Team, Project, Notification
+        from core.memory.models import Project, Notification
         stmt = (
             select(Project.owner_id)
             .join(Team, Team.project_id == Project.id)

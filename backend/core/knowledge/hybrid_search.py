@@ -10,6 +10,7 @@ fused via Reciprocal Rank Fusion (RRF).
 import re
 import logging
 import hashlib
+import json
 import fnmatch
 import numpy as np
 from collections import defaultdict
@@ -67,6 +68,7 @@ class BM25Index:
         self.b = b
         self.bm25_model = None
         self.chunks: List[ASTChunk] = []
+        self.token_sets = []
 
     def index_chunks(self, chunks: List[ASTChunk]) -> None:
         """Tokenizes and indexes ASTChunk objects using rank_bm25."""
@@ -82,6 +84,7 @@ class BM25Index:
             text = f"{chunk.file_path} {chunk.name} {chunk.kind} {' '.join(chunk.params)} {' '.join(chunk.calls)} {chunk.code}"
             tokens = tokenize_code(text)
             tokenized_corpus.append(tokens)
+        self.token_sets = [set(tokens) for tokens in tokenized_corpus]
 
         if tokenized_corpus:
             self.bm25_model = BM25Engine(tokenized_corpus, k1=self.k1, b=self.b)
@@ -98,7 +101,9 @@ class BM25Index:
             return []
 
         scores = self.bm25_model.get_scores(query_tokens)
-        scored_pairs = [(idx, float(score)) for idx, score in enumerate(scores) if score > 0.0]
+        query_set = set(query_tokens)
+        scored_pairs = [(idx, float(score)) for idx, score in enumerate(scores)
+                        if score > 0.0 and query_set.intersection(self.token_sets[idx])]
         scored_pairs.sort(key=lambda x: x[1], reverse=True)
         return scored_pairs[:top_k]
 
@@ -163,6 +168,7 @@ class ProjectIndex:
         self.bm25: BM25Index = BM25Index()
         self.combined_chunks: List[ASTChunk] = []
         self.combined_embeddings: Optional[np.ndarray] = None
+        self.vector_chunk_indices: List[int] = []
         self._dirty: bool = False
 
     def _compute_hash(self, content: Optional[str], chunks: List[ASTChunk]) -> str:
@@ -170,7 +176,7 @@ class ProjectIndex:
             return hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
         h = hashlib.sha256()
         for c in chunks:
-            h.update(f"{c.file_path}:{c.name}:{c.start_line}:{c.end_line}:{c.code[:100]}".encode("utf-8"))
+            h.update(json.dumps(c.to_dict(), sort_keys=True, ensure_ascii=False).encode("utf-8"))
         return h.hexdigest()
 
     def update_file(self, file_path: str, chunks: List[ASTChunk], content: Optional[str] = None) -> bool:
@@ -226,18 +232,20 @@ class ProjectIndex:
 
         all_chunks: List[ASTChunk] = []
         embedding_blocks: List[np.ndarray] = []
+        vector_chunk_indices = []
 
         for fpath, chunks in self.file_chunks.items():
             if not chunks:
                 continue
+            offset = len(all_chunks)
             all_chunks.extend(chunks)
             vecs = self.file_embeddings.get(fpath)
             if vecs is not None and len(vecs) == len(chunks):
                 embedding_blocks.append(vecs)
-            elif vecs is not None and len(vecs) > 0:
-                embedding_blocks.append(vecs[:len(chunks)])
+                vector_chunk_indices.extend(range(offset, offset + len(chunks)))
 
         self.combined_chunks = all_chunks
+        self.vector_chunk_indices = vector_chunk_indices
         self.bm25.index_chunks(all_chunks)
 
         if embedding_blocks and len(all_chunks) > 0:
@@ -264,14 +272,15 @@ class ProjectIndex:
         if norm_q == 0:
             return []
 
-        if self.combined_embeddings.shape[0] != len(self.combined_chunks):
+        if self.combined_embeddings.shape[0] != len(self.vector_chunk_indices):
             return []
 
         norm_docs = np.linalg.norm(self.combined_embeddings, axis=1)
         norm_docs = np.where(norm_docs == 0, 1e-9, norm_docs)
 
         scores = np.dot(self.combined_embeddings, query_vec[0]) / (norm_docs * norm_q)
-        scored_pairs = [(idx, float(score)) for idx, score in enumerate(scores)]
+        scored_pairs = [(self.vector_chunk_indices[idx], float(score)) for idx, score in enumerate(scores)
+                        if np.isfinite(score) and score > 0]
         scored_pairs.sort(key=lambda x: x[1], reverse=True)
         return scored_pairs[:top_k]
 
@@ -348,7 +357,7 @@ class HybridCodeSearch:
         idx = self.get_project_index(project_id)
         by_file: Dict[str, List[ASTChunk]] = defaultdict(list)
         for c in chunks:
-            by_file[c.file_path].append(c)
+            by_file[c.file_path.replace("\\", "/")].append(c)
 
         current_files = set(by_file.keys())
         for existing in list(idx.file_chunks.keys()):
@@ -399,6 +408,8 @@ class HybridCodeSearch:
         """
         Dual Hybrid Retrieval with incremental index synchronization and metadata filtering.
         """
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 100:
+            raise ValueError("top_k must be an integer between 1 and 100")
         idx = self.get_project_index(project_id)
         idx.sync_index()
 
@@ -406,16 +417,35 @@ class HybridCodeSearch:
             return []
 
         # 1. BM25 Lexical Ranking
-        bm25_results = idx.bm25.search(query, top_k=top_k * 3)
+        # Rank the eligible corpus before reducing the candidate pool.
+        candidate_limit = len(idx.combined_chunks) if file_filter or kind else top_k * 3
+        bm25_results = idx.bm25.search(query, top_k=candidate_limit)
 
         # 2. Vector Ranking
         if vector_search_fn is not None:
             try:
-                vector_results = await vector_search_fn(query, top_k=top_k * 3)
+                vector_results = await vector_search_fn(query, top_k=candidate_limit)
             except Exception:
-                vector_results = idx.search_vectors(query, top_k=top_k * 3)
+                vector_results = idx.search_vectors(query, top_k=candidate_limit)
         else:
-            vector_results = idx.search_vectors(query, top_k=top_k * 3)
+            vector_results = idx.search_vectors(query, top_k=candidate_limit)
+
+        def eligible(pair):
+            doc_idx, _ = pair
+            if not isinstance(doc_idx, int) or not 0 <= doc_idx < len(idx.combined_chunks):
+                return False
+            chunk = idx.combined_chunks[doc_idx]
+            if kind and chunk.kind.lower() != kind.lower():
+                return False
+            if file_filter:
+                pattern = file_filter.replace("\\", "/")
+                path = chunk.file_path.replace("\\", "/")
+                if pattern not in path and not fnmatch.fnmatch(path, f"*{pattern}*"):
+                    return False
+            return True
+
+        bm25_results = [pair for pair in bm25_results if eligible(pair)][:top_k * 3]
+        vector_results = [pair for pair in vector_results if eligible(pair)][:top_k * 3]
 
         # 3. Reciprocal Rank Fusion
         if vector_results:

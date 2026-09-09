@@ -245,3 +245,276 @@ def test_react_agent_xml_notifications_escaping():
     assert parsed[0]["agent"] == "Worker<Special>"
     assert parsed[0]["status"] == "completed"
     assert parsed[0]["result"] == raw_result
+
+
+def test_react_agent_role_category_scoping():
+    """Verify ROLE_ALLOWED_CATEGORIES prunes tool schemas down to relevant subsets."""
+    from core.agent.react_agent import ROLE_ALLOWED_CATEGORIES
+    from core.tools.tool_registry import ToolRegistry
+
+    # Orchestrator categories
+    orch_cats = ROLE_ALLOWED_CATEGORIES["orchestrator"]
+    assert "coordination" in orch_cats
+    assert "interaction" in orch_cats
+    assert "filesystem" in orch_cats
+    assert "git" not in orch_cats  # Deferred / on-demand
+
+    # Compare full tools vs pruned tools for orchestrator
+    all_tools = ToolRegistry.to_anthropic_tools()
+    pruned_tools = ToolRegistry.to_anthropic_tools(categories=orch_cats)
+
+    assert len(pruned_tools) > 0
+    assert len(pruned_tools) < len(all_tools)
+    # Pruned toolset should include ask_user, write_file, create_task
+    pruned_names = {t["name"] for t in pruned_tools}
+    assert "ask_user" in pruned_names
+    assert "write_file" in pruned_names
+
+
+@pytest.mark.asyncio
+async def test_react_agent_fetch_tool_schemas():
+    """Verify fetch_tool_schemas allows agents to discover on-demand tools by name or category."""
+    from core.tools.tool_executor import tool_executor
+
+    # 1. Fetch by category 'git'
+    res = await tool_executor.execute(
+        "fetch_tool_schemas",
+        {"category": "git"},
+        agent_id="test_agent",
+        agent_name="Archer",
+        team_id="test_team",
+        permissions={"fetch_tool_schemas": "safe"},
+    )
+    assert isinstance(res, str)
+    assert "Tools found" in res or "git" in res
+
+    # 2. Fetch specific tool by name
+    res2 = await tool_executor.execute(
+        "fetch_tool_schemas",
+        {"tool_name": "ask_user"},
+        agent_id="test_agent",
+        agent_name="Archer",
+        team_id="test_team",
+        permissions={"fetch_tool_schemas": "safe"},
+    )
+    assert isinstance(res2, str)
+    assert "ask_user" in res2
+
+
+@pytest.mark.asyncio
+async def test_interaction_tools_ask_user_multi_question():
+    """Verify ask_user supports batching multiple questions and formats JSON answers into markdown bullets."""
+    import asyncio
+    from core.tools.interaction_tools import interaction_tools, pending_questions, question_answers
+
+    questions_payload = [
+        {"id": "q1", "question": "What frontend framework?", "options": ["React", "Vue"]},
+        {"id": "q2", "question": "What backend language?", "options": ["Python", "Go"]},
+    ]
+
+    async def simulate_answer():
+        await asyncio.sleep(0.05)
+        # Find the question_id
+        assert len(pending_questions) > 0
+        q_id = list(pending_questions.keys())[0]
+        question_answers[q_id] = '{"What frontend framework?": "React", "What backend language?": "Python"}'
+        pending_questions[q_id].set()
+
+    task = asyncio.create_task(simulate_answer())
+
+    result = await interaction_tools.ask_user(
+        question="Please specify stack preferences",
+        agent_id="test_orch",
+        agent_name="Archer",
+        team_id="test_team",
+        questions=questions_payload,
+    )
+    await task
+
+    assert "Human answered:" in result
+    assert "- **What frontend framework?**: React" in result
+    assert "- **What backend language?**: Python" in result
+
+
+def test_circuit_breaker_token_limit_config():
+    """Verify MAX_BUDGET_TOKENS defaults to 1,000,000 to prevent premature circuit breaker halts."""
+    import core.config as cfg
+    assert hasattr(cfg, "MAX_BUDGET_TOKENS")
+    assert cfg.MAX_BUDGET_TOKENS >= 1_000_000
+
+
+def test_openai_message_formatter_preserves_tool_use_and_results():
+    """Verify _format_messages_for_provider preserves tool calls and observations for OpenAI/OpenRouter."""
+    from core.agent.message_history import MessageHistory
+    from core.llm.multi_model_router import llm_router
+
+    h = MessageHistory()
+    h.add_user("title: test task. description: run tests")
+    h.add_assistant_text("Creating task...", tool_uses=[{
+        "id": "call_123",
+        "name": "create_task",
+        "input": {"title": "test task", "assignee": "Nova"}
+    }])
+    h.add_tool_results([{
+        "tool_use_id": "call_123",
+        "content": "✓ Task created: 'test task' (ID: task-abc)",
+        "tool_name": "create_task"
+    }])
+
+    msgs = h.get_messages()
+    formatted = llm_router._format_messages_for_provider(msgs, "openai")
+
+    # 1. First message should be user prompt
+    assert formatted[0]["role"] == "user"
+    assert "title: test task" in str(formatted[0]["content"])
+
+    # 2. Second message should be assistant with tool_calls
+    assert formatted[1]["role"] == "assistant"
+    assert formatted[1]["content"] == "Creating task..."
+    assert len(formatted[1]["tool_calls"]) == 1
+    assert formatted[1]["tool_calls"][0]["id"] == "call_123"
+    assert formatted[1]["tool_calls"][0]["function"]["name"] == "create_task"
+    assert "Nova" in formatted[1]["tool_calls"][0]["function"]["arguments"]
+
+    # 3. Third message should be tool role with tool_call_id
+    assert formatted[2]["role"] == "tool"
+    assert formatted[2]["tool_call_id"] == "call_123"
+    assert "✓ Task created: 'test task' (ID: task-abc)" in formatted[2]["content"]
+
+
+def test_universal_memory_category_for_all_roles():
+    """Verify that 'memory' is in allowed categories for all roles by default."""
+    from core.agent.react_agent import ROLE_ALLOWED_CATEGORIES, UNIVERSAL_ALLOWED_CATEGORIES, resolve_active_tools
+
+    assert "memory" in UNIVERSAL_ALLOWED_CATEGORIES
+    for role_name, cats in ROLE_ALLOWED_CATEGORIES.items():
+        assert "memory" in cats, f"Role '{role_name}' must have memory allowed by default"
+
+    allowed_cats, selected_tools = resolve_active_tools("custom_unknown_role", "hello world")
+    assert "memory" in allowed_cats
+    assert "search_memory" in selected_tools
+    assert "add_memory" in selected_tools
+
+
+def test_intent_matrix_activates_git_on_repo_synonym():
+    """Verify that 'repo' synonym activates git tools without saying the word 'git'."""
+    from core.agent.react_agent import resolve_active_tools
+
+    allowed_cats, selected_tools = resolve_active_tools("coder", "check the repo and see what changed")
+    assert "git" in allowed_cats
+    assert "git_status" in selected_tools or "git_diff" in selected_tools
+
+
+def test_intent_matrix_activates_browser_for_coder_on_preview():
+    """Verify that frontend/preview intent allows coder/developer to use browser tools."""
+    from core.agent.react_agent import resolve_active_tools
+
+    allowed_cats, selected_tools = resolve_active_tools("coder", "preview frontend on localhost:3000")
+    assert "browser" in allowed_cats
+    assert "browser_navigate" in selected_tools or "browser_screenshot" in selected_tools
+
+
+def test_tools_capped_at_max_tools():
+    """Verify that resolve_active_tools caps the total active tool schemas to max_tools."""
+    from core.agent.react_agent import resolve_active_tools
+
+    allowed_cats, selected_tools = resolve_active_tools(
+        "coder",
+        "preview in browser, commit git changes, run pytest tests, search with grep, create task, read memory",
+        max_tools=10,
+    )
+    assert len(selected_tools) <= 10
+    # Universal essentials should still be preserved
+    assert "read_file" in selected_tools
+    assert "ask_user" in selected_tools
+
+
+def test_deterministic_tool_sorting_and_schema_cache():
+    """Verify tools are deterministically sorted alphabetically by name and schema cache works."""
+    from core.tools.tool_registry import ToolRegistry
+
+    tools = ToolRegistry.to_anthropic_tools()
+    tool_names = [t["name"] for t in tools]
+    assert tool_names == sorted(tool_names), "Anthropic tool schemas must be sorted alphabetically for deterministic prompt caching"
+
+    # Verify schema cache is populated
+    assert len(ToolRegistry._schema_cache) > 0
+
+    # Verify cache invalidation on unregister/register
+    cached_count = len(ToolRegistry._schema_cache)
+    ToolRegistry.unregister("__non_existent_tool__")
+    assert len(ToolRegistry._schema_cache) == 0, "Cache should clear on unregister"
+
+
+def test_anthropic_prompt_caching_breakpoints():
+    """Verify Anthropic 3-breakpoint prompt caching matches Claude Code / Roo Code design."""
+    from core.llm.multi_model_router import MultiModelRouter
+
+    router = MultiModelRouter()
+
+    # 1. Large system prompt (>1024 chars) gets cache_control
+    large_system = "A" * 1200
+    short_system = "You are a helpful assistant."
+
+    tools = [
+        {"name": "ask_user", "description": "Ask user", "input_schema": {}},
+        {"name": "read_file", "description": "Read file", "input_schema": {}},
+        {"name": "write_file", "description": "Write file", "input_schema": {}},
+    ]
+    messages = [
+        {"role": "user", "content": "First message from user"},
+        {"role": "assistant", "content": "First response from assistant"},
+        {"role": "user", "content": "Second turn from user"},
+    ]
+
+    sys_payload, cached_tools, cached_msgs = router._apply_anthropic_prompt_caching(
+        system_prompt=large_system,
+        tools=tools,
+        formatted_messages=messages,
+    )
+
+    # Breakpoint 1: System prompt
+    assert isinstance(sys_payload, list)
+    assert sys_payload[0]["cache_control"] == {"type": "ephemeral"}
+    assert sys_payload[0]["text"] == large_system
+
+    # Breakpoint 2: Final tool schema only
+    assert cached_tools is not None
+    assert len(cached_tools) == 3
+    assert "cache_control" not in cached_tools[0]
+    assert "cache_control" not in cached_tools[1]
+    assert cached_tools[-1]["cache_control"] == {"type": "ephemeral"}
+    assert cached_tools[-1]["name"] == "write_file"
+
+    # Breakpoint 3: Penultimate user turn (messages[0] in 3-message list)
+    # The last message is index 2 (current turn), so penultimate user turn is index 0
+    assert cached_msgs[0]["role"] == "user"
+    assert isinstance(cached_msgs[0]["content"], list)
+    assert cached_msgs[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert cached_msgs[0]["content"][0]["text"] == "First message from user"
+
+    # Current user turn (index 2) should NOT have cache_control
+    assert cached_msgs[2]["content"] == "Second turn from user"
+
+    # Verify immutability: original tools list was NOT mutated
+    assert "cache_control" not in tools[-1]
+
+    # Verify short system prompt stays as raw str
+    short_sys_payload, _, _ = router._apply_anthropic_prompt_caching(
+        system_prompt=short_system,
+        tools=None,
+        formatted_messages=[{"role": "user", "content": "Hello"}],
+    )
+    assert short_sys_payload == short_system
+
+
+def test_openai_strict_mode():
+    """Verify OpenAI strict mode sets strict=True and additionalProperties=False."""
+    from core.tools.tool_registry import ToolRegistry
+
+    openai_tools = ToolRegistry.to_openai_tools(strict=True)
+    assert len(openai_tools) > 0
+    first = openai_tools[0]["function"]
+    assert first.get("strict") is True
+    assert first["parameters"].get("additionalProperties") is False
+    assert "required" in first["parameters"]

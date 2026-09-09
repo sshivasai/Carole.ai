@@ -33,10 +33,10 @@ def _extract_text_from_pdf(data: bytes) -> str:
             if text:
                 pages.append(text.strip())
         return "\n\n".join(pages)
-    except ImportError:
-        return "[PDF extraction error: PyPDF2 not installed. Run: pip install PyPDF2]"
+    except ImportError as exc:
+        raise ValueError("PDF extraction requires PyPDF2") from exc
     except Exception as e:
-        return f"[PDF extraction error: {e}]"
+        raise ValueError(f"Could not extract PDF text: {e}") from e
 
 
 def _extract_text(filename: str, data: bytes) -> str:
@@ -56,7 +56,8 @@ def _chunk_markdown_and_docs(filename: str, text: str, max_words: int = 350, ove
     Splits markdown/document text along heading hierarchy (#, ##, ###) and paragraph boundaries.
     Returns a list of (section_breadcrumb, chunk_text) tuples.
     """
-    import re
+    if max_words <= 0 or not 0 <= overlap_words < max_words:
+        raise ValueError("Chunk size must be positive and overlap smaller than chunk size")
     lines = text.splitlines()
     chunks = []
     
@@ -118,6 +119,8 @@ def _chunk_code(filename: str, code: str, max_words: int = 350) -> List[tuple[st
     AST-aware chunker for Python, and structural regex chunker for JS/TS/Go/Rust/Java.
     Extracts complete class and function definitions.
     """
+    if max_words <= 0:
+        raise ValueError("Chunk size must be positive")
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     chunks = []
     
@@ -126,14 +129,22 @@ def _chunk_code(filename: str, code: str, max_words: int = 350) -> List[tuple[st
             import ast
             tree = ast.parse(code)
             lines = code.splitlines()
+            cursor = 0
             for node in ast.iter_child_nodes(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    start_line = node.lineno - 1
+                    start_line = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
                     end_line = getattr(node, "end_lineno", len(lines))
+                    preamble = "\n".join(lines[cursor:start_line]).strip()
+                    if preamble:
+                        chunks.append((f"{filename} > Global Scope", preamble))
                     block = "\n".join(lines[start_line:end_line]).strip()
                     kind = "Class" if isinstance(node, ast.ClassDef) else "Function"
                     breadcrumb = f"{filename} > {kind} `{node.name}`"
                     chunks.append((breadcrumb, block))
+                    cursor = end_line
+            trailing = "\n".join(lines[cursor:]).strip()
+            if trailing:
+                chunks.append((f"{filename} > Global Scope", trailing))
         except Exception:
             pass  # Fall back to structural regex
 
@@ -159,7 +170,21 @@ def _chunk_code(filename: str, code: str, max_words: int = 350) -> List[tuple[st
             if block_text:
                 chunks.append((f"{filename} > {current_title}", block_text))
 
-    return chunks if chunks else [(filename, code[:2000])]
+    # Bound oversized definitions without losing source whitespace or long lines.
+    # Splits are retrieval excerpts; callers should read the source to execute it.
+    bounded = []
+    import re
+    for title, block in chunks or [(filename, code)]:
+        words = list(re.finditer(r"\S+", block))
+        starts = [0] + [words[i].start() for i in range(max_words, len(words), max_words)]
+        for index, start in enumerate(starts):
+            end = starts[index + 1] if index + 1 < len(starts) else len(block)
+            part = block[start:end]
+            # A minified file may contain one extremely long token.
+            for offset in range(0, len(part), 16000):
+                label = title if len(starts) == 1 and len(part) <= 16000 else f"{title} > Part {len(bounded) + 1}"
+                bounded.append((label, part[offset:offset + 16000]))
+    return bounded
 
 
 def _chunk_text(filename: str, text: str) -> List[tuple[str, str]]:
@@ -182,45 +207,28 @@ async def ingest_file(
     and store as Learning rows in both SQLite and LanceDB.
     Returns a summary dict.
     """
-    text = _extract_text(filename, data)
+    import asyncio
+    from core.memory.models import Team, Project
+    if len(data) > 20 * 1024 * 1024:
+        return {"error": "Knowledge uploads must be at most 20 MiB", "chunks": 0}
+    project_uuid = uuid_mod.UUID(str(project_id))
+    team_uuid = uuid_mod.UUID(str(team_id)) if team_id else None
+    if await db.get(Project, project_uuid) is None:
+        return {"error": "Project not found", "chunks": 0}
+    if team_uuid:
+        team = await db.get(Team, team_uuid)
+        if team is None or team.project_id != project_uuid:
+            return {"error": "Team does not belong to project", "chunks": 0}
+    try:
+        text = await asyncio.to_thread(_extract_text, filename, data)
+    except ValueError as exc:
+        return {"error": str(exc), "chunks": 0}
     if not text or len(text.strip()) < 20:
         return {"error": "Could not extract meaningful text from file.", "chunks": 0}
-
-    chunks = _chunk_text(filename, text)
-    stored = 0
-
-    for i, (breadcrumb, chunk_content) in enumerate(chunks):
-        try:
-            embedding = await llm_router.generate_embeddings(f"{breadcrumb}\n{chunk_content}")
-
-            learning = Learning(
-                project_id=uuid_mod.UUID(project_id),
-                team_id=uuid_mod.UUID(team_id) if team_id else None,
-                task_summary=breadcrumb,
-                lesson_rule=chunk_content,
-            )
-            db.add(learning)
-            await db.flush()  # Get the ID assigned
-
-            # Also insert into LanceDB vector store
-            await lancedb_client.insert_learning(
-                learning_id=str(learning.id),
-                project_id=project_id,
-                team_id=team_id,
-                task_summary=breadcrumb,
-                lesson_rule=chunk_content,
-                vector=embedding,
-            )
-            stored += 1
-        except Exception as e:
-            logger.error("[KnowledgeIngestor] Error embedding chunk %d of '%s': %s", i, filename, e)
-            continue
-
+    chunks = await asyncio.to_thread(_chunk_text, filename, text)
+    for breadcrumb, chunk_content in chunks:
+        db.add(Learning(project_id=project_uuid, team_id=team_uuid,
+                        task_summary=breadcrumb, lesson_rule=chunk_content))
     await db.commit()
-
-    return {
-        "filename": filename,
-        "chunks_stored": stored,
-        "total_chunks": len(chunks),
-        "chars": len(text),
-    }
+    return {"filename": filename, "chunks_stored": len(chunks),
+            "total_chunks": len(chunks), "chars": len(text), "index_status": "pending"}

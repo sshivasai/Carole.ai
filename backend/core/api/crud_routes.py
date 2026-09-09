@@ -6,6 +6,8 @@ Also provides a /api/seed endpoint for bootstrapping a demo environment.
 """
 
 import uuid
+import json
+import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Union, Dict, Any
@@ -21,6 +23,7 @@ from core.config import DEFAULT_FAST_MODEL
 from core.auth.auth_middleware import require_auth
 
 router = APIRouter(prefix="/api", tags=["crud"])
+logger = logging.getLogger("carole.crud_routes")
 
 async def _get_human_name(db: AsyncSession, team_id: Optional[uuid.UUID] = None) -> str:
     user_name = None
@@ -293,26 +296,10 @@ async def list_users(db: AsyncSession = Depends(get_db), user: dict = Depends(re
 @router.post("/projects")
 async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     # If owner_id is provided, make sure it is valid; otherwise use authenticated caller
-    owner_uuid = None
-    if body.owner_id:
-        try:
-            owner_uuid = uuid.UUID(body.owner_id)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid owner_id format.")
-    elif user and "sub" in user:
-        try:
-            owner_uuid = uuid.UUID(user["sub"])
-        except Exception:
-            owner_uuid = None
-    if not owner_uuid:
-        # fallback to first user
-        users_result = await db.execute(select(User).limit(1))
-        first_user = users_result.scalar_one_or_none()
-        if first_user:
-            owner_uuid = first_user.id
-        else:
-            owner_uuid = uuid.uuid4()
-    
+    owner_uuid = uuid.UUID(user["sub"])
+    if body.owner_id and body.owner_id != str(owner_uuid):
+        raise HTTPException(403, "Cannot create a project for another user")
+
     custom_path = None
     if body.custom_workspace_path and body.custom_workspace_path.strip():
         resolved_custom = Path(body.custom_workspace_path.strip()).resolve()
@@ -323,20 +310,18 @@ async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)
     db.add(project)
     await db.flush()
 
-    # Provision project workspace folder using exactly the slugified name
-    import re
     from core.config import CAROLE_HOME_DIR
-    slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
-    if not slug:
-        slug = str(project.id)[:8]
-    workspace_dir = CAROLE_HOME_DIR / "workspaces" / slug
-    workspace_dir.mkdir(parents=True, exist_ok=True)
+    if not project.custom_workspace_path:
+        workspace_dir = CAROLE_HOME_DIR / "workspaces" / str(project.id)
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        project.custom_workspace_path = str(workspace_dir.resolve())
+        await db.flush()
 
     return {"id": str(project.id), "name": project.name, "custom_workspace_path": project.custom_workspace_path}
 
 @router.get("/projects")
 async def list_projects(db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    result = await db.execute(select(Project).order_by(Project.created_at.desc()))
+    result = await db.execute(select(Project).where(Project.owner_id == uuid.UUID(user["sub"])).order_by(Project.created_at.desc()))
     return [
         {
             "id": str(p.id),
@@ -358,7 +343,8 @@ async def update_project(project_id: str, body: ProjectUpdate, db: AsyncSession 
             resolved_custom.mkdir(parents=True, exist_ok=True)
             project.custom_workspace_path = str(resolved_custom)
         else:
-            project.custom_workspace_path = None
+            from core.config import CAROLE_HOME_DIR
+            project.custom_workspace_path = str((CAROLE_HOME_DIR / "workspaces" / str(project.id)).resolve())
         file_tools._project_workspace_cache.pop(project_id, None)
         file_tools._team_workspace_cache.clear()
 
@@ -389,13 +375,13 @@ async def update_project(project_id: str, body: ProjectUpdate, db: AsyncSession 
 
 @router.post("/learnings")
 async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    from core.llm.multi_model_router import llm_router
     from core.memory.models import Learning
-    from core.memory.lancedb_client import lancedb_client
+    await _assert_project_access(db, body.project_id, user["sub"])
+    if body.team_id:
+        team = await _assert_team_access(db, body.team_id, user["sub"])
+        if str(team.project_id) != body.project_id:
+            raise HTTPException(400, "Team does not belong to project")
 
-    combined_text = f"Task: {body.task_summary} | Rule: {body.lesson_rule}"
-    embedding = await llm_router.generate_embeddings(combined_text)
-    
     learning = Learning(
         project_id=uuid.UUID(body.project_id),
         team_id=uuid.UUID(body.team_id) if body.team_id else None,
@@ -406,15 +392,8 @@ async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_d
     await db.commit()
     await db.refresh(learning)
     
-    await lancedb_client.insert_learning(
-        learning_id=str(learning.id),
-        project_id=body.project_id,
-        team_id=body.team_id,
-        task_summary=body.task_summary,
-        lesson_rule=body.lesson_rule,
-        vector=embedding
-    )
-    
+    # SQL commit also durably queues vector indexing.
+
     if body.team_id:
         from core.chat.message_router import message_router
         await message_router.route_message(
@@ -425,10 +404,10 @@ async def create_learning(body: LearningCreate, db: AsyncSession = Depends(get_d
             attachments=[]
         )
     
-    return {"id": str(learning.id), "task_summary": learning.task_summary, "lesson_rule": learning.lesson_rule}
+    return {"id": str(learning.id), "task_summary": learning.task_summary, "lesson_rule": learning.lesson_rule, "index_status": "pending"}
 
 @router.get("/learnings")
-async def list_learnings(project_id: Optional[str] = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+async def list_learnings(project_id: Optional[str] = None, team_id: Optional[str] = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     from core.memory.models import Learning
     from sqlalchemy import or_
     import uuid
@@ -441,12 +420,14 @@ async def list_learnings(project_id: Optional[str] = None, db: AsyncSession = De
     except (ValueError, TypeError):
         return []
 
-    stmt = select(Learning).where(
-        or_(
-            Learning.project_id == p_uuid,
-            Learning.project_id.is_(None)
-        )
-    ).order_by(Learning.created_at.desc())
+    await _assert_project_access(db, project_id, user["sub"])
+    stmt = select(Learning).where(Learning.project_id == p_uuid)
+    if team_id:
+        team = await _assert_team_access(db, team_id, user["sub"])
+        if team.project_id != p_uuid:
+            raise HTTPException(400, "Team does not belong to project")
+        stmt = stmt.where(or_(Learning.team_id == team.id, Learning.team_id.is_(None)))
+    stmt = stmt.order_by(Learning.created_at.desc())
     result = await db.execute(stmt)
     return [
         {
@@ -462,57 +443,39 @@ async def list_learnings(project_id: Optional[str] = None, db: AsyncSession = De
 
 @router.put("/learnings/{learning_id}")
 async def update_learning(learning_id: str, body: LearningUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    from core.memory.models import Learning
-    from core.memory.lancedb_client import lancedb_client
-    from core.llm.multi_model_router import llm_router
-    
-    stmt = select(Learning).where(Learning.id == uuid.UUID(learning_id))
-    result = await db.execute(stmt)
-    learning = result.scalar_one_or_none()
-    if not learning:
-        raise HTTPException(status_code=404, detail="Learning not found")
-        
-    text_changed = False
-    if body.task_summary is not None and body.task_summary != learning.task_summary:
-        learning.task_summary = body.task_summary
-        text_changed = True
-    if body.lesson_rule is not None and body.lesson_rule != learning.lesson_rule:
-        learning.lesson_rule = body.lesson_rule
-        text_changed = True
+    learning = await _owned_learning(db, learning_id, user["sub"])
     if body.project_id == "null":
-        learning.project_id = None
-        await lancedb_client.update_project_id(learning_id, None)
-
+        raise HTTPException(400, "User memories must remain scoped to their project")
+    if body.project_id and body.project_id != str(learning.project_id):
+        raise HTTPException(400, "Moving memories between projects is not supported")
+    if body.task_summary is not None:
+        learning.task_summary = body.task_summary
+    if body.lesson_rule is not None:
+        learning.lesson_rule = body.lesson_rule
     await db.commit()
+    return {"status": "updated", "id": learning_id, "index_status": "pending"}
 
-    if text_changed:
-        try:
-            combined_text = f"Task: {learning.task_summary} | Rule: {learning.lesson_rule}"
-            new_embedding = await llm_router.generate_embeddings(combined_text)
-            await lancedb_client.delete_learning(learning_id)
-            await lancedb_client.insert_learning(
-                learning_id=learning_id,
-                project_id=str(learning.project_id) if learning.project_id else "",
-                team_id=str(learning.team_id) if learning.team_id else None,
-                task_summary=learning.task_summary,
-                lesson_rule=learning.lesson_rule,
-                vector=new_embedding,
-            )
-        except Exception as e:
-            logger.warning("LanceDB re-embedding failed during update_learning: %s", e)
 
-    return {"status": "updated", "id": learning_id}
+async def _owned_learning(db, learning_id, user_id):
+    from core.memory.models import Learning
+    try:
+        memory_uuid = uuid.UUID(str(learning_id))
+    except ValueError:
+        raise HTTPException(400, "Invalid learning ID")
+    learning = await db.get(Learning, memory_uuid)
+    if learning is None:
+        raise HTTPException(404, "Learning not found")
+    if learning.project_id is None:
+        raise HTTPException(403, "Global knowledge cannot be edited through a user account")
+    await _assert_project_access(db, str(learning.project_id), user_id)
+    return learning
+
 
 @router.delete("/learnings/{learning_id}")
 async def delete_learning(learning_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    from core.memory.models import Learning
-    from core.memory.lancedb_client import lancedb_client
-    await db.execute(delete(Learning).where(Learning.id == uuid.UUID(learning_id)))
+    learning = await _owned_learning(db, learning_id, user["sub"])
+    await db.delete(learning)
     await db.commit()
-    try:
-        await lancedb_client.delete_learning(learning_id)
-    except Exception as e:
-        logger.warning("LanceDB delete failed for %s: %s", learning_id, e)
     return {"status": "deleted", "id": learning_id}
 
 
@@ -525,12 +488,18 @@ class DreamRunRequest(BaseModel):
 
 
 @router.post("/memory/dream/run")
-async def trigger_dream_cycle(body: Optional[DreamRunRequest] = None, user: dict = Depends(require_auth)):
+async def trigger_dream_cycle(body: Optional[DreamRunRequest] = None, team_id: Optional[str] = None,
+                             db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Triggers an immediate on-demand memory dream consolidation cycle."""
     from core.memory.auto_dream import dream_worker
-    team_id = body.team_id if body else None
-    result = await dream_worker.run_once(team_id=team_id)
-    return result
+    requested_team = body.team_id if body and body.team_id else team_id
+    if requested_team:
+        await _assert_team_access(db, requested_team, user["sub"])
+        return await dream_worker.run_once(team_id=requested_team)
+    owned_teams = (await db.execute(select(Team.id).join(Project).where(
+        Project.owner_id == uuid.UUID(user["sub"])
+    ))).scalars().all()
+    return {"teams": [await dream_worker.run_once(team_id=str(t)) for t in owned_teams]}
 
 
 @router.get("/memory/dream/status")
@@ -1118,8 +1087,9 @@ async def list_messages(
     # Finding #8 — verify the authenticated user owns this team
     await _assert_team_access(db, team_id, user["sub"])
     # Clamp limit to prevent large data dumps
-    limit = min(limit, 500)
-    from sqlalchemy import nulls_last
+    limit = max(1, min(limit, 500))
+    from sqlalchemy import func, and_, or_
+    sequence = func.coalesce(Message.sequence, -1)
 
     query = select(Message).where(Message.team_id == uuid.UUID(team_id))
 
@@ -1128,16 +1098,21 @@ async def list_messages(
     if before:
         try:
             cursor_msg = (await db.execute(
-                select(Message).where(Message.id == uuid.UUID(before))
+                select(Message).where(Message.id == uuid.UUID(before), Message.team_id == uuid.UUID(team_id))
             )).scalar_one_or_none()
             if cursor_msg and cursor_msg.created_at:
-                query = query.where(Message.created_at < cursor_msg.created_at)
+                cursor_sequence = cursor_msg.sequence if cursor_msg.sequence is not None else -1
+                query = query.where(or_(
+                    Message.created_at < cursor_msg.created_at,
+                    and_(Message.created_at == cursor_msg.created_at, sequence < cursor_sequence),
+                    and_(Message.created_at == cursor_msg.created_at, sequence == cursor_sequence, Message.id < cursor_msg.id),
+                ))
         except (ValueError, Exception):
             pass  # Invalid cursor — just return latest page
 
     result = await db.execute(
         query
-        .order_by(Message.created_at.desc(), nulls_last(Message.sequence.desc()))
+        .order_by(Message.created_at.desc(), sequence.desc(), Message.id.desc())
         .limit(limit)
     )
     messages = result.scalars().all()
@@ -1297,8 +1272,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), team_id: O
         project = res.scalar_one_or_none()
         if project:
             import re
-            proj_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', project.name).strip('-')
-            team_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', team.name).strip('-')
+            proj_slug = str(project.id)
+            team_slug = str(team.id)
             from core.tools.file_tools import file_tools
             team_carole_dir = await file_tools.get_team_carole_dir(team_id)
             upload_dir = str(team_carole_dir / "Chat_Media")
@@ -1409,7 +1384,7 @@ async def clear_team_chat(team_id: str, db: AsyncSession = Depends(get_db), user
     from sqlalchemy import delete, update
     import shutil
     from core.tools.file_tools import file_tools
-    from core.memory.models import Learning, EntityMemory, GraphTriple, CompactionEvent, FileBackup
+    from core.memory.models import Learning, EntityMemory, GraphTriple, CompactionEvent
     from core.memory.lancedb_client import lancedb_client
     
     await _assert_team_access(db, team_id, user["sub"])
@@ -1479,7 +1454,7 @@ async def rollback_from_message(message_id: str, db: AsyncSession = Depends(get_
     import logging as _rlog
     _rollback_log = _rlog.getLogger("carole.rollback")
     from core.memory.models import (
-        FileBackup, Task, TaskComment, PlanInlineComment,
+        Task, TaskComment, PlanInlineComment,
         Learning, EntityMemory, GraphTriple, CompactionEvent
     )
     from core.memory.lancedb_client import lancedb_client
@@ -2102,32 +2077,6 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
     return {"status": "updated", "id": task_id}
 
 
-# ============================================================
-# Memory Dream Cycle Routes
-# ============================================================
-
-@router.post("/memory/dream/run")
-async def trigger_dream_cycle(
-    team_id: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
-    user: dict = Depends(require_auth)
-):
-    """Triggers an on-demand memory consolidation (Dream) cycle immediately."""
-    from core.memory.auto_dream import dream_worker
-    if team_id:
-        await _assert_team_access(db, team_id, user["sub"])
-    return await dream_worker.run_once(team_id=team_id)
-
-
-@router.get("/memory/dream/status")
-async def get_dream_status(user: dict = Depends(require_auth)):
-    """Returns operational metrics and telemetry for the background Dream worker."""
-    from core.memory.auto_dream import dream_worker
-    return dream_worker.get_status()
-
-
-from core.memory.models import TaskComment
-
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     task = await _assert_task_access(db, task_id, user["sub"])
@@ -2421,7 +2370,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
                 "web_search": "safe", "web_fetch": "safe",
                 "spawn_agent": "safe", "send_message": "safe",
                 "create_task": "safe", "list_tasks": "safe", "update_task": "safe",
-                "write_file": "block", "edit_file": "block", "create_directory": "block",
+                "write_file": "safe", "edit_file": "safe", "create_directory": "block",
             },
         },
         {
@@ -2505,8 +2454,10 @@ async def upload_knowledge(
         await _assert_team_access(db, team_id, user["sub"])
     from core.knowledge.knowledge_ingestor import ingest_file
 
-    data = await file.read()
-    res = await ingest_file(db, project_id, team_id, file.filename, data)
+    data = await file.read(20 * 1024 * 1024 + 1)
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Knowledge uploads must be at most 20 MiB")
+    res = await ingest_file(db, project_id, team_id, file.filename or "upload.txt", data)
     if "error" in res:
         raise HTTPException(status_code=400, detail=res["error"])
     return res
@@ -3751,6 +3702,12 @@ async def list_entity_memories(
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(require_auth)
 ):
+    if team_id:
+        team = await _assert_team_access(db, team_id, user["sub"])
+        if project_id and str(team.project_id) != project_id:
+            raise HTTPException(400, "Team does not belong to project")
+    if project_id:
+        await _assert_project_access(db, project_id, user["sub"])
     if not team_id and not project_id:
         return []
     
@@ -3794,6 +3751,14 @@ async def create_entity_memory(
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid project_id format.")
 
+    if t_uuid:
+        team = await _assert_team_access(db, str(t_uuid), user["sub"])
+        if p_uuid and p_uuid != team.project_id:
+            raise HTTPException(400, "Team does not belong to project")
+        p_uuid = team.project_id
+    if p_uuid is None:
+        raise HTTPException(400, "Project or team scope is required")
+    await _assert_project_access(db, str(p_uuid), user["sub"])
     mem = EntityMemory(
         team_id=t_uuid,
         project_id=p_uuid,
@@ -3817,6 +3782,15 @@ async def delete_entity_memory(
         m_uuid = uuid.UUID(memory_id)
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Invalid memory_id format.")
+    memory = await db.get(EntityMemory, m_uuid)
+    if memory is None:
+        raise HTTPException(404, "Memory not found")
+    if memory.team_id:
+        await _assert_team_access(db, str(memory.team_id), user["sub"])
+    elif memory.project_id:
+        await _assert_project_access(db, str(memory.project_id), user["sub"])
+    else:
+        raise HTTPException(403, "Global knowledge cannot be deleted by a user")
     stmt = delete(EntityMemory).where(EntityMemory.id == m_uuid)
     await db.execute(stmt)
     await db.commit()

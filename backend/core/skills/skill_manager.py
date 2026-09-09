@@ -1,4 +1,5 @@
 import os
+import tempfile
 import re
 import shutil
 import uuid
@@ -11,9 +12,6 @@ from core.memory.models import Skill
 from core.skills.skill_parser import SkillParser, SkillDefinition
 
 logger = logging.getLogger("carole.skills.manager")
-
-# In-memory toggle overrides: skill_name -> bool
-_SKILL_STATE_OVERRIDES: Dict[str, bool] = {}
 
 class SkillManager:
     """
@@ -132,10 +130,7 @@ class SkillManager:
         if workspace_root:
             candidates.append(Path(workspace_root).resolve())
 
-        cwd = Path.cwd().resolve()
-        candidates.append(cwd)
-        if cwd.name == "backend":
-            candidates.append(cwd.parent)
+        # Project discovery never includes the server checkout implicitly.
 
         seen_roots = set()
         for w_path in candidates:
@@ -156,8 +151,8 @@ class SkillManager:
                 seen_roots.add(str(p3))
 
         # Global user home (~/.carole/skills/)
-        home = Path.home()
-        g1 = home / ".carole" / "skills"
+        from core.config import CAROLE_HOME_DIR
+        g1 = CAROLE_HOME_DIR / "skills"
         if g1.exists() and g1.is_dir() and str(g1) not in seen_roots:
             roots.append((g1, "global"))
             seen_roots.add(str(g1))
@@ -172,16 +167,39 @@ class SkillManager:
     ) -> Path:
         """Resolves root directory where new SKILL.md packages should be saved (.carole/skills/)."""
         if target.lower() == "global":
-            dest = Path.home() / ".carole" / "skills"
+            from core.config import CAROLE_HOME_DIR
+            dest = CAROLE_HOME_DIR / "skills"
         else:
+            if target.lower() != "project":
+                raise ValueError("Skill target must be project or global")
             w_path = Path(workspace_root).resolve() if workspace_root else None
             if not w_path:
-                cwd = Path.cwd().resolve()
-                w_path = cwd.parent if cwd.name == "backend" else cwd
+                raise ValueError("A project workspace is required")
             dest = w_path / ".carole" / "skills"
 
         dest.mkdir(parents=True, exist_ok=True)
         return dest
+
+    @staticmethod
+    def _safe_child(root: Path, child: Path) -> Path:
+        resolved_root = root.resolve()
+        resolved = child.resolve()
+        if resolved == resolved_root or not resolved.is_relative_to(resolved_root):
+            raise ValueError("Skill path must stay inside its discovery root")
+        return resolved
+
+    @staticmethod
+    def _write_atomic(path: Path, content: str) -> None:
+        fd, temporary = tempfile.mkstemp(prefix=".skill-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     @classmethod
     def save_skill_package(
@@ -198,25 +216,27 @@ class SkillManager:
         clean_name = re.sub(r"[^a-zA-Z0-9_-]+", "-", name).strip("-").lower()
         if not clean_name:
             raise ValueError("Skill name must contain at least one alphanumeric character.")
+        if clean_name.upper() in {"CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)], *[f"LPT{i}" for i in range(1, 10)]}:
+            raise ValueError("Skill name is a reserved filesystem name")
 
         dest_root = cls.get_destination_root(target=target, workspace_root=workspace_root)
-        skill_dir = dest_root / clean_name
+        skill_dir = cls._safe_child(dest_root, dest_root / clean_name)
         skill_dir.mkdir(parents=True, exist_ok=True)
-        skill_file = skill_dir / "SKILL.md"
+        skill_file = cls._safe_child(dest_root, skill_dir / "SKILL.md")
 
         # Ensure content has valid YAML frontmatter; if missing, format standard frontmatter
         cleaned_content = content.strip()
         if not re.match(r"^---\s*\n[\s\S]*?\n---\s*\n", cleaned_content):
             cleaned_content = f"---\nname: {clean_name}\ndescription: Custom skill {clean_name}\ntools: []\nauthor: user\nversion: 1.0.0\nis_active: true\n---\n\n{cleaned_content}\n"
 
-        skill_file.write_text(cleaned_content, encoding="utf-8")
-
         source = "global" if target.lower() == "global" else "project"
-        parsed = SkillParser.parse_skill_file(skill_file, source=source)
+        parsed = SkillParser.parse_skill_content(cleaned_content, source=source, skill_dir=skill_dir, skill_file=skill_file)
         if not parsed:
             raise ValueError("Failed to parse saved SKILL.md file.")
 
-        _SKILL_STATE_OVERRIDES[parsed.name] = parsed.is_active
+        if parsed.name != clean_name:
+            raise ValueError("Frontmatter name must match the skill package name")
+        cls._write_atomic(skill_file, cleaned_content)
         logger.info("Saved and hot-loaded skill '%s' at %s", parsed.name, skill_file)
         return parsed
 
@@ -228,19 +248,20 @@ class SkillManager:
     ) -> bool:
         """Deletes a discovered skill directory from disk."""
         clean_name = re.sub(r"[^a-zA-Z0-9_-]+", "-", skill_name).strip("-").lower()
-        deleted = False
+        if not clean_name:
+            raise ValueError("Skill name cannot be empty")
 
         # Scan roots to find the skill directory
         roots = cls.get_discovery_roots(workspace_root)
         for root_dir, _ in roots:
-            target_dir = root_dir / clean_name
+            target_dir = cls._safe_child(root_dir, root_dir / clean_name)
             if target_dir.exists() and target_dir.is_dir():
-                shutil.rmtree(target_dir, ignore_errors=True)
-                deleted = True
-                _SKILL_STATE_OVERRIDES.pop(clean_name, None)
+                shutil.rmtree(target_dir)
                 logger.info("Deleted skill directory %s", target_dir)
+                # Delete only the selected package, never every namesake.
+                return True
 
-        return deleted
+        return False
 
     @classmethod
     def get_skill_content(
@@ -252,7 +273,7 @@ class SkillManager:
         clean_name = re.sub(r"[^a-zA-Z0-9_-]+", "-", skill_name).strip("-").lower()
         roots = cls.get_discovery_roots(workspace_root)
         for root_dir, source in roots:
-            target_file = root_dir / clean_name / "SKILL.md"
+            target_file = cls._safe_child(root_dir, root_dir / clean_name / "SKILL.md")
             if target_file.exists() and target_file.is_file():
                 try:
                     content = target_file.read_text(encoding="utf-8", errors="replace")
@@ -277,15 +298,12 @@ class SkillManager:
             try:
                 for entry in root_dir.iterdir():
                     if entry.is_dir():
-                        skill_file = entry / "SKILL.md"
+                        skill_file = cls._safe_child(root_dir, entry / "SKILL.md")
                         if skill_file.exists() and skill_file.is_file():
                             parsed = SkillParser.parse_skill_file(skill_file, source=source)
                             if parsed:
-                                # Check state override
-                                if parsed.name in _SKILL_STATE_OVERRIDES:
-                                    parsed.is_active = _SKILL_STATE_OVERRIDES[parsed.name]
                                 # Project overrides global if same name
-                                if parsed.name not in skills or source == "project":
+                                if parsed.name not in skills:
                                     skills[parsed.name] = parsed
             except Exception as e:
                 logger.error("Error scanning skills root '%s': %s", root_dir, e)
@@ -313,7 +331,7 @@ class SkillManager:
                 db_skills = await cls.get_team_skills(db, team_id, active_only=False)
                 for ds in db_skills:
                     if ds.name not in skills_map:
-                        active = ds.is_active if ds.name not in _SKILL_STATE_OVERRIDES else _SKILL_STATE_OVERRIDES[ds.name]
+                        active = ds.is_active
                         skills_map[ds.name] = SkillDefinition(
                             name=ds.name,
                             description=ds.description or "",
@@ -327,10 +345,21 @@ class SkillManager:
 
         return list(skills_map.values())
 
-    @staticmethod
-    def toggle_skill_state(skill_name: str, is_active: bool) -> None:
-        """Toggles active status of a skill in-memory."""
-        _SKILL_STATE_OVERRIDES[skill_name] = is_active
+    @classmethod
+    def toggle_skill_state(cls, skill_name: str, is_active: bool, workspace_root: Optional[Path] = None) -> None:
+        """Persist state on the selected package; namesakes in other roots are independent."""
+        info = cls.get_skill_content(skill_name, workspace_root)
+        if not info:
+            raise ValueError("Skill not found")
+        content = info["content"]
+        match = re.match(r"^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$", content)
+        state = "true" if is_active else "false"
+        if match:
+            front = re.sub(r"(?m)^is_active\s*:.*\n?", "", match.group(1))
+            content = f"---\n{front.rstrip()}\nis_active: {state}\n---\n{match.group(2)}"
+        else:
+            content = f"---\nname: {skill_name}\nis_active: {state}\n---\n{content}"
+        cls._write_atomic(Path(info["path"]), content)
         logger.info("Skill '%s' active state set to %s", skill_name, is_active)
 
     @staticmethod
@@ -342,23 +371,18 @@ class SkillManager:
         if not active:
             return ""
 
-        lines = [
-            "<skills>",
-            "You have access to the following specialized capabilities and domain skills.",
-            "Consult these skills and follow their instructions when addressing relevant tasks:",
-            ""
-        ]
-
-        for s in active:
-            tools_str = f" (Tools: {', '.join(s.tools)})" if s.tools else ""
-            lines.append(f"- **{s.name}**{tools_str}: {s.description}")
-            if s.instructions:
-                # Truncate if extremely long in system overview, full instructions loaded on execution
-                inst_snippet = s.instructions if len(s.instructions) <= 1200 else s.instructions[:1200] + "\n...[instructions truncated]"
-                lines.append(f"  *Guidelines*:\n  {inst_snippet}\n")
-
+        lines = ["<skills>", "Load relevant instructions with read_skill(name) before using a skill."]
+        remaining = 6000 - sum(map(len, lines))
+        for skill in active:
+            entry = f"- {skill.name[:100]}: {skill.description[:240]}"
+            if len(entry) + 1 > remaining:
+                lines.append("Additional skills are available through discovery.")
+                break
+            lines.append(entry)
+            remaining -= len(entry) + 1
         lines.append("</skills>")
         return "\n".join(lines)
+
 
 
 # Singleton

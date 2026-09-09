@@ -1,0 +1,206 @@
+{
+  "requested_model": "openrouter/free",
+  "status": "passed",
+  "provider_requests": [
+    {
+      "model": "nvidia/nemotron-3-embed-1b:free",
+      "path": "/api/v1/embeddings",
+      "max_tokens": null,
+      "http_status": 200
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048,
+      "http_status": 200
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048,
+      "http_status": 200
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048,
+      "http_status": 200
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048,
+      "http_status": 200
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048,
+      "http_status": 200
+    },
+    {
+      "model": "openrouter/free",
+      "path": "/api/v1/chat/completions",
+      "max_tokens": 2048,
+      "http_status": 200
+    }
+  ],
+  "checks": {
+    "authenticated_setup": true,
+    "native_tools_executed": true,
+    "tests_unchanged": true,
+    "independent_test_execution": true,
+    "final_message_persisted": true
+  },
+  "events": [
+    {
+      "type": "message",
+      "tool_name": null,
+      "is_error": null,
+      "text": "[AGENT_ADD] New agent @Verifier joined the team (Added by E2E User(admin))",
+      "observation": null,
+      "is_intermediate": null
+    },
+    {
+      "type": "message",
+      "tool_name": null,
+      "is_error": null,
+      "text": "@Verifier Fix the addition bug in calculator.py. Read calculator.py and test_calculator.py, edit only calculator.py, then run \"C:\\Users\\sanko\\OneDrive\\Desktop\\Carole.ai\\backend\\venv\\Scripts\\python.exe\" -m unittest test_calculator.py -v. Do not modify tests. Use read_file, edit_file and execute_command. Finish with the actual test outcome. No plan approval is needed for this disposable fixture.",
+      "observation": null,
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_start",
+      "tool_name": "read_file",
+      "is_error": null,
+      "text": null,
+      "observation": null,
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_start",
+      "tool_name": "read_file",
+      "is_error": null,
+      "text": null,
+      "observation": null,
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_end",
+      "tool_name": "read_file",
+      "is_error": null,
+      "text": null,
+      "observation": "def add(a, b):\n    return a - b\n",
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_end",
+      "tool_name": "read_file",
+      "is_error": null,
+      "text": null,
+      "observation": "import unittest\nfrom calculator import add\nclass AdditionTest(unittest.TestCase):\n    def test_positive(self): self.assertEqual(add(2, 3), 5)\n    def test_negative(self): self.assertEqual(add(-2, -3), -5)\n    def test_identity(self): self.assertEqual(add(0, 9), 9)\n    def test_decimal(self): self.assertAlmostEqual(add(1.25, 2.5), 3.75)\nif __name__ == '__main__': unittest.main()\n",
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_start",
+      "tool_name": "edit_file",
+      "is_error": null,
+      "text": null,
+      "observation": null,
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_end",
+      "tool_name": "edit_file",
+      "is_error": null,
+      "text": null,
+      "observation": "Error: Missing required parameter 'relative_path'. Usage: edit_file(relative_path=\"...\", target_content=\"...\", replacement_content=\"...\")",
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_start",
+      "tool_name": "edit_file",
+      "is_error": null,
+      "text": null,
+      "observation": null,
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_end",
+      "tool_name": "edit_file",
+      "is_error": null,
+      "text": null,
+      "observation": "Error: Missing required parameter 'replacement_content'. Usage: edit_file(relative_path=\"...\", target_content=\"...\", replacement_content=\"...\")",
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_start",
+      "tool_name": "edit_file",
+      "is_error": null,
+      "text": null,
+      "observation": null,
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_end",
+      "tool_name": "edit_file",
+      "is_error": null,
+      "text": null,
+      "observation": "Success: Modified 'calculator.py'.",
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_start",
+      "tool_name": "execute_command",
+      "is_error": null,
+      "text": null,
+      "observation": null,
+      "is_intermediate": null
+    },
+    {
+      "type": "tool_end",
+      "tool_name": "execute_command",
+      "is_error": null,
+      "text": null,
+      "observation": "test_decimal (test_calculator.AdditionTest.test_decimal) ... ok\ntest_identity (test_calculator.AdditionTest.test_identity) ... ok\ntest_negative (test_calculator.AdditionTest.test_negative) ... ok\ntest_positive (test_calculator.AdditionTest.test_positive) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n",
+      "is_intermediate": null
+    },
+    {
+      "type": "message",
+      "tool_name": null,
+      "is_error": null,
+      "text": "All tests pass. The addition bug has been fixed.\n\nTest outcome:\n```\ntest_decimal (test_calculator.AdditionTest.test_decimal) ... ok\ntest_identity (test_calculator.AdditionTest.test_identity) ... ok\ntest_negative (test_calculator.AdditionTest.test_negative) ... ok\ntest_positive (test_calculator.AdditionTest.test_positive) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n```",
+      "observation": null,
+      "is_intermediate": null
+    }
+  ],
+  "event_types": [
+    "agent_created",
+    "agent_queue_update",
+    "agent_status",
+    "collapse_to_reasoning",
+    "context_usage",
+    "file_change",
+    "file_system_updated",
+    "message",
+    "process_started",
+    "shell_output",
+    "stream_reasoning",
+    "thought_delta",
+    "token_usage",
+    "tool_end",
+    "tool_progress",
+    "tool_start",
+    "tool_trace",
+    "typing"
+  ],
+  "tools_used": [
+    "read_file",
+    "read_file",
+    "edit_file",
+    "edit_file",
+    "edit_file",
+    "execute_command"
+  ],
+  "verification": "test_decimal (test_calculator.AdditionTest.test_decimal) ... ok\ntest_identity (test_calculator.AdditionTest.test_identity) ... ok\ntest_negative (test_calculator.AdditionTest.test_negative) ... ok\ntest_positive (test_calculator.AdditionTest.test_positive) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n"
+}

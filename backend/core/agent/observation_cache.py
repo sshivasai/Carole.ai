@@ -23,14 +23,16 @@ how large the output is, while still giving the agent full access to the data.
 import hashlib
 import logging
 import os
-import tempfile
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger("carole.observation_cache")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-CACHE_DIR = Path(tempfile.gettempdir()) / "carole_obs_cache"
+from core.config import CAROLE_HOME_DIR
+
+CACHE_DIR = CAROLE_HOME_DIR / "observations"
 
 # Observations up to this size are returned verbatim (≈750 tokens at 4 chars/tok)
 MAX_INLINE_CHARS = 3_000
@@ -40,7 +42,11 @@ HEADER_CHARS = 1_200
 TAIL_CHARS = 600
 
 
-def cache_observation(tool_name: str, content: str) -> str:
+def _scope_dir(scope: str | None) -> Path:
+    return CACHE_DIR / hashlib.sha256(scope.encode()).hexdigest() if scope else CACHE_DIR
+
+
+def cache_observation(tool_name: str, content: str, scope: str | None = None) -> str:
     """
     Return content verbatim if small, otherwise write excess to disk and return
     a head+tail summary with a disk reference.
@@ -62,14 +68,18 @@ def cache_observation(tool_name: str, content: str) -> str:
         return content
 
     # Write full output to disk
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    content_hash = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
+    content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
     # Sanitize tool_name for filesystem safety
     safe_name = "".join(c if c.isalnum() or c in "_-" else "_" for c in tool_name)[:40]
-    cache_file = CACHE_DIR / f"{safe_name}_{content_hash}.txt"
+    directory = _scope_dir(scope)
+    cache_file = directory / f"{safe_name}_{content_hash}_{uuid.uuid4().hex}.txt"
 
     try:
-        cache_file.write_text(content, encoding="utf-8", errors="replace")
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Exclusive creation avoids overwriting or following an existing symlink.
+        fd = os.open(cache_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as stream:
+            stream.write(content)
         logger.debug(
             "Large observation from '%s' cached (%d chars) → %s",
             tool_name, len(content), cache_file,
@@ -90,9 +100,36 @@ def cache_observation(tool_name: str, content: str) -> str:
     return (
         f"{head}\n"
         f"... [{dropped:,} chars omitted — full output saved to: {cache_file}] ...\n"
-        f"(Use read_file or execute_command to read the cached file if you need the full content.)\n"
+        f"(Use read_observation(artifact_id=\"{cache_file.name}\", offset=0, limit=2500) to retrieve more. Discover it with fetch_tool_schemas if needed.)\n"
         f"{tail}"
     )
+
+
+def read_observation(artifact_id: str, scope: str, offset: int = 0, limit: int = 2500) -> str:
+    """Retrieve bounded characters using a trusted team/agent scope, never a caller path."""
+    import re
+    if not scope or not re.fullmatch(r"[\w-]+\.txt", artifact_id, flags=re.ASCII):
+        raise ValueError("Invalid observation artifact")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("offset must be a nonnegative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 2500:
+        raise ValueError("limit must be between 1 and 2500")
+    directory = _scope_dir(scope).resolve()
+    path = (directory / artifact_id).resolve()
+    if not path.is_relative_to(directory):
+        raise ValueError("Observation path escapes its owner scope")
+    with path.open(encoding="utf-8") as stream:
+        # Text seeks use opaque cookies rather than character offsets. Discard
+        # bounded blocks so multibyte text uses the same offsets as the preview.
+        remaining = offset
+        while remaining:
+            discarded = stream.read(min(remaining, 8192))
+            if not discarded:
+                break
+            remaining -= len(discarded)
+        excerpt = stream.read(limit)
+        more = bool(stream.read(1))
+    return f"[artifact: {artifact_id}; offset: {offset}; next_offset: {offset + len(excerpt)}; more: {str(more).lower()}]\n{excerpt}"
 
 
 def clear_cache() -> int:
