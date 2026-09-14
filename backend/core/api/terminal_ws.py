@@ -314,7 +314,7 @@ class TerminalSessionManager:
                                 except Exception:
                                     pass
                     except Exception as e:
-                        logger.error("Error reading process output: %e", e)
+                        logger.error("Error reading process output: %s", e)
 
                 thread = threading.Thread(target=read_output, daemon=True)
                 thread.start()
@@ -328,10 +328,6 @@ class TerminalSessionManager:
                 pass
 
     async def _run_input_loop(self, websocket: WebSocket, session: TerminalSession):
-        import fcntl
-        import termios
-        import struct
-
         try:
             while True:
                 data = await websocket.receive_text()
@@ -348,8 +344,14 @@ class TerminalSessionManager:
                         if session.session_type == "winpty":
                             session.process.set_size(cols, rows)
                         elif session.session_type == "unix_pty" and session.master_fd is not None:
-                            size = struct.pack("HHHH", rows, cols, 0, 0)
-                            fcntl.ioctl(session.master_fd, termios.TIOCSWINSZ, size)
+                            try:
+                                import fcntl
+                                import termios
+                                import struct
+                                size = struct.pack("HHHH", rows, cols, 0, 0)
+                                fcntl.ioctl(session.master_fd, termios.TIOCSWINSZ, size)
+                            except Exception as resize_err:
+                                logger.debug("Terminal resize error: %s", resize_err)
                     elif action == "interrupt":
                         self._send_interrupt(session)
                     elif action == "terminate":
@@ -419,17 +421,31 @@ async def terminal_websocket(
         if not user:
             await websocket.close(code=4001)
             return
-        try:
-            project_uuid = uuid.UUID(project_id)
-        except ValueError:
+        target_project_id = None
+        if project_id and project_id != "default":
+            try:
+                project_uuid = uuid.UUID(project_id)
+                project = (await db.execute(
+                    select(Project.id).where(Project.id == project_uuid, Project.owner_id == user.id)
+                )).scalar_one_or_none()
+                if project:
+                    target_project_id = str(project)
+            except ValueError:
+                target_project_id = None
+
+        if not target_project_id:
+            # Fallback to user's first available project
+            first_project = (await db.execute(
+                select(Project.id).where(Project.owner_id == user.id).limit(1)
+            )).scalar_one_or_none()
+            if first_project:
+                target_project_id = str(first_project)
+
+        if not target_project_id:
             await websocket.close(code=4003)
             return
-        project = (await db.execute(
-            select(Project.id).where(Project.id == project_uuid, Project.owner_id == user.id)
-        )).scalar_one_or_none()
-        if project is None:
-            await websocket.close(code=4003)
-            return
+
+        project_id = target_project_id
 
     active_session_id = session_id or str(uuid.uuid4())
     logger.info(

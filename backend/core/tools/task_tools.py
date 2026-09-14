@@ -118,6 +118,14 @@ class TaskTools:
                 if b_id and b_id not in clean_deps:
                     clean_deps.append(b_id)
 
+            known_ids = {str(existing.id).lower() for existing in existing_tasks}
+            missing = [dependency for dependency in clean_deps if dependency not in known_ids]
+            if missing:
+                return f"Error: Unknown task dependencies: {', '.join(missing)}"
+
+            if priority not in {"low", "medium", "high", "critical"}:
+                return f"Error: Invalid priority '{priority}'."
+
             task_uuid = uuid.uuid4()
             task_uuid_str = str(task_uuid)
 
@@ -156,6 +164,8 @@ class TaskTools:
                 assignee_agent = result.scalar_one_or_none()
                 if assignee_agent:
                     assigned_agent_id = assignee_agent.id
+                else:
+                    return f"Error: No agent named '{assignee_name}' found in this team."
 
             task = Task(
                 id=task_uuid,
@@ -168,22 +178,27 @@ class TaskTools:
                 blocked_by_task_id=primary_blocked_by,
                 depends_on=clean_deps,
                 created_by="agent",
+                revision=1,
             )
             db.add(task)
             await db.commit()
             await db.refresh(task)
 
-            # Broadcast task creation to the UI
-            await event_bus.publish(f"team:{team_id}", {
-                "type": "task_update",
-                "action": "created",
-                "task": {
-                    "id": str(task.id), "title": title, "description": description,
-                    "status": initial_status, "priority": priority,
-                    "assigned_agent_id": str(assigned_agent_id) if assigned_agent_id else None,
-                    "depends_on": clean_deps,
-                },
-            })
+            from core.tasks.board_service import notify_assignment, notify_unassigned_task, publish_task, record_task_activity
+            agent_actor_name = creator_agent_name or "Agent"
+            await record_task_activity(
+                db, task, actor_id="agent", actor_name=agent_actor_name,
+                activity_type="created", details=f"Task '{task.title}' created ({task.status}, {task.priority})",
+                new_value={"title": task.title, "priority": task.priority, "status": task.status}
+            )
+            if assignee_agent:
+                await record_task_activity(
+                    db, task, actor_id="agent", actor_name=agent_actor_name,
+                    activity_type="assigned", details=f"Assigned to {assignee_agent.name}",
+                    new_value={"assigned_agent_id": str(assignee_agent.id), "assignee_name": assignee_agent.name}
+                )
+
+            await publish_task(task, "created")
 
             # If assigned, wake the agent via chat @mention (suppress if assigned to oneself)
             is_self_assignment = (
@@ -192,18 +207,11 @@ class TaskTools:
                 and assignee_agent.name.strip().lower() == creator_agent_name.strip().lower()
             )
             if assignee_agent and not is_self_assignment:
-                from core.chat.message_router import message_router
-                if initial_status == "blocked":
-                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} task '{title}' (Task ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by prerequisite dependencies ({', '.join(clean_deps[:3])}). You will be notified when it is unblocked. Do not start work yet. DO NOT create a new task — this task already exists on the board."
-                else:
-                    assign_text = f"[TASK_ASSIGN] @{assignee_agent.name} task '{title}' (Task ID: {task.id}) has been assigned to you. IMPORTANT: DO NOT use create_task — this task already exists on the board. Use update_task(task_id='{task.id}', status='in_progress') to start, then update_task(task_id='{task.id}', status='done') when finished."
-                await message_router.route_message(
-                    text=assign_text,
-                    sender_id="system",
-                    team_id=str(team_id),
-                    sender_name="System",
-                    attachments=[]
+                await notify_assignment(
+                    db, task, actor_id=None, actor_name=creator_agent_name or "Agent",
                 )
+            elif not assignee_agent:
+                await notify_unassigned_task(db, task, creator_agent_name or "Agent")
 
             assigned_msg = f" (assigned to {assignee_name})" if assignee_name else ""
             blocked_msg = f" [BLOCKED by {len(clean_deps)} prerequisite(s)]" if initial_status == "blocked" else ""
@@ -247,28 +255,36 @@ class TaskTools:
         assignee_name: str = None, agent_name: str = None,
         blocked_by_task_id: str = None, team_id: str = None,
         depends_on: Optional[List[str]] = None,
+        expected_revision: Optional[int] = None,
         db: Optional[AsyncSession] = None,
     ) -> str:
         """Updates a task's status, notes, dependencies, and/or assignee. Wakes the agent on assignment."""
         if db is not None:
-            return await self._execute_update_task(db, task_id, status, notes, assignee_name, agent_name, blocked_by_task_id, team_id, depends_on)
+            return await self._execute_update_task(db, task_id, status, notes, assignee_name, agent_name, blocked_by_task_id, team_id, depends_on, expected_revision)
         async with async_session() as session:
-            return await self._execute_update_task(session, task_id, status, notes, assignee_name, agent_name, blocked_by_task_id, team_id, depends_on)
+            return await self._execute_update_task(session, task_id, status, notes, assignee_name, agent_name, blocked_by_task_id, team_id, depends_on, expected_revision)
 
     async def _execute_update_task(
         self, db: AsyncSession, task_id: str, status: str = None, notes: str = None,
         assignee_name: str = None, agent_name: str = None,
         blocked_by_task_id: str = None, team_id: str = None,
-        depends_on: Optional[List[str]] = None
+        depends_on: Optional[List[str]] = None,
+        expected_revision: Optional[int] = None,
     ) -> str:
         task = await _resolve_task(db, task_id, team_id)
         if not task:
             return f"Error: Task '{task_id}' not found."
 
+        if expected_revision is not None and (task.revision or 1) != expected_revision:
+            return f"Error: Conflict (409). Task '{task.id}' revision is {task.revision or 1}, but expected revision was {expected_revision}."
+
         old_status = task.status
+        old_assignee_id = task.assigned_agent_id
+        old_deps = list(task.depends_on or [])
         team_id_str = str(task.team_id)
 
         # Update and validate dependencies if requested
+        deps_changed = False
         if depends_on is not None or blocked_by_task_id is not None:
             stmt_team_tasks = select(Task).where(Task.team_id == task.team_id)
             team_tasks = (await db.execute(stmt_team_tasks)).scalars().all()
@@ -302,18 +318,23 @@ class TaskTools:
             except DAGCycleError as e:
                 return f"Error: Cannot update task dependencies — {str(e)}"
 
-            task.depends_on = new_deps
-            if new_deps and not task.blocked_by_task_id:
-                try:
-                    task.blocked_by_task_id = uuid.UUID(new_deps[0])
-                except (ValueError, AttributeError):
-                    pass
+            if new_deps != old_deps:
+                deps_changed = True
+                task.depends_on = new_deps
+                if new_deps and not task.blocked_by_task_id:
+                    try:
+                        task.blocked_by_task_id = uuid.UUID(new_deps[0])
+                    except (ValueError, AttributeError):
+                        pass
 
+        status_changed = False
         if status:
             valid_statuses = {"todo", "in_progress", "review", "done", "blocked"}
             if status not in valid_statuses:
                 return f"Error: Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}"
-            task.status = status
+            if status != old_status:
+                status_changed = True
+                task.status = status
 
         if notes:
             comment = TaskComment(
@@ -324,10 +345,9 @@ class TaskTools:
             )
             db.add(comment)
 
-        task.updated_at = datetime.now(timezone.utc)
-
         # Handle assignee change
         new_assignee_agent = None
+        assignee_changed = False
         if assignee_name:
             a_stmt = select(Agent).where(
                 Agent.team_id == task.team_id,
@@ -336,40 +356,38 @@ class TaskTools:
             a_res = await db.execute(a_stmt)
             new_assignee_agent = a_res.scalar_one_or_none()
             if new_assignee_agent:
-                task.assigned_agent_id = new_assignee_agent.id
+                if task.assigned_agent_id != new_assignee_agent.id:
+                    assignee_changed = True
+                    task.assigned_agent_id = new_assignee_agent.id
             else:
                 return f"Error: No agent named '{assignee_name}' found in this team."
 
+        task.revision = (task.revision or 1) + 1
+        task.updated_at = datetime.now(timezone.utc)
+
+        from core.tasks.board_service import notify_assignment, publish_task, wake_agents, record_task_activity
+        updater_actor_name = agent_name or "Agent"
+        if status_changed:
+            await record_task_activity(
+                db, task, actor_id="agent", actor_name=updater_actor_name,
+                activity_type="status_changed", details=f"Status changed from {old_status} to {task.status}",
+                old_value=old_status, new_value=task.status,
+            )
+        if assignee_changed:
+            await record_task_activity(
+                db, task, actor_id="agent", actor_name=updater_actor_name,
+                activity_type="assigned", details=f"Assigned to {new_assignee_agent.name if new_assignee_agent else 'None'}",
+                new_value={"assigned_agent_id": str(new_assignee_agent.id) if new_assignee_agent else None, "assignee_name": new_assignee_agent.name if new_assignee_agent else None},
+            )
+        if deps_changed:
+            await record_task_activity(
+                db, task, actor_id="agent", actor_name=updater_actor_name,
+                activity_type="dependencies_changed", details=f"Dependencies updated to {task.depends_on}",
+                old_value=old_deps, new_value=task.depends_on,
+            )
+
         await db.commit()
-
-        # Broadcast status change to UI with complete status field
-        await event_bus.publish(f"team:{team_id_str}", {
-            "type": "task_update",
-            "action": "updated",
-            "task": {
-                "id": str(task.id),
-                "title": task.title,
-                "status": task.status,
-                "old_status": old_status,
-                "new_status": task.status,
-                "priority": task.priority,
-                "description": task.description,
-                "assigned_agent_id": str(task.assigned_agent_id) if task.assigned_agent_id else None,
-                "depends_on": task.depends_on or [],
-            },
-        })
-
-        # Broadcast a visible chat message so the team knows
-        from core.chat.message_router import message_router
-        updater = f" by {agent_name}" if agent_name else ""
-        chat_text = f"[TASK_UPDATE] Task '{task.title}' moved to '{task.status}'{updater}"
-        await message_router.route_message(
-            text=chat_text,
-            sender_id="system",
-            team_id=team_id_str,
-            sender_name="System",
-            attachments=[]
-        )
+        await publish_task(task)
 
         # If a new assignee was set, wake them via @mention (suppress if assigned to oneself)
         is_self_update = (
@@ -377,20 +395,10 @@ class TaskTools:
             and agent_name is not None
             and new_assignee_agent.name.strip().lower() == agent_name.strip().lower()
         )
-        if new_assignee_agent and not is_self_update:
-            if task.status == "blocked":
-                assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by prerequisite dependencies. You will be notified when it is unblocked. Do not start work yet. DO NOT create a new task — this task already exists on the board."
-            else:
-                assign_text = f"[TASK_ASSIGN] @{new_assignee_agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. Description: {task.description or 'No description provided.'}. IMPORTANT: DO NOT use create_task — this task already exists on the board. Use update_task(task_id='{task.id}', status='in_progress') to start, then update_task(task_id='{task.id}', status='done') when finished."
-            await message_router.route_message(
-                text=assign_text,
-                sender_id="system",
-                team_id=team_id_str,
-                sender_name="System",
-                attachments=[]
+        if new_assignee_agent and not is_self_update and assignee_changed:
+            await notify_assignment(
+                db, task, actor_id=None, actor_name=agent_name or "Agent",
             )
-            if task.status != "blocked":
-                await message_router._enqueue_agent(new_assignee_agent, assign_text, db)
 
         # ── MULTI-DEPENDENCY UNBLOCK & CASCADE ENGINE ───────────────────────────
         all_team_tasks_stmt = select(Task).where(Task.team_id == task.team_id)
@@ -404,31 +412,21 @@ class TaskTools:
             for b_task in unblocked_tasks:
                 b_task.blocked_by_task_id = None
                 b_task.status = "todo"
+                b_task.revision = (b_task.revision or 1) + 1
                 b_task.updated_at = datetime.now(timezone.utc)
-
-                # Broadcast unblocked status update for UI
-                await event_bus.publish(f"team:{team_id_str}", {
-                    "type": "task_update",
-                    "action": "updated",
-                    "task": {
-                        "id": str(b_task.id),
-                        "title": b_task.title,
-                        "status": "todo",
-                        "old_status": "blocked",
-                        "new_status": "todo",
-                        "priority": b_task.priority,
-                        "description": b_task.description,
-                        "assigned_agent_id": str(b_task.assigned_agent_id) if b_task.assigned_agent_id else None,
-                        "depends_on": b_task.depends_on or [],
-                    },
-                })
+                await record_task_activity(
+                    db, b_task, actor_id="system", actor_name="System",
+                    activity_type="unblocked", details=f"Prerequisites satisfied by task '{task.title}'",
+                    old_value="blocked", new_value="todo",
+                )
+                await publish_task(b_task, "updated")
 
                 if b_task.assigned_agent_id:
                     agent_res = await db.execute(select(Agent).where(Agent.id == b_task.assigned_agent_id))
                     b_agent = agent_res.scalar_one_or_none()
                     if b_agent:
                         unblock_text = f"[TASK_UNBLOCKED] @{b_agent.name} prerequisite task '{task.title}' is complete. All prerequisites for '{b_task.title}' are now satisfied. You are unblocked and can begin work now. Use update_task(task_id='{b_task.id}', status='in_progress') to start."
-                        unblock_notifications.append((b_agent, unblock_text))
+                        unblock_notifications.append((b_agent, b_task, unblock_text))
 
             orchestrator_notification = None
             if not unblocked_tasks:
@@ -453,26 +451,20 @@ class TaskTools:
             await db.commit()
 
             # Dispatch unblock notifications
-            for b_agent, unblock_text in unblock_notifications:
-                await message_router.route_message(
-                    text=unblock_text,
-                    sender_id="system",
-                    team_id=team_id_str,
-                    sender_name="System",
-                    attachments=[]
+            for b_agent, b_task, unblock_text in unblock_notifications:
+                await wake_agents(
+                    db, b_task, [b_agent], reason="unblocked", actor_id=None,
+                    actor_name=agent_name or "Agent", event_id=str(task.id),
+                    coordination_context=unblock_text,
                 )
-                await message_router._enqueue_agent(b_agent, unblock_text, db)
 
             if orchestrator_notification:
                 orch, done_text = orchestrator_notification
-                await message_router.route_message(
-                    text=done_text,
-                    sender_id="system",
-                    team_id=team_id_str,
-                    sender_name="System",
-                    attachments=[]
+                await wake_agents(
+                    db, task, [orch], reason="board_complete", actor_id=None,
+                    actor_name=agent_name or "Agent", event_id=str(task.updated_at),
+                    coordination_context=done_text,
                 )
-                await message_router._enqueue_agent(orch, done_text, db)
 
         elif task.status == "blocked":
             # 2. Propagate cascade failure to downstream tasks
@@ -484,18 +476,14 @@ class TaskTools:
             for c_task, cascade_msg in cascade_impacted:
                 if c_task.status != "blocked":
                     c_task.status = "blocked"
+                    c_task.revision = (c_task.revision or 1) + 1
                     c_task.updated_at = datetime.now(timezone.utc)
-                    await event_bus.publish(f"team:{team_id_str}", {
-                        "type": "task_update",
-                        "action": "updated",
-                        "task": {
-                            "id": str(c_task.id),
-                            "title": c_task.title,
-                            "status": "blocked",
-                            "priority": c_task.priority,
-                            "depends_on": c_task.depends_on or [],
-                        },
-                    })
+                    await record_task_activity(
+                        db, c_task, actor_id="system", actor_name="System",
+                        activity_type="status_changed", details=f"Cascade blocked: {cascade_msg}",
+                        old_value="todo", new_value="blocked",
+                    )
+                    await publish_task(c_task, "updated")
             if cascade_impacted:
                 await db.commit()
 
@@ -503,6 +491,22 @@ class TaskTools:
         if new_assignee_agent:
             summary += f" | assigned to {new_assignee_agent.name}"
         return summary
+
+    async def delete_task(
+        self, task_id: str, author_id: str = "agent", author_name: str = "Agent", team_id: str = None
+    ) -> str:
+        """Deletes a task and cleans up dependencies across downstream tasks."""
+        from core.tasks.board_service import delete_task_with_dependencies
+        async with async_session() as db:
+            task = await _resolve_task(db, task_id, team_id)
+            if not task:
+                return f"Error: Task '{task_id}' not found."
+            task_title = task.title
+            task_id_str = str(task.id)
+            deleted = await delete_task_with_dependencies(db, task, author_id=author_id, author_name=author_name)
+            if not deleted:
+                return f"Error: Could not delete task '{task_id}'."
+            return f"✓ Task '{task_title}' (ID: {task_id_str}) deleted."
 
     async def comment_on_task(
         self, task_id: str, text: str, author_id: str, author_name: str, team_id: str = None,
@@ -517,54 +521,17 @@ class TaskTools:
     async def _execute_comment_on_task(
         self, db: AsyncSession, task_id: str, text: str, author_id: str, author_name: str, team_id: str = None
     ) -> str:
-        from core.memory.models import TaskComment
+        from core.tasks.board_service import add_comment
         task = await _resolve_task(db, task_id, team_id)
         if not task:
             return f"Error: Task '{task_id}' not found."
-                
-        comment = TaskComment(
-            task_id=task.id,
-            author_id=author_id,
-            author_name=author_name,
-            text=text
-        )
-        db.add(comment)
-        await db.commit()
-        
-        # Broadcast UI update + visible chat message
-        team_id_str = str(task.team_id)
-        await event_bus.publish(f"team:{team_id_str}", {
-            "type": "task_update",
-            "action": "updated",
-            "task": {
-                "id": str(task.id),
-                "title": task.title,
-                "status": task.status,
-                "description": task.description,
-                "assigned_agent_id": str(task.assigned_agent_id) if task.assigned_agent_id else None,
-            }
-        })
-
-        from core.chat.message_router import message_router
-        sys_text = f"[TASK_COMMENT] {author_name} on '{task.title}': {text}"
-        
-        import re
-        # Implicit mentions for assignee if no explicit mention is in the text
-        if task.assigned_agent_id and not re.search(r"@\w+", text):
-            agent_res = await db.execute(select(Agent).where(Agent.id == task.assigned_agent_id))
-            assignee_agent = agent_res.scalar_one_or_none()
-            if assignee_agent and str(assignee_agent.id) != author_id:
-                sys_text += f"\n(Implicitly notifying assignee: @{assignee_agent.name})"
-
-        await message_router.route_message(
-            text=sys_text,
-            sender_id="system",
-            team_id=team_id_str,
-            sender_name="System",
-            attachments=[]
-        )
-        
-        return f"✓ Comment added to task '{task.title}'"
+        try:
+            _, woken = await add_comment(
+                db, task, author_id=author_id, author_name=author_name, text=text,
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+        return f"✓ Comment added to task '{task.title}' ({len(woken)} agent(s) notified)"
 
     # ── Implementation Plan Tools ────────────────────────────────────────────────
 

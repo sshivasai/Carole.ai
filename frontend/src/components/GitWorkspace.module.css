@@ -1,0 +1,109 @@
+.workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(ellipse 65% 40% at 55% -10%, rgba(93,111,247,.07), transparent 65%), var(--color-canvas);
+  overflow: hidden;
+}
+
+.header {
+  height: 56px;
+  min-height: 56px;
+  max-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.08));
+  background: color-mix(in srgb, var(--color-canvas) 84%, transparent);
+  backdrop-filter: blur(16px);
+  flex-shrink: 0;
+  gap: 16px;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.titleGroup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.iconCircle {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--color-primary-glow-sm);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+  color: var(--color-primary-soft, #818cf8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-ink, #f8fafc);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.subtitle {
+  font-size: 11px;
+  color: var(--color-mute, #94a3b8);
+  margin: 0;
+}
+
+.branchPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--color-canvas-soft, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.1));
+  border-radius: 999px;
+  transition: border-color .2s ease, background .2s ease, transform .2s ease;
+  font-size: 11px;
+  color: var(--color-ink, #f8fafc);
+}
+
+.branchName {
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-primary-soft);
+}
+
+.upstreamStatus {
+  color: var(--color-mute, #94a3b8);
+  font-size: 10px;
+  margin-left: 4px;
+  border-left: 1px solid var(--color-hairline, rgba(255, 255, 255, 0.1));
+  padding-left: 6px;
+}
+
+.upToDate {
+  color: #10b981;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}

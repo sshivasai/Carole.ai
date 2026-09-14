@@ -240,6 +240,19 @@ async def lifespan(app: FastAPI):
 
     sweeper_task = asyncio.create_task(_topic_sweeper(), name="topic_sweeper")
 
+    # Periodic Kanban outbox processor & stale lease reclaimer
+    async def _outbox_worker():
+        while True:
+            await asyncio.sleep(10)
+            try:
+                from core.tasks.board_service import dispatch_pending_outbox
+                async with async_session() as db:
+                    await dispatch_pending_outbox(db)
+            except Exception as outbox_err:
+                logger.debug("Outbox worker sweep error: %s", outbox_err)
+
+    outbox_task = asyncio.create_task(_outbox_worker(), name="outbox_worker")
+
     # Initialize OpenLLMetry Observability & Tracing
     try:
         from core.observability.openllmetry_tracer import init_openllmetry
@@ -247,8 +260,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("OpenLLMetry initialization warning: %s", e)
 
-    # Store all background task references in app.state (MCP boot tasks + workers + sweeper)
-    app.state.background_tasks = [dream_task, sweeper_task, cron_task, memory_index_task] + mcp_boot_tasks
+    # Dynamic LLM Provider Model Discovery & Catalog Sync (startup refresh)
+    from core.llm.provider_sync import sync_provider_models_background
+    model_sync_task = asyncio.create_task(sync_provider_models_background(), name="provider_models_sync")
+
+    # Store all background task references in app.state (MCP boot tasks + workers + sweeper + model sync)
+    app.state.background_tasks = [dream_task, sweeper_task, cron_task, memory_index_task, outbox_task, model_sync_task] + mcp_boot_tasks
+
 
     try:
         yield  # Server is now running
@@ -489,6 +507,19 @@ async def websocket_endpoint(
                 # Handle heartbeat pings
                 if payload.get("type") == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
+                    continue
+
+                # Ephemeral WebSocket events: presence and typing indicators
+                # Ephemeral events broadcast to other clients; never wake agents or enter model context
+                if payload.get("type") in ("typing", "presence"):
+                    user_display_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "You"
+                    ephemeral_msg = {
+                        "type": payload["type"],
+                        "user_id": str(user.id),
+                        "user_name": user_display_name,
+                        **{k: v for k, v in payload.items() if k not in ("type", "user_id", "user_name")},
+                    }
+                    await event_bus.publish(f"team:{team_id}", ephemeral_msg)
                     continue
 
                 # Basic validation to avoid injection/spoofing

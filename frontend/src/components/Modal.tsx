@@ -16,36 +16,43 @@ export default function Modal({ open, onClose, title, children, maxWidth = 480, 
   const previousActiveElement = useRef<HTMLElement | null>(null);
   const titleId = useId();
 
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
+
   // Focus trap & escape key handler
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopPropagation();
-      onClose();
+      closeRef.current();
       return;
     }
 
     if (e.key === "Tab" && modalRef.current) {
-      const focusable = modalRef.current.querySelectorAll<HTMLElement>(
+      const focusable = Array.from(modalRef.current.querySelectorAll<HTMLElement>(
         'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      );
-      if (focusable.length === 0) return;
+      )).filter(element => element.getClientRects().length > 0 && !element.closest("[inert]"));
+      if (focusable.length === 0) {
+        e.preventDefault();
+        modalRef.current.focus();
+        return;
+      }
 
       const firstElement = focusable[0];
       const lastElement = focusable[focusable.length - 1];
 
       if (e.shiftKey) {
-        if (document.activeElement === firstElement) {
+        if (document.activeElement === firstElement || !focusable.includes(document.activeElement as HTMLElement)) {
           e.preventDefault();
           lastElement.focus();
         }
       } else {
-        if (document.activeElement === lastElement) {
+        if (document.activeElement === lastElement || !focusable.includes(document.activeElement as HTMLElement)) {
           e.preventDefault();
           firstElement.focus();
         }
       }
     }
-  }, [onClose]);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -92,6 +99,7 @@ export default function Modal({ open, onClose, title, children, maxWidth = 480, 
       role="dialog"
       aria-modal="true"
       aria-labelledby={title ? titleId : undefined}
+      aria-label={title ? undefined : "Dialog"}
     >
       <div
         ref={modalRef}
@@ -114,7 +122,7 @@ export default function Modal({ open, onClose, title, children, maxWidth = 480, 
             )}
           </div>
         )}
-        <div style={{ overflowY: "auto", maxHeight: "calc(90vh - 120px)" }} className="modal-content">
+        <div style={{ overflowY: "auto", minHeight: 0, flex: "1 1 auto" }} className="modal-content">
           {children}
         </div>
       </div>

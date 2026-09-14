@@ -236,11 +236,15 @@ async def test_message_rollback_and_file_restoration(client: AsyncClient):
     modified_code = "print('version 2 - feature A added')\n"
     await file_tools.write_file(rel_path, modified_code, agent_name="Coder", project_id=project_id)
 
-    # 4. Agent posts response Message 2
+    agent_id = str(uuid.uuid4())
+    from core.memory.models import Agent
+    async with TestSession() as s:
+        s.add(Agent(id=uuid.UUID(agent_id), name="Coder", role="developer", team_id=uuid.UUID(team_id), model="openrouter/free", system_prompt="You are a coder"))
+        await s.commit()
     with patch("core.chat.message_router.async_session", TestSession):
         await message_router.route_message(
             text="I added feature A",
-            sender_id="coder",
+            sender_id=agent_id,
             team_id=team_id,
             sender_name="Coder"
         )

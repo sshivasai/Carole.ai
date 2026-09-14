@@ -50,6 +50,7 @@ def event_loop():
 @pytest.fixture(scope="session", autouse=True)
 async def setup_db():
     """Initializes the database schema and tool registry before tests run."""
+    import core.memory.models  # Ensure all SQLAlchemy models are registered on Base.metadata
     from core.tools.tool_executor import register_builtin_tools
     register_builtin_tools()
 

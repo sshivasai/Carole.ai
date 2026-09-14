@@ -70,3 +70,8 @@ backend/audit/BACKEND_REVIEW.md
 backend/audit/REMEDIATION_STATUS.md
 backend/audit/CONTEXT_PROMPT_REVIEW.md
 *.log
+docs/KANBAN_AGENT_WORKFLOW.md
+docs/UI_PRODUCT_BLUEPRINT.md
+backend/audit/backend-tests-verified.xml
+backend/audit/backend-tests-verified.xml
+backend/audit/backend-tests-verified.xml

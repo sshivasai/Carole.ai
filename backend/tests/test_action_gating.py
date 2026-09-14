@@ -69,8 +69,17 @@ def test_intent_engine_detect_unexecuted_promise():
     assert IntentEngine.detect_unexecuted_promise(promise_1, has_tool_call=False) is not None
     assert IntentEngine.detect_unexecuted_promise(promise_2, has_tool_call=False) is not None
     assert IntentEngine.detect_unexecuted_promise(promise_3, has_tool_call=False) is not None
+    assert IntentEngine.detect_unexecuted_promise("On it — opening a browser to search for the latest news.", has_tool_call=False) is not None
+    assert IntentEngine.detect_unexecuted_promise("Let me check the browser snapshot to see what news appeared.", has_tool_call=False) is not None
 
     # With tool call: NOT flagged!
     assert IntentEngine.detect_unexecuted_promise(promise_1, has_tool_call=True) is None
     assert IntentEngine.detect_unexecuted_promise(promise_2, has_tool_call=True) is None
     assert IntentEngine.detect_unexecuted_promise(promise_3, has_tool_call=True) is None
+    assert IntentEngine.detect_unexecuted_promise("On it — opening a browser to search for the latest news.", has_tool_call=True) is None
+
+
+def test_intent_engine_action_requests_with_mentions_and_browser():
+    assert IntentEngine.is_action_request("open a web browser and search for latest news using the browser @Archer")
+    assert IntentEngine.is_action_request("@Nova search for python docs online")
+    assert IntentEngine.is_action_request("open the dashboard preview @Coder")

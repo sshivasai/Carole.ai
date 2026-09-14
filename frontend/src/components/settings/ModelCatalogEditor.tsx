@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   Save, Loader2, Plus, Trash2, ChevronDown, ChevronUp,
-  GripVertical, AlertCircle, RefreshCw, RotateCcw, AlertTriangle,
+  GripVertical, AlertCircle, RefreshCw, RotateCcw, AlertTriangle, Globe,
 } from "lucide-react";
 import { api } from "@/hooks/useApi";
 
@@ -300,6 +300,7 @@ export default function ModelCatalogEditor({ onToast }: Props) {
   const [resetting, setResetting]     = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [showAdd, setShowAdd]         = useState(false);
+  const [syncing, setSyncing]         = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -312,7 +313,26 @@ export default function ModelCatalogEditor({ onToast }: Props) {
     } finally { setLoading(false); }
   }, []);
 
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      const res = await api.syncModelCatalog();
+      if (res.catalog) {
+        setCatalog(res.catalog);
+        setOriginal(res.catalog);
+      }
+      const count = res.total_models || 0;
+      const providers = res.synced_providers?.join(", ") || "providers";
+      onToast(`Successfully synced latest models from ${providers} (${count} total) ✓`, "success");
+    } catch (err: any) {
+      onToast(`Failed to sync provider models: ${err?.message || "error"}`, "error");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   useEffect(() => { load(); }, [load]);
+
 
   const handleProviderChange = (id: string, updated: ProviderData) => {
     setCatalog(c => ({ ...c, [id]: updated }));
@@ -375,8 +395,18 @@ export default function ModelCatalogEditor({ onToast }: Props) {
           </p>
         </div>
         <div style={{ display: "flex", gap: "var(--sp-sm)", flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button className="btn btn-ghost btn-sm" onClick={load} disabled={loading} title="Reload from server">
+          <button className="btn btn-ghost btn-sm" onClick={load} disabled={loading || syncing} title="Reload from server">
             <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={handleSync}
+            disabled={loading || syncing}
+            title="Fetch latest models dynamically from OpenRouter, OpenAI, Anthropic, Gemini, Ollama"
+            style={{ color: "var(--color-primary)", borderColor: "rgba(99, 102, 241, 0.3)" }}
+          >
+            {syncing ? <Loader2 size={13} className="animate-spin" /> : <Globe size={13} />}
+            {syncing ? "Syncing Providers..." : "Sync from Providers"}
           </button>
           <button
             className="btn btn-ghost btn-sm"

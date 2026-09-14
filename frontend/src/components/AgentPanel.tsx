@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import type { AgentConfig, ScheduledTask, AccessControlConfig, PermissionLevel } from "@/lib/types";
-import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock, Shield, Shuffle, Sparkles, RefreshCw, FileText } from "lucide-react";
+import { Zap, Plus, Edit2, Trash2, Loader2, Bot, ChevronDown, ChevronUp, Cpu, Clock, Shield, Shuffle, Sparkles, RefreshCw, FileText, Search, Edit3, ListFilter } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
 import AgentAvatar from "./AgentAvatar";
@@ -161,7 +161,7 @@ function detectProvider(model: string, catalog: Record<string, any>): string {
   return Object.keys(catalog)[0] || "openrouter";
 }
 
-/** Single model selector (provider dropdown + model select + custom text input) */
+/** Single model selector (provider dropdown + searchable model select + custom text input) */
 function ModelSelector({
   label, catalog, provider, model,
   onProviderChange, onModelChange,
@@ -174,70 +174,176 @@ function ModelSelector({
   onModelChange: (m: string) => void;
 }) {
   const providerData = catalog[provider];
-  const models = providerData?.models || [];
+  const models = (providerData?.models as any[]) || [];
 
-  // If the current model isn't in the provider's known list, we treat it as "custom"
   const isKnown = models.some((m: any) => m.value === model);
-  const showCustom = !isKnown && model !== "";
+  const [customMode, setCustomMode] = useState(!isKnown && model !== "");
+  const [filterText, setFilterText] = useState("");
+
+  // Auto-switch to customMode if model is not in provider list
+  useEffect(() => {
+    if (!isKnown && model !== "") {
+      setCustomMode(true);
+    }
+  }, [model, isKnown]);
+
+  const filteredModels = models.filter((m: any) => {
+    if (!filterText.trim()) return true;
+    const q = filterText.toLowerCase();
+    return (m.label || "").toLowerCase().includes(q) || (m.value || "").toLowerCase().includes(q);
+  });
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: "var(--sp-md)" }}>
-      <div className="form-group" style={{ marginBottom: 0 }}>
-        <label className="form-label">{label} — Provider</label>
-        <select className="input" value={provider} onChange={e => onProviderChange(e.target.value)}>
-          {Object.entries(catalog).map(([k, v]: [string, any]) => (
-            <option key={k} value={k}>{v.label}</option>
-          ))}
-        </select>
-      </div>
-      <div className="form-group" style={{ marginBottom: 0 }}>
-        <label className="form-label">
-          Model
-        </label>
-        <select
-          className="input"
-          value={isKnown ? model : "custom"}
-          onChange={e => {
-            if (e.target.value === "custom") {
-              onModelChange("");
-            } else {
-              onModelChange(e.target.value);
-            }
-          }}
-        >
-          {models.map((m: any) => (
-            <option key={m.value} value={m.value}>
-              {m.label}{m.special ? (m.value === "openrouter/auto" ? " (Auto-router)" : " (Random Free + Reasoning)") : ""}
-            </option>
-          ))}
-          <option value="custom">Custom... (Type manually)</option>
-        </select>
-
-        {(!isKnown || showCustom) && (
-          <input
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-xs)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: "var(--sp-md)", alignItems: "flex-end" }}>
+        {/* Provider selector */}
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label">{label} — Provider</label>
+          <select
             className="input"
-            style={{ marginTop: "var(--sp-xs)" }}
-            value={model}
-            onChange={e => onModelChange(e.target.value)}
-            placeholder="Type custom model ID..."
-          />
-        )}
+            value={provider}
+            onChange={e => {
+              onProviderChange(e.target.value);
+              setFilterText("");
+            }}
+          >
+            {Object.entries(catalog).map(([k, v]: [string, any]) => (
+              <option key={k} value={k}>{v.label || k}</option>
+            ))}
+          </select>
+        </div>
 
-        {/* Special model info banners */}
-        {model === "openrouter/auto" && (
-          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#a78bfa", display: "flex", alignItems: "center", gap: 5 }}>
-            <Shuffle size={12} /> <strong>Auto Router</strong> — NotDiamond picks the best model per prompt.
-          </p>
-        )}
-        {model === "openrouter/free" && (
-          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#00d992", display: "flex", alignItems: "center", gap: 5 }}>
-            <Sparkles size={12} /> <strong>Auto Free</strong> — Randomly selects a free model. Reasoning is automatically enabled.
-          </p>
-        )}
+        {/* Model selector or custom input */}
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--sp-2xs)" }}>
+            <label className="form-label" style={{ margin: 0 }}>
+              Model {models.length > 0 && <span style={{ opacity: 0.6, fontSize: 11 }}>({models.length} available)</span>}
+            </label>
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              style={{
+                fontSize: 11,
+                padding: "2px 6px",
+                height: "auto",
+                gap: 4,
+                color: customMode ? "var(--color-primary)" : "var(--color-mute)",
+              }}
+              onClick={() => {
+                const next = !customMode;
+                setCustomMode(next);
+                if (!next && !isKnown) {
+                  onModelChange(models[0]?.value || "");
+                }
+              }}
+              title={customMode ? "Switch to selecting from available models list" : "Type a custom or unlisted model name"}
+            >
+              {customMode ? (
+                <>
+                  <ListFilter size={11} /> Choose from List
+                </>
+              ) : (
+                <>
+                  <Edit3 size={11} /> Type Custom Model
+                </>
+              )}
+            </button>
+          </div>
+
+          {!customMode ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2xs)" }}>
+              {models.length > 10 && (
+                <div style={{ position: "relative" }}>
+                  <Search size={12} style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", color: "var(--color-mute)", pointerEvents: "none" }} />
+                  <input
+                    className="input"
+                    style={{ fontSize: 11, paddingLeft: 26, height: 28 }}
+                    placeholder={`Filter ${models.length} models (e.g. claude, gpt, qwen, free)...`}
+                    value={filterText}
+                    onChange={e => setFilterText(e.target.value)}
+                  />
+                  {filterText && (
+                    <button
+                      type="button"
+                      onClick={() => setFilterText("")}
+                      style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--color-mute)", cursor: "pointer", fontSize: 11 }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              )}
+              <select
+                className="input"
+                value={isKnown ? model : (models[0]?.value || "")}
+                onChange={e => {
+                  if (e.target.value === "__custom__") {
+                    setCustomMode(true);
+                  } else {
+                    onModelChange(e.target.value);
+                  }
+                }}
+              >
+                {filteredModels.map((m: any) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}{m.special ? (m.value === "openrouter/auto" ? " (Auto-router)" : " (Random Free + Reasoning)") : ""}
+                  </option>
+                ))}
+                {filteredModels.length === 0 && (
+                  <option disabled value="">No models matching &quot;{filterText}&quot;</option>
+                )}
+                <option value="__custom__">✏️ Custom... (Type any model name)</option>
+              </select>
+            </div>
+          ) : (
+            <div>
+              <input
+                className="input"
+                value={model}
+                onChange={e => onModelChange(e.target.value)}
+                placeholder={
+                  provider === "openrouter"
+                    ? "openrouter/author/model-name (e.g. openrouter/deepseek/deepseek-chat)"
+                    : provider === "ollama"
+                    ? "ollama/model:tag (e.g. ollama/llama3.2)"
+                    : provider === "google"
+                    ? "gemini-model-name (e.g. gemini-2.5-pro)"
+                    : provider === "anthropic"
+                    ? "claude-model-name (e.g. claude-3-7-sonnet-20250219)"
+                    : "e.g. gpt-4o, o3, custom/model-name"
+                }
+                autoFocus
+              />
+              <p className="caption" style={{ fontSize: 10, color: "var(--color-mute)", marginTop: 3 }}>
+                Type any model ID or fine-tune. Provider routing: {
+                  provider === "openrouter" ? "Use openrouter/<vendor>/<model>" :
+                  provider === "ollama" ? "Use ollama/<model>" :
+                  provider === "nvidia" ? "Use nvidia/<model>" :
+                  provider === "google" ? "Use gemini-..." :
+                  provider === "anthropic" ? "Use claude-..." :
+                  "Standard model ID"
+                }
+              </p>
+            </div>
+          )}
+
+          {/* Special model info banners */}
+          {model === "openrouter/auto" && (
+            <p style={{ margin: "4px 0 0", fontSize: 11, color: "#a78bfa", display: "flex", alignItems: "center", gap: 5 }}>
+              <Shuffle size={12} /> <strong>Auto Router</strong> — NotDiamond picks the best model per prompt.
+            </p>
+          )}
+          {model === "openrouter/free" && (
+            <p style={{ margin: "4px 0 0", fontSize: 11, color: "#00d992", display: "flex", alignItems: "center", gap: 5 }}>
+              <Sparkles size={12} /> <strong>Auto Free</strong> — Randomly selects a free model. Reasoning is automatically enabled.
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
 }
+
 
 function AgentForm({ initial, teamId, roleTemplates, onSave, onClose }: {
   initial?: AgentConfig; teamId: string; roleTemplates: any[];

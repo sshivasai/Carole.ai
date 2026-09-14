@@ -315,6 +315,9 @@ class Task(Base):
     # JSON list: [{"id": "t1", "text": "...", "done": false}, ...]
     todo_list = Column(MutableList.as_mutable(JSON), nullable=True, default=list)
 
+    # Optimistic concurrency revision counter
+    revision = Column(Integer, nullable=False, default=1)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -333,6 +336,118 @@ class TaskComment(Base):
     author_name = Column(String(100), nullable=False)
     text = Column(Text, nullable=False)
     
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class TaskOutboxEvent(Base):
+    """Transactional database outbox for agent wake events."""
+    __tablename__ = "task_outbox_events"
+
+    __table_args__ = (
+        Index("ix_task_outbox_status_lease", "status", "lease_timeout"),
+        Index("ix_task_outbox_event_id", "event_id"),
+        Index("ix_task_outbox_team_id", "team_id"),
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    event_id = Column(String(255), nullable=False, unique=True)
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    agent_id = Column(Uuid, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    reason = Column(String(50), nullable=False)  # assigned, unblocked, comment, triage, dependency_deleted, board_complete
+    actor_id = Column(String(100), nullable=True)
+    actor_name = Column(String(100), nullable=False, default="System")
+    comment = Column(Text, nullable=True)
+    dedupe_key = Column(String(255), nullable=True)
+    prompt = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="pending")  # pending, processing, completed, failed
+    retry_count = Column(Integer, nullable=False, default=0)
+    lease_timeout = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    error = Column(Text, nullable=True)
+
+
+class TaskWatcher(Base):
+    """Task watchers / subscribers for notifications and subscription behavior."""
+    __tablename__ = "task_watchers"
+
+    __table_args__ = (
+        Index("ix_task_watchers_task_user", "task_id", "user_id", unique=True),
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(100), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class TaskReadCursor(Base):
+    """Per-user read cursor tracking unread comments per task."""
+    __tablename__ = "task_read_cursors"
+
+    __table_args__ = (
+        Index("ix_task_read_cursors_task_user", "task_id", "user_id", unique=True),
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(100), nullable=False)
+    last_read_comment_id = Column(Uuid, nullable=True)
+    last_read_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class TaskActivity(Base):
+    """Task activity audit record for assignment, status, dependency, and comment events."""
+    __tablename__ = "task_activities"
+
+    __table_args__ = (
+        Index("ix_task_activities_task_created", "task_id", "created_at"),
+        Index("ix_task_activities_team_created", "team_id", "created_at"),
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    actor_id = Column(String(100), nullable=False)
+    actor_name = Column(String(100), nullable=False)
+    activity_type = Column(String(50), nullable=False)  # created, status_changed, assigned, comment_added, dependency_added, dependency_removed, unblocked
+    old_value = Column(JSON, nullable=True)
+    new_value = Column(JSON, nullable=True)
+    details = Column(String(500), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AgentNotificationPreference(Base):
+    """Notification preferences per agent: assignment, mention, all comments, and muted tasks."""
+    __tablename__ = "agent_notification_preferences"
+
+    agent_id = Column(Uuid, ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True)
+    notify_on_assignment = Column(Boolean, nullable=False, default=True)
+    notify_on_mention = Column(Boolean, nullable=False, default=True)
+    notify_on_all_comments = Column(Boolean, nullable=False, default=False)
+    muted_task_ids = Column(MutableList.as_mutable(JSON), nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class TaskMetric(Base):
+    """Operational metrics: queue delay, duplicate suppression, wake reason, completion, failure, token cost."""
+    __tablename__ = "task_metrics"
+
+    __table_args__ = (
+        Index("ix_task_metrics_team_type", "team_id", "metric_type"),
+        Index("ix_task_metrics_task_id", "task_id"),
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    task_id = Column(Uuid, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
+    agent_id = Column(Uuid, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True)
+    metric_type = Column(String(50), nullable=False)  # queue_delay, duplicate_suppressed, wake, completion, failure, token_cost
+    value = Column(Float, nullable=False, default=0.0)
+    details = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 

@@ -17,8 +17,11 @@ import html
 import re
 import asyncio
 import logging
+import xml.etree.ElementTree as ET
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,14 +33,19 @@ from core.tools.context import CancellationToken, ToolExecutionContext, ToolPerm
 from core.memory.lancedb_client import lancedb_client
 import core
 import core.config
-from core.config import (
-    STRICT_REASONING_GUIDELINES, COMPACTION_SYSTEM_PROMPT, COMPACTION_USER_PROMPT,
-)
+from core.config import COMPACTION_USER_PROMPT
 
 logger = logging.getLogger("carole.react_agent")
 
+_NOTIFICATION_FIELDS = ("task_id", "agent", "status", "result", "tokens_used")
+_REDACTED_ARGUMENT_KEY = re.compile(
+    r"password|token|secret|credential|authorization|api[_-]?key", re.IGNORECASE
+)
+_TOOL_ERROR_PREFIXES = (
+    "✗", "error:", "error ", "permission denied", "denied:",
+    "execution denied:", "blocked:", "🛑 action paused:", "action paused:",
+)
 
-from dataclasses import dataclass
 
 @dataclass
 class ASTNode:
@@ -220,8 +228,8 @@ def resolve_active_tools(
 
     for cat, trigger in INTENT_TRIGGERS.items():
         if any(kw in init_lower for kw in trigger["keywords"]):
-            # Allow coder/developer to use browser when frontend/preview intent is detected
-            if cat == "browser" and ("coder" in role_key or "developer" in role_key):
+            # Allow coder/developer/orchestrator/coordinator/researcher/qa to use browser when browser/preview intent is detected
+            if cat == "browser" and any(r in role_key for r in ("coder", "developer", "orchestrator", "coordinator", "researcher", "qa")):
                 allowed_categories.add("browser")
             if cat in allowed_categories:
                 intent_tools.extend(trigger["tools"])
@@ -301,7 +309,8 @@ class ReACTAgent:
         # Tracks the DB id of the current response message (for file snapshotting)
         self.active_message_id: str | None = None
         self._worker_results: List[Dict[str, Any]] = []
-        self._notification_queue: asyncio.Queue = asyncio.Queue()
+        self._notification_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self._worker_notification_event = asyncio.Event()
         self._listening = False
         self._log = logger.getChild(self.name)
         # Strong reference to the background cancel-cleanup task so it isn't
@@ -311,12 +320,36 @@ class ReACTAgent:
         # --- Session-level caches (cleared at start of each run_loop call) ---
         # Cached assembled system prompt — rebuilt once per session, not per loop.
         self._cached_system_prompt: Optional[str] = None
+        self._cached_system_prompt_task: Optional[str] = None
         # Last observation text for no-progress detection.
         self._last_observation: str = ""
         self._no_progress_count: int = 0
         self._consecutive_tool_errors: int = 0
         self._modified_files: set = set()
         self._dynamically_requested_tools: Set[str] = set()
+
+    @staticmethod
+    def _as_uuid(value: Any) -> uuid.UUID:
+        """Return *value* as a UUID and fail with a clear error for invalid IDs."""
+        if isinstance(value, uuid.UUID):
+            return value
+        return uuid.UUID(str(value))
+
+    @staticmethod
+    def _sanitize_tool_args(value: Any) -> Any:
+        """Recursively redact credential-like values before emitting events."""
+        if isinstance(value, dict):
+            return {
+                str(key): "[REDACTED]"
+                if _REDACTED_ARGUMENT_KEY.search(str(key))
+                else ReACTAgent._sanitize_tool_args(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [ReACTAgent._sanitize_tool_args(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(ReACTAgent._sanitize_tool_args(item) for item in value)
+        return value
 
     async def _load_conversation_history(self, db_session: AsyncSession, limit: int = 20, exclude_msg_id: Optional[str] = None) -> List[Dict[str, str]]:
         """Loads recent team messages from the DB to give the agent conversation context.
@@ -328,7 +361,7 @@ class ReACTAgent:
         compaction persist across server restarts (previously, in-memory compaction
         was discarded on each new run and the full verbose history was reloaded).
         """
-        team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+        team_uuid = self._as_uuid(self.team_id)
 
         # --- Check for the most recent compaction checkpoint ---
         compaction_summary_msg = None
@@ -365,21 +398,21 @@ class ReACTAgent:
             # are UI-only scratch data. Loading them back into LLM context
             # causes 60-80% token bloat with no benefit — the agent already
             # consumed and acted on those results in the same run they were created.
-            .where(Message.is_intermediate == False)
+            .where(Message.is_intermediate.is_(False))
         )
         if getattr(self, "is_private_response", False):
-            stmt = stmt.where(or_(Message.is_private == False,
+            stmt = stmt.where(or_(Message.is_private.is_(False),
                                  Message.recipient_id == self.agent_id,
                                  Message.sender_id == self.agent_id))
         else:
-            stmt = stmt.where(Message.is_private == False)
+            stmt = stmt.where(Message.is_private.is_(False))
         # If there's a compaction checkpoint, only load messages after its coverage boundary
         if compaction_after_dt is not None:
             stmt = stmt.where(Message.created_at >= compaction_after_dt)
 
         if exclude_msg_id:
             try:
-                ex_uuid = uuid.UUID(exclude_msg_id) if isinstance(exclude_msg_id, str) else exclude_msg_id
+                ex_uuid = self._as_uuid(exclude_msg_id)
                 stmt = stmt.where(Message.id != ex_uuid)
             except Exception as e:
                 self._log.debug("Invalid exclude_msg_id format: %s", e)
@@ -445,12 +478,15 @@ class ReACTAgent:
         Optimized: fetches Agent roster, Project, User, and Team in a single
         pass using joined selects instead of 3 sequential round-trips.
         """
-        if self._cached_system_prompt is not None:
+        if (
+            self._cached_system_prompt is not None
+            and self._cached_system_prompt_task == current_task
+        ):
             return self._cached_system_prompt
         capabilities_block = "\n====\nCAPABILITIES & MEMORY\n====\n"
 
         # Single query: fetch all agents for the team
-        team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+        team_uuid = self._as_uuid(self.team_id)
         stmt = select(Agent).where(Agent.team_id == team_uuid)
         roster_result = await db_session.execute(stmt)
         teammates = roster_result.scalars().all()
@@ -524,7 +560,7 @@ class ReACTAgent:
                 for learning in valid_learnings:
                     learnings_block += f"- Past Situation: {learning.get('task_summary')}\n  Heuristic: {learning.get('lesson_rule')}\n"
                 learnings_block += "\n"
-            
+
         # 3.5 Format Entity Facts (with hard limit to prevent unbounded context growth)
         proj_uuid = uuid.UUID(str(self.project_id)) if self.project_id else None
         fact_conditions = [
@@ -638,7 +674,7 @@ class ReACTAgent:
             f"CURRENT ENVIRONMENT: You are running on {os_name} {os_release}.\n"
             f"When using shell tools, ensure your commands are compatible with {os_name} (e.g., use PowerShell/cmd syntax on Windows).\n\n"
         )
-        
+
         # Temporal awareness — agents always know the current date/time
         now = datetime.now(timezone.utc)
         temporal_block = (
@@ -684,9 +720,10 @@ class ReACTAgent:
         # Reasoning guidelines & Output Efficiency
         identity_rule = f"\n\nCRITICAL IDENTITY RULE: You are {self.name} ({self.role}). You MUST speak in the first person ('I', 'me'). NEVER refer to {self.name} in the third person. NEVER pretend to be someone else."
         output_efficiency = getattr(core.config, "OUTPUT_EFFICIENCY_PROMPT", "")
-        
+
         assembled = f"{TRUST_BOUNDARY}\n{self.system_prompt}{identity_rule}\n\n{output_efficiency}\n\n{capabilities_block}"
         self._cached_system_prompt = assembled
+        self._cached_system_prompt_task = current_task
         return assembled
 
     def _model_supports_native_tools(self, model: str) -> bool:
@@ -733,22 +770,24 @@ class ReACTAgent:
         """Force a rebuild of the cached system prompt on the next loop iteration.
         Call this when worker results arrive or team context changes."""
         self._cached_system_prompt = None
+        self._cached_system_prompt_task = None
 
     async def run_loop(self, db_session: AsyncSession, initial_prompt: str, attachments: Optional[List[Dict]] = None, token: Optional["CancellationToken"] = None, trigger_message_id: Optional[str] = None):
         """Runs the core ReACT loop with conversation history and streaming."""
-        if trigger_message_id:
-            self.active_message_id = trigger_message_id
-        
+        self.active_message_id = trigger_message_id
         self._listening = True
-        listener_task = asyncio.create_task(self._listen_for_notifications())
-        
+        listener_task = asyncio.create_task(
+            self._listen_for_notifications(),
+            name=f"react-notifications:{self.agent_id}",
+        )
+
         try:
             await self._run_loop_native(db_session, initial_prompt, attachments, token, trigger_message_id=trigger_message_id)
         except asyncio.CancelledError:
             # User clicked "Stop Generating" — persist whatever was partially generated
             partial = getattr(self, "_current_thought_buffer", "").strip()
             reasoning = getattr(self, "_current_reasoning_buffer", None) or None
-            
+
             async def _cleanup_cancelled_task():
                 # We must use a new session because the task is cancelled,
                 # and awaiting on the existing db_session might raise CancelledError.
@@ -756,10 +795,10 @@ class ReACTAgent:
                 async with async_session() as cleanup_db:
                     stop_note = "\n\n*[Generation stopped by user]*"
                     final_text = (partial + stop_note) if partial else stop_note.strip()
-        
+
                     try:
                         db_msg = Message(
-                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            team_id=self._as_uuid(self.team_id),
                             sender_id=self.agent_id,
                             sender_name=self.name,
                             text=final_text,
@@ -782,7 +821,7 @@ class ReACTAgent:
                         })
                     except Exception as persist_err:
                         self._log.warning("Could not persist partial message after cancel: %s", persist_err)
-        
+
                     # Signal idle so the UI clears the typing indicator
                     await event_bus.publish(self.topic, {
                         "type": "agent_status",
@@ -791,7 +830,7 @@ class ReACTAgent:
                         "role": self.role,
                         "status": "idle",
                     })
-                    
+
             # Launch cleanup as a background task so it isn't aborted by the current task's cancellation
             self._pending_cleanup = asyncio.create_task(_cleanup_cancelled_task())
             self._log.info("Agent %s stopped by user request.", self.name)
@@ -799,10 +838,8 @@ class ReACTAgent:
         finally:
             self._listening = False
             listener_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await listener_task
-            except asyncio.CancelledError:
-                pass
             # Guarantee terminal status publication so UI never remains stuck in "thinking"
             try:
                 await event_bus.publish(self.topic, {
@@ -1043,11 +1080,11 @@ class ReACTAgent:
             "CRITICAL ERROR — Code in Chat Detected",
             "CRITICAL ERROR — Plan Without Execution Detected"
         )
-        
+
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
-            
+
             if role == "assistant":
                 ast.append(ThoughtNode(msg))
                 if isinstance(content, str) and "[ACTION]" in content and "[/ACTION]" in content:
@@ -1062,7 +1099,7 @@ class ReACTAgent:
                     ast.append(ObservationNode(msg))
             else:
                 ast.append(ThoughtNode(msg))
-                
+
         return ast
 
     def _snip_dead_ends(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1152,7 +1189,7 @@ class ReACTAgent:
             # Persist CompactionEvent only for shared team chats (never leak private chats into team context)
             if db_session is not None and not getattr(self, "is_private_response", False):
                 try:
-                    team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+                    team_uuid = self._as_uuid(self.team_id)
                     cov_uuid = uuid.UUID(str(covered_msg_id)) if covered_msg_id else None
                     cp_event = CompactionEvent(
                         team_id=team_uuid,
@@ -1232,7 +1269,7 @@ class ReACTAgent:
                 json_str = json_str.split("```", 1)[1].split("```", 1)[0].strip()
 
             parsed = json.loads(json_str)
-            team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
+            team_uuid = self._as_uuid(self.team_id)
             proj_uuid = uuid.UUID(str(self.project_id)) if self.project_id else None
 
             saved_facts = 0
@@ -1327,6 +1364,7 @@ class ReACTAgent:
         # ── Reset per-session state ───────────────────────────────────────────
         model = self.model
         self._cached_system_prompt = None
+        self._cached_system_prompt_task = None
         self._last_observation = ""
         self._no_progress_count = 0
         self._consecutive_tool_errors = 0
@@ -1343,7 +1381,7 @@ class ReACTAgent:
         if trigger_message_id:
             self.active_message_id = trigger_message_id
             try:
-                t_uuid = uuid.UUID(trigger_message_id) if isinstance(trigger_message_id, str) else trigger_message_id
+                t_uuid = self._as_uuid(trigger_message_id)
                 t_res = await db_session.execute(select(Message).where(Message.id == t_uuid))
                 trigger_msg = t_res.scalar_one_or_none()
                 if trigger_msg and trigger_msg.is_private:
@@ -1353,7 +1391,7 @@ class ReACTAgent:
                 self._log.warning("Could not check trigger message privacy: %s", e)
 
         # ── Fetch agent config & permissions ─────────────────────────────────
-        agent_uuid = uuid.UUID(self.agent_id) if isinstance(self.agent_id, str) else self.agent_id
+        agent_uuid = self._as_uuid(self.agent_id)
         res = await db_session.execute(select(Agent).where(Agent.id == agent_uuid))
         db_agent = res.scalar_one_or_none()
         if db_agent is None:
@@ -1441,22 +1479,15 @@ class ReACTAgent:
         })
 
         loop_count = 0
-        max_loops = getattr(core.config, "MAX_LOOPS", 25)
+        configured_max_loops = getattr(core.config, "MAX_LOOPS", 25)
+        max_loops = (
+            configured_max_loops
+            if isinstance(configured_max_loops, int)
+            and not isinstance(configured_max_loops, bool)
+            and configured_max_loops > 0
+            else 25
+        )
         terminated = False
-
-        # Helper to redact sensitive credentials before broadcasting
-        def _sanitize_tool_args(args: Dict[str, Any]) -> Dict[str, Any]:
-            if not isinstance(args, dict):
-                return {}
-            sanitized = {}
-            for k, v in args.items():
-                if re.search(r"password|token|secret|credential|authorization|api[_-]?key", str(k), re.I):
-                    sanitized[k] = "[REDACTED]"
-                elif isinstance(v, dict):
-                    sanitized[k] = _sanitize_tool_args(v)
-                else:
-                    sanitized[k] = v
-            return sanitized
 
         # ── Main ReAct loop ───────────────────────────────────────────────────
         while loop_count < max_loops:
@@ -1508,7 +1539,7 @@ class ReACTAgent:
                 budget_note = f"\n\n*[System: Agent execution halted by Circuit Breaker — cumulative token budget of {max_budget_tokens:,} tokens reached.]*"
                 final_text = (self._current_thought_buffer or "") + budget_note
                 db_msg = Message(
-                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                    team_id=self._as_uuid(self.team_id),
                     sender_id=self.agent_id,
                     sender_name=self.name,
                     text=final_text,
@@ -1590,7 +1621,7 @@ class ReACTAgent:
                 if request_max_tokens < 1:
                     had_error = True
                     budget_text = "[System: No context or token budget remains. Task completion is unverified.]"
-                    budget_message = Message(team_id=uuid.UUID(str(self.team_id)), sender_id=self.agent_id,
+                    budget_message = Message(team_id=self._as_uuid(self.team_id), sender_id=self.agent_id,
                                              sender_name=self.name, text=budget_text,
                                              is_private=self.is_private_response, recipient_id=self.reply_recipient_id)
                     db_session.add(budget_message)
@@ -1677,7 +1708,7 @@ class ReACTAgent:
                             "error": e.to_dict(),
                         })
                         db_msg = Message(
-                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            team_id=self._as_uuid(self.team_id),
                             sender_id=self.agent_id,
                             sender_name=self.name,
                             text=error_msg,
@@ -1709,7 +1740,7 @@ class ReACTAgent:
                         error_msg = f"⚠️ LLM API error after 3 retries: {str(e)}"
                         self._log.error("[native] %s", error_msg)
                         db_msg = Message(
-                            team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                            team_id=self._as_uuid(self.team_id),
                             sender_id=self.agent_id,
                             sender_name=self.name,
                             text=error_msg,
@@ -1776,6 +1807,33 @@ class ReACTAgent:
                     else:
                         assistant_text = "The model returned no usable response. Task completion could not be verified."
 
+                # ── Intent Engine: false refusal & unexecuted promise interception ──
+                from core.agent.intent_engine import IntentEngine
+
+                false_refusal_obs = IntentEngine.detect_false_refusal(assistant_text)
+                if false_refusal_obs and loop_count < max_loops - 1:
+                    self._log.warning("[native] False refusal detected on loop %d: %s", loop_count, assistant_text[:100])
+                    history.add_assistant_text(text=assistant_text)
+                    history.add_context_note(false_refusal_obs)
+                    continue
+
+                unexecuted_promise_obs = IntentEngine.detect_unexecuted_promise(assistant_text, has_tool_call=False)
+                if unexecuted_promise_obs and loop_count < max_loops - 1:
+                    self._log.warning("[native] Unexecuted promise detected on loop %d: %s", loop_count, assistant_text[:100])
+                    history.add_assistant_text(text=assistant_text)
+                    history.add_context_note(unexecuted_promise_obs)
+                    continue
+
+                # Action-gated Turn 1 enforcement: if user gave an actionable prompt but model only chatted
+                if loop_count == 1 and IntentEngine.is_action_request(initial_prompt) and loop_count < max_loops - 1:
+                    self._log.warning("[native] Action request missing tool execution on Turn 1: '%s' -> '%s'", initial_prompt[:80], assistant_text[:80])
+                    history.add_assistant_text(text=assistant_text)
+                    history.add_context_note(
+                        "[OBSERVATION] Action Required: The user requested an action, but your response contains only text and no tool execution. "
+                        "Do not merely describe what you will do. Call the required tool immediately to execute the user's request."
+                    )
+                    continue
+
                 history.add_assistant_text(text=assistant_text, tool_uses=None)
                 self._log.info("[native] No tool calls in response — agent finished after %d loop(s).", loop_count)
 
@@ -1798,7 +1856,7 @@ class ReACTAgent:
                     attachments_list.append({"type": "parent_message", "id": self.parent_message_id})
 
                 db_msg = Message(
-                    team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                    team_id=self._as_uuid(self.team_id),
                     sender_id=self.agent_id,
                     sender_name=self.name,
                     text=assistant_text,
@@ -1819,7 +1877,7 @@ class ReACTAgent:
                 if self.parent_coordinator_id and coordinator_notification:
                     try:
                         from core.chat.message_router import message_router
-                        parent_uuid = uuid.UUID(str(self.parent_coordinator_id))
+                        parent_uuid = self._as_uuid(self.parent_coordinator_id)
                         stmt = select(Agent).where(Agent.id == parent_uuid)
                         p_res = await db_session.execute(stmt)
                         parent_agent = p_res.scalar_one_or_none()
@@ -1885,7 +1943,7 @@ class ReACTAgent:
                     "sender_id": self.agent_id,
                     "sender_name": self.name,
                     "tool_name": tool_name,
-                    "arguments": _sanitize_tool_args(tool_args),
+                    "arguments": self._sanitize_tool_args(tool_args),
                     "is_private": self.is_private_response,
                     "recipient_id": self.reply_recipient_id,
                 })
@@ -1895,7 +1953,7 @@ class ReACTAgent:
                         name=tool_name, args=tool_args,
                         permissions=permissions, token=token,
                     )
-                    if str(observation).lstrip().lower().startswith(("✗", "error:", "error ", "permission denied", "denied:", "execution denied:", "blocked:", "🛑 action paused:", "action paused:")):
+                    if str(observation).lstrip().lower().startswith(_TOOL_ERROR_PREFIXES):
                         is_error = True
                     else:
                         if tool_name in ("write_file", "edit_file", "append_file", "delete_file"):
@@ -2000,7 +2058,7 @@ class ReACTAgent:
                 db_trace_msg_id = None
                 try:
                     db_trace = Message(
-                        team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                        team_id=self._as_uuid(self.team_id),
                         sender_id=self.agent_id,
                         sender_name=self.name,
                         text=intermediate_trace,
@@ -2077,7 +2135,7 @@ class ReACTAgent:
                     halt_note = f"\n\n*[System: Execution halted by Circuit Breaker — {osc_loop}.]*"
                     final_text = (assistant_text or "") + halt_note
                     db_msg = Message(
-                        team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                        team_id=self._as_uuid(self.team_id),
                         sender_id=self.agent_id,
                         sender_name=self.name,
                         text=final_text,
@@ -2126,7 +2184,7 @@ class ReACTAgent:
                     )
                     final_text = (assistant_text or "") + stuck_note
                     db_msg = Message(
-                        team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                        team_id=self._as_uuid(self.team_id),
                         sender_id=self.agent_id,
                         sender_name=self.name,
                         text=final_text,
@@ -2176,7 +2234,7 @@ class ReACTAgent:
             final_note = f"\n\n*[System: Agent reached maximum loop limit of {max_loops}.]*"
             final_text = (self._current_thought_buffer or "") + final_note
             db_msg = Message(
-                team_id=uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id,
+                team_id=self._as_uuid(self.team_id),
                 sender_id=self.agent_id,
                 sender_name=self.name,
                 text=final_text,
@@ -2312,7 +2370,7 @@ class ReACTAgent:
             from core.memory.models import Learning
             async with _async_session() as db:
                 project_uuid = uuid.UUID(str(self.project_id))
-                team_uuid = uuid.UUID(str(self.team_id))
+                team_uuid = self._as_uuid(self.team_id)
                 existing = await db.scalar(select(Learning.id).where(
                     Learning.project_id == project_uuid, Learning.team_id == team_uuid,
                     Learning.task_summary == task_summary, Learning.lesson_rule == lesson_rule))
@@ -2344,12 +2402,12 @@ class ReACTAgent:
             s = re.sub(r"^```(?:json)?\s*", "", s)
             s = re.sub(r"\s*```$", "", s)
         s = s.strip()
-        
+
         in_str = False
         escape = False
         stack = []
         out = []
-        
+
         for c in s:
             if not in_str:
                 if c == '"':
@@ -2380,14 +2438,14 @@ class ReACTAgent:
                     out.append('\\t')
                 else:
                     out.append(c)
-                    
+
         if in_str:
             out.append('"')
         while stack:
             c = stack.pop()
             if c == '{': out.append('}')
             elif c == '[': out.append(']')
-            
+
         return "".join(out)
 
     def _parse_action(self, text: str) -> Any:
@@ -2623,25 +2681,27 @@ class ReACTAgent:
                     event = await asyncio.wait_for(queue.get(), timeout=2.0)
 
                     # Check if this is a task-notification from a worker
-                    if (
-                        event.get("type") == "message"
-                        and event.get("is_task_notification")
-                        and event.get("sender_id") != self.agent_id
-                    ):
-                        text = event.get("text", "")
-                        notifications = self.parse_task_notifications(text)
-                        for notif in notifications:
-                            notif["agent"] = event.get("sender_name", "unknown")
-                            self._worker_results.append(notif)
-                            self._invalidate_system_prompt_cache()
-                            self._log.info(
-                                "Collected notification from %s: task_id=%s status=%s",
-                                notif.get("agent", "?"),
-                                notif.get("task_id", "?"),
-                                notif.get("status", "?"),
-                            )
-
-                    queue.task_done()
+                    try:
+                        if (
+                            event.get("type") == "message"
+                            and event.get("is_task_notification")
+                            and event.get("sender_id") != self.agent_id
+                        ):
+                            text = event.get("text", "")
+                            notifications = self.parse_task_notifications(text)
+                            for notif in notifications:
+                                notif["agent"] = event.get("sender_name", "unknown")
+                                self._worker_results.append(notif)
+                                self._worker_notification_event.set()
+                                self._invalidate_system_prompt_cache()
+                                self._log.info(
+                                    "Collected notification from %s: task_id=%s status=%s",
+                                    notif.get("agent", "?"),
+                                    notif.get("task_id", "?"),
+                                    notif.get("status", "?"),
+                                )
+                    finally:
+                        queue.task_done()
                 except asyncio.TimeoutError:
                     continue
         except asyncio.CancelledError:
@@ -2649,43 +2709,50 @@ class ReACTAgent:
         finally:
             await event_bus.unsubscribe(topic, queue)
 
-    async def collect_pending_notifications(self, timeout: float = 30.0) -> List[Dict[str, str]]:
-        """
-        Waits up to `timeout` seconds for worker notifications to arrive.
-        Returns a list of parsed notification dicts.
-        Used when the agent explicitly needs to wait for worker results.
-        """
-        collected = []
-        # FIX: Use asyncio.get_running_loop() — asyncio.get_event_loop() is
-        # deprecated in Python 3.10+ and raises DeprecationWarning.
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+    async def collect_pending_notifications(
+        self, timeout: float = 30.0
+    ) -> List[Dict[str, str]]:
+        """Wait for and atomically drain worker notifications."""
+        if timeout < 0:
+            raise ValueError("timeout must be non-negative")
 
-        while loop.time() < deadline:
-            if self._worker_results:
-                # Drain all pending results
-                collected.extend(self._worker_results)
-                self._worker_results.clear()
-                break
-            await asyncio.sleep(1.0)
+        if not self._worker_results:
+            self._worker_notification_event.clear()
+            try:
+                await asyncio.wait_for(
+                    self._worker_notification_event.wait(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                return []
 
+        collected = list(self._worker_results)
+        self._worker_results.clear()
+        self._worker_notification_event.clear()
         return collected
 
     def parse_task_notifications(self, text: str) -> List[Dict[str, str]]:
-        """Parses <task-notification> XML blocks from worker messages."""
-        notifications = []
-        pattern = r"<task-notification>(.*?)</task-notification>"
-        matches = re.findall(pattern, text, re.DOTALL)
+        """Parse escaped ``task-notification`` XML blocks safely."""
+        if not text or "<task-notification>" not in text:
+            return []
 
-        for match in matches:
-            notification = {}
-            for field in ["task_id", "agent", "status", "result", "tokens_used"]:
-                field_match = re.search(f"<{field}>(.*?)</{field}>", match, re.DOTALL)
-                if field_match:
-                    notification[field] = html.unescape(field_match.group(1).strip())
+        notifications: List[Dict[str, str]] = []
+        blocks = re.findall(
+            r"<task-notification>.*?</task-notification>", text, re.DOTALL
+        )
+        for block in blocks:
+            try:
+                node = ET.fromstring(block)
+            except ET.ParseError:
+                self._log.warning("Ignoring malformed task-notification payload")
+                continue
+
+            notification = {
+                field: "".join(child.itertext()).strip()
+                for field in _NOTIFICATION_FIELDS
+                if (child := node.find(field)) is not None
+            }
             if notification:
                 notifications.append(notification)
-
         return notifications
 
     async def _execute_tool(self, name: str, args: Dict[str, Any], permissions: Dict[str, str], token: Optional[CancellationToken] = None) -> str:
@@ -2720,7 +2787,7 @@ class ReACTAgent:
             active_message_id=self.active_message_id,
             agent_role=self.role,
         )
-        
+
         # Build permission context
         perm_context = ToolPermissionContext(
             always_allow=set(),

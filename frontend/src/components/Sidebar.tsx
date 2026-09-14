@@ -1,6 +1,6 @@
 "use client";
-import React, { useState, useCallback, useRef, useEffect } from "react";
-import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu, Code2, Server, BookOpen, StickyNote, Network, GitBranch } from "lucide-react";
+import React, { useState, useCallback } from "react";
+import { MessageSquare, LayoutGrid, Brain, Globe, Settings, Zap, Plus, X, Loader2, ChevronRight, ChevronLeft, Menu, Code2, Server, BookOpen, StickyNote, Network, GitBranch, Home, Terminal, Sparkles } from "lucide-react";
 import styles from "./Sidebar.module.css";
 import { api } from "@/hooks/useApi";
 import { useAuth } from "@/hooks/useAuth";
@@ -43,10 +43,13 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: "Workspace",
     items: [
-      { id: "chat", label: "Chat Room", Icon: MessageSquare },
+      { id: "home", label: "Home", Icon: Home },
+      { id: "chat", label: "Team Chat", Icon: MessageSquare },
       { id: "tasks", label: "Task Board", Icon: LayoutGrid },
+      { id: "git", label: "Source Control", Icon: GitBranch },
+      { id: "terminal", label: "Terminal", Icon: Terminal },
+      { id: "browser", label: "Browser", Icon: Globe },
       { id: "agents", label: "Agents", Icon: Zap },
-      { id: "browser", label: "Browser View", Icon: Globe },
     ],
   },
   {
@@ -54,7 +57,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: "memory", label: "Memory & Logs", Icon: Brain },
       { id: "scratchpad", label: "Scratchpad", Icon: StickyNote },
-      { id: "code_graph", label: "Code Graph", Icon: GitBranch },
+      { id: "code_graph", label: "Code Graph", Icon: Network },
     ],
   },
   {
@@ -119,7 +122,6 @@ export default function Sidebar({
   const [teamFilter, setTeamFilter] = useState("");
   const [internalCollapsed, setInternalCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
-  const sidebarRef = useRef<HTMLElement>(null);
 
   const isCollapsed = controlledCollapsed !== undefined ? controlledCollapsed : internalCollapsed;
   const toggleCollapse = useCallback((forceState?: boolean) => {
@@ -130,24 +132,9 @@ export default function Sidebar({
     }
   }, [onToggleCollapse]);
 
-  // Auto-close sidebar on click outside when expanded
-  useEffect(() => {
-    if (isCollapsed) return;
-    const handleOutsideClick = (e: MouseEvent) => {
-      if (sidebarRef.current && !sidebarRef.current.contains(e.target as Node)) {
-        toggleCollapse(true);
-      }
-    };
-    document.addEventListener("mousedown", handleOutsideClick);
-    return () => document.removeEventListener("mousedown", handleOutsideClick);
-  }, [isCollapsed, toggleCollapse]);
-
   const handleNavClick = useCallback((id: string) => {
     onViewChange(id);
-    if (!isCollapsed) {
-      toggleCollapse(true);
-    }
-  }, [onViewChange, isCollapsed, toggleCollapse]);
+  }, [onViewChange]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -268,7 +255,6 @@ export default function Sidebar({
 
   return (
     <nav
-      ref={sidebarRef}
       className={styles.sidebar}
       style={{
         width: effectiveWidth,

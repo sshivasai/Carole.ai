@@ -38,6 +38,7 @@ class InteractionTools:
         self, question: str, agent_id: str, agent_name: str, team_id: str,
         options: Optional[List[str]] = None,
         questions: Optional[List[Dict[str, Any]]] = None,
+        parent_message_id: Optional[str] = None,
     ) -> str:
         """
         Sends question(s) to the human and blocks until they reply.
@@ -50,6 +51,7 @@ class InteractionTools:
             options: Optional list of choice strings for single-question multiple-choice UI.
             questions: Optional list of question dicts for batching multiple questions:
                        [{'id': 'q1', 'question': '...', 'options': ['A', 'B'], 'is_multi_select': False}]
+            parent_message_id: Optional UUID of the turn or prompt message triggering this question.
 
         The reply comes in via the WebSocket as a message with the question_id.
         Times out after APPROVAL_TIMEOUT_SECS to prevent indefinite blocking.
@@ -73,6 +75,8 @@ class InteractionTools:
             "agent_name": agent_name,
             "question": question or (questions[0].get("question", "") if questions else ""),
             "text": display_text,
+            "parent_message_id": parent_message_id,
+            "attachments": [{"type": "parent_message", "id": parent_message_id}] if parent_message_id else [],
         }
         if options:
             payload["options"] = [str(o) for o in options]

@@ -234,6 +234,7 @@ class TaskCreate(BaseModel):
     title: str
     description: Optional[str] = None
     priority: str = "medium"
+    status: Optional[str] = "todo"
     assigned_agent_id: Optional[str] = None
     parent_task_id: Optional[str] = None
     blocked_by_task_id: Optional[str] = None
@@ -248,10 +249,18 @@ class TaskUpdate(BaseModel):
     description: Optional[str] = None
     blocked_by_task_id: Optional[str] = None
     depends_on: Optional[List[str]] = None
+    revision: Optional[int] = None
+    expected_revision: Optional[int] = None
+
+class AgentNotificationPreferenceUpdate(BaseModel):
+    notify_on_assignment: Optional[bool] = None
+    notify_on_mention: Optional[bool] = None
+    notify_on_all_comments: Optional[bool] = None
+    muted_task_ids: Optional[List[str]] = None
 
 class TaskCommentCreate(BaseModel):
-    author_id: str
-    author_name: str
+    author_id: Optional[str] = None
+    author_name: Optional[str] = None
     text: str
 
 
@@ -1364,18 +1373,101 @@ async def edit_message(message_id: str, body: MessageEdit, db: AsyncSession = De
 
 @router.delete("/messages/{message_id}")
 async def delete_message(message_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    """Delete a single message only. No rollback, no cascade to later messages."""
+    """Delete a message and its related activities (intermediate traces, system actions, child worker messages)."""
     msg = await _assert_message_access(db, message_id, user["sub"])
-    team_id = str(msg.team_id)
-    await db.delete(msg)
+    team_id_uuid = msg.team_id
+    team_id = str(team_id_uuid)
+
+    from sqlalchemy import select, delete, update
+    from core.memory.models import FileBackup
+
+    to_delete_ids: set[uuid.UUID] = {msg.id}
+
+    # Fetch all messages in the team ordered by creation time
+    all_team_msgs = (
+        await db.execute(
+            select(Message)
+            .where(Message.team_id == team_id_uuid)
+            .order_by(Message.created_at.asc())
+        )
+    ).scalars().all()
+
+    is_human = (msg.sender_id == "human" or msg.sender_id == user["sub"])
+    is_intermediate = getattr(msg, "is_intermediate", False) or msg.sender_id == "system"
+
+    if is_human:
+        # If human prompt is deleted, cascade to the entire turn:
+        # all intermediate tool traces, system action pills, and subsequent assistant messages
+        # generated in response to this prompt up to the next human message.
+        found_current = False
+        for m in all_team_msgs:
+            if m.id == msg.id:
+                found_current = True
+                continue
+            if found_current:
+                # Stop when hitting the next human message
+                if m.sender_id == "human" or m.sender_id == user["sub"]:
+                    break
+                to_delete_ids.add(m.id)
+
+    elif not is_intermediate:
+        # Assistant message: find intermediate/activity messages leading up to this assistant message
+        # Walk backward from this assistant message until the preceding non-intermediate message
+        intermediate_candidates: list[uuid.UUID] = []
+        for m in reversed(all_team_msgs):
+            if m.id == msg.id:
+                continue
+            if m.created_at > msg.created_at:
+                continue
+            # If we encounter an earlier non-intermediate message (human or previous assistant), stop
+            if not getattr(m, "is_intermediate", False) and m.sender_id != "system":
+                break
+            # It's an intermediate / system / tool trace message in this turn
+            intermediate_candidates.append(m.id)
+
+        for mid in intermediate_candidates:
+            to_delete_ids.add(mid)
+
+    # Add any child messages referencing any of the to_delete_ids via parent_message
+    str_delete_ids = {str(i) for i in to_delete_ids}
+    for m in all_team_msgs:
+        if m.id in to_delete_ids:
+            continue
+        atts = getattr(m, "attachments", []) or []
+        if isinstance(atts, list):
+            for a in atts:
+                if isinstance(a, dict) and a.get("type") == "parent_message" and str(a.get("id")) in str_delete_ids:
+                    to_delete_ids.add(m.id)
+                    str_delete_ids.add(str(m.id))
+                    break
+
+    # Unlink FileBackup records to avoid foreign key errors
+    try:
+        await db.execute(
+            update(FileBackup)
+            .where(FileBackup.message_id.in_(list(to_delete_ids)))
+            .values(message_id=None)
+        )
+    except Exception as fb_err:
+        import logging as _log
+        _log.getLogger("carole.crud").warning("Could not unlink file backups during message delete: %s", fb_err)
+
+    # Delete the messages
+    await db.execute(
+        delete(Message).where(Message.id.in_(list(to_delete_ids)))
+    )
     await db.commit()
 
+    # Broadcast to event bus so all connected clients sync
+    final_deleted_str_ids = [str(_id) for _id in to_delete_ids]
     from core.chat.event_bus import event_bus
     await event_bus.publish(f"team:{team_id}", {
         "type": "message_deleted",
         "message_id": message_id,
+        "deleted_ids": final_deleted_str_ids,
     })
-    return {"ok": True}
+
+    return {"ok": True, "id": message_id, "deleted_ids": final_deleted_str_ids}
 
 
 @router.delete("/teams/{team_id}/messages")
@@ -1722,9 +1814,8 @@ async def get_agent_queue(agent_id: str, db: AsyncSession = Depends(get_db), use
 
 @router.post("/tasks")
 async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    from core.chat.event_bus import event_bus
-    from core.chat.message_router import message_router
     from core.agent.workflow_dag import workflow_dag, DAGCycleError
+    from core.tasks.board_service import notify_assignment, notify_unassigned_task, publish_task, task_payload, record_task_activity
 
     if body.team_id:
         await _assert_team_access(db, body.team_id, user["sub"])
@@ -1764,7 +1855,7 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user
         raise HTTPException(status_code=400, detail=str(e))
 
     # Initial status: if has prerequisite tasks not yet 'done', mark blocked
-    initial_status = "todo"
+    initial_status = body.status if body.status in {"todo", "in_progress", "review", "done", "blocked"} else "todo"
     primary_blocked_by = None
     if clean_deps and existing_tasks:
         status_map = {str(t.id).lower(): t.status for t in existing_tasks}
@@ -1782,141 +1873,98 @@ async def create_task(body: TaskCreate, db: AsyncSession = Depends(get_db), user
         except (ValueError, AttributeError):
             pass
 
+    assigned_agent = None
+    if body.assigned_agent_id:
+        try:
+            assigned_uuid = uuid.UUID(body.assigned_agent_id)
+            agent_stmt = select(Agent).where(Agent.id == assigned_uuid, Agent.team_id == team_uuid)
+            assigned_agent = (await db.execute(agent_stmt)).scalar_one_or_none()
+        except (ValueError, AttributeError):
+            pass
+
     task = Task(
         id=task_id_uuid,
         team_id=team_uuid,
         title=body.title,
         description=body.description,
-        priority=body.priority,
+        priority=body.priority if body.priority in {"low", "medium", "high", "critical"} else "medium",
         status=initial_status,
-        assigned_agent_id=uuid.UUID(body.assigned_agent_id) if body.assigned_agent_id else None,
+        assigned_agent_id=assigned_agent.id if assigned_agent else None,
         parent_task_id=uuid.UUID(body.parent_task_id) if body.parent_task_id else None,
         blocked_by_task_id=primary_blocked_by,
         depends_on=clean_deps,
-        created_by=body.created_by,
+        created_by=body.created_by or "human",
+        revision=1,
     )
     db.add(task)
     await db.commit()
+    await db.refresh(task)
 
-    assignee_name = "unassigned"
-    agent = None
-    if task.assigned_agent_id:
-        agent_stmt = select(Agent).where(Agent.id == task.assigned_agent_id)
-        agent_result = await db.execute(agent_stmt)
-        agent = agent_result.scalar_one_or_none()
-        if agent:
-            assignee_name = agent.name
+    creator = await _get_human_name(db, task.team_id) if body.created_by == "human" or not body.created_by else body.created_by
+    actor_id = user["sub"] if body.created_by == "human" or not body.created_by else body.created_by
 
-    if task.team_id:
-        await event_bus.publish(f"team:{str(task.team_id)}", {
-            "type": "task_update",
-            "action": "created",
-            "task": {
-                "id": str(task.id), "title": task.title, "description": task.description,
-                "status": task.status, "priority": task.priority,
-                "assigned_to": assignee_name,
-                "depends_on": clean_deps,
-            },
-        })
-        if body.created_by == "human" or not body.created_by:
-            creator = await _get_human_name(db, task.team_id)
-        else:
-            creator = body.created_by
-        if agent:
-            # Task was assigned — notify assignee
-            if task.status == "blocked":
-                assign_text = f"[TASK_ASSIGN] @{agent.name} a new task '{task.title}' was created and assigned to you by {creator}. However, it is currently BLOCKED by prerequisite dependencies ({', '.join(clean_deps[:3])}). You will be notified when it is unblocked. Do not start work yet."
-            else:
-                assign_text = f"[TASK_ASSIGN] @{agent.name} a new task '{task.title}' was created and assigned to you by {creator}. Please start working on it."
-            await message_router.route_message(
-                text=assign_text,
-                sender_id="system",
-                team_id=str(task.team_id),
-                sender_name="System",
-                attachments=[]
-            )
-        else:
-            # Task is unassigned — ping the Coordinator to triage and assign it
-            from sqlalchemy import func
-            coord_stmt = select(Agent).where(
-                Agent.team_id == task.team_id,
-                func.lower(Agent.role).in_(["coordinator", "orchestrator"])
-            ).limit(1)
-            coord_res = await db.execute(coord_stmt)
-            coordinator = coord_res.scalar_one_or_none()
-            if coordinator:
-                await message_router.route_message(
-                    text=f"[TASK_CREATE] @{coordinator.name} a new unassigned task '{task.title}' was created by {creator}. Please review and assign it to the appropriate teammate.",
-                    sender_id="system",
-                    team_id=str(task.team_id),
-                    sender_name="System",
-                    attachments=[]
-                )
-                coord_prompt = (
-                    f"A new unassigned task was created on the Kanban board: '{task.title}' (Task ID: {task.id}). "
-                    f"Description: {task.description or 'No description provided.'}. Priority: {task.priority}. "
-                    f"Please review your team roster and assign this task to the best-suited teammate using update_task(task_id='{task.id}', assignee_name='...'). "
-                    f"If no existing teammate fits the required expertise, you may create a teammate or hire a specialist."
-                )
-                await message_router._trigger_agent(coordinator, coord_prompt, db)
-            else:
-                await message_router.route_message(
-                    text=f"[TASK_CREATE] {creator} created task '{task.title}' (unassigned).",
-                    sender_id="system",
-                    team_id=str(task.team_id),
-                    sender_name="System",
-                    attachments=[]
-                )
+    await record_task_activity(
+        db, task, actor_id=actor_id, actor_name=creator,
+        activity_type="created", details=f"Task '{task.title}' created ({task.status}, {task.priority})",
+    )
+    await publish_task(task, "created")
 
-    if agent and task.status != "blocked":
-        prompt = f"The human just assigned a new task to you on the Kanban board: '{task.title}'. Description: {task.description or 'No description provided.'}. Please review it and start working."
-        await message_router._trigger_agent(agent, prompt, db)
+    if assigned_agent:
+        await record_task_activity(
+            db, task, actor_id=actor_id, actor_name=creator,
+            activity_type="assigned", details=f"Assigned to {assigned_agent.name}",
+            new_value={"assigned_agent_id": str(assigned_agent.id)},
+        )
+        await notify_assignment(db, task, actor_id=actor_id, actor_name=creator)
+    else:
+        await notify_unassigned_task(db, task, creator)
 
-    return {"id": str(task.id), "title": task.title, "status": task.status, "depends_on": task.depends_on or []}
+    return task_payload(task)
+
 
 @router.get("/tasks/{team_id}")
 async def list_tasks(team_id: str, status: Optional[str] = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     await _assert_team_access(db, team_id, user["sub"])
+    from core.tasks.board_service import task_payload
     stmt = select(Task).where(Task.team_id == uuid.UUID(team_id))
     if status:
         stmt = stmt.where(Task.status == status)
     stmt = stmt.order_by(Task.created_at.desc())
     result = await db.execute(stmt)
-    return [
-        {
-            "id": str(t.id), "title": t.title, "description": t.description,
-            "status": t.status, "priority": t.priority,
-            "assigned_agent_id": str(t.assigned_agent_id) if t.assigned_agent_id else None,
-            "parent_task_id": str(t.parent_task_id) if t.parent_task_id else None,
-            "blocked_by_task_id": str(t.blocked_by_task_id) if t.blocked_by_task_id else None,
-            "depends_on": t.depends_on or [],
-            "created_by": t.created_by,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "plan_status": t.plan_status,
-            "todo_list": t.todo_list or [],
-        }
-        for t in result.scalars().all()
-    ]
+    return [task_payload(t) for t in result.scalars().all()]
+
 
 @router.get("/tasks/dag/{team_id}")
 async def get_team_task_dag(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
-    """Returns the DAG graph structure, nodes, edges, cycle status, and execution waves."""
     await _assert_team_access(db, team_id, user["sub"])
     from core.agent.workflow_dag import workflow_dag
     stmt = select(Task).where(Task.team_id == uuid.UUID(team_id))
     team_tasks = (await db.execute(stmt)).scalars().all()
     return workflow_dag.build_dag_summary(team_tasks)
 
+
 @router.put("/tasks/{task_id}")
 async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     task = await _assert_task_access(db, task_id, user["sub"])
     from core.agent.workflow_dag import workflow_dag, DAGCycleError
-    from core.chat.message_router import message_router
-    from core.memory.models import Agent
-    from core.chat.event_bus import event_bus
+    from core.tasks.board_service import notify_assignment, publish_task, task_payload, wake_agents, record_task_activity
+
+    # Optimistic concurrency: check revision
+    expected_rev = body.expected_revision if body.expected_revision is not None else body.revision
+    if expected_rev is not None and expected_rev != getattr(task, "revision", 1):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Task has been modified by another process. Please refresh and try again.",
+                "current_revision": getattr(task, "revision", 1),
+                "task": task_payload(task),
+            },
+        )
 
     old_status = task.status
-    team_id_str = str(task.team_id)
+    old_assignee_id = task.assigned_agent_id
+    human_name = await _get_human_name(db, task.team_id)
+    dependencies_unblocked = False
 
     # Validate and update dependencies if requested
     if body.depends_on is not None or body.blocked_by_task_id is not None:
@@ -1953,59 +2001,89 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
         except DAGCycleError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+        old_deps = list(task.depends_on or [])
         task.depends_on = new_deps
+        if old_deps != new_deps:
+            await record_task_activity(
+                db, task, actor_id=user["sub"], actor_name=human_name,
+                activity_type="dependencies_changed", details="Updated task prerequisites",
+                old_value={"depends_on": old_deps}, new_value={"depends_on": new_deps},
+            )
 
-    if body.status is not None:
+        status_by_id = {str(candidate.id).lower(): candidate.status for candidate in team_tasks}
+        incomplete = [dep for dep in new_deps if status_by_id.get(dep) != "done"]
+        if incomplete:
+            task.blocked_by_task_id = uuid.UUID(incomplete[0])
+            if body.status is None:
+                task.status = "blocked"
+        elif old_status == "blocked" and body.status is None:
+            task.blocked_by_task_id = None
+            task.status = "todo"
+            dependencies_unblocked = True
+
+    if body.status is not None and body.status != task.status:
+        if body.status not in {"todo", "in_progress", "review", "done", "blocked"}:
+            raise HTTPException(status_code=400, detail="Invalid task status")
+        await record_task_activity(
+            db, task, actor_id=user["sub"], actor_name=human_name,
+            activity_type="status_changed", details=f"Status changed: {task.status} → {body.status}",
+            old_value={"status": task.status}, new_value={"status": body.status},
+        )
         task.status = body.status
-    if body.priority is not None:
-        task.priority = body.priority
-    if body.assigned_agent_id is not None:
-        try:
-            task.assigned_agent_id = uuid.UUID(body.assigned_agent_id)
-        except (ValueError, AttributeError):
-            raise HTTPException(status_code=400, detail="Invalid assigned_agent_id format")
-    if body.title is not None:
-        task.title = body.title
-    if body.description is not None:
-        task.description = body.description
-    task.updated_at = datetime.now(timezone.utc)
-    await db.commit()
 
-    human_name = await _get_human_name(db, task.team_id)
-    sys_text = f"[TASK_UPDATE] '{task.title}' moved to {task.status} by {human_name}"
-    if task.assigned_agent_id:
-        agent_res = await db.execute(select(Agent).where(Agent.id == task.assigned_agent_id))
-        agent = agent_res.scalar_one_or_none()
+    if body.priority is not None and body.priority != task.priority:
+        if body.priority not in {"low", "medium", "high", "critical"}:
+            raise HTTPException(status_code=400, detail="Invalid task priority")
+        await record_task_activity(
+            db, task, actor_id=user["sub"], actor_name=human_name,
+            activity_type="priority_changed", details=f"Priority changed: {task.priority} → {body.priority}",
+            old_value={"priority": task.priority}, new_value={"priority": body.priority},
+        )
+        task.priority = body.priority
+
+    if "assigned_agent_id" in body.model_fields_set:
+        new_assignee_uuid = uuid.UUID(body.assigned_agent_id) if body.assigned_agent_id else None
+        if new_assignee_uuid != task.assigned_agent_id:
+            assigned_agent = None
+            if new_assignee_uuid:
+                assigned_agent = (await db.execute(select(Agent).where(
+                    Agent.id == new_assignee_uuid, Agent.team_id == task.team_id
+                ))).scalar_one_or_none()
+                if not assigned_agent:
+                    raise HTTPException(status_code=400, detail="Assigned agent does not belong to this team")
+            task.assigned_agent_id = new_assignee_uuid
+            agent_name = assigned_agent.name if assigned_agent else "Unassigned"
+            await record_task_activity(
+                db, task, actor_id=user["sub"], actor_name=human_name,
+                activity_type="assigned", details=f"Assigned to {agent_name}",
+                old_value={"assigned_agent_id": str(old_assignee_id) if old_assignee_id else None},
+                new_value={"assigned_agent_id": str(task.assigned_agent_id) if task.assigned_agent_id else None},
+            )
+
+    if body.title is not None and body.title != task.title:
+        task.title = body.title
+    if body.description is not None and body.description != task.description:
+        task.description = body.description
+
+    task.updated_at = datetime.now(timezone.utc)
+    task.revision = getattr(task, "revision", 1) + 1
+    await db.commit()
+    await db.refresh(task)
+
+    await publish_task(task)
+
+    # Wake assignee if changed
+    if task.assigned_agent_id != old_assignee_id:
+        await notify_assignment(db, task, actor_id=user["sub"], actor_name=human_name)
+    elif dependencies_unblocked and task.assigned_agent_id:
+        agent = (await db.execute(select(Agent).where(
+            Agent.id == task.assigned_agent_id, Agent.team_id == task.team_id
+        ))).scalar_one_or_none()
         if agent:
-            # Wake agent if assignment changed or task moved to in_progress
-            if body.assigned_agent_id:
-                if task.status == "blocked":
-                    assign_text = f"[TASK_ASSIGN] @{agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. However, it is currently BLOCKED by another task. You will be notified when it is unblocked. Do not start work yet. DO NOT create a new task — this task already exists on the board."
-                else:
-                    assign_text = f"[TASK_ASSIGN] @{agent.name} task '{task.title}' (Task ID: {task.id}) has been assigned to you. Description: {task.description or 'No description provided.'}. Please begin work now. IMPORTANT: DO NOT use create_task — this task already exists on the board with the ID above. Use update_task(task_id='{task.id}', status='in_progress') to start it, then update_task(task_id='{task.id}', status='done') when finished."
-                await message_router.route_message(
-                    text=assign_text,
-                    sender_id="system",
-                    team_id=team_id_str,
-                    sender_name="System",
-                    attachments=[]
-                )
-                if task.status != "blocked":
-                    await message_router._enqueue_agent(agent, assign_text, db)
-            elif body.status == "in_progress":
-                if task.status == "blocked":
-                    update_text = f"[TASK_UPDATE] @{agent.name} your task '{task.title}' has been moved to 'In Progress'. However, it is currently BLOCKED. You may investigate it, but wait for the blocking task to complete before making major changes."
-                else:
-                    update_text = f"[TASK_UPDATE] @{agent.name} your task '{task.title}' has been moved to 'In Progress'. Description: {task.description or 'No description provided.'}. Please continue work."
-                await message_router.route_message(
-                    text=update_text,
-                    sender_id="system",
-                    team_id=team_id_str,
-                    sender_name="System",
-                    attachments=[]
-                )
-                if task.status != "blocked":
-                    await message_router._enqueue_agent(agent, update_text, db)
+            await wake_agents(
+                db, task, [agent], reason="unblocked", actor_id=user["sub"],
+                actor_name=human_name, event_id=f"dependencies:{task.updated_at}",
+            )
 
     # DAG MULTI-DEPENDENCY UNBLOCK & CASCADE ENGINE
     stmt_all = select(Task).where(Task.team_id == task.team_id)
@@ -2017,33 +2095,23 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
             b_task.blocked_by_task_id = None
             b_task.status = "todo"
             b_task.updated_at = datetime.now(timezone.utc)
-            await event_bus.publish(f"team:{team_id_str}", {
-                "type": "task_update",
-                "action": "updated",
-                "task": {
-                    "id": str(b_task.id),
-                    "title": b_task.title,
-                    "status": "todo",
-                    "priority": b_task.priority,
-                    "depends_on": b_task.depends_on or [],
-                }
-            })
+            b_task.revision = getattr(b_task, "revision", 1) + 1
+            await record_task_activity(
+                db, b_task, actor_id=user["sub"], actor_name=human_name,
+                activity_type="unblocked", details=f"Prerequisite '{task.title}' completed",
+            )
+        if unblocked:
+            await db.commit()
+        for b_task in unblocked:
+            await publish_task(b_task)
             if b_task.assigned_agent_id:
                 agent_res = await db.execute(select(Agent).where(Agent.id == b_task.assigned_agent_id))
                 b_agent = agent_res.scalar_one_or_none()
                 if b_agent:
-                    unblock_msg = f"[TASK_UNBLOCKED] @{b_agent.name} all prerequisite tasks for '{b_task.title}' are now complete. You may begin work."
-                    await message_router.route_message(
-                        text=unblock_msg,
-                        sender_id="system",
-                        team_id=team_id_str,
-                        sender_name="System",
-                        attachments=[]
+                    await wake_agents(
+                        db, b_task, [b_agent], reason="unblocked", actor_id=user["sub"],
+                        actor_name=human_name, event_id=str(task.id),
                     )
-                    await message_router._enqueue_agent(b_agent, unblock_msg, db)
-        if unblocked:
-            await db.commit()
-
     elif task.status == "blocked" and old_status != "blocked":
         cascade = workflow_dag.propagate_cascade_failure(
             all_team_tasks, str(task.id), f"Upstream prerequisite '{task.title}' is blocked"
@@ -2052,125 +2120,220 @@ async def update_task(task_id: str, body: TaskUpdate, db: AsyncSession = Depends
             if c_task.status != "blocked":
                 c_task.status = "blocked"
                 c_task.updated_at = datetime.now(timezone.utc)
-                await event_bus.publish(f"team:{team_id_str}", {
-                    "type": "task_update",
-                    "action": "updated",
-                    "task": {
-                        "id": str(c_task.id),
-                        "title": c_task.title,
-                        "status": "blocked",
-                        "priority": c_task.priority,
-                        "depends_on": c_task.depends_on or [],
-                    }
-                })
+                c_task.revision = getattr(c_task, "revision", 1) + 1
         if cascade:
             await db.commit()
+        for c_task, _ in cascade:
+            await publish_task(c_task)
 
-    await message_router.route_message(
-        text=sys_text,
-        sender_id="system",
-        team_id=team_id_str,
-        sender_name="System",
-        attachments=[]
-    )
-
-    return {"status": "updated", "id": task_id}
+    t_payload = task_payload(task)
+    return {
+        "status": "updated",
+        "task": t_payload,
+        "revision": t_payload.get("revision", 1),
+        "task_id": t_payload.get("id"),
+        "id": t_payload.get("id"),
+    }
 
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     task = await _assert_task_access(db, task_id, user["sub"])
-    from core.memory.models import Agent
-    from core.chat.message_router import message_router
-
-    # UNBLOCK ENGINE: If a task is deleted, unblock tasks waiting on it
-    unblock_stmt = select(Task).where(Task.blocked_by_task_id == task.id)
-    unblock_res = await db.execute(unblock_stmt)
-    blocked_tasks = unblock_res.scalars().all()
-    for b_task in blocked_tasks:
-        b_task.blocked_by_task_id = None
-        b_task.updated_at = datetime.now(timezone.utc)
-        if b_task.assigned_agent_id:
-            agent_res = await db.execute(select(Agent).where(Agent.id == b_task.assigned_agent_id))
-            b_agent = agent_res.scalar_one_or_none()
-            if b_agent:
-                await message_router.route_message(
-                    text=f"[TASK_UNBLOCKED] @{b_agent.name} the task you were waiting on ('{task.title}') was DELETED. You are now unblocked and can begin work on your task: '{b_task.title}'.",
-                    sender_id="system",
-                    team_id=str(b_task.team_id),
-                    sender_name="System",
-                    attachments=[]
-                )
-
-    await db.delete(task)
-    await db.commit()
-    from core.chat.message_router import message_router
+    from core.tasks.board_service import delete_task_with_dependencies
     human_name = await _get_human_name(db, task.team_id)
-    await message_router.route_message(
-        text=f"[TASK_DELETE] '{task.title}' was deleted by {human_name}",
-        sender_id="system",
-        team_id=str(task.team_id),
-        sender_name="System",
-        attachments=[]
-    )
-    return {"status": "deleted", "id": task_id}
+    return await delete_task_with_dependencies(db, task, actor_id=user["sub"], actor_name=human_name)
+
 
 @router.post("/tasks/{task_id}/comments")
 async def create_task_comment(task_id: str, body: TaskCommentCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     task = await _assert_task_access(db, task_id, user["sub"])
-        
-    comment = TaskComment(
-        task_id=uuid.UUID(task_id),
-        author_id=body.author_id,
-        author_name=body.author_name,
-        text=body.text
-    )
-    db.add(comment)
-    await db.flush()
-    
-    from core.chat.message_router import message_router
-    sys_text = f"[TASK_COMMENT] {body.author_name} on '{task.title}': {body.text}"
-    
-    import re
-    if task.assigned_agent_id and not re.search(r"@\w+", body.text):
-        agent_res = await db.execute(select(Agent).where(Agent.id == task.assigned_agent_id))
-        agent = agent_res.scalar_one_or_none()
-        if agent and str(agent.id) != body.author_id:
-            sys_text += f"\n(Implicitly notifying assignee: @{agent.name})"
-    await db.commit()
-            
-    await message_router.route_message(
-        text=sys_text,
-        sender_id="system",
-        team_id=str(task.team_id),
-        sender_name="System",
-        attachments=[]
-    )
-    
-    return {
-        "id": str(comment.id),
-        "author_id": comment.author_id,
-        "author_name": comment.author_name,
-        "text": comment.text,
-        "created_at": comment.created_at.isoformat() if comment.created_at else None
-    }
+    from core.tasks.board_service import add_comment, comment_payload
+    author_name = body.author_name or await _get_human_name(db, task.team_id)
+    author_id = body.author_id or user["sub"]
+    try:
+        comment, woken = await add_comment(
+            db, task, author_id=author_id, author_name=author_name, text=body.text,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {**comment_payload(comment), "woken_agent_ids": woken}
+
 
 @router.get("/tasks/{task_id}/comments")
 async def list_task_comments(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     await _assert_task_access(db, task_id, user["sub"])
+    from core.tasks.board_service import comment_payload
     stmt = select(TaskComment).where(TaskComment.task_id == uuid.UUID(task_id)).order_by(TaskComment.created_at.asc())
     result = await db.execute(stmt)
-    comments = result.scalars().all()
+    return [comment_payload(c) for c in result.scalars().all()]
+
+
+@router.get("/tasks/{task_id}/activities")
+async def get_task_activities(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    task = await _assert_task_access(db, task_id, user["sub"])
+    from core.tasks.board_service import activity_payload
+    from core.memory.models import TaskActivity
+    stmt = select(TaskActivity).where(TaskActivity.task_id == task.id).order_by(TaskActivity.created_at.desc()).limit(100)
+    activities = (await db.execute(stmt)).scalars().all()
+    return [activity_payload(a) for a in activities]
+
+
+@router.post("/tasks/{task_id}/watch")
+async def watch_task(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    task = await _assert_task_access(db, task_id, user["sub"])
+    from core.memory.models import TaskWatcher
+    user_id = user["sub"]
+    stmt = select(TaskWatcher).where(TaskWatcher.task_id == task.id, TaskWatcher.user_id == user_id)
+    watcher = (await db.execute(stmt)).scalar_one_or_none()
+    if not watcher:
+        watcher = TaskWatcher(task_id=task.id, user_id=user_id)
+        db.add(watcher)
+        await db.commit()
+    return {"status": "watching", "task_id": task_id, "user_id": user_id, "watching": True}
+
+
+@router.delete("/tasks/{task_id}/watch")
+async def unwatch_task(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    task = await _assert_task_access(db, task_id, user["sub"])
+    from core.memory.models import TaskWatcher
+    user_id = user["sub"]
+    await db.execute(delete(TaskWatcher).where(TaskWatcher.task_id == task.id, TaskWatcher.user_id == user_id))
+    await db.commit()
+    return {"status": "unwatched", "task_id": task_id, "user_id": user_id, "watching": False}
+
+
+@router.get("/tasks/{task_id}/watchers")
+async def get_task_watchers(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    task = await _assert_task_access(db, task_id, user["sub"])
+    from core.memory.models import TaskWatcher
+    stmt = select(TaskWatcher.user_id).where(TaskWatcher.task_id == task.id)
+    user_ids = (await db.execute(stmt)).scalars().all()
+    return {"task_id": task_id, "watchers": user_ids, "is_watching": user["sub"] in user_ids}
+
+
+@router.post("/tasks/{task_id}/read")
+async def mark_task_read_endpoint(task_id: str, body: Optional[dict] = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    task = await _assert_task_access(db, task_id, user["sub"])
+    from core.tasks.board_service import mark_task_read
+    last_comment_id = body.get("last_comment_id") if body else None
+    cursor = await mark_task_read(db, task.id, user["sub"], last_comment_id)
+    return {"status": "read", "task_id": task_id, "last_read_at": cursor.last_read_at.isoformat()}
+
+
+@router.get("/teams/{team_id}/tasks/unread-counts")
+async def get_unread_counts_endpoint(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_team_access(db, team_id, user["sub"])
+    from core.tasks.board_service import get_task_unread_counts
+    return await get_task_unread_counts(db, team_id, user["sub"])
+
+
+@router.get("/agents/{agent_id}/notification-preferences")
+async def get_agent_notification_preferences_endpoint(agent_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    agent = await _assert_agent_access(db, agent_id, user["sub"])
+    from core.tasks.board_service import get_agent_notification_preferences
+    pref = await get_agent_notification_preferences(db, agent.id)
+    return {
+        "agent_id": str(agent.id),
+        "notify_on_assignment": pref.notify_on_assignment,
+        "notify_on_mention": pref.notify_on_mention,
+        "notify_on_all_comments": pref.notify_on_all_comments,
+        "muted_task_ids": pref.muted_task_ids or [],
+    }
+
+
+@router.put("/agents/{agent_id}/notification-preferences")
+async def update_agent_notification_preferences_endpoint(agent_id: str, body: AgentNotificationPreferenceUpdate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    agent = await _assert_agent_access(db, agent_id, user["sub"])
+    from core.tasks.board_service import get_agent_notification_preferences
+    pref = await get_agent_notification_preferences(db, agent.id)
+    if body.notify_on_assignment is not None:
+        pref.notify_on_assignment = body.notify_on_assignment
+    if body.notify_on_mention is not None:
+        pref.notify_on_mention = body.notify_on_mention
+    if body.notify_on_all_comments is not None:
+        pref.notify_on_all_comments = body.notify_on_all_comments
+    if body.muted_task_ids is not None:
+        pref.muted_task_ids = body.muted_task_ids
+    pref.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {
+        "agent_id": str(agent.id),
+        "notify_on_assignment": pref.notify_on_assignment,
+        "notify_on_mention": pref.notify_on_mention,
+        "notify_on_all_comments": pref.notify_on_all_comments,
+        "muted_task_ids": pref.muted_task_ids or [],
+    }
+
+
+@router.post("/tasks/{task_id}/mute")
+async def toggle_task_mute_for_agent(task_id: str, agent_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    agent = await _assert_agent_access(db, agent_id, user["sub"])
+    task = await _assert_task_access(db, task_id, user["sub"])
+    from core.tasks.board_service import get_agent_notification_preferences
+    pref = await get_agent_notification_preferences(db, agent.id)
+    muted = list(pref.muted_task_ids or [])
+    task_id_str = str(task.id)
+    if task_id_str in muted:
+        muted.remove(task_id_str)
+        is_muted = False
+    else:
+        muted.append(task_id_str)
+        is_muted = True
+    pref.muted_task_ids = muted
+    pref.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"agent_id": agent_id, "task_id": task_id, "is_muted": is_muted, "muted": is_muted}
+
+
+@router.get("/tasks/{task_id}/metrics")
+async def get_task_metrics_endpoint(task_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    task = await _assert_task_access(db, task_id, user["sub"])
+    from core.memory.models import TaskMetric
+    stmt = select(TaskMetric).where(TaskMetric.task_id == task.id).order_by(TaskMetric.created_at.desc())
+    metrics = (await db.execute(stmt)).scalars().all()
     return [
         {
-            "id": str(c.id),
-            "author_id": c.author_id,
-            "author_name": c.author_name,
-            "text": c.text,
-            "created_at": c.created_at.isoformat() if c.created_at else None
+            "id": str(m.id),
+            "team_id": str(m.team_id),
+            "task_id": str(m.task_id) if m.task_id else None,
+            "agent_id": str(m.agent_id) if m.agent_id else None,
+            "metric_type": m.metric_type,
+            "value": m.value,
+            "details": m.details,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
         }
-        for c in comments
+        for m in metrics
     ]
+
+
+@router.get("/teams/{team_id}/task-metrics/summary")
+async def get_team_task_metrics_summary(team_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+    await _assert_team_access(db, team_id, user["sub"])
+    from core.memory.models import TaskMetric
+    team_uuid = uuid.UUID(team_id)
+    stmt = select(TaskMetric).where(TaskMetric.team_id == team_uuid)
+    metrics = (await db.execute(stmt)).scalars().all()
+
+    reasons: dict[str, int] = {}
+    for m in metrics:
+        if m.details and "reason" in m.details:
+            r = m.details["reason"]
+            reasons[r] = reasons.get(r, 0) + 1
+
+    summary: dict[str, Any] = {
+        "total_wakes": sum(1 for m in metrics if m.metric_type == "wake"),
+        "duplicate_suppressions": sum(1 for m in metrics if m.metric_type in ("duplicate_suppressed", "duplicate_suppression")),
+        "completions": sum(1 for m in metrics if m.metric_type in ("completion", "task_completion")),
+        "task_completions": sum(1 for m in metrics if m.metric_type in ("completion", "task_completion")),
+        "failures": sum(1 for m in metrics if m.metric_type in ("failure", "task_failure")),
+        "total_token_cost": sum(m.value for m in metrics if m.metric_type == "token_cost"),
+        "wake_reason_distribution": reasons,
+        "avg_queue_delay_ms": (
+            sum(m.value for m in metrics if m.metric_type == "queue_delay") /
+            max(1, sum(1 for m in metrics if m.metric_type == "queue_delay"))
+        ) if any(m.metric_type == "queue_delay" for m in metrics) else 0.0,
+    }
+    return summary
 
 # ============================================================
 # LLM Model Catalog

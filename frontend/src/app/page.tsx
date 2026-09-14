@@ -28,6 +28,12 @@ import { useToast } from "@/hooks/useToast";
 import { api } from "@/hooks/useApi";
 import FileExplorerPanel from "@/components/FileExplorerPanel";
 import KeyboardShortcutsModal from "@/components/KeyboardShortcutsModal";
+import AppHeader from "@/components/shell/AppHeader";
+import ContextPanel, { type ContextPanelTab } from "@/components/shell/ContextPanel";
+import WorkspaceHome from "@/components/WorkspaceHome";
+import GitWorkspace from "@/components/GitWorkspace";
+import CommandPalette from "@/components/CommandPalette";
+import TerminalPanel from "@/components/TerminalPanel";
 import type { AgentConfig, ChatMessage, TaskItem, BrowserScreenshotEvent, LearningItem, ScratchpadItem, CompactionEvent } from "@/lib/types";
 
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -166,7 +172,31 @@ function applyWSEvent(prev: ChatMessage[], evt: any, user: any): ChatMessage[] {
       return [...prev, { id: makeId(), sender_id: evt.sender_id || "agent", sender_name: evt.sender_name, type: "file_change", path: evt.path, action: evt.action, diff: evt.diff, text: evt.text || "", timestamp: ts }];
     }
     case "agent_question":
-      return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "agent_question", question_id: evt.question_id, question: evt.question, options: evt.options, timestamp: ts }];
+      return [...prev, {
+        id: evt.id || evt.question_id || makeId(),
+        sender_id: evt.agent_id || evt.sender_id || "agent",
+        sender_name: evt.agent_name || evt.sender_name,
+        text: evt.text || "",
+        type: "agent_question",
+        question_id: evt.question_id,
+        question: evt.question,
+        options: evt.options,
+        questions: evt.questions,
+        timestamp: ts,
+        attachments: evt.attachments || (evt.parent_message_id ? [{ type: "parent_message", id: evt.parent_message_id }] : []),
+      }];
+    case "agent_question_answered": {
+      return prev.map(m => {
+        if (m.question_id === evt.question_id || m.id === evt.question_id) {
+          return {
+            ...m,
+            is_answered: true,
+            answer: evt.answer,
+          };
+        }
+        return m;
+      });
+    }
     case "browser_intervention":
       return [...prev, { id: makeId(), sender_id: evt.agent_id || evt.sender_id || "agent", sender_name: evt.agent_name || evt.sender_name, text: evt.text || "", type: "browser_intervention", question_id: evt.question_id, reason: evt.reason, captcha_image: evt.captcha_image, timestamp: ts }];
     case "llm_error":
@@ -183,8 +213,14 @@ function applyWSEvent(prev: ChatMessage[], evt: any, user: any): ChatMessage[] {
     }
     case "chat_cleared":
       return [];
-    case "message_deleted":
-      return prev.filter(m => m.id !== evt.message_id);
+    case "message_deleted": {
+      const delIds = new Set<string>(
+        Array.isArray(evt.deleted_ids) && evt.deleted_ids.length > 0
+          ? evt.deleted_ids
+          : (evt.message_id ? [evt.message_id] : [])
+      );
+      return prev.filter(m => !delIds.has(m.id));
+    }
     case "message_rewind": {
       const fromId = evt.from_message_id;
       if (fromId) {
@@ -392,7 +428,11 @@ function AppShell() {
   const [screenshots, setScreenshots] = useState<BrowserScreenshotEvent[]>([]);
   const [appLoading, setAppLoading] = useState(true);
   const [streamingAgents, setStreamingAgents] = useState<Set<string>>(new Set());
-  const [explorerOpen, setExplorerOpen] = useState(false);
+  const [contextPanelOpen, setContextPanelOpen] = useState(false);
+  const [activeContextTab, setActiveContextTab] = useState<ContextPanelTab>("files");
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const explorerOpen = contextPanelOpen;
+  const setExplorerOpen = setContextPanelOpen;
   const [isChatPanelCollapsed, setIsChatPanelCollapsed] = useState(false);
   const chatPanelRef = useRef<ImperativePanelHandle>(null);
   const [pendingChatInputAppend, setPendingChatInputAppend] = useState<string | null>(null);
@@ -429,25 +469,26 @@ function AppShell() {
     }
   }, [activeView]);
 
-  // Automatically collapse left sidebar when file explorer is opened to maximize workspace
+  // Automatically collapse left sidebar when context panel is opened to maximize workspace
   useEffect(() => {
-    if (explorerOpen) {
+    if (contextPanelOpen) {
       setSidebarCollapsed(true);
       try {
         localStorage.setItem("carole_sidebar_collapsed", "true");
       } catch {}
     }
-  }, [explorerOpen]);
+  }, [contextPanelOpen]);
 
   // Latest file_change WS event, fed to the FileExplorerPanel for realtime sync.
   const [lastFileChange, setLastFileChange] = useState<any | null>(null);
   // A file path the explorer should open automatically (set when the user
   // clicks a file-change card in chat).
   const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null);
-  const [pendingOpenDiffFile, setPendingOpenDiffFile] = useState<{path: string, originalContent: string} | null>(null);
+  const [pendingOpenDiffFile, setPendingOpenDiffFile] = useState<{path: string, originalContent: string, diff?: string} | null>(null);
   const [agentQueues, setAgentQueues] = useState<Record<string, number>>({});
   const [scratchpads, setScratchpads] = useState<ScratchpadItem[]>([]);
   const [lastTokenEvent, setLastTokenEvent] = useState<any | null>(null);
+  const [lastTaskComment, setLastTaskComment] = useState<import("@/lib/types").TaskComment | null>(null);
   const [contextUsage, setContextUsage] = useState<any | null>(null);
   // Compaction events — rendered as visible dividers in the chat timeline.
   // Populated on team load (from DB) and updated live via SSE.
@@ -455,9 +496,12 @@ function AppShell() {
 
   useEffect(() => {
     const handleGlobalKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setExplorerOpen(o => !o);
+        setIsCommandPaletteOpen(o => !o);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setContextPanelOpen(o => !o);
       }
     };
     window.addEventListener("keydown", handleGlobalKey);
@@ -471,7 +515,7 @@ function AppShell() {
       setStreamingAgents(s => { const n = new Set(s); n.delete(evt.sender_id!); return n; });
     }
 
-    if (["thought_delta", "thought_reset", "stream_reasoning", "message", "approval_request", "approval_update", "approval_resolved", "agent_question", "browser_intervention", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "chat_cleared", "file_change", "collapse_to_reasoning", "llm_error"].includes(evt.type)) {
+    if (["thought_delta", "thought_reset", "stream_reasoning", "message", "approval_request", "approval_update", "approval_resolved", "agent_question", "agent_question_answered", "browser_intervention", "tool_start", "tool_end", "tool_progress", "agent_status", "message_deleted", "message_rewind", "chat_cleared", "file_change", "collapse_to_reasoning", "llm_error"].includes(evt.type)) {
       setMessages(prev => {
         const updated = applyWSEvent(prev, evt, user);
         
@@ -515,6 +559,9 @@ function AppShell() {
     if (evt.type === "task_deleted" && evt.task_id) {
       setTasks(prev => prev.filter(t => t.id !== evt.task_id));
     }
+    if (evt.type === "task_comment_created" && evt.comment) {
+      setLastTaskComment(evt.comment);
+    }
     if (evt.type === "agent_queue_update" && evt.agent_id != null) {
       setAgentQueues(prev => ({ ...prev, [evt.agent_id]: evt.queue_depth ?? 0 }));
     }
@@ -523,6 +570,10 @@ function AppShell() {
     }
     if (evt.type === "context_usage") {
       setContextUsage(evt);
+    }
+    if (evt.type === "chat_cleared") {
+      setContextUsage(null);
+      setLastTokenEvent(null);
     }
     // ── Compaction events: render a visible divider in chat ──
     if (evt.type === "compaction_event" && evt.id) {
@@ -745,13 +796,13 @@ function AppShell() {
   }
 
   return (
-    <div className="schematic-bg" style={{ display: "flex", width: "100vw", height: "100vh", overflow: "hidden", background: "var(--bg-app)", position: "relative" }}>
-      {widgetPos && (
+    <div className="schematic-bg app-workspace" style={{ display: "flex", width: "100%", height: "100dvh", overflow: "hidden", background: "var(--bg-app)", position: "relative" }}>
+      {false && widgetPos && (
         <div 
           style={{ 
             position: "absolute", 
-            left: `${widgetPos.x}px`, 
-            top: `${widgetPos.y}px`, 
+            left: `${widgetPos?.x ?? 0}px`, 
+            top: `${widgetPos?.y ?? 0}px`, 
             zIndex: 9999, 
             display: "flex", 
             gap: "4px", 
@@ -809,22 +860,68 @@ function AppShell() {
         onWidthChange={handleWidthChange}
       />
 
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", background: "transparent", position: "relative", width: "100%" }}>
-        {activeView === "chat" && (
-          <div className="animate-entrance" style={{ display: "flex", flex: 1, minHeight: 0, width: "100%" }}>
-            <PanelGroup direction="horizontal" autoSaveId="chat-layout-v2">
-              <Panel
-                ref={chatPanelRef}
-                id="chat-main-panel"
-                order={1}
-                collapsible={explorerOpen}
-                defaultSize={45}
-                minSize={30}
-                onCollapse={() => setIsChatPanelCollapsed(true)}
-                onExpand={() => setIsChatPanelCollapsed(false)}
-                style={{ display: "flex", minWidth: 0, flexDirection: "column" }}
-              >
-                <div style={{ display: "flex", flex: 1, minWidth: 0, minHeight: 0 }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", position: "relative", width: "100%" }}>
+        <AppHeader
+          projects={projects}
+          projectId={projectId}
+          onProjectChange={setProjectId}
+          teams={teams}
+          teamId={teamId}
+          onTeamChange={setTeamId}
+          connected={connected}
+          activeBranch="main"
+          pendingApprovalsCount={
+            messages.filter(
+              m => (m.type === "approval_request" && m.status !== "approved" && m.status !== "denied") ||
+                   (m.pending_approval && m.pending_approval.status !== "approved" && m.pending_approval.status !== "denied")
+            ).length
+          }
+          runningAgentsCount={streamingAgents.size}
+          contextPanelOpen={contextPanelOpen}
+          activeContextTab={activeContextTab}
+          onToggleContextPanel={() => setContextPanelOpen(v => !v)}
+          onSelectContextTab={(tab) => {
+            setContextPanelOpen(true);
+            setActiveContextTab(tab);
+          }}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreen}
+          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+          activeView={activeView}
+          onViewChange={handleViewChange}
+        />
+
+        <main style={{ flex: 1, display: "flex", minWidth: 0, minHeight: 0, overflow: "hidden", position: "relative", width: "100%" }}>
+          <PanelGroup direction="horizontal" autoSaveId="workspace-shell-layout-v3">
+            <Panel id="workspace-main-panel" order={1} defaultSize={contextPanelOpen ? 58 : 100} minSize={30} style={{ display: "flex", minWidth: 0, flexDirection: "column" }}>
+              {activeView === "home" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <WorkspaceHome
+                    projects={projects}
+                    projectId={projectId}
+                    onProjectChange={setProjectId}
+                    teams={teams}
+                    teamId={teamId}
+                    onTeamChange={setTeamId}
+                    agents={agents}
+                    tasks={tasks}
+                    messages={messages}
+                    onStartObjective={(text: string) => {
+                      setActiveView("chat");
+                      handleSendMessage(text);
+                    }}
+                    onNavigateToChat={() => setActiveView("chat")}
+                    onNavigateToTasks={() => setActiveView("tasks")}
+                    onOpenFile={(path: string) => {
+                      setContextPanelOpen(true);
+                      setActiveContextTab("files");
+                      setPendingOpenFile(path);
+                    }}
+                  />
+                </div>
+              )}
+              {activeView === "chat" && (
+                <div className="animate-entrance" style={{ display: "flex", flex: 1, minHeight: 0, width: "100%" }}>
                   <ChatInterface
                     messages={messages}
                     agents={agents}
@@ -844,9 +941,51 @@ function AppShell() {
                     }}
                     onDeleteMessage={async (id) => {
                       const snapshot = [...messages];
-                      setMessages(prev => prev.filter(m => m.id !== id));
+                      const toDelete = new Set<string>([id]);
+                      const target = messages.find(m => m.id === id);
+
+                      if (target) {
+                        const isHuman = target.sender_id === "human" || target.sender_id === user?.id || target.role === "user";
+                        const isInter = target.is_intermediate || target.type === "tool_trace" || target.sender_id === "system";
+
+                        if (isHuman) {
+                          const idx = messages.findIndex(m => m.id === id);
+                          if (idx >= 0) {
+                            for (let i = idx + 1; i < messages.length; i++) {
+                              const m = messages[i];
+                              const mHuman = m.sender_id === "human" || m.sender_id === user?.id || m.role === "user";
+                              if (mHuman) break;
+                              toDelete.add(m.id);
+                            }
+                          }
+                        } else if (!isInter) {
+                          // Assistant message: cascade to intermediate activity messages in this turn
+                          const idx = messages.findIndex(m => m.id === id);
+                          if (idx >= 0) {
+                            for (let i = idx - 1; i >= 0; i--) {
+                              const m = messages[i];
+                              const mInter = m.is_intermediate || m.type === "tool_trace" || m.sender_id === "system";
+                              if (!mInter) break;
+                              toDelete.add(m.id);
+                            }
+                          }
+                        }
+
+                        // Also include child messages referencing any deleted id via parent_message
+                        for (const m of messages) {
+                          if (m.attachments?.some((a: any) => a.type === "parent_message" && toDelete.has(a.id))) {
+                            toDelete.add(m.id);
+                          }
+                        }
+                      }
+
+                      setMessages(prev => prev.filter(m => !toDelete.has(m.id)));
                       try {
-                        await api.deleteMessage(id);
+                        const res = await api.deleteMessage(id);
+                        if (res?.deleted_ids && Array.isArray(res.deleted_ids)) {
+                          const serverDeleted = new Set<string>(res.deleted_ids);
+                          setMessages(prev => prev.filter(m => !serverDeleted.has(m.id)));
+                        }
                       } catch (err: any) {
                         if (err?.status !== 404) {
                           setMessages(snapshot);
@@ -910,15 +1049,22 @@ function AppShell() {
                     }}
                     onClearChat={() => {
                       setMessages([]);
+                      setContextUsage(null);
+                      setLastTokenEvent(null);
                       toast.success("Chat cleared");
                     }}
                     teamId={teamId}
+                    teamName={teams.find(t => t.id === teamId)?.name}
                     projectId={projectId}
                     lastTokenEvent={lastTokenEvent}
                     contextUsage={contextUsage}
-                    onToggleExplorer={() => setExplorerOpen(o => !o)}
+                    onToggleExplorer={() => {
+                      setContextPanelOpen(o => !o);
+                      setActiveContextTab("files");
+                    }}
                     onOpenFile={(path: string) => {
-                      setExplorerOpen(true);
+                      setContextPanelOpen(true);
+                      setActiveContextTab("files");
                       setPendingOpenFile(path);
                     }}
                     onOpenDiffFile={async (path: string, originalContent: string) => {
@@ -932,105 +1078,145 @@ function AppShell() {
                           console.error("Failed to fetch original content", e);
                         }
                       }
-                      setExplorerOpen(true);
-                      setPendingOpenDiffFile({ path, originalContent: actualOriginal });
+                      setContextPanelOpen(true);
+                      setActiveContextTab("diff");
+                      setPendingOpenDiffFile({ path, originalContent: actualOriginal, diff: originalContent });
                     }}
                   />
                 </div>
-              </Panel>
-              {explorerOpen && (
-                <>
-                  <PanelResizeHandle className="resize-handle" />
-                  <Panel id="chat-explorer-panel" order={2} defaultSize={55} minSize={20} style={{ display: "flex", minWidth: 0 }}>
-                    <FileExplorerPanel
-                      onClose={() => setExplorerOpen(false)}
-                      projectId={projectId || undefined}
-                      teamId={teamId || undefined}
-                      lastFileChange={lastFileChange}
-                      pendingOpenFile={pendingOpenFile}
-                      onPendingOpenConsumed={() => setPendingOpenFile(null)}
-                      pendingOpenDiffFile={pendingOpenDiffFile}
-                      onPendingOpenDiffConsumed={() => setPendingOpenDiffFile(null)}
-                      onAppendToChat={handleAppendToChat}
-                    />
-                  </Panel>
-                </>
               )}
-            </PanelGroup>
-          </div>
-        )}
-        {activeView === "tasks" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <KanbanBoard tasks={tasks} agents={agents} teamId={teamId} onTasksChange={setTasks} />
-          </div>
-        )}
-        {activeView === "agents" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <AgentPanel agents={agents} teamId={teamId} streamingAgents={streamingAgents}
-              agentQueues={agentQueues}
-              onAgentsChange={setAgents} onToast={(msg, type) => toast.show(msg, type)} />
-          </div>
-        )}
-        {activeView === "workflow_dag" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <WorkflowDAGCanvas teamId={teamId} />
-          </div>
-        )}
-        {activeView === "code_graph" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <CodeGraphVisualizer projectId={projectId} />
-          </div>
-        )}
-        {activeView === "browser" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <BrowserView screenshots={screenshots} />
-          </div>
-        )}
-        {activeView === "memory" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <MemoryView learnings={learnings} entityMemories={entityMemories} projectId={projectId} teamId={teamId}
-              onLearningsChange={setLearnings} onEntityMemoriesChange={setEntityMemories} onToast={(msg, type) => toast.show(msg, type)} />
-          </div>
-        )}
-        {activeView === "scratchpad" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <ScratchpadPanel teamId={teamId} agents={agents} scratchpads={scratchpads}
-              onScratchpadsChange={setScratchpads}
-              onToast={(msg, type) => toast.show(msg, type as any)} />
-          </div>
-        )}
-        {activeView === "settings" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <SettingsPanel teamId={teamId} projectId={projectId} agents={agents}
-              onToast={(msg, type) => toast.show(msg, type as any)}
-              onTeamDeleted={handleTeamDeleted}
-              onProjectDeleted={handleProjectDeleted} />
-          </div>
-        )}
-        {activeView === "plugins" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <PluginStudio onToast={(msg, type) => toast.show(msg, type as any)} />
-          </div>
-        )}
-        {activeView === "skills" && (
-          <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
-            <SkillsStudio teamId={teamId} onToast={(msg, type) => toast.show(msg, type as any)} />
-          </div>
-        )}
-        {activeView === "mcp" && (
-          <div className="animate-entrance" style={{ padding: "var(--space-6)", height: "100%", overflowY: "auto" }}>
-            <div className="card">
-              <div className="section-header">
-                <h3 className="display-sm">MCP Servers</h3>
-                <p className="caption">Model Context Protocol server integrations for this team.</p>
-              </div>
-              <div style={{ padding: "var(--sp-lg)" }}>
-                <McpIntegration teamId={teamId} agents={agents} onToast={(msg, type) => toast.show(msg, type as any)} />
-              </div>
-            </div>
-          </div>
-        )}
-      </main>
+              {activeView === "tasks" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <KanbanBoard tasks={tasks} agents={agents} teamId={teamId} onTasksChange={setTasks} liveComment={lastTaskComment} />
+                </div>
+              )}
+              {activeView === "git" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <GitWorkspace
+                    projectId={projectId}
+                    onNavigateToChat={() => setActiveView("chat")}
+                    onOpenFile={(path: string) => {
+                      setContextPanelOpen(true);
+                      setActiveContextTab("files");
+                      setPendingOpenFile(path);
+                    }}
+                    onOpenDiffFile={(path: string, originalContent: string) => {
+                      setContextPanelOpen(true);
+                      setActiveContextTab("diff");
+                      setPendingOpenDiffFile({ path, originalContent, diff: "" });
+                    }}
+                    lastFileChange={lastFileChange}
+                  />
+                </div>
+              )}
+              {activeView === "terminal" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <TerminalPanel projectId={projectId || undefined} />
+                </div>
+              )}
+              {activeView === "agents" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <AgentPanel agents={agents} teamId={teamId} streamingAgents={streamingAgents}
+                    agentQueues={agentQueues}
+                    onAgentsChange={setAgents} onToast={(msg, type) => toast.show(msg, type)} />
+                </div>
+              )}
+              {activeView === "workflow_dag" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <WorkflowDAGCanvas teamId={teamId} />
+                </div>
+              )}
+              {activeView === "code_graph" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <CodeGraphVisualizer projectId={projectId} />
+                </div>
+              )}
+              {activeView === "browser" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <BrowserView screenshots={screenshots} />
+                </div>
+              )}
+              {activeView === "memory" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <MemoryView learnings={learnings} entityMemories={entityMemories} projectId={projectId} teamId={teamId}
+                    onLearningsChange={setLearnings} onEntityMemoriesChange={setEntityMemories} onToast={(msg, type) => toast.show(msg, type)} />
+                </div>
+              )}
+              {activeView === "scratchpad" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <ScratchpadPanel teamId={teamId} agents={agents} scratchpads={scratchpads}
+                    onScratchpadsChange={setScratchpads}
+                    onToast={(msg, type) => toast.show(msg, type as any)} />
+                </div>
+              )}
+              {activeView === "settings" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <SettingsPanel teamId={teamId} projectId={projectId} agents={agents}
+                    onToast={(msg, type) => toast.show(msg, type as any)}
+                    onTeamDeleted={handleTeamDeleted}
+                    onProjectDeleted={handleProjectDeleted} />
+                </div>
+              )}
+              {activeView === "plugins" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <PluginStudio onToast={(msg, type) => toast.show(msg, type as any)} />
+                </div>
+              )}
+              {activeView === "skills" && (
+                <div className="animate-entrance" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%" }}>
+                  <SkillsStudio teamId={teamId} onToast={(msg, type) => toast.show(msg, type as any)} />
+                </div>
+              )}
+              {activeView === "mcp" && (
+                <div className="animate-entrance" style={{ padding: "var(--space-6)", height: "100%", overflowY: "auto" }}>
+                  <div className="card">
+                    <div className="section-header">
+                      <h3 className="display-sm">MCP Servers</h3>
+                      <p className="caption">Model Context Protocol server integrations for this team.</p>
+                    </div>
+                    <div style={{ padding: "var(--sp-lg)" }}>
+                      <McpIntegration teamId={teamId} agents={agents} onToast={(msg, type) => toast.show(msg, type as any)} />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </Panel>
+
+            {contextPanelOpen && (
+              <>
+                <PanelResizeHandle className="resize-handle" />
+                <Panel id="workspace-context-panel" order={2} defaultSize={45} minSize={25} style={{ display: "flex", minWidth: 0 }}>
+                  <ContextPanel
+                    activeTab={activeContextTab}
+                    onSelectTab={setActiveContextTab}
+                    onClose={() => setContextPanelOpen(false)}
+                    projectId={projectId || undefined}
+                    teamId={teamId || undefined}
+                    lastFileChange={lastFileChange}
+                    pendingOpenFile={pendingOpenFile}
+                    onPendingOpenConsumed={() => setPendingOpenFile(null)}
+                    pendingOpenDiffFile={pendingOpenDiffFile}
+                    onPendingOpenDiffConsumed={() => setPendingOpenDiffFile(null)}
+                    onAppendToChat={handleAppendToChat}
+                    screenshots={screenshots}
+                  />
+                </Panel>
+              </>
+            )}
+          </PanelGroup>
+        </main>
+      </div>
+
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        onNavigate={handleViewChange}
+        onNewObjective={() => {
+          setActiveView("home");
+        }}
+        tasks={tasks}
+        agents={agents}
+      />
 
       <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
       <KeyboardShortcutsModal />

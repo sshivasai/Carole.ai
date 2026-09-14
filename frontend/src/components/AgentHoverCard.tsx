@@ -6,10 +6,217 @@ import type { AgentConfig } from "@/lib/types";
 import AgentAvatar from "./AgentAvatar";
 import { 
   Bot, Shield, Sparkles, Cpu, AtSign, Copy, Check, 
-  Terminal, FileCode, Globe, Zap, CheckCircle2, ChevronRight
+  Terminal, FileCode, Globe, Zap, CheckCircle2, ChevronRight,
+  Search, Bug, FileText, Layers, ShieldAlert
 } from "lucide-react";
 
 import { getAvatarTheme } from "./PrettyAvatar";
+
+export function formatModelName(rawModel: string): string {
+  if (!rawModel) return "Default LLM";
+  const m = rawModel.toLowerCase();
+  if (m === "free" || m.includes("openrouter/free") || m === "openrouter/auto") return "OpenRouter Free";
+  if (m.includes("claude-3-5-sonnet") || m.includes("claude-3.5-sonnet")) return "Claude 3.5 Sonnet";
+  if (m.includes("claude-3-7-sonnet") || m.includes("claude-3.7-sonnet")) return "Claude 3.7 Sonnet";
+  if (m.includes("claude-3-opus")) return "Claude 3 Opus";
+  if (m.includes("claude-3-haiku")) return "Claude 3 Haiku";
+  if (m.includes("gpt-4o-mini")) return "GPT-4o Mini";
+  if (m.includes("gpt-4o")) return "GPT-4o";
+  if (m.includes("o1-mini") || m.includes("o3-mini")) return "o3-mini";
+  if (m.includes("o1")) return "o1 Preview";
+  if (m.includes("gemini-2.0-flash") || m.includes("gemini-2-flash")) return "Gemini 2.0 Flash";
+  if (m.includes("gemini-1.5-pro")) return "Gemini 1.5 Pro";
+  if (m.includes("gemini-1.5-flash")) return "Gemini 1.5 Flash";
+  if (m.includes("deepseek-reasoner") || m.includes("deepseek-r1")) return "DeepSeek R1";
+  if (m.includes("deepseek-chat") || m.includes("deepseek-v3")) return "DeepSeek V3";
+  if (m.includes("llama-3.3") || m.includes("llama-3-3")) return "Llama 3.3 70B";
+  if (m.includes("llama-3.1") || m.includes("llama-3-1")) return "Llama 3.1 70B";
+  if (m.includes("mistral-large")) return "Mistral Large";
+  if (m.includes("codestral")) return "Codestral";
+
+  const parts = rawModel.split("/");
+  const last = parts[parts.length - 1];
+  if (last === "free") return "OpenRouter Free";
+  return last.replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+export function resolvePersonality(agent?: AgentConfig | null, role?: string, name?: string): string {
+  const raw = agent?.personality?.trim();
+  if (raw) {
+    const lower = raw.toLowerCase();
+    if (lower === "casual") return "Casual & Direct";
+    if (lower === "professional") return "Professional & Methodical";
+    if (lower === "witty") return "Witty & Pragmatic";
+    if (lower === "analytical") return "Analytical & Rigorous";
+    if (lower === "curious") return "Curious & Inquisitive";
+    if (lower === "direct") return "Direct & Concise";
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }
+
+  const r = (role || agent?.role || "").toLowerCase();
+  const n = (name || agent?.name || "").toLowerCase();
+
+  if (r.includes("orchestrat") || r.includes("coordinator") || n === "archer" || n === "captain") {
+    return "Strategic & Directive";
+  }
+  if (r.includes("inspect") || r.includes("debug") || n === "sherlock" || n === "probe") {
+    return "Analytical & Methodical";
+  }
+  if (r.includes("coder") || r.includes("engineer") || r.includes("developer") || n === "nova" || n === "pixel") {
+    return "Pragmatic & Fast";
+  }
+  if (r.includes("architect") || n === "blueprint" || n === "keystone") {
+    return "Systemic & Thorough";
+  }
+  if (r.includes("review") || r.includes("critic") || r.includes("audit")) {
+    return "Skeptical & Precise";
+  }
+  if (r.includes("test") || r.includes("qa")) {
+    return "Meticulous & Defensive";
+  }
+  if (r.includes("research") || r.includes("scout")) {
+    return "Curious & Inquisitive";
+  }
+  return "Professional & Focused";
+}
+
+interface CapabilityBadge {
+  key: string;
+  label: string;
+  Icon: React.ComponentType<{ size?: number; color?: string }>;
+  color: string;
+}
+
+export function resolveCapabilities(agent?: AgentConfig | null, role?: string, name?: string): CapabilityBadge[] {
+  const list: CapabilityBadge[] = [];
+  const r = (role || agent?.role || "").toLowerCase();
+  const n = (name || agent?.name || "").toLowerCase();
+  const skills = agent?.skills || [];
+  const permissions = (agent?.tool_permissions || {}) as any;
+  const overrides = permissions.overrides || (typeof permissions === "object" ? permissions : {});
+  const categories = permissions.categories || {};
+
+  const isBlocked = (toolName: string, catName?: string) => {
+    if (overrides[toolName] === "block") return true;
+    if (catName && categories[catName] === "block") return true;
+    return false;
+  };
+
+  const isAllowed = (toolName: string, catName?: string) => {
+    if (overrides[toolName] === "allow" || overrides[toolName] === "safe" || overrides[toolName] === "judge") return true;
+    if (catName && (categories[catName] === "allow" || categories[catName] === "safe" || categories[catName] === "judge")) return true;
+    return false;
+  };
+
+  // 1. Subagent Spawning & Delegation
+  const canSpawn = (r.includes("orchestrat") || r.includes("coordinator") || n === "archer" || isAllowed("spawn_agent", "subagents")) && !isBlocked("spawn_agent", "subagents");
+  if (canSpawn) {
+    list.push({
+      key: "subagents",
+      label: "Subagent Spawning",
+      Icon: Zap,
+      color: "#a855f7",
+    });
+  }
+
+  // 2. Code Implementation & File Editing vs Code Inspection vs Architecture
+  const isCoder = r.includes("coder") || r.includes("engineer") || r.includes("developer") || n === "nova";
+  const canEdit = !isBlocked("write_file", "edit") && !isBlocked("edit_file", "edit");
+  if (isCoder && canEdit) {
+    list.push({
+      key: "code",
+      label: "Code Implementation",
+      Icon: FileCode,
+      color: "#34d399",
+    });
+  } else if (r.includes("inspect") || r.includes("debug") || n === "sherlock") {
+    list.push({
+      key: "inspect",
+      label: "Code Inspection",
+      Icon: Search,
+      color: "#38bdf8",
+    });
+  } else if (r.includes("architect") || n === "blueprint") {
+    list.push({
+      key: "arch",
+      label: "Architecture Specs",
+      Icon: FileText,
+      color: "#818cf8",
+    });
+  }
+
+  // 3. Root Cause Analysis / Diagnostics
+  if (r.includes("debug") || r.includes("inspect") || n === "sherlock" || skills.some(s => s.toLowerCase().includes("root cause") || s.toLowerCase().includes("diagnos"))) {
+    list.push({
+      key: "rca",
+      label: "Root Cause Analysis",
+      Icon: Bug,
+      color: "#f43f5e",
+    });
+  }
+
+  // 4. Terminal Execution
+  const canTerminal = !isBlocked("execute_command", "execute") && !r.includes("architect") && !r.includes("coordinator") && n !== "archer";
+  if (canTerminal) {
+    list.push({
+      key: "terminal",
+      label: "Terminal Execution",
+      Icon: Terminal,
+      color: "#60a5fa",
+    });
+  }
+
+  // 5. Web Search
+  const canWeb = !isBlocked("web_search", "web") && !isBlocked("web_fetch", "web");
+  if (canWeb && (r.includes("research") || r.includes("orchestrat") || r.includes("inspect") || r.includes("debug") || r.includes("coder") || n === "archer" || n === "sherlock")) {
+    list.push({
+      key: "web",
+      label: "Web Search",
+      Icon: Globe,
+      color: "#f59e0b",
+    });
+  }
+
+  // 6. Regression Testing
+  if (r.includes("test") || r.includes("qa") || skills.some(s => s.toLowerCase().includes("test") || s.toLowerCase().includes("regression"))) {
+    list.push({
+      key: "test",
+      label: "Regression Testing",
+      Icon: CheckCircle2,
+      color: "#10b981",
+    });
+  }
+
+  // 7. System Design & Modeling
+  if (r.includes("architect") || skills.some(s => s.toLowerCase().includes("diagram") || s.toLowerCase().includes("system architecture"))) {
+    list.push({
+      key: "design",
+      label: "Mermaid & Systems",
+      Icon: Layers,
+      color: "#c084fc",
+    });
+  }
+
+  // 8. Custom configured skills from agent.skills
+  for (const s of skills) {
+    if (list.length >= 5) break;
+    const clean = s.trim();
+    if (clean && !list.some(item => item.label.toLowerCase() === clean.toLowerCase())) {
+      list.push({
+        key: `skill-${clean}`,
+        label: clean.length > 24 ? clean.slice(0, 22) + "…" : clean,
+        Icon: Sparkles,
+        color: "#38bdf8",
+      });
+    }
+  }
+
+  if (list.length === 0) {
+    list.push({ key: "task", label: "Task Execution", Icon: Cpu, color: "#38bdf8" });
+  }
+
+  return list.slice(0, 5);
+}
 
 interface AgentHoverCardProps {
   agent?: AgentConfig | null;
@@ -63,6 +270,9 @@ export default function AgentHoverCard({
   const isSubagent = agentName.startsWith("Sub-") || agentName.startsWith("Subagent-") || agentRole.toLowerCase().includes("subagent");
   const isActive = isStreaming || isThinking;
   const avatarTheme = getAvatarTheme(agentName, agentRole, agentId);
+  const formattedModel = formatModelName(agentModel);
+  const resolvedPersonality = resolvePersonality(agent, agentRole, agentName);
+  const resolvedCaps = resolveCapabilities(agent, agentRole, agentName);
 
   const calculatePosition = useCallback(() => {
     if (!triggerRef.current) return;
@@ -312,16 +522,16 @@ export default function AgentHoverCard({
                 <span style={{ color: "var(--color-mute)", display: "block", fontSize: "9px", textTransform: "uppercase", fontWeight: 700 }}>
                   Model
                 </span>
-                <span style={{ color: "var(--color-ink)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>
-                  {agentModel.split("/").pop() || agentModel}
+                <span style={{ color: "var(--color-ink)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }} title={agentModel}>
+                  {formattedModel}
                 </span>
               </div>
               <div>
                 <span style={{ color: "var(--color-mute)", display: "block", fontSize: "9px", textTransform: "uppercase", fontWeight: 700 }}>
                   Personality
                 </span>
-                <span style={{ color: "var(--color-ink)", fontWeight: 600, textTransform: "capitalize" }}>
-                  {agent?.personality || "Professional"}
+                <span style={{ color: "var(--color-ink)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>
+                  {resolvedPersonality}
                 </span>
               </div>
             </div>
@@ -351,19 +561,30 @@ export default function AgentHoverCard({
               <span style={{ color: "var(--color-mute)", display: "block", fontSize: "9px", textTransform: "uppercase", fontWeight: 700, marginBottom: "6px" }}>
                 Capabilities & Access
               </span>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
-                <span className="pill" style={{ fontSize: "10px", padding: "2px 6px", background: "rgba(255, 255, 255, 0.04)" }}>
-                  <FileCode size={10} color="#34d399" /> Code & Files
-                </span>
-                <span className="pill" style={{ fontSize: "10px", padding: "2px 6px", background: "rgba(255, 255, 255, 0.04)" }}>
-                  <Terminal size={10} color="#60a5fa" /> Terminal
-                </span>
-                <span className="pill" style={{ fontSize: "10px", padding: "2px 6px", background: "rgba(255, 255, 255, 0.04)" }}>
-                  <Globe size={10} color="#f59e0b" /> Web Search
-                </span>
-                <span className="pill" style={{ fontSize: "10px", padding: "2px 6px", background: "rgba(255, 255, 255, 0.04)" }}>
-                  <Zap size={10} color="#a855f7" /> Subagent Spawning
-                </span>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
+                {resolvedCaps.map(cap => {
+                  const Icon = cap.Icon;
+                  return (
+                    <span
+                      key={cap.key}
+                      className="pill"
+                      style={{
+                        fontSize: "10px",
+                        padding: "3px 7px",
+                        background: "rgba(255, 255, 255, 0.04)",
+                        border: `1px solid ${cap.color}33`,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        color: "#f1f5f9",
+                        fontWeight: 500,
+                      }}
+                    >
+                      <Icon size={11} color={cap.color} />
+                      {cap.label}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           </div>

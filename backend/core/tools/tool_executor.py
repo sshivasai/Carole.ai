@@ -2872,6 +2872,8 @@ async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
     if not question and not questions:
         return "Error: Missing 'question' or 'questions'."
 
+    parent_message_id = args.get("_active_message_id")
+
     return await interaction_tools.ask_user(
         question=str(question) if question else "",
         agent_id=agent_id,
@@ -2879,6 +2881,7 @@ async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
         team_id=team_id,
         options=options,
         questions=questions,
+        parent_message_id=parent_message_id,
     )
 
 

@@ -7,7 +7,7 @@
   min-width: 260px;
   max-width: 260px;
   height: 100vh;
-  background: var(--color-canvas);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-canvas-soft) 50%, var(--color-canvas)), var(--color-canvas) 42%);
   border-right: 1px solid var(--color-hairline);
   display: flex;
   flex-direction: column;
@@ -35,7 +35,8 @@
   min-height: 56px;
   box-sizing: border-box;
   overflow: hidden;
-  background: var(--color-canvas-soft);
+  background: color-mix(in srgb, var(--color-canvas-soft) 82%, transparent);
+  backdrop-filter: blur(16px);
 }
 
 .sidebarLogoBrand {
@@ -283,7 +284,7 @@
   cursor: pointer;
   transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   border: 1px solid transparent;
-  border-radius: var(--radius-md, 8px);
+  border-radius: 10px;
   background: none;
   width: 100%;
   text-align: left;
@@ -292,16 +293,17 @@
 
 .navItem:hover {
   color: var(--color-ink-strong);
-  background: var(--color-canvas-soft);
-  border-color: var(--color-hairline);
+  background: var(--color-canvas-raised);
+  border-color: color-mix(in srgb, var(--color-primary) 16%, var(--color-hairline));
+  transform: translateX(2px);
 }
 
 .navItem.active {
-  color: var(--color-primary);
-  background: var(--color-primary-glow-sm);
-  border-color: rgba(167, 139, 250, 0.3);
+  color: var(--color-primary-soft);
+  background: linear-gradient(90deg, var(--color-primary-glow-sm), transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--color-hairline));
   font-weight: 700;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  box-shadow: inset 2px 0 var(--color-primary), 0 5px 16px rgba(0, 0, 0, 0.08);
 }
 
 .navItemIcon {
@@ -368,8 +370,8 @@
 }
 
 .connDot.live {
-  background: #10b981;
-  box-shadow: 0 0 8px #10b981;
+  background: var(--color-success);
+  box-shadow: 0 0 8px var(--color-success);
   animation: livePulse 2s infinite;
 }
 

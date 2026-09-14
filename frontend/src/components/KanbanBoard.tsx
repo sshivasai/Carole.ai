@@ -1,12 +1,12 @@
 "use client";
-import React, { useState, useCallback } from "react";
-import type { TaskItem, AgentConfig } from "@/lib/types";
-import { CheckCircle2, Clock, PlayCircle, AlertCircle, Lock, Plus, X, Loader2, FileText, ListTodo, ChevronDown, Check } from "lucide-react";
+import React, { useState, useCallback, useEffect } from "react";
+import type { TaskItem, AgentConfig, TaskComment } from "@/lib/types";
+import { CheckCircle2, Clock, PlayCircle, AlertCircle, Lock, Plus, X, Loader2, FileText, ListTodo, ChevronDown, Check, MessageSquare } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import TaskDetailModal from "./TaskDetailModal";
 import ImplementationPlanModal from "./ImplementationPlanModal";
 
-interface Props { tasks: TaskItem[]; agents: AgentConfig[]; teamId: string | null; onTasksChange: (tasks: TaskItem[]) => void; }
+interface Props { tasks: TaskItem[]; agents: AgentConfig[]; teamId: string | null; onTasksChange: (tasks: TaskItem[]) => void; liveComment?: TaskComment | null; }
 
 const COLS = [
   { id: "todo",        label: "To Do",       Icon: Clock,         color: "var(--color-mute)" },
@@ -62,14 +62,48 @@ function AddTaskForm({ colId, teamId, agents, onAdded, onCancel }: {
   );
 }
 
-export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Props) {
+export default function KanbanBoard({ tasks, agents, teamId, onTasksChange, liveComment }: Props) {
   const [addingCol, setAddingCol] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
   const [planTaskId, setPlanTaskId] = useState<string | null>(null);
   const [planTaskTitle, setPlanTaskTitle] = useState<string | undefined>(undefined);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
-  const getAgentName = (id?: string) => agents.find(a => a.id === id)?.name || "Unassigned";
+  useEffect(() => {
+    if (!teamId) return;
+    api.getTaskUnreadCounts(teamId)
+      .then(counts => setUnreadCounts(counts || {}))
+      .catch(() => {});
+  }, [teamId]);
+
+  useEffect(() => {
+    if (!liveComment?.task_id) return;
+    if (selectedTask?.id !== liveComment.task_id) {
+      setUnreadCounts(prev => ({
+        ...prev,
+        [liveComment.task_id!]: (prev[liveComment.task_id!] || 0) + 1,
+      }));
+    }
+  }, [liveComment, selectedTask]);
+
+  React.useEffect(() => {
+    if (!selectedTask) return;
+    const current = tasks.find(task => task.id === selectedTask.id);
+    if (current && current !== selectedTask) setSelectedTask(current);
+  }, [tasks, selectedTask]);
+
+  const handleOpenTask = (task: TaskItem) => {
+    setSelectedTask(task);
+    setUnreadCounts(prev => {
+      if (!prev[task.id]) return prev;
+      const copy = { ...prev };
+      delete copy[task.id];
+      return copy;
+    });
+  };
+
+  const getAgentName = (id?: string | null) => agents.find(a => a.id === id)?.name || "Unassigned";
 
   const handleDrop = useCallback(async (colId: string, e: React.DragEvent) => {
     e.preventDefault();
@@ -147,7 +181,7 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
                   return (
                     <div key={task.id}
                       draggable onDragStart={() => setDraggingId(task.id)}
-                      onClick={() => setSelectedTask(task)}
+                      onClick={() => handleOpenTask(task)}
                       className="card"
                       style={{
                         padding: "var(--sp-md)",
@@ -168,14 +202,24 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
                       }}
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                        <span className={`badge ${PRIORITY_BADGE[task.priority] || "badge-gray"}`} style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: 0.3 }}>
-                          {task.priority}
-                        </span>
-                        {task.blocked_by_task_id && (
-                          <span className="badge badge-warn" style={{ fontSize: 9, display: "inline-flex", alignItems: "center", gap: 3 }}>
-                            <Lock size={9} /> Blocked
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span className={`badge ${PRIORITY_BADGE[task.priority] || "badge-gray"}`} style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: 0.3 }}>
+                            {task.priority}
                           </span>
-                        )}
+                          <span className="badge badge-gray" style={{ fontSize: 8 }}>r{task.revision || 1}</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          {(unreadCounts[task.id] || 0) > 0 && (
+                            <span className="badge badge-yellow" style={{ fontSize: 9, display: "inline-flex", alignItems: "center", gap: 2 }} title={`${unreadCounts[task.id]} unread comment(s)`}>
+                              <MessageSquare size={9} /> {unreadCounts[task.id]}
+                            </span>
+                          )}
+                          {task.blocked_by_task_id && (
+                            <span className="badge badge-warn" style={{ fontSize: 9, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                              <Lock size={9} /> Blocked
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <span className="body-sm-strong" style={{ fontSize: 12, lineHeight: 1.4, color: "var(--color-ink)" }}>{task.title}</span>
                       {task.description && (
@@ -251,6 +295,7 @@ export default function KanbanBoard({ tasks, agents, teamId, onTasksChange }: Pr
         task={selectedTask} 
         agents={agents} 
         allTasks={tasks}
+        liveComment={liveComment}
         onClose={() => setSelectedTask(null)} 
         onUpdate={(t) => {
           onTasksChange(tasks.map(task => task.id === t.id ? t : task));
@@ -363,9 +408,9 @@ function KanbanSyncSchedule({ teamId, agents }: { teamId: string, agents: AgentC
   if (loading) return null;
 
   const OPTIONS = [
-    { value: "off", label: "Off", desc: "Manual sync only" },
-    { value: "5m", label: "Every 5 mins", desc: "Fast periodic review" },
-    { value: "10m", label: "Every 10 mins", desc: "Standard recommended" },
+    { value: "off", label: "Off", desc: "Live sync stays active; no review tokens" },
+    { value: "5m", label: "Every 5 mins", desc: "High-frequency agent review" },
+    { value: "10m", label: "Every 10 mins", desc: "Frequent agent review" },
     { value: "30m", label: "Every 30 mins", desc: "Balanced cadence" },
     { value: "1h", label: "Every 1 hour", desc: "Low token usage" },
   ];
@@ -398,14 +443,14 @@ function KanbanSyncSchedule({ teamId, agents }: { teamId: string, agents: AgentC
           boxShadow: isEnabled ? "0 0 10px rgba(16, 185, 129, 0.12)" : "var(--shadow-clay-sm, 0 1px 3px rgba(0,0,0,0.1))",
           transition: "all 0.15s ease",
         }}
-        title="Configure automated background orchestrator check on task board"
+        title="Configure an optional orchestrator review; board synchronization is already live"
       >
         {saving ? (
           <Loader2 size={13} className="animate-spin text-mute" />
         ) : (
           <Clock size={13} style={{ color: isEnabled ? "#10b981" : "var(--color-mute, #9ca3af)" }} />
         )}
-        <span style={{ color: "var(--color-mute, #9ca3af)" }}>Auto-Sync:</span>
+        <span style={{ color: "var(--color-mute, #9ca3af)" }}>Auto-Review:</span>
         <span style={{ fontWeight: 600, color: isEnabled ? "#10b981" : "var(--color-ink, #f9fafb)", display: "flex", alignItems: "center", gap: 4 }}>
           {isEnabled && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10b981", animation: "syncPulse 2s infinite" }} />}
           {currentOption.label}
@@ -436,7 +481,7 @@ function KanbanSyncSchedule({ teamId, agents }: { teamId: string, agents: AgentC
         >
           <div style={{ padding: "4px 8px 6px 8px", borderBottom: "1px solid var(--color-hairline, #2a2a3f)", marginBottom: 2 }}>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--color-mute, #9ca3af)", letterSpacing: "0.04em" }}>
-              Kanban Auto-Review
+              Optional Board Review
             </div>
             <div style={{ fontSize: 9.5, color: "var(--color-mute, #9ca3af)" }}>
               Orchestrator reviews tasks on interval

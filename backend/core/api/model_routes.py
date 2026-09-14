@@ -7,6 +7,7 @@ from core.llm.model_catalog import (
     save_model_catalog, 
     reset_model_catalog
 )
+from core.llm.provider_sync import sync_all_provider_models
 
 logger = logging.getLogger("carole.model_routes")
 router = APIRouter(prefix="/api/models", tags=["Models"])
@@ -28,6 +29,17 @@ async def reset_catalog(user: dict = Depends(require_auth)):
     reset_model_catalog()
     return load_model_catalog()
 
+@router.post("/sync")
+async def sync_models(user: dict = Depends(require_auth)):
+    """Dynamically discover and sync latest models from active providers."""
+    try:
+        result = await sync_all_provider_models()
+        return result
+    except Exception as exc:
+        logger.error("Failed to sync models: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to sync models: {exc}")
+
 @router.get("")
 async def list_models(user: dict = Depends(require_auth)):
     return load_model_catalog()
+

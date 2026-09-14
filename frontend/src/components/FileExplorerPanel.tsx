@@ -420,7 +420,25 @@ export default function FileExplorerPanel({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [filterText, setFilterText] = useState("");
   const [collapseSignal, setCollapseSignal] = useState(0);
-  const [showTerminal, setShowTerminal] = useState(true);
+  const [showTerminal, setShowTerminalState] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("carole_explorer_show_terminal");
+      if (saved !== null) return saved === "true";
+    }
+    return false;
+  });
+
+  const setShowTerminal = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    setShowTerminalState((prev) => {
+      const next = typeof value === "function" ? value(prev) : value;
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem("carole_explorer_show_terminal", String(next));
+        } catch { }
+      }
+      return next;
+    });
+  }, []);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([{ id: "t1", label: "Terminal 1", shell: "default", cmd: null }]);
   const [activeTerminalTabId, setActiveTerminalTabId] = useState("t1");
   const [showShellDropdown, setShowShellDropdown] = useState(false);

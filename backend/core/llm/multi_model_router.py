@@ -1011,11 +1011,23 @@ class MultiModelRouter:
         model: str,
     ) -> Optional[LLMProviderError]:
         error = data.get("error")
+        if error is None:
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                choice = choices[0]
+                if isinstance(choice, dict):
+                    if choice.get("error"):
+                        error = choice.get("error")
+                    elif choice.get("finish_reason") == "error":
+                        error = {
+                            "message": choice.get("message") or f"Provider '{provider}' upstream error during stream for model '{model}'."
+                        }
+
         if error is None and data.get("type") != "error":
             return None
 
         if not isinstance(error, dict):
-            return LLMProviderError(ERROR_PROVIDER_DOWN, provider, model)
+            return LLMProviderError(ERROR_PROVIDER_DOWN, provider, model, message=str(error) if error else None)
 
         code = error.get("code")
         if isinstance(code, str) and code.isdigit():
@@ -1040,7 +1052,7 @@ class MultiModelRouter:
             "api_error": ERROR_PROVIDER_DOWN,
         }.get(error_type, ERROR_PROVIDER_DOWN)
 
-        return LLMProviderError(classification, provider, model)
+        return LLMProviderError(classification, provider, model, message=error.get("message"))
 
     async def _stream_with_retry(
         self,
@@ -1442,7 +1454,30 @@ class MultiModelRouter:
 
         except LLMProviderError as e:
             fallback_model = (fallback_model or "").strip()
-            if not emitted_event and fallback_model and fallback_model != model:
+            if not fallback_model:
+                try:
+                    cfg = load_config()
+                    fallback_model = (
+                        cfg.get("default_models", {}).get("DEFAULT_FAST_MODEL")
+                        or cfg.get("default_models", {}).get("DEFAULT_CODER_MODEL")
+                        or ""
+                    ).strip()
+                except Exception:
+                    fallback_model = ""
+
+            if not fallback_model or fallback_model == model:
+                # If model is openrouter/free, select the best active provider
+                if model == "openrouter/free":
+                    if self.openrouter_key:
+                        fallback_model = "openrouter/auto"
+                    elif self.anthropic_key:
+                        fallback_model = "claude-3-5-sonnet-latest"
+                    elif self.openai_key:
+                        fallback_model = "gpt-4o-mini"
+                    elif self.google_key:
+                        fallback_model = "gemini-2.0-flash"
+
+            if fallback_model and fallback_model != model:
                 logger.warning(
                     "[generate_with_tools] Primary model '%s' failed: %s. Falling back to '%s'.",
                     model, e, fallback_model
@@ -1795,10 +1830,14 @@ class MultiModelRouter:
                     )
 
                 # Never execute truncated or otherwise unfinished tool calls.
-                if tool_calls_acc and finish_reason != "tool_calls":
+                # Note: Many open-source models finish with 'stop' instead of 'tool_calls'
+                if tool_calls_acc and finish_reason not in ("tool_calls", "stop"):
+                    err_msg = f"Tool generation did not complete ({finish_reason})."
+                    if finish_reason == "error":
+                        err_msg = f"Upstream provider error during tool execution with model '{model}'. If using openrouter/free, consider switching to a model with guaranteed tool-calling support or configuring a fallback model."
                     raise LLMProviderError(
                         ERROR_PROVIDER_DOWN, provider, model,
-                        message=f"Tool generation did not complete: {finish_reason}.",
+                        message=err_msg,
                     )
 
                 # Validate every call before exposing any for execution.

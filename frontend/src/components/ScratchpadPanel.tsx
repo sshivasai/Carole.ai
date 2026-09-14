@@ -67,6 +67,7 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
   const [appendText, setAppendText] = useState("");
   const [showAppend, setShowAppend] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [staleRemote, setStaleRemote] = useState(false);
   // Tracks the server content snapshot when an edit session began.
   const [editBase, setEditBase] = useState("");
@@ -184,7 +185,6 @@ export default function ScratchpadPanel({ teamId, agents, scratchpads, onScratch
     }
   };
 
-  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   const executeClear = async () => {
     if (!teamId || !selected) return;

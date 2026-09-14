@@ -21,6 +21,7 @@ import {
 import type { AgentConfig } from "@/lib/types";
 import { api } from "@/hooks/useApi";
 import Modal from "./Modal";
+import styles from "./SettingsPanel.module.css";
 
 // Sub-components
 import GeneralSettings from "./settings/GeneralSettings";
@@ -189,125 +190,51 @@ export default function SettingsPanel({
   const activeTabDef = SETTINGS_TABS.find(t => t.id === activeTab) || SETTINGS_TABS[0];
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        background: "var(--color-canvas)",
-        color: "var(--color-ink)",
-        overflow: "hidden",
-      }}
-    >
+    <div className={styles.settings}>
       {/* ── Top Header Bar ── */}
-      <div
-        style={{
-          padding: "var(--sp-lg) var(--sp-2xl)",
-          borderBottom: "1px solid var(--color-hairline)",
-          background: "var(--color-canvas-soft)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: "var(--radius-sm)",
-              background: "var(--color-primary-glow)",
-              border: "1px solid var(--color-primary-soft)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--color-primary)",
-            }}
-          >
+      <header className={styles.header}>
+        <div className={styles.headerIdentity}>
+          <div className={styles.headerIcon}>
             <Settings size={16} />
           </div>
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-xs)", fontSize: 13, fontWeight: 700 }}>
+            <div className={styles.breadcrumb}>
               <span>Settings</span>
               <ChevronRight size={13} color="var(--color-mute)" />
-              <span style={{ color: "var(--color-primary)" }}>{activeTabDef.label}</span>
+              <span>{activeTabDef.label}</span>
             </div>
-            <div className="caption text-mute" style={{ fontSize: 10 }}>
-              Configure AI models, agent safety policies, runtime limits, and integrations
-            </div>
+            <p>Configure the workspace, agent capabilities, and safety boundaries.</p>
           </div>
         </div>
-
-        {/* Global indicator pill */}
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
-          <span className="pill pill-live" style={{ fontSize: 10 }}>
-            {agents.length} active {agents.length === 1 ? "agent" : "agents"}
-          </span>
-        </div>
-      </div>
+        <div className={styles.agentStatus}><i />{agents.length} active {agents.length === 1 ? "agent" : "agents"}</div>
+      </header>
 
       {/* ── Main Two-Column Master-Detail Layout ── */}
-      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+      <div className={styles.layout}>
         {/* ── Left Sidebar Navigation ── */}
-        <div
-          style={{
-            width: 260,
-            flexShrink: 0,
-            borderRight: "1px solid var(--color-hairline)",
-            background: "var(--color-canvas-soft)",
-            display: "flex",
-            flexDirection: "column",
-            overflowY: "auto",
-          }}
-        >
+        <aside className={styles.navigation}>
           {/* Search Bar */}
-          <div style={{ padding: "var(--sp-md) var(--sp-lg)", borderBottom: "1px solid var(--color-hairline)" }}>
-            <div style={{ position: "relative" }}>
-              <Search
-                size={13}
-                style={{
-                  position: "absolute",
-                  left: 10,
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  color: "var(--color-mute)",
-                }}
-              />
+          <div className={styles.searchBox}>
+            <div>
+              <Search size={14} />
               <input
                 type="text"
                 placeholder="Search settings..."
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                className="input"
-                style={{
-                  paddingLeft: 30,
-                  fontSize: 11,
-                  height: 28,
-                  borderRadius: "var(--radius-sm)",
-                  background: "var(--color-canvas)",
-                }}
+                className={styles.searchInput}
               />
             </div>
           </div>
 
           {/* Grouped Navigation Links */}
-          <div style={{ padding: "var(--sp-md)", display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
+          <div className={styles.navGroups}>
             {Object.entries(groupedTabs).map(([groupName, tabs]) => (
               <div key={groupName}>
-                <div
-                  style={{
-                    fontSize: 9.5,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.08em",
-                    color: "var(--color-mute)",
-                    padding: "0 var(--sp-sm) var(--sp-xs)",
-                  }}
-                >
+                <div className={styles.groupLabel}>
                   {groupName}
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div className={styles.navList}>
                   {tabs.map(tab => {
                     const Icon = tab.icon;
                     const isActive = activeTab === tab.id;
@@ -316,28 +243,11 @@ export default function SettingsPanel({
                         key={tab.id}
                         type="button"
                         onClick={() => setActiveTab(tab.id)}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "var(--sp-sm)",
-                          padding: "7px 10px",
-                          borderRadius: "var(--radius-sm)",
-                          border: `1px solid ${isActive ? "var(--color-primary-soft)" : "transparent"}`,
-                          background: isActive ? "var(--color-primary-glow)" : "transparent",
-                          color: isActive ? "var(--color-primary-soft)" : "var(--color-ink)",
-                          fontWeight: isActive ? 600 : 500,
-                          fontSize: 11.5,
-                          cursor: "pointer",
-                          textAlign: "left",
-                          transition: "all var(--t-fast)",
-                          outline: "none",
-                        }}
+                        className={`${styles.navItem} ${isActive ? styles.navItemActive : ""}`}
                       >
-                        <Icon size={14} color={isActive ? "var(--color-primary)" : "var(--color-mute)"} />
-                        <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {tab.label}
-                        </span>
-                        {isActive && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--color-primary)" }} />}
+                        <span className={styles.navIcon}><Icon size={15} /></span>
+                        <span>{tab.label}</span>
+                        {isActive && <i />}
                       </button>
                     );
                   })}
@@ -346,34 +256,24 @@ export default function SettingsPanel({
             ))}
 
             {filteredTabs.length === 0 && (
-              <div style={{ padding: "var(--sp-xl)", textAlign: "center", color: "var(--color-mute)", fontSize: 11 }}>
+              <div className={styles.emptySearch}>
                 No settings match &quot;{searchQuery}&quot;
               </div>
             )}
           </div>
-        </div>
+        </aside>
 
         {/* ── Right Content Area ── */}
-        <div
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            padding: "var(--sp-2xl) var(--sp-3xl)",
-            maxWidth: 1000,
-          }}
-        >
+        <main className={styles.content}>
           {/* Active Tab Header */}
-          <div style={{ marginBottom: "var(--sp-xl)" }}>
-            <h2 className="display-sm" style={{ margin: 0, fontSize: 18 }}>
-              {activeTabDef.label}
-            </h2>
-            <p className="body-sm text-mute" style={{ marginTop: 2, marginBottom: 0 }}>
-              {activeTabDef.description}
-            </p>
+          <div className={styles.contentIntro}>
+            <span>{activeTabDef.group}</span>
+            <h1>{activeTabDef.label}</h1>
+            <p>{activeTabDef.description}</p>
           </div>
 
           {/* Active Tab View */}
-          <div className="animate-entrance">
+          <div className={styles.settingPage} key={activeTab}>
             {activeTab === "general" && <GeneralSettings teamId={teamId} onToast={onToast} />}
             {activeTab === "providers" && <ProvidersSettings onToast={onToast} />}
             {activeTab === "models" && <ModelsSettings onToast={onToast} />}
@@ -390,7 +290,7 @@ export default function SettingsPanel({
               />
             )}
           </div>
-        </div>
+        </main>
       </div>
 
       {/* ── Deletion Confirmation Modal ── */}

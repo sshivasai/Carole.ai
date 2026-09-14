@@ -199,6 +199,9 @@ export default function ModelsSettings({ onToast }: Props) {
                         style={{ fontSize: 11 }}
                       >
                         <option value="">-- Auto Dynamic Fallback (Default: {fallbackModel}) --</option>
+                        {defaults[key] && !Object.values(catalog).some((p: any) => p.models?.some((m: any) => m.value === defaults[key])) && (
+                          <option value={defaults[key]}>Custom: {defaults[key]}</option>
+                        )}
                         {Object.entries(catalog).map(([providerId, provider]: [string, any]) => (
                           <optgroup key={providerId} label={provider.label || providerId}>
                             {provider.models?.map((m: any, idx: number) => (

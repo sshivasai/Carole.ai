@@ -49,6 +49,7 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
   const heartbeatTimer = useRef<NodeJS.Timeout | null>(null);
   const attemptRef = useRef(0);
   const isMounted = useRef(true);
+  const connectionVersion = useRef(0);
   const onEventRef = useRef(onEvent);
   const connectRef = useRef<() => void>(() => { });
 
@@ -92,6 +93,14 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
   }, [stopHeartbeat]);
 
   const connect = useCallback(async () => {
+    const version = ++connectionVersion.current;
+    const isCurrent = () => isMounted.current && connectionVersion.current === version;
+    if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+    stopHeartbeat();
+    const previousSocket = wsRef.current;
+    wsRef.current = null;
+    previousSocket?.close();
+    setConnected(false);
     if (!teamId || !isMounted.current) {
       setConnectionState("offline");
       return;
@@ -109,12 +118,14 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
       const res = await api.getWsTicket();
       ticket = res.ticket;
     } catch (err) {
+      if (!isCurrent()) return;
       console.warn("Failed to fetch WS ticket, scheduling retry:", err);
       scheduleReconnect();
       return;
     }
 
-    if (!isMounted.current || !ticket) return;
+    if (!isCurrent()) return;
+    if (!ticket) { scheduleReconnect(); return; }
 
     try {
       const url = `${getWsBase()}/ws/chat/${teamId}?ticket=${encodeURIComponent(ticket)}`;
@@ -122,16 +133,16 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!isMounted.current) return;
+        if (!isCurrent()) return;
         attemptRef.current = 0;
         setConnected(true);
         setConnectionState("connected");
         startHeartbeat(ws);
-        console.log(`🟢 WebSocket connected to ${url}`);
+        console.log("WebSocket connected");
       };
 
       ws.onmessage = (e) => {
-        if (!isMounted.current) return;
+        if (!isCurrent()) return;
         try {
           const event: WSEvent = JSON.parse(e.data);
           if ((event as any).type === "pong") return;
@@ -155,7 +166,7 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
       };
 
       ws.onclose = () => {
-        scheduleReconnect();
+        if (isCurrent()) scheduleReconnect();
       };
 
       ws.onerror = () => {
@@ -165,7 +176,7 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
       console.warn("Error creating WebSocket:", e);
       scheduleReconnect();
     }
-  }, [teamId, startHeartbeat, scheduleReconnect]);
+  }, [teamId, startHeartbeat, stopHeartbeat, scheduleReconnect]);
 
   useEffect(() => {
     connectRef.current = connect;
@@ -181,10 +192,15 @@ export function useWebSocket(teamId: string | null, onEvent?: (evt: WSEvent) => 
     return () => {
       clearTimeout(connectTimer);
       isMounted.current = false;
+      connectionVersion.current += 1;
+      attemptRef.current = 0;
       stopHeartbeat();
       if (flushTimer.current) clearTimeout(flushTimer.current);
+      flushTimer.current = null;
+      eventQueue.current = [];
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
+      wsRef.current = null;
     };
   }, [connect, stopHeartbeat]);
 

@@ -202,6 +202,9 @@ async def init_db(force_recreate: bool = False):
                 if "depends_on" not in existing_task_cols:
                     await conn.execute(text("ALTER TABLE tasks ADD COLUMN depends_on JSON DEFAULT '[]'"))
                     logger.info("Added 'depends_on' column to tasks table.")
+                if "revision" not in existing_task_cols:
+                    await conn.execute(text("ALTER TABLE tasks ADD COLUMN revision INTEGER DEFAULT 1 NOT NULL"))
+                    logger.info("Added 'revision' column to tasks table.")
             except Exception as e:
                 logger.debug("Column addition notice: %s", e)
 

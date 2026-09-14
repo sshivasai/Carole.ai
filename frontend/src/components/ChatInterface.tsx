@@ -5,7 +5,7 @@ import {
   Send, Bot, User, Wrench, CheckCircle, XCircle, MessageCircleQuestion,
   Loader2, ChevronDown, ChevronUp, ChevronRight, Search, Trash2,
   RotateCcw, Square, Folder, Info, CheckSquare, Users, Lightbulb, FileCode,
-  Terminal, Copy, Check, ThumbsUp, ThumbsDown, Cpu, Scale, Sparkles,
+  Terminal, Copy, Check, ThumbsUp, ThumbsDown, Cpu, Scale, Sparkles, MoreHorizontal,
   FileText, Globe, GitBranch, CheckCircle2, AlertTriangle, ShieldCheck, ArrowDown, ShieldAlert
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -24,6 +24,9 @@ import AgentActivityStream, { ActivityStep } from "./AgentActivityStream";
 import ContextUsageGauge from "./ContextUsageGauge";
 import InChatPlanCard from "./InChatPlanCard";
 import AskUserQuestionCard from "./AskUserQuestionCard";
+import BackgroundWork from "@/features/chat/BackgroundWork";
+import { useBackgroundWork } from "@/features/chat/useBackgroundWork";
+import "./chat-workspace.css";
 
 interface Props {
   messages: ChatMessage[];
@@ -33,6 +36,7 @@ interface Props {
   onRollbackMessage?: (id: string) => void;
   onClearChat?: () => void;
   teamId: string | null;
+  teamName?: string;
   projectId?: string | null;
   onToggleExplorer?: () => void;
   onOpenFile?: (path: string) => void;
@@ -56,6 +60,18 @@ function avatarColor(name: string) {
 function fmtTime(ts?: string | number) {
   if (!ts) return "";
   return new Date(typeof ts === "number" ? ts : ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function BackgroundWorkMark({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="3.1" fill="currentColor" />
+      <circle cx="5.5" cy="8" r="2.05" fill="currentColor" opacity=".72" />
+      <circle cx="17.8" cy="6.2" r="2.05" fill="currentColor" opacity=".72" />
+      <circle cx="18.2" cy="17.5" r="2.05" fill="currentColor" opacity=".72" />
+      <path d="M7.3 9.2 9.5 10.5M15.3 7.7l-1.6 2.2m2.8 5.8-2.1-1.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity=".72" />
+    </svg>
+  );
 }
 
 export function getToolMeta(toolName: string) {
@@ -146,7 +162,9 @@ function ApprovalCard({ msg, onFeedback }: { msg: ChatMessage; onFeedback?: (tex
     if (!txId) return;
     setLoading(true);
     try {
-      await api.approveToolExecution(txId, approved, feedback);
+      const result = await api.approveToolExecution(txId, approved, feedback);
+      const actual = String(result?.action || "").toLowerCase();
+      if (actual && actual !== (approved ? "approved" : "denied")) throw new Error("This request was already " + actual + ". Its latest status will appear when the conversation updates.");
       if (feedback && onFeedback) {
         onFeedback(`[Guidance on ${msg.pending_approval?.tool_name || msg.tool_name || "action"}]: ${feedback}`);
       }
@@ -239,12 +257,13 @@ function AskUserCard({ msg, onAnswerSubmit }: { msg: ChatMessage; onAnswerSubmit
       chosenAnswer={(msg as any).answer}
       onAnswer={handleAnswer}
       onSkip={async (qId) => {
-        (msg as any).is_answered = true;
-        (msg as any).answer = "Skipped by user";
         try {
           await api.answerAgentQuestion(qId, "Skipped by user");
+          (msg as any).is_answered = true;
+          (msg as any).answer = "Skipped by user";
         } catch (e) {
           console.error("Failed to skip question:", e);
+          throw e;
         }
       }}
     />
@@ -577,305 +596,33 @@ function parseReasoningIntoSections(raw: string): Array<{
   return sections;
 }
 
-function extractFileChanges(reasoning: string, msg: ChatMessage): ChangedFileItem[] {
-  const map = new Map<string, ChangedFileItem>();
-
-  if (msg.path) {
-    const lines = (msg.arguments?.content || msg.text || "").split("\n");
-    map.set(msg.path, {
-      path: msg.path,
-      diff: msg.diff,
-      content: msg.arguments?.content || msg.text,
-      action: msg.action || "modified",
-      additions: msg.diff ? msg.diff.split("\n").filter(l => l.startsWith("+") && !l.startsWith("+++")).length : (lines.length || 1),
-      deletions: msg.diff ? msg.diff.split("\n").filter(l => l.startsWith("-") && !l.startsWith("---")).length : 0
-    });
-  }
-
-  if (reasoning) {
-    const sections = parseReasoningIntoSections(reasoning);
-    for (const sec of sections) {
-      if (sec.type === "tool" && sec.toolName && ["write_file", "edit_file", "create_file"].includes(sec.toolName.toLowerCase())) {
-        const args = sec.argsObj || {};
-        const p = args.relative_path || args.path || args.TargetFile;
-        if (p) {
-          const content = args.content || args.CodeContent || "";
-          const diff = args.diff;
-          const diffLines = diff ? diff.split("\n") : (content ? content.split("\n") : []);
-          const adds = diff ? diffLines.filter((l: string) => l.startsWith("+") && !l.startsWith("+++")).length : (diffLines.length || 1);
-          const dels = diff ? diffLines.filter((l: string) => l.startsWith("-") && !l.startsWith("---")).length : 0;
-
-          map.set(p, {
-            path: p,
-            diff,
-            content,
-            action: sec.toolName.toLowerCase().includes("write") ? "created" : "modified",
-            additions: adds,
-            deletions: dels
-          });
-        }
-      }
-    }
-  }
-
-  return Array.from(map.values());
+function extractFileChanges(_reasoning: string, msg: ChatMessage): ChangedFileItem[] {
+  // Proposed tool arguments are not evidence that a file was changed.
+  if (!msg.path || (!msg.diff && msg.type !== "file_change")) return [];
+  return [{ path: msg.path, diff: msg.diff, content: msg.arguments?.content, action: msg.action || "modified" }];
 }
 
-function TraceToolCard({
-  toolName,
-  argsObj,
-  argsRaw,
-  result,
-  isError,
-  pid,
-  defaultOpen = false,
-  agentName,
-  timestamp
-}: {
-  toolName: string;
-  argsObj?: any;
-  argsRaw?: string;
-  result?: string;
-  isError?: boolean;
-  pid?: number | null;
-  defaultOpen?: boolean;
-  agentName?: string;
-  timestamp?: string | number;
+function TraceToolCard({ toolName, argsObj, argsRaw, result, isError, pid }: {
+  toolName: string; argsObj?: any; argsRaw?: string; result?: string; isError?: boolean;
+  pid?: number | null; defaultOpen?: boolean; agentName?: string; timestamp?: string | number;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const [copied, setCopied] = useState<"args" | "result" | null>(null);
+  return <AgentActivityStream steps={[{ type: "tool", toolName, argsObj, argsJson: argsRaw, result, isError, pid }]} />;
+}
 
-  const toolMeta = getToolMeta(toolName);
-  const ToolIcon = toolMeta.icon;
-  const summary = getToolSummaryText(toolName, argsObj || argsRaw);
-
-  const handleCopy = (type: "args" | "result", text: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(text);
-    setCopied(type);
-    setTimeout(() => setCopied(null), 1500);
-  };
-
-  const statusColor = isError ? "var(--color-danger, #ef4444)" : result ? "var(--color-success, #10b981)" : "var(--color-warning, #f59e0b)";
-  const statusBg = isError ? "rgba(239, 68, 68, 0.12)" : result ? "rgba(16, 185, 129, 0.12)" : "rgba(245, 158, 11, 0.12)";
-
-  return (
-    <div
-      style={{
-        margin: "4px 0",
-        borderRadius: "var(--radius-md, 8px)",
-        border: "1px solid rgba(255, 255, 255, 0.08)",
-        background: "rgba(15, 15, 22, 0.65)",
-        backdropFilter: "blur(12px)",
-        WebkitBackdropFilter: "blur(12px)",
-        overflow: "hidden",
-        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.2)",
-        transition: "border-color 0.2s, box-shadow 0.2s"
-      }}
-    >
-      <div
-        onClick={() => setOpen(o => !o)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "7px 12px",
-          cursor: "pointer",
-          background: open ? "rgba(255, 255, 255, 0.03)" : "transparent",
-          borderBottom: open ? "1px solid rgba(255, 255, 255, 0.06)" : "none",
-          userSelect: "none",
-          gap: 8
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            background: "rgba(167, 139, 250, 0.15)",
-            color: "var(--color-primary-soft, #a78bfa)",
-            flexShrink: 0
-          }}>
-            <ToolIcon size={12} />
-          </div>
-
-          <span style={{
-            fontFamily: "var(--font-mono, monospace)",
-            fontSize: 11.5,
-            fontWeight: 600,
-            color: "var(--text-primary, #f1f5f9)",
-            letterSpacing: "-0.2px"
-          }}>
-            {toolName}
-          </span>
-
-          {summary && (
-            <span
-              title={summary}
-              style={{
-                fontFamily: "var(--font-mono, monospace)",
-                fontSize: 10.5,
-                color: "var(--text-muted, #94a3b8)",
-                background: "rgba(255, 255, 255, 0.05)",
-                padding: "1px 7px",
-                borderRadius: 4,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                maxWidth: 260,
-                border: "1px solid rgba(255, 255, 255, 0.06)"
-              }}
-            >
-              {summary}
-            </span>
-          )}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          {result !== undefined && result !== "" && (
-            <span style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              fontSize: 10,
-              fontWeight: 500,
-              padding: "2px 7px",
-              borderRadius: 10,
-              background: statusBg,
-              color: statusColor,
-              border: `1px solid ${statusColor}33`
-            }}>
-              {isError ? <AlertTriangle size={10} /> : <Check size={10} />}
-              {isError ? "Error" : "Done"}
-            </span>
-          )}
-
-          {agentName && (
-            <span style={{ fontSize: 10, color: "var(--color-mute)", opacity: 0.8 }}>
-              {agentName}
-            </span>
-          )}
-
-          <div style={{ color: "var(--color-mute)", display: "flex", alignItems: "center" }}>
-            {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          </div>
-        </div>
-      </div>
-
-      {open && (
-        <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 10, fontSize: 11 }}>
-          {(argsRaw || argsObj) && (
-            <div>
-              <div style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 4,
-                fontSize: 9.5,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "0.6px",
-                color: "var(--color-mute, #64748b)"
-              }}>
-                <span>Parameters</span>
-                <button
-                  onClick={(e) => handleCopy("args", argsRaw || JSON.stringify(argsObj, null, 2), e)}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    color: copied === "args" ? "var(--color-success, #4ade80)" : "var(--color-mute)",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 3,
-                    fontSize: 10,
-                    padding: "1px 4px",
-                    borderRadius: 3
-                  }}
-                  title="Copy parameters"
-                >
-                  {copied === "args" ? <Check size={10} /> : <Copy size={10} />}
-                  {copied === "args" ? "Copied" : "Copy"}
-                </button>
-              </div>
-              <pre style={{
-                margin: 0,
-                padding: "8px 10px",
-                background: "#0c0c12",
-                border: "1px solid rgba(255, 255, 255, 0.07)",
-                borderRadius: 6,
-                fontSize: 11,
-                lineHeight: 1.45,
-                fontFamily: "var(--font-mono, monospace)",
-                color: "#e2e8f0",
-                overflowX: "auto",
-                maxHeight: 140
-              }}>
-                {argsRaw || JSON.stringify(argsObj, null, 2)}
-              </pre>
-            </div>
-          )}
-
-          {result && (
-            <div>
-              <div style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 4,
-                fontSize: 9.5,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "0.6px",
-                color: isError ? "var(--color-danger, #f87171)" : "var(--color-mute, #64748b)"
-              }}>
-                <span>{isError ? "Error Output" : "Observation Output"}</span>
-                <button
-                  onClick={(e) => handleCopy("result", result, e)}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    color: copied === "result" ? "var(--color-success, #4ade80)" : "var(--color-mute)",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 3,
-                    fontSize: 10,
-                    padding: "1px 4px",
-                    borderRadius: 3
-                  }}
-                  title="Copy output"
-                >
-                  {copied === "result" ? <Check size={10} /> : <Copy size={10} />}
-                  {copied === "result" ? "Copied" : "Copy"}
-                </button>
-              </div>
-              <pre style={{
-                margin: 0,
-                padding: "8px 10px",
-                background: isError ? "rgba(239, 68, 68, 0.05)" : "#0c0c12",
-                border: isError ? "1px solid rgba(239, 68, 68, 0.2)" : "1px solid rgba(255, 255, 255, 0.07)",
-                borderRadius: 6,
-                fontSize: 11,
-                lineHeight: 1.45,
-                fontFamily: "var(--font-mono, monospace)",
-                color: isError ? "#fca5a5" : "#cbd5e1",
-                overflowX: "auto",
-                maxHeight: 200,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word"
-              }}>
-                {result}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
+function StopAgentButton({ agentId }: { agentId: string }) {
+  const [status, setStatus] = useState<"idle" | "sending" | "requested">("idle");
+  const [error, setError] = useState("");
+  const lock = useRef(false);
+  return <div className="cw-stop-control">
+    <button className="cw-text-button" disabled={status !== "idle"} onClick={async () => {
+      if (lock.current) return;
+      lock.current = true; setStatus("sending"); setError("");
+      try { await api.stopAgent(agentId); setStatus("requested"); }
+      catch (e) { setStatus("idle"); setError(e instanceof Error ? e.message : "Could not stop this agent."); }
+      finally { lock.current = false; }
+    }}>{status === "sending" ? <Loader2 size={13} className="cw-spin" /> : <Square size={13} />}{status === "idle" ? "Stop agent" : status === "sending" ? "Requesting stop…" : "Stop requested"}</button>
+    {error && <p role="alert" className="cw-inline-error">{error}</p>}
+  </div>;
 }
 
 function ThoughtsPanel({ reasoning, isStreaming, components }: { reasoning?: string; isStreaming?: boolean; components?: any }) {
@@ -1007,6 +754,7 @@ export default function ChatInterface({
   onRollbackMessage,
   onClearChat,
   teamId,
+  teamName,
   projectId,
   onToggleExplorer,
   onOpenFile,
@@ -1023,9 +771,14 @@ export default function ChatInterface({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [showTeamAgents, setShowTeamAgents] = useState(false);
+  const [showBackground, setShowBackground] = useState(false);
+  const backgroundWork = useBackgroundWork(teamId);
+  const runningJobs = backgroundWork.error ? [] : backgroundWork.jobs.filter(job => job.status === "running");
   const [sendError, setSendError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const sendLock = useRef(false);
+  const activeTeamRef = useRef(teamId);
+  activeTeamRef.current = teamId;
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1073,17 +826,31 @@ export default function ChatInterface({
       }
     }
 
-    // 2. Link orphan intermediate messages (is_intermediate / tool_trace) without explicit parentAttachment
+    // 2. Link orphan intermediate messages (is_intermediate / tool_trace / agent_question) without explicit parentAttachment
     // to the assistant message in the same conversation turn
     let pendingIntermediates: ChatMessage[] = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       const isExplicitChild = msg.attachments?.some((a: any) => a.type === "parent_message");
-      const isInter = msg.is_intermediate === true || msg.type === "tool_trace";
+      const isTurnActivity = msg.is_intermediate === true ||
+        msg.type === "tool_trace" ||
+        msg.type === "agent_question" ||
+        msg.type === "ask_user" ||
+        msg.type === "approval_request" ||
+        msg.type === "browser_intervention" ||
+        (msg.sender_id === "system" && (msg.text?.startsWith("Approval Event:") || msg.text?.includes("ACTION")));
 
-      if (isInter && !isExplicitChild) {
+      const isAssistantFinal = !isTurnActivity &&
+        msg.sender_id !== "human" &&
+        msg.sender_id !== "system" &&
+        msg.sender_id !== user?.id &&
+        msg.role !== "user" &&
+        msg.type !== "file_change" &&
+        msg.type !== "llm_error";
+
+      if (isTurnActivity && !isExplicitChild) {
         pendingIntermediates.push(msg);
-      } else if (!isInter && msg.sender_id !== "human" && msg.sender_id !== "system") {
+      } else if (isAssistantFinal) {
         // Assistant message in this turn
         if (pendingIntermediates.length > 0) {
           if (!groups[msg.id]) groups[msg.id] = [];
@@ -1093,13 +860,13 @@ export default function ChatInterface({
           }
           pendingIntermediates = [];
         }
-      } else if (msg.sender_id === "human") {
+      } else if (msg.sender_id === "human" || msg.role === "user" || msg.sender_id === user?.id) {
         pendingIntermediates = [];
       }
     }
 
     return { childMessagesByParent: groups, orphanIntermediateIds: orphanIds };
-  }, [messages]);
+  }, [messages, user?.id]);
 
   const markdownComponents = useMemo(() => ({
     a: ({ href, children, ...props }: any) => {
@@ -1201,8 +968,8 @@ export default function ChatInterface({
   const pendingActions = useMemo(() => {
     return messages.filter(m => {
       const isPendingApproval = Boolean(
-        (m.pending_approval && m.pending_approval.status !== "approved" && m.pending_approval.status !== "denied" && m.pending_approval.status !== "expired") ||
-        (m.type === "approval_request" && m.status !== "approved" && m.status !== "denied" && m.status !== "expired")
+        (m.pending_approval && m.pending_approval.status !== "approved" && m.pending_approval.status !== "denied" && m.pending_approval.status !== "expired" && m.pending_approval.status !== "cancelled" && m.pending_approval.status !== "superseded") ||
+        (m.type === "approval_request" && m.status !== "approved" && m.status !== "denied" && m.status !== "expired" && m.status !== "cancelled" && m.status !== "superseded")
       );
       const isPendingQuestion = Boolean((m.type === "ask_user" || m.type === "agent_question") && !(m as any).is_answered);
       return isPendingApproval || isPendingQuestion;
@@ -1365,18 +1132,20 @@ export default function ChatInterface({
   };
 
   const handleSend = useCallback(async () => {
-    if (!inputText.trim() && attachments.length === 0) return;
+    if (!teamId || sendLock.current || isSending || uploading || (!inputText.trim() && attachments.length === 0)) return;
 
     let textToSend = inputText.trim();
 
     // ── /compact slash command ──
     // Intercept before sending to backend. Triggers manual compaction via API.
     if (textToSend === "/compact") {
-      setInputText("");
-      setAttachments([]);
-      if (onCompact) {
-        onCompact().catch(() => {/* error handled in parent */ });
-      }
+      if (!onCompact) { setSendError("Compaction is unavailable for this conversation."); return; }
+      sendLock.current = true; setIsSending(true);
+      try {
+        await onCompact();
+        if (activeTeamRef.current === teamId) setInputText(current => current === inputText ? "" : current);
+      } catch (e) { setSendError(e instanceof Error ? e.message : "Could not compact the conversation."); }
+      finally { sendLock.current = false; setIsSending(false); }
       return;
     }
 
@@ -1406,26 +1175,30 @@ export default function ChatInterface({
       if (!seen.has(p)) { seen.add(p); fileRefs.push({ type: "file_ref", path: p }); }
     }
 
+    sendLock.current = true;
     setIsSending(true);
     setSendError(null);
     try {
       const res = await onSendMessage(textToSend, [...attachments, ...fileRefs]);
+      if (activeTeamRef.current !== teamId) return;
       if (res && typeof res === "object" && "success" in res && !res.success) {
         setSendError(res.error || "Message delivery failed. Connection offline.");
         return; // PRESERVE draft text and attachments!
       }
-      setInputText("");
-      setAttachments([]);
+      setInputText(current => current === inputText ? "" : current);
+      setAttachments(current => current.filter(item => !attachments.includes(item)));
       setMentionOpen(false);
       setSendError(null);
     } catch (err: any) {
       setSendError(err?.message || "Failed to dispatch message.");
     } finally {
+      sendLock.current = false;
       setIsSending(false);
     }
-  }, [inputText, attachments, onSendMessage, onCompact]);
+  }, [inputText, attachments, onSendMessage, onCompact, teamId, isSending, uploading]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (mentionOpen && mentionItems.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -1646,114 +1419,43 @@ export default function ChatInterface({
 
 
   return (
-    <div style={{ flex: 1, minHeight: 0, height: "100%", width: "100%", position: "relative" }}>
+    <div className="cw-workspace" style={{ flex: 1, minHeight: 0, height: "100%", width: "100%", position: "relative" }}>
       <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        {/* Header */}
-        <header className="section-header" style={{ flexShrink: 0, padding: "var(--sp-md) var(--sp-2xl)", background: "var(--bg-surface)", borderBottom: "1px solid var(--border-glass)" }}>
-          <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "var(--sp-md)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-lg)" }}>
-              <div>
-                <h2 className="display-sm" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  Team Chat
-                  {agents.length > 0 && (
-                    <span className="pill pill-live" style={{ fontSize: 9, padding: "1px 6px" }}>
-                      <span className="live-dot" /> LIVE
-                    </span>
-                  )}
-                </h2>
-                <p className="caption">Collaborate with your <span style={{ color: "var(--color-primary)", fontWeight: 500 }}>AI</span> <del style={{ opacity: 0.6 }}> agents</del> <span style={{ color: "var(--color-primary)", fontWeight: 500 }}> teammates</span> · <kbd style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, border: "1px solid var(--color-hairline)", background: "var(--color-canvas-soft)" }}>Shift+Enter</kbd> for newline</p>
-              </div>
-
-              <div style={{ position: "relative" }}>
-                <div
-                  onClick={() => setShowTeamAgents(!showTeamAgents)}
-                  className="live-team-presence"
-                  style={{ cursor: "pointer" }}
-                  title="View active team agents and subagents"
-                >
-                  <div style={{ display: "flex", marginRight: "4px" }}>
-                    {agents.slice(0, 3).map((agent, i) => (
-                      <div key={agent.id} style={{ marginLeft: i > 0 ? "-8px" : 0, borderRadius: "50%", border: "2px solid var(--bg-surface)", zIndex: 3 - i }}>
-                        <AgentHoverCard agent={agent} onMention={handleDirectMention}>
-                          <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={22} hideBadge />
-                        </AgentHoverCard>
-                      </div>
-                    ))}
-                    {agents.length > 3 && (
-                      <div style={{ marginLeft: "-8px", borderRadius: "50%", border: "2px solid var(--bg-surface)", width: 22, height: 22, background: "var(--color-canvas-raised)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "var(--color-primary-soft)", zIndex: 0 }}>
-                        +{agents.length - 3}
-                      </div>
-                    )}
-                  </div>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: "var(--color-ink)" }}>
-                    {agents.length} Agent{agents.length !== 1 ? "s" : ""}
-                  </span>
-                  <ChevronDown size={12} color="var(--color-mute)" style={{ transform: showTeamAgents ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
-                </div>
-
-                {showTeamAgents && (
-                  <div style={{ position: "absolute", top: "100%", left: 0, marginTop: "8px", width: "280px", background: "var(--bg-glass-card)", backdropFilter: "var(--blur-lg)", WebkitBackdropFilter: "var(--blur-lg)", border: "1px solid var(--border-glass)", borderRadius: "var(--radius-md)", boxShadow: "0 12px 36px rgba(0,0,0,0.5)", zIndex: 100, overflow: "hidden" }}>
-                    <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border-glass)", background: "rgba(255,255,255,0.02)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.5px", color: "var(--color-mute)", textTransform: "uppercase" }}>TEAM PRESENCE</span>
-                      <span className="caption" style={{ fontSize: 10, color: "var(--color-primary)" }}>{agents.length} available</span>
-                    </div>
-                    <div style={{ maxHeight: "300px", overflowY: "auto", padding: "6px" }}>
-                      {agents.map(a => {
-                        const isSub = a.name.startsWith("Sub-") || a.name.startsWith("Subagent-");
-                        return (
-                          <AgentHoverCard key={a.id} agent={a} onMention={handleDirectMention}>
-                            <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "7px 10px", borderRadius: "var(--radius-sm)", transition: "background var(--t-fast)", width: "100%", cursor: "pointer" }} className="hover:bg-[var(--color-canvas-raised)]">
-                              <AgentAvatar name={a.name} id={a.id} role={a.role} size={28} hideBadge />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontWeight: 600, fontSize: "12px", color: "var(--color-ink)", display: "flex", alignItems: "center", gap: 5 }}>
-                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
-                                  {isSub && <span className="subagent-chip" style={{ fontSize: 8, padding: "1px 4px" }}>SUB</span>}
-                                </div>
-                                <div className="caption" style={{ fontSize: "10px", color: "var(--color-mute)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                  {a.role || a.model || "Active Agent"}
-                                </div>
-                              </div>
-                            </div>
-                          </AgentHoverCard>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
+        <header className="cw-header" style={{ position: "relative", zIndex: 40 }}>
+          <div className="cw-header-left">
+            <div className="cw-title">
+              <h2>{teamName || "Team chat"}</h2>
+              <p>{teamId ? agents.length + " teammates ready" : "Choose a team to begin"}</p>
             </div>
-            <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "center" }}>
-              {/* Context Window & Token Usage Meter */}
-              <ContextUsageGauge
-                projectId={projectId || undefined}
-                teamId={teamId || undefined}
-                activeModel={contextUsage?.model || agents[0]?.model || "claude-3-7-sonnet"}
-                estimatedTokens={contextUsage?.estimated_tokens}
-                contextWindow={contextUsage?.context_window}
-                usagePercent={contextUsage?.usage_percent}
-                lastTokenEvent={lastTokenEvent}
-                messages={messages}
-                agents={agents}
-              />
-
-              {onToggleExplorer && (
-                <button className="btn btn-icon btn-outline btn-sm" onClick={onToggleExplorer} title="Toggle File Explorer">
-                  <Folder size={14} />
-                </button>
-              )}
-              <button className={`btn btn-icon btn-outline btn-sm ${searchMode ? "card-active" : ""}`}
-                onClick={() => setSearchMode(s => !s)} title="Search messages">
-                <Search size={14} />
-              </button>
-              <button className="btn btn-icon btn-outline btn-sm"
-                onClick={() => setClearChatOpen(true)} title="Clear all chat messages"
-                style={{ color: "var(--color-danger)" }}>
-                <Trash2 size={14} />
-              </button>
-              <McpStatusIndicator />
+            <div className="cw-team-presence" aria-label="Team members">
+              <div className="cw-team-stack">
+                {agents.slice(0, 6).map((agent, index) => (
+                  <AgentHoverCard key={agent.id} agent={agent} onMention={handleDirectMention} side="bottom">
+                    <button className="cw-team-avatar" style={{ zIndex: 8 - index }} onClick={() => handleDirectMention(agent.name)} aria-label={"View " + agent.name + " or mention in chat"}>
+                      <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={30} hideBadge />
+                    </button>
+                  </AgentHoverCard>
+                ))}
+              </div>
+              {agents.length > 6 && <span className="cw-team-more">+{agents.length - 6}</span>}
             </div>
           </div>
+          <div className="cw-header-actions">
+            <ContextUsageGauge projectId={projectId || undefined} teamId={teamId || undefined} estimatedTokens={contextUsage?.estimated_tokens} contextWindow={contextUsage?.context_window} usagePercent={contextUsage?.usage_percent} lastTokenEvent={lastTokenEvent} messages={messages} agents={agents} />
+            <button className={`cw-background-button ${showBackground ? "cw-background-button-active" : ""}`} aria-expanded={showBackground} onClick={() => setShowBackground(v => !v)} title="View background work">
+              <BackgroundWorkMark />
+              <span>Work</span>
+              {runningJobs.length > 0 && <b>{runningJobs.length}</b>}
+            </button>
+            <details className="cw-menu"><summary className="cw-icon-button" aria-label="Conversation options"><MoreHorizontal size={18} /></summary><div className="cw-menu-content">
+              <button className="cw-text-button" onClick={() => setSearchMode(v => !v)}><Search size={14} />Search conversation</button>
+              {onToggleExplorer && <button className="cw-text-button" onClick={onToggleExplorer}><Folder size={14} />Open files and changes</button>}
+              <button className="cw-text-button cw-danger" onClick={() => setClearChatOpen(true)}><Trash2 size={14} />Clear conversation</button>
+              <McpStatusIndicator />
+            </div></details>
+          </div>
         </header>
+        {showBackground && <BackgroundWork work={backgroundWork} onClose={() => setShowBackground(false)} />}
 
         {/* Search bar */}
         {
@@ -1771,8 +1473,8 @@ export default function ChatInterface({
         }
 
         {/* Messages */}
-        <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-xl) var(--sp-2xl)" }}>
-          <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--sp-lg)", minHeight: "100%" }}>
+        <div className="cw-scroll" ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-xl) var(--sp-2xl)", position: "relative", zIndex: 1 }}>
+          <div className="cw-timeline" style={{ maxWidth: "min(1360px, 94%)", width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--sp-lg)", minHeight: "100%" }}>
             {/* Load older button */}
             {!searchMode && hasOlderMessages && messages.length >= 50 && (
               <div style={{ display: "flex", justifyContent: "center", paddingBottom: 8 }}>
@@ -1799,10 +1501,10 @@ export default function ChatInterface({
                 return null;
               }
 
-              const isHuman = msg.sender_id === "human";
+              const isHuman = msg.sender_id === "human" || msg.sender_id === user?.id || msg.role === "user";
               const isTool = msg.type === "tool_start" || msg.type === "tool_end";
               const isApproval = msg.type === "approval_request";
-              const isQuestion = msg.type === "agent_question";
+              const isQuestion = msg.type === "agent_question" || msg.type === "ask_user";
               const isIntervention = msg.type === "browser_intervention";
               const isFileChange = msg.type === "file_change";
               const isSystem = msg.sender_id === "system";
@@ -1818,23 +1520,35 @@ export default function ChatInterface({
 
                 if (hasTools) {
                   return (
-                    <div key={msg.id} style={{ marginLeft: 8, marginBottom: 4, maxWidth: "85%" }}>
-                      {sections.map((sec, idx) => (
-                        sec.type === "tool" ? (
-                          <TraceToolCard
-                            key={idx}
-                            toolName={sec.toolName!}
-                            argsObj={sec.argsObj}
-                            argsRaw={sec.argsJson}
-                            result={sec.result}
-                            isError={sec.isError}
-                            pid={sec.pid}
-                            agentName={msg.sender_name}
-                            timestamp={msg.timestamp}
-                            defaultOpen={false}
-                          />
-                        ) : null
-                      ))}
+                    <div data-chat-message={msg.id} key={msg.id} style={{ marginLeft: 8, marginBottom: 4, maxWidth: "85%", display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        {sections.map((sec, idx) => (
+                          sec.type === "tool" ? (
+                            <TraceToolCard
+                              key={idx}
+                              toolName={sec.toolName!}
+                              argsObj={sec.argsObj}
+                              argsRaw={sec.argsJson}
+                              result={sec.result}
+                              isError={sec.isError}
+                              pid={sec.pid}
+                              agentName={msg.sender_name}
+                              timestamp={msg.timestamp}
+                              defaultOpen={false}
+                            />
+                          ) : null
+                        ))}
+                      </div>
+                      <button
+                        className="btn btn-icon btn-ghost btn-sm"
+                        title="Delete activity"
+                        onClick={() => doDelete(msg.id)}
+                        style={{ opacity: 0.35, padding: 3 }}
+                        onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
+                        onMouseLeave={e => (e.currentTarget.style.opacity = "0.35")}
+                      >
+                        <Trash2 size={11} />
+                      </button>
                     </div>
                   );
                 }
@@ -1849,34 +1563,46 @@ export default function ChatInterface({
                 const traceRole = traceAgentInfo?.role && traceAgentInfo.role !== "Active Agent" ? traceAgentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
 
                 return (
-                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-start", marginLeft: 8, marginBottom: 2 }}>
+                  <div data-chat-message={msg.id} key={msg.id} style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-start", marginLeft: 8, marginBottom: 2 }}>
                     <AgentAvatar name={msg.sender_name || "agent"} id={traceAgentInfo?.id || msg.sender_id} role={traceRole} size={22} isStreaming={isStreaming} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <button
-                        onClick={() => setExpandedTraces(prev => {
-                          const s = new Set(prev);
-                          isExpanded ? s.delete(msg.id) : s.add(msg.id);
-                          return s;
-                        })}
-                        style={{
-                          background: "var(--bg-glass-card)", border: "1px solid var(--border-glass)",
-                          borderRadius: "var(--radius-sm)", cursor: "pointer", padding: "4px 8px",
-                          display: "inline-flex", alignItems: "center", gap: 6, color: "var(--color-body)",
-                          transition: "all var(--t-fast)"
-                        }}
-                      >
-                        {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                        <span className={toolMeta.className} style={{ fontSize: 9, padding: "1px 5px" }}>
-                          <ToolIcon size={9} /> {toolMeta.label}
-                        </span>
-                        <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--color-ink)", fontWeight: 500 }}>
-                          {toolName}
-                        </span>
-                        <span className="caption" style={{ fontSize: 10, color: "var(--color-mute)" }}>
-                          ({msg.sender_name})
-                        </span>
-                        {msg.timestamp && <span className="caption" style={{ marginLeft: 4, opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
-                      </button>
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        <button
+                          onClick={() => setExpandedTraces(prev => {
+                            const s = new Set(prev);
+                            isExpanded ? s.delete(msg.id) : s.add(msg.id);
+                            return s;
+                          })}
+                          style={{
+                            background: "var(--bg-glass-card)", border: "1px solid var(--border-glass)",
+                            borderRadius: "var(--radius-sm)", cursor: "pointer", padding: "4px 8px",
+                            display: "inline-flex", alignItems: "center", gap: 6, color: "var(--color-body)",
+                            transition: "all var(--t-fast)"
+                          }}
+                        >
+                          {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                          <span className={toolMeta.className} style={{ fontSize: 9, padding: "1px 5px" }}>
+                            <ToolIcon size={9} /> {toolMeta.label}
+                          </span>
+                          <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--color-ink)", fontWeight: 500 }}>
+                            {toolName}
+                          </span>
+                          <span className="caption" style={{ fontSize: 10, color: "var(--color-mute)" }}>
+                            ({msg.sender_name})
+                          </span>
+                          {msg.timestamp && <span className="caption" style={{ marginLeft: 4, opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
+                        </button>
+                        <button
+                          className="btn btn-icon btn-ghost btn-sm"
+                          title="Delete activity"
+                          onClick={() => doDelete(msg.id)}
+                          style={{ opacity: 0.35, padding: 3 }}
+                          onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
+                          onMouseLeave={e => (e.currentTarget.style.opacity = "0.35")}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
                       {isExpanded && (
                         <div className="markdown-body" style={{ fontSize: 11, marginTop: 4, padding: "var(--sp-sm) var(--sp-md)", background: "var(--color-canvas-raised)", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-hairline)", overflow: "auto", maxHeight: 300 }}>
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text || ""}</ReactMarkdown>
@@ -1913,34 +1639,36 @@ export default function ChatInterface({
                 cleanText = cleanText.replace(/ by (?:Human|Admin)(?=\s|$)/g, " by admin").replace(/\(Admin\)/gi, "(admin)");
 
                 return (
-                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", position: "relative", marginLeft: 8 }}>
+                  <div data-chat-message={msg.id} key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", position: "relative", marginLeft: 8 }}>
                     <div style={{ position: "absolute", top: 15, bottom: -15, left: 14, width: 2, background: "var(--border-glass)", zIndex: 0 }} />
                     <div style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--bg-glass-panel)", border: `1px solid ${color}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, zIndex: 1, position: "relative" }}>
                       {icon}
                     </div>
-                    <div style={{ flex: 1, minWidth: 0, paddingTop: 4 }}>
+                    <div style={{ flex: 1, minWidth: 0, paddingTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
                       <span className="caption" style={{ color: "var(--color-mute)" }}>{cleanText}</span>
                       {msg.timestamp && <span className="caption" style={{ marginLeft: "var(--sp-sm)", opacity: 0.5 }}>{fmtTime(msg.timestamp)}</span>}
+                      <button
+                        className="btn btn-icon btn-ghost btn-sm"
+                        title="Delete system notification"
+                        onClick={() => doDelete(msg.id)}
+                        style={{ opacity: 0.3, transition: "opacity 0.15s", padding: 2, marginLeft: "auto" }}
+                        onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
+                        onMouseLeave={e => (e.currentTarget.style.opacity = "0.3")}
+                      >
+                        <Trash2 size={11} />
+                      </button>
                     </div>
                   </div>
                 );
               }
               if (isFileChange && msg.path) {
-                const isHandledByAssistant = displayMessages.some(m =>
-                  m.id !== msg.id &&
-                  m.sender_id !== "human" &&
-                  m.sender_id !== "system" &&
-                  (m.reasoning?.includes(msg.path!) || m.path === msg.path)
-                );
-                if (isHandledByAssistant) return null;
-
                 return (
-                  <div key={msg.id} style={{ margin: "4px 0" }}>
+                  <div data-chat-message={msg.id} key={msg.id} style={{ margin: "4px 0" }}>
                     <FileChangeCard
                       senderName={msg.sender_name}
                       path={msg.path}
                       diff={msg.diff}
-                      content={msg.arguments?.content || msg.text}
+                      content={msg.arguments?.content}
                       action={msg.action || "modified"}
                       timestamp={msg.timestamp}
                       onOpenFile={onOpenFile}
@@ -1953,7 +1681,7 @@ export default function ChatInterface({
                 const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
                 const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
                 return (
-                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                  <div data-chat-message={msg.id} key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
                     <AgentHoverCard agent={agentInfo} name={msg.sender_name} id={msg.sender_id} role={displayRole} onMention={handleDirectMention}>
                       <AgentAvatar name={msg.sender_name || "Agent"} id={agentInfo?.id || msg.sender_id} role={displayRole} size={32} />
                     </AgentHoverCard>
@@ -1972,7 +1700,7 @@ export default function ChatInterface({
                 const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
                 const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
                 return (
-                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                  <div data-chat-message={msg.id} key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
                     <AgentHoverCard agent={agentInfo} name={msg.sender_name} id={msg.sender_id} role={displayRole} onMention={handleDirectMention}>
                       <AgentAvatar name={msg.sender_name || "Agent"} id={agentInfo?.id || msg.sender_id} role={displayRole} size={32} />
                     </AgentHoverCard>
@@ -1991,7 +1719,7 @@ export default function ChatInterface({
                 const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
                 const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
                 return (
-                  <div key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
+                  <div data-chat-message={msg.id} key={msg.id} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start" }}>
                     <AgentHoverCard agent={agentInfo} name={msg.sender_name} id={msg.sender_id} role={displayRole} onMention={handleDirectMention}>
                       <AgentAvatar name={msg.sender_name || "Agent"} id={agentInfo?.id || msg.sender_id} role={displayRole} size={32} />
                     </AgentHoverCard>
@@ -2010,7 +1738,7 @@ export default function ChatInterface({
               if (msg.type === "llm_error" && msg.llm_error) {
                 const err = msg.llm_error;
                 return (
-                  <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                  <div data-chat-message={msg.id} key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
                     <div style={{
                       width: 32, height: 32, borderRadius: "50%",
                       background: "rgba(239, 68, 68, 0.15)", // red-500 with opacity
@@ -2068,7 +1796,7 @@ export default function ChatInterface({
               const isTaskNotification = Boolean(msg.text?.includes("<task-notification>"));
               if (isTaskNotification) {
                 return (
-                  <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                  <div data-chat-message={msg.id} key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
                     <AgentAvatar name={msg.sender_name || "Subagent"} id={msg.sender_id} role={msg.role || "subagent"} size={32} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", marginBottom: 3 }}>
@@ -2092,7 +1820,7 @@ export default function ChatInterface({
                 cleanSysText = cleanSysText.replace(/\[TASK_ASSIGN\]|\[TASK_UPDATE\]/g, "").trim();
 
                 return (
-                  <div key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
+                  <div data-chat-message={msg.id} key={msg.id} className="animate-fade-in" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", width: "100%" }}>
                     <div style={{
                       width: 32, height: 32, borderRadius: "50%",
                       background: "rgba(167, 139, 250, 0.15)",
@@ -2203,7 +1931,7 @@ export default function ChatInterface({
               }
 
               return (
-                <div key={msg.id} className="animate-fade-in group" style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", flexDirection: isHuman ? "row-reverse" : "row", width: "100%" }}>
+                <div data-chat-message={msg.id} key={msg.id} className={"cw-message group " + (isHuman ? "cw-message-human" : "cw-message-assistant")} style={{ display: "flex", gap: "var(--sp-md)", alignItems: "flex-start", flexDirection: isHuman ? "row-reverse" : "row", width: "100%" }}>
 
                   {!isHuman ? (() => {
                     const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
@@ -2228,15 +1956,18 @@ export default function ChatInterface({
                         />
                       </AgentHoverCard>
                     );
-                  })() : (
-                    <AgentAvatar
-                      name={msg.sender_name || (user?.first_name ? `${user.first_name} ${user.last_name || ""}`.trim() : user?.email) || "Admin"}
-                      id={msg.sender_id || user?.id}
-                      role="human"
-                      size={32}
-                    />
-                  )}
-                  <div style={{ maxWidth: isHuman ? "78%" : "88%", minWidth: 0, position: "relative" }}>
+                  })() : (() => {
+                    const humanDisplayName = (user?.first_name ? `${user.first_name} ${user.last_name || ""}`.trim() : user?.email) || (msg.sender_name && msg.sender_name !== "human" ? msg.sender_name : "You");
+                    return (
+                      <AgentAvatar
+                        name={humanDisplayName}
+                        id={msg.sender_id || user?.id}
+                        role="human"
+                        size={32}
+                      />
+                    );
+                  })()}
+                  <div className="cw-message-body" style={{ maxWidth: isHuman ? "78%" : "88%", minWidth: 0, position: "relative" }}>
                     {!isHuman && (() => {
                       const agentInfo = getAgentInfo(msg.sender_id, msg.sender_name, msg.role);
                       const displayRole = agentInfo?.role && agentInfo.role !== "Active Agent" ? agentInfo.role : (msg.role !== "assistant" ? msg.role : undefined);
@@ -2258,7 +1989,7 @@ export default function ChatInterface({
                     })()}
                     {isHuman && msg.timestamp && <div style={{ textAlign: "right", marginBottom: 3 }}><span className="caption">{fmtTime(msg.timestamp)}</span></div>}
 
-                    <div style={{
+                    <div className="cw-message-content" style={{
                       padding: "var(--sp-md) var(--sp-lg)", lineHeight: 1.6,
                       background: isHuman ? "var(--bg-surface-raised)" : "var(--bg-surface)",
                       border: isHuman ? "1px solid var(--border-subtle)" : "1px solid var(--border-subtle)",
@@ -2269,7 +2000,7 @@ export default function ChatInterface({
                       {isThinking ? (
                         <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", color: "var(--color-mute)" }}>
                           <TypingIndicator />
-                          <span className="body-sm" style={{ opacity: 0.8 }}>Thinking & analyzing...</span>
+                          <span className="body-sm" style={{ opacity: 0.8 }}>Thinking…</span>
                         </div>
                       ) : isHuman ? (
                         <div style={{ whiteSpace: "pre-wrap" }}>
@@ -2298,6 +2029,24 @@ export default function ChatInterface({
                               />
                             </div>
                           )}
+                          {/* Linked interactive questions asked during this turn */}
+                          {!isHuman && !isThinking && (childMessagesByParent[msg.id] || [])
+                            .filter(c => c.type === "agent_question" || c.type === "ask_user")
+                            .map(qChild => (
+                              <div key={qChild.id} style={{ marginBottom: "12px" }}>
+                                <AskUserCard msg={qChild} />
+                              </div>
+                            ))
+                          }
+                          {/* Linked interactive approvals requested during this turn */}
+                          {!isHuman && !isThinking && (childMessagesByParent[msg.id] || [])
+                            .filter(c => c.type === "approval_request")
+                            .map(appChild => (
+                              <div key={appChild.id} style={{ marginBottom: "12px" }}>
+                                <ApprovalCard msg={appChild} />
+                              </div>
+                            ))
+                          }
                           <div className="markdown-body">
                             <ReactMarkdown
                               skipHtml={true}
@@ -2310,26 +2059,7 @@ export default function ChatInterface({
                         </>
                       )}
                       {isStreaming && <TypingIndicator />}
-                      {/* Stop Generating button — visible while streaming or thinking */}
-                      {(isStreaming || isThinking) && !isHuman && (
-                        <div style={{ marginTop: "var(--sp-sm)", display: "flex", justifyContent: "flex-end" }}>
-                          <button
-                            onClick={() => api.stopAgent(msg.sender_id)}
-                            style={{
-                              display: "inline-flex", alignItems: "center", gap: 6,
-                              padding: "4px 10px", fontSize: 11, cursor: "pointer",
-                              background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)",
-                              borderRadius: "var(--radius-sm)", color: "var(--color-danger)",
-                              transition: "background 0.15s",
-                            }}
-                            onMouseOver={e => (e.currentTarget.style.background = "rgba(239,68,68,0.2)")}
-                            onMouseOut={e => (e.currentTarget.style.background = "rgba(239,68,68,0.1)")}
-                          >
-                            <Square size={11} fill="currentColor" />
-                            Stop generating
-                          </button>
-                        </div>
-                      )}
+                      {(isStreaming || isThinking) && !isHuman && <StopAgentButton agentId={msg.sender_id} />}
                       {/* File Changes Card — associated directly with this assistant message! */}
                       {!isHuman && !isThinking && (() => {
                         const fileChanges = extractFileChanges(finalReasoning, msg);
@@ -2353,10 +2083,10 @@ export default function ChatInterface({
                       )}
 
                       {/* Subagent Activities / Worker reports enqueued for this message */}
-                      {!isHuman && !isThinking && (childMessagesByParent[msg.id] || []).some(c => !c.is_intermediate && c.type !== "tool_trace") && (
+                      {!isHuman && !isThinking && (childMessagesByParent[msg.id] || []).some(c => !c.is_intermediate && c.type !== "tool_trace" && c.type !== "agent_question" && c.type !== "ask_user" && c.type !== "approval_request" && c.type !== "browser_intervention") && (
                         <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px", borderTop: "1px solid var(--border-glass)", paddingTop: "12px", width: "100%" }}>
                           {(childMessagesByParent[msg.id] || [])
-                            .filter(c => !c.is_intermediate && c.type !== "tool_trace")
+                            .filter(c => !c.is_intermediate && c.type !== "tool_trace" && c.type !== "agent_question" && c.type !== "ask_user" && c.type !== "approval_request" && c.type !== "browser_intervention")
                             .map(child => {
                               const isChildTaskNotification = Boolean(child.text?.includes("<task-notification>"));
 
@@ -2416,15 +2146,22 @@ export default function ChatInterface({
                       )}
                     </div>
 
-                    {/* Action Menu Hover — anchored right on top of this message bubble */}
+                    {/* Action Menu Hover — anchored on left side above this message */}
                     {!isThinking && !isStreaming && !isSystem && !isApproval && !isQuestion && (
                       <div className="msg-actions" style={{
-                        display: "flex", gap: 4, position: "absolute", top: -12,
-                        [isHuman ? "left" : "right"]: 0,
-                        background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)",
-                        border: "1px solid var(--border-glass)", boxShadow: "var(--shadow-clay-sm)",
-                        padding: "2px 4px", borderRadius: "var(--radius-md)",
-                        opacity: 0, transition: "opacity 0.15s ease", zIndex: 10,
+                        display: "flex", gap: 3, position: "absolute",
+                        top: -24,
+                        ...(isHuman ? { right: 0, left: "auto" } : { left: 0, right: "auto" }),
+                        background: "rgba(18, 18, 30, 0.94)",
+                        backdropFilter: "blur(14px)",
+                        WebkitBackdropFilter: "blur(14px)",
+                        border: "1px solid rgba(255, 255, 255, 0.14)",
+                        boxShadow: "0 6px 20px rgba(0, 0, 0, 0.5)",
+                        padding: "2px 5px",
+                        borderRadius: "8px",
+                        opacity: 0,
+                        transition: "opacity 0.15s ease, transform 0.15s ease",
+                        zIndex: 25,
                       }}>
                         <button className="btn btn-icon btn-ghost btn-sm" title="Copy message text"
                           onClick={() => handleCopyMessage(msg.text || "", msg.id)}
@@ -2465,14 +2202,12 @@ export default function ChatInterface({
             })}
 
             {messages.length === 0 && !searchMode && (
-              <div className="empty-state" style={{ marginTop: 60 }}>
-                <Bot size={40} className="empty-state-icon" />
-                <h3>No messages yet</h3>
-                <p>Send a message to start collaborating with your AI agent team</p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-sm)", justifyContent: "center", marginTop: "var(--sp-md)" }}>
-                  {["Summarize our latest tasks", "What tools do you have?", "Research competitor pricing"].map(s => (
-                    <button key={s} className="btn btn-outline btn-sm" onClick={() => onSendMessage(s)}>{s}</button>
-                  ))}
+              <div className="cw-welcome">
+                <div className="cw-welcome-mark"><MessageCircleQuestion size={22} /><span>Your team, on the same page.</span></div>
+                <h3>What shall we work on?</h3>
+                <p>Bring an idea, a tricky bug, or a fresh perspective. We’ll work through it together.</p>
+                <div className="cw-starters">
+                  {[{ icon: FileCode, title: "Understand this codebase", prompt: "Explore this codebase and explain its structure and the most important flows." }, { icon: Lightbulb, title: "Think through a change", prompt: "/plan Help me think through a change. Start by asking what I want to improve." }, { icon: Search, title: "Find what needs attention", prompt: "Review this project for bugs and explain the most important findings before making changes." }].map(item => <button key={item.title} onClick={() => { setInputText(item.prompt); inputRef.current?.focus(); }}><item.icon size={18} /><span>{item.title}</span><ChevronRight size={16} /></button>)}
                 </div>
               </div>
             )}
@@ -2540,95 +2275,18 @@ export default function ChatInterface({
           )
         }
 
-        {/* Floating Antigravity Input Bar */}
-        <div style={{ flexShrink: 0, padding: "0 var(--sp-md) var(--sp-md)", background: "transparent", zIndex: 10, position: "relative" }}>
-          {/* Needs Your Input Notification Banner */}
-          {pendingActions.length > 0 && (
-            <button
-              onClick={() => scrollToBottom(true)}
-              className="btn btn-sm"
-              style={{
-                position: "absolute",
-                top: isUserScrolledUp ? -72 : -38,
-                left: "50%",
-                transform: "translateX(-50%)",
-                background: "linear-gradient(135deg, rgba(234, 179, 8, 0.25), rgba(249, 115, 22, 0.25))",
-                border: "1px solid rgba(245, 158, 11, 0.5)",
-                backdropFilter: "blur(12px)",
-                borderRadius: 20,
-                boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-                padding: "4px 14px",
-                fontSize: 11.5,
-                fontWeight: 600,
-                color: "#fbbf24",
-                zIndex: 30,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                cursor: "pointer",
-                animation: "fadeIn 0.15s ease-out",
-              }}
-            >
-              <AlertTriangle size={13} />
-              <span>Needs your input ({pendingActions.length}) · View request</span>
-            </button>
-          )}
-
-          {isUserScrolledUp && (
-            <button
-              onClick={() => scrollToBottom(true)}
-              className="btn btn-sm"
-              style={{
-                position: "absolute",
-                top: -38,
-                left: "50%",
-                transform: "translateX(-50%)",
-                background: "rgba(18, 18, 36, 0.95)",
-                border: "1px solid rgba(168, 85, 247, 0.4)",
-                backdropFilter: "blur(12px)",
-                borderRadius: 20,
-                boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-                padding: "3px 14px",
-                fontSize: 11,
-                fontWeight: 600,
-                color: "#c084fc",
-                zIndex: 30,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                cursor: "pointer",
-                animation: "fadeIn 0.15s ease-out",
-              }}
-            >
-              <ArrowDown size={12} /> Jump to latest
-            </button>
-          )}
-          <div className="antigravity-composer-floating">
-            {/* Top Quick Actions Bar */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, paddingBottom: 6, borderBottom: "1px solid rgba(255, 255, 255, 0.06)", flexWrap: "wrap", gap: 6 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                {["/goal", "/plan", "/learn", "/schedule", "/compact"].map(cmd => (
-                  <button
-                    key={cmd}
-                    onClick={() => {
-                      setInputText(prev => (prev ? `${prev} ${cmd}` : `${cmd} `));
-                      inputRef.current?.focus();
-                    }}
-                    className="antigravity-pill-btn"
-                    style={{ fontSize: 10, padding: "2px 7px" }}
-                    title={`Insert slash command ${cmd}`}
-                  >
-                    <code>{cmd}</code>
-                  </button>
-                ))}
-              </div>
-              {contextUsage && (
-                <div style={{ fontSize: 10, color: "var(--color-mute, #94a3b8)", fontFamily: "var(--font-mono, monospace)" }}>
-                  {contextUsage.percent_used ? `${contextUsage.percent_used}% context` : ""}
-                </div>
-              )}
-            </div>
-
+        {/* Composer and persistent attention controls */}
+        <div className="cw-composer-region" style={{ flexShrink: 0, zIndex: 10, position: "relative" }}>
+          {(pendingActions.length > 0 || isUserScrolledUp || runningJobs.length > 0) && <div className="cw-attention">
+            {pendingActions.length > 0 && <button onClick={() => {
+              const target = pendingActions[0];
+              const element = [...(scrollRef.current?.querySelectorAll<HTMLElement>("[data-chat-message]") || [])].find(node => node.dataset.chatMessage === target.id);
+              if (element) element.scrollIntoView({ behavior: "smooth", block: "center" }); else scrollToBottom(true);
+            }}><MessageCircleQuestion size={14} />{pendingActions.length} {pendingActions.length === 1 ? "request needs" : "requests need"} you</button>}
+            {runningJobs.length > 0 && <button onClick={() => setShowBackground(true)}><Loader2 size={13} className="cw-spin" />{runningJobs.length} running</button>}
+            {isUserScrolledUp && <button onClick={() => scrollToBottom(true)}><ArrowDown size={13} />Latest</button>}
+          </div>}
+          <div className="cw-composer">
             {/* Inline Send Error Banner */}
             {sendError && (
               <div
@@ -2645,7 +2303,7 @@ export default function ChatInterface({
                   color: "#fca5a5",
                 }}
               >
-                <span>⚠️ {sendError}</span>
+                <span role="alert">{sendError}</span>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <button
                     onClick={handleSend}
@@ -2664,7 +2322,7 @@ export default function ChatInterface({
               </div>
             )}
 
-            <div style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
+            <div className="cw-composer-entry" style={{ display: "flex", gap: "var(--sp-sm)", alignItems: "flex-end", position: "relative" }}>
               <input
                 type="file"
                 ref={fileInputRef}
@@ -2675,6 +2333,7 @@ export default function ChatInterface({
               <button
                 className="btn btn-sm btn-icon btn-ghost"
                 title="Attach file"
+                aria-label="Attach file"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
                 style={{ flexShrink: 0, padding: "8px 10px", borderRadius: "8px" }}
@@ -2779,7 +2438,9 @@ export default function ChatInterface({
                   border: "none",
                   boxShadow: "none"
                 }}
-                placeholder="Message your team... (@ to mention agent or file · Enter to send, Shift+Enter for newline)"
+                aria-label="Message your team"
+                placeholder="Message the team…"
+                disabled={!teamId}
                 value={inputText}
                 rows={1}
                 onChange={handleChange}
@@ -2788,7 +2449,7 @@ export default function ChatInterface({
               <button
                 className="btn btn-primary btn-sm"
                 onClick={handleSend}
-                disabled={(!inputText.trim() && attachments.length === 0) || isSending}
+                disabled={!teamId || (!inputText.trim() && attachments.length === 0) || isSending || uploading}
                 style={{
                   height: 38,
                   padding: "0 16px",
@@ -2807,6 +2468,7 @@ export default function ChatInterface({
               </button>
             </div>
           </div>
+          <div className="cw-composer-hint"><span>@ mention · / commands</span><span>Enter to send</span></div>
         </div>
 
         <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>

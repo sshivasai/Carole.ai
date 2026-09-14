@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 """
-# backend/core/chat/message_router.py
+backend/core/chat/message_router.py
 
 This file defines the router that parses and directs incoming messages.
 
@@ -9,12 +10,13 @@ Responsibilities:
 3. If no @mention, optionally route to the Coordinator agent.
 4. Persist messages to the DB and broadcast via EventBus.
 5. Trigger target Agent ReACT loops via a per-agent FIFO sequential queue
-   (Actor Model) — agents process their assigned tasks one at a time, in order,
+   (Actor Model) - agents process their assigned tasks one at a time, in order,
    preventing race conditions on dependent tasks.
 """
 
 import re
 import uuid
+import time
 import asyncio
 import logging
 from typing import Optional, List, Set, Dict, Tuple, Any
@@ -29,8 +31,6 @@ from core.memory.database import async_session
 from core.tools.context import CancellationToken
 from core.config import MAX_QUEUE_SIZE
 
-# Type alias for a queue item: (prompt_text, attachments)
-_QueueItem = Tuple[str, List[Dict]]
 _SENTINEL = None  # Sent to a worker queue to signal graceful shutdown
 
 
@@ -41,12 +41,13 @@ class MessageRouter:
         self._queues: Dict[str, asyncio.Queue] = {}
         self._workers: Dict[str, asyncio.Task] = {}
 
-        # Currently *executing* loop per agent — used for cancellation only.
+        # Currently *executing* loop per agent - used for cancellation only.
         # Value is (asyncio.Task, CancellationToken) while running, None otherwise.
         self._running: Dict[str, Optional[Tuple[asyncio.Task, CancellationToken]]] = {}
 
         # Snapshot of pending prompts for queue introspection (REST /queue endpoint).
         self._pending: Dict[str, List[str]] = {}
+        self._pending_keys: Dict[str, Set[str]] = {}
         
         # Locks to prevent race conditions when enqueuing to a new agent
         self._enqueue_locks: Dict[str, asyncio.Lock] = {}
@@ -70,6 +71,7 @@ class MessageRouter:
         self._workers.clear()
         self._running.clear()
         self._pending.clear()
+        self._pending_keys.clear()
         self._enqueue_locks.clear()
 
     # ------------------------------------------------------------------
@@ -112,6 +114,7 @@ class MessageRouter:
                 self._pending[agent_id].clear()
             else:
                 self._pending[agent_id] = []
+            self._pending_keys.setdefault(agent_id, set()).clear()
             logger.info("Cleared queue for agent %s", agent_id)
 
         logger.info("Cancelled %d running task(s) for agent %s (cancel_all=%s)",
@@ -148,12 +151,7 @@ class MessageRouter:
         Each targeted agent is woken via its personal FIFO queue rather than
         direct task spawning, guaranteeing sequential execution per agent.
         """
-        # Find all private mentions (/@name) and public mentions (@name)
-        private_matches = re.findall(r"/\@(\w+)", text)
-        public_matches = re.findall(r"(?<!/)@(\w+)", text)
-
-        is_private = len(private_matches) > 0
-        mentioned_names = private_matches if is_private else public_matches
+        is_private = False
 
         # Persist message to database
         async with async_session() as db:
@@ -185,38 +183,24 @@ class MessageRouter:
                         logger.warning("Sender agent %s does not belong to team %s. Dropping message.", sender_id, team_id)
                         return
                 except ValueError:
-                    # Non-UUID sender (e.g. test sender names like 'coder')
-                    pass
+                    logger.warning("Rejected non-UUID agent sender %r for team %s.", sender_id, team_id)
+                    return
 
-            # OPTIMIZATION: Resolve all mentioned agents in a single query
-            # System broadcasts (e.g. member joined, task done) are informational logs and NEVER wake agents.
-            if mentioned_names and sender_id != "system":
-                from sqlalchemy import func
-                stmt = select(Agent).where(
-                    Agent.team_id == team_uuid,
-                    func.lower(Agent.name).in_([n.lower() for n in mentioned_names])
-                )
-                result = await db.execute(stmt)
-                agents = result.scalars().all()
-                # Exclude the sender themselves from being triggered by self-mentions
-                valid_targets = [a for a in agents if str(a.id) != sender_id]
-                
-                if valid_targets:
-                    # Multi-mention Routing: Coordinator Priority
-                    # If any mentioned agent is a coordinator, route ONLY to them.
-                    coordinator = next((a for a in valid_targets if a.role.lower() in ["coordinator", "orchestrator"]), None)
-                    
-                    if coordinator:
-                        target_agents.append(coordinator)
-                        recipient_id = str(coordinator.id)
-                    else:
-                        # Fallback: Route ONLY to the first valid mentioned agent
-                        for mention in mentioned_names:
-                            primary_agent = next((a for a in valid_targets if a.name.lower() == mention.lower()), None)
-                            if primary_agent:
-                                target_agents.append(primary_agent)
-                                recipient_id = str(primary_agent.id)
-                                break
+            # Resolve literal team member names so spaces and punctuation work. Every
+            # public mention is a target; /@name keeps the message private to the
+            # explicitly named recipients.
+            if sender_id != "system":
+                from core.tasks.board_service import resolve_mentions
+                mentioned_agents = await resolve_mentions(db, team_uuid, text)
+                private_agents = [
+                    agent for agent in mentioned_agents
+                    if re.search(rf"/@{re.escape(agent.name)}(?=$|[\s,.;:!?()\[\]{{}}])", text, re.IGNORECASE)
+                ]
+                is_private = bool(private_agents)
+                candidates = private_agents if is_private else mentioned_agents
+                target_agents.extend(agent for agent in candidates if str(agent.id) != sender_id)
+                if is_private and len(target_agents) == 1:
+                    recipient_id = str(target_agents[0].id)
 
             resolved_sender_name = sender_name
             if sender_id == "human" and not resolved_sender_name:
@@ -347,13 +331,14 @@ class MessageRouter:
         task_id: Optional[str] = None,
         parent_message_id: Optional[str] = None,
         project_id: Optional[str] = None,
+        dedupe_key: Optional[str] = None,
     ):
         """
         Enqueue a prompt into the agent's personal FIFO queue.
 
         Creates the queue and starts the long-lived worker coroutine the first
         time it is called for a given agent.  Subsequent calls simply drop the
-        item into the existing queue — the worker picks it up as soon as it
+        item into the existing queue - the worker picks it up as soon as it
         finishes whatever it is currently doing.
 
         Deduplication: if the *exact same prompt* is already sitting in the
@@ -365,16 +350,34 @@ class MessageRouter:
         team_id = str(agent.team_id)
 
         async with self._get_enqueue_lock(agent_id):
-            # Deduplication — avoid enqueuing identical back-to-back wakeups inside lock
+            # Deduplication - avoid enqueuing identical back-to-back wakeups inside lock
             pending = self._pending.setdefault(agent_id, [])
-            if prompt_text in pending:
+            pending_keys = self._pending_keys.setdefault(agent_id, set())
+            effective_key = dedupe_key or f"prompt:{prompt_text}"
+            if effective_key in pending_keys:
                 logger.debug("Deduplicated duplicate wakeup for agent %s", agent.name)
-                return True
+                return False
 
             # Ensure queue + worker exist
             if agent_id not in self._queues:
                 self._queues[agent_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
                 self._pending[agent_id] = []
+                self._pending_keys[agent_id] = set()
+                # Build context snapshot for the worker (avoids closing over db_session)
+                agent_snapshot = _AgentSnapshot(agent, db_session, project_id=project_id)
+                worker_task = asyncio.create_task(
+                    self._agent_worker(agent_id, agent_snapshot),
+                    name=f"worker:{agent.name}",
+                )
+                self._workers[agent_id] = worker_task
+
+                def _on_worker_done(t: asyncio.Task):
+                    if not t.cancelled() and t.exception():
+                        logger.exception(
+                            "Worker for agent '%s' died unexpectedly: %s",
+                            agent.name, t.exception(), exc_info=t.exception()
+                        )
+                    # Remove stale entries so the worker is recreated fresh on next trigger
                 # Build context snapshot for the worker (avoids closing over db_session)
                 agent_snapshot = _AgentSnapshot(agent, db_session, project_id=project_id)
                 worker_task = asyncio.create_task(
@@ -393,6 +396,7 @@ class MessageRouter:
                     self._queues.pop(agent_id, None)
                     self._workers.pop(agent_id, None)
                     self._pending.pop(agent_id, None)
+                    self._pending_keys.pop(agent_id, None)
 
                 worker_task.add_done_callback(_on_worker_done)
 
@@ -405,8 +409,11 @@ class MessageRouter:
                     "parent_coordinator_id": parent_coordinator_id,
                     "task_id": task_id,
                     "parent_message_id": parent_message_id,
+                    "dedupe_key": effective_key,
+                    "enqueued_at": time.time(),
                 })
                 self._pending[agent_id].append(prompt_text)
+                self._pending_keys[agent_id].add(effective_key)
             except asyncio.QueueFull:
                 logger.warning(
                     "Queue full for agent '%s' (maxsize=%d). Dropping prompt.",
@@ -433,17 +440,18 @@ class MessageRouter:
         item, then pulls the next.  Never exits unless a None sentinel is
         received (shutdown) or the task itself is cancelled.
 
-        Exceptions inside a single agent loop are caught and logged — the
+        Exceptions inside a single agent loop are caught and logged - the
         worker then continues draining the queue.
 
-        B5 — Watchdog: each queue item is bounded by MAX_TASK_TIMEOUT seconds
+        B5 - Watchdog: each queue item is bounded by MAX_TASK_TIMEOUT seconds
         (default 30 min). A stuck tool (hanging subprocess, browser) won't
         block the queue forever.
 
-        B2 — Auto-restart: if the worker coroutine itself crashes unexpectedly
+        B2 - Auto-restart: if the worker coroutine itself crashes unexpectedly
         (not from a per-item exception), it is restarted with exponential
         backoff up to 3 times before giving up.
         """
+        import time
         queue = self._queues[agent_id]
         logger.info("Worker started for agent '%s'", snapshot.name)
         # Max time in seconds a single agent loop item may take (30 minutes)
@@ -461,11 +469,13 @@ class MessageRouter:
                 logger.info("Worker for agent '%s' received shutdown sentinel.", snapshot.name)
                 break
 
+            enqueued_at = None
             if isinstance(item, tuple):
                 prompt_text, attachments, trigger_msg_id = item if len(item) == 3 else (item[0], item[1], None)
                 parent_coordinator_id = None
                 task_id = None
                 parent_message_id = None
+                dedupe_key = None
             else:
                 prompt_text = item.get("prompt_text", "")
                 attachments = item.get("attachments", [])
@@ -473,9 +483,29 @@ class MessageRouter:
                 parent_coordinator_id = item.get("parent_coordinator_id")
                 task_id = item.get("task_id")
                 parent_message_id = item.get("parent_message_id")
+                dedupe_key = item.get("dedupe_key")
+                enqueued_at = item.get("enqueued_at")
+
+            if enqueued_at and task_id:
+                queue_delay_ms = (time.time() - enqueued_at) * 1000
+                try:
+                    async with async_session() as db:
+                        from core.tasks.board_service import record_task_metric
+                        await record_task_metric(
+                            db,
+                            team_id=snapshot.team_id,
+                            metric_type="queue_delay",
+                            value=queue_delay_ms,
+                            task_id=task_id,
+                            agent_id=agent_id,
+                            details={"delay_ms": round(queue_delay_ms, 2)},
+                        )
+                        await db.commit()
+                except Exception as exc:
+                    logger.debug("Could not record queue_delay metric: %s", exc)
 
             try:
-                # B5: Watchdog timeout — prevent a single stuck task from
+                # B5: Watchdog timeout - prevent a single stuck task from
                 # blocking the queue indefinitely.
                 await asyncio.wait_for(
                     self._execute_agent_loop(
@@ -500,6 +530,8 @@ class MessageRouter:
                     pending = self._pending.get(agent_id, [])
                     if prompt_text in pending:
                         pending.remove(prompt_text)
+                    if dedupe_key:
+                        self._pending_keys.get(agent_id, set()).discard(dedupe_key)
 
                 queue.task_done()
 
@@ -603,7 +635,7 @@ class MessageRouter:
         attachments: Optional[List[Dict]] = None,
         project_id: Optional[str] = None,
     ):
-        """Thin shim — delegates to _enqueue_agent for sequential execution."""
+        """Thin shim - delegates to _enqueue_agent for sequential execution."""
         await self._enqueue_agent(agent, prompt_text, db_session, attachments, project_id=project_id)
 
 

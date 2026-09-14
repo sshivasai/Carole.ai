@@ -177,6 +177,9 @@ export const api = {
     apiFetch<any>("/api/models/catalog", { method: "POST", body: JSON.stringify(data) }),
   resetModelCatalog: () =>
     apiFetch<Record<string, any>>("/api/models/catalog/reset", { method: "POST" }),
+  syncModelCatalog: () =>
+    apiFetch<{ status: string; synced_providers: string[]; total_models: number; catalog: Record<string, any> }>("/api/models/sync", { method: "POST" }),
+
 
   // ── Prompt Blocks ──
   getPromptBlocks: () => apiFetch<import("../lib/types").PromptBlock[]>("/api/settings/prompt-blocks"),
@@ -241,11 +244,33 @@ export const api = {
   deleteTask: (taskId: string) => apiFetch<any>(`/api/tasks/${taskId}`, { method: "DELETE" }),
   getTaskComments: (taskId: string) =>
     isInvalidId(taskId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/tasks/${taskId}/comments`),
-  addTaskComment: (taskId: string, authorId: string, authorName: string, text: string) =>
+  addTaskComment: (taskId: string, text: string) =>
     apiFetch<any>(`/api/tasks/${taskId}/comments`, {
       method: "POST",
-      body: JSON.stringify({ author_id: authorId, author_name: authorName, text }),
+      body: JSON.stringify({ text }),
     }),
+  getTaskActivities: (taskId: string) =>
+    isInvalidId(taskId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/tasks/${taskId}/activities`),
+  watchTask: (taskId: string) =>
+    apiFetch<any>(`/api/tasks/${taskId}/watch`, { method: "POST" }),
+  unwatchTask: (taskId: string) =>
+    apiFetch<any>(`/api/tasks/${taskId}/watch`, { method: "DELETE" }),
+  getTaskWatchers: (taskId: string) =>
+    isInvalidId(taskId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/tasks/${taskId}/watchers`),
+  markTaskRead: (taskId: string) =>
+    isInvalidId(taskId) ? Promise.resolve(null) : apiFetch<any>(`/api/tasks/${taskId}/read`, { method: "POST" }),
+  getTaskUnreadCounts: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve({}) : apiFetch<Record<string, number>>(`/api/teams/${teamId}/tasks/unread-counts`),
+  getAgentNotificationPreferences: (agentId: string) =>
+    isInvalidId(agentId) ? Promise.resolve(null) : apiFetch<any>(`/api/agents/${agentId}/notification-preferences`),
+  updateAgentNotificationPreferences: (agentId: string, prefs: any) =>
+    apiFetch<any>(`/api/agents/${agentId}/notification-preferences`, { method: "PUT", body: JSON.stringify(prefs) }),
+  toggleTaskMute: (taskId: string, agentId: string) =>
+    apiFetch<any>(`/api/tasks/${taskId}/mute?agent_id=${encodeURIComponent(agentId)}`, { method: "POST" }),
+  getTaskMetrics: (taskId: string) =>
+    isInvalidId(taskId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/tasks/${taskId}/metrics`),
+  getTeamTaskMetricsSummary: (teamId: string) =>
+    isInvalidId(teamId) ? Promise.resolve(null) : apiFetch<any>(`/api/teams/${teamId}/task-metrics/summary`),
 
   // ── Implementation Plans ──
   getTaskPlan: (taskId: string) =>

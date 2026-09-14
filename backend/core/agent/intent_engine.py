@@ -6,7 +6,38 @@ Ensures deterministic action enforcement on Turn 1 and eliminates false safety/c
 """
 
 import re
+from dataclasses import dataclass
+from enum import Enum
 from typing import Optional, Tuple
+
+
+class IntentKind(str, Enum):
+    ACTION = "action"
+    INFORMATIONAL = "informational"
+
+
+class IssueKind(str, Enum):
+    UNEXECUTED_PROMISE = "unexecuted_promise"
+
+
+@dataclass(frozen=True)
+class CapabilityContext:
+    browser_available: bool = False
+    shell_available: bool = False
+    filesystem_available: bool = False
+
+
+@dataclass(frozen=True)
+class IntentResult:
+    kind: IntentKind
+    requires_action: bool
+    confidence: float
+
+
+@dataclass(frozen=True)
+class ResponseIssue:
+    kind: IssueKind
+    message: str
 
 
 class IntentEngine:
@@ -19,7 +50,7 @@ class IntentEngine:
     _PURE_QUESTION_PREFIXES = (
         "what is", "what are", "what does", "what do", "what can", "what will",
         "why is", "why are", "why did", "why does", "why do",
-        "how does", "how do", "how come", "how can", "how would",
+        "how to", "tell me how", "how does", "how do", "how come", "how can", "how would",
         "who is", "who are", "who was",
         "explain how", "explain what", "explain why", "can you explain",
         "tell me about", "tell me what", "describe what", "describe how",
@@ -48,10 +79,13 @@ class IntentEngine:
         re.IGNORECASE,
     )
 
-    # Patterns indicating unexecuted promises ("I will open the file", "Let me search for that")
+    # Patterns indicating unexecuted promises ("I will open the file", "Let me search for that", "On it — opening...")
     _UNEXECUTED_PROMISE_PATTERNS = [
         re.compile(r"\b(?:i'll|i\s+will|let\s+me(?!\s+know)|let's|i\s+am\s+going\s+to|working\s+on\s+it|just\s+a\s+moment|one\s+moment)\b", re.IGNORECASE),
         re.compile(r"\b(?:i'll\s+hire|i\s+will\s+hire|i'll\s+spawn|i\s+will\s+spawn|i'll\s+delegate|hiring\s+a|spawning\s+a)\b", re.IGNORECASE),
+        re.compile(r"\b(?:on\s+it|i['’]?m\s+on\s+it)\b", re.IGNORECASE),
+        re.compile(r"\b(?:opening\s+(?:a\s+)?(?:browser|file|window|tab|terminal)|searching\s+(?:for|the\s+web)|checking\s+(?:the\s+)?(?:browser|database|files?)|navigating\s+to)\b", re.IGNORECASE),
+        re.compile(r"\b(?:starting\s+(?:to|on)|about\s+to|getting\s+started\s+on)\b", re.IGNORECASE),
     ]
 
     # False refusal patterns
@@ -85,26 +119,33 @@ class IntentEngine:
         """
         Determines if a user prompt is an actionable request that mandates
         a tool execution on Turn 1.
-        Uses SemanticRouter first, then falls back to grammar/regex rules.
+        Uses SemanticRouter and grammar/regex rules with @mention normalization.
         """
         if not prompt or not prompt.strip():
             return False
 
-        # Phase 1: Semantic Intent Routing (Vector Similarity)
-        route_name, score = cls.classify_intent(prompt)
-        if route_name in ("capability_inquiry", "chitchat_greeting", "informational_question"):
-            return False
-        if route_name == "imperative_action":
-            return True
-
-        # Phase 2: Grammar & Rule-based Fallback
-        p = prompt.strip().lower()
+        # Strip @mentions like @Archer, @Nova to isolate intent
+        clean_prompt = re.sub(r'@[A-Za-z0-9_-]+', '', prompt).strip()
+        p = clean_prompt.lower()
 
         # Check for capability / access inquiries (e.g. "do you have access to write something into memory tool?")
         if re.search(r"^(?:do\s+you\s+have|are\s+you\s+able\s+to|can\s+you\s+access|what\s+tools?\s+do\s+you\s+have|which\s+tools?\s+do\s+you\s+have)\b", p):
             if any(term in p for term in ["access", "tool", "tools", "permission", "permissions", "capability", "capabilities", "memory"]):
                 return False
 
+        # Bare capability questions lack a concrete object to act on.
+        if re.fullmatch(r"can you (?:write to|read from|access) (?:the )?memory\??", p):
+            return False
+
+        # Direct imperative check: If the prompt starts with an action verb (or modal prefix + action verb)
+        # and not a question prefix, it is an action request regardless of router similarity.
+        first_clean = cls._MODAL_PREFIX_RE.sub("", p).strip()
+        first_words = first_clean.split()
+        if first_words and first_words[0] in cls._ACTION_VERBS:
+            if not any(p.startswith(q) for q in cls._PURE_QUESTION_PREFIXES):
+                return True
+
+        # Phase 2: Grammar & Rule-based Fallback
         # If it starts with an informational question prefix, it's not an action mandate
         # UNLESS it also contains an explicit compound action directive (e.g. "How does auth work? Find the auth file")
         for q_pre in cls._PURE_QUESTION_PREFIXES:
@@ -115,6 +156,13 @@ class IntentEngine:
                     # If any subsequent sentence is an action command, consider it actionable
                     return any(cls._is_imperative_sentence(s.strip()) for s in sentences[1:] if s.strip())
                 return False
+
+        # Phase 1: Semantic Intent Routing (Vector Similarity)
+        route_name, score = cls.classify_intent(clean_prompt)
+        if route_name in ("capability_inquiry", "chitchat_greeting", "informational_question") and score >= 0.75:
+            return False
+        if route_name == "imperative_action":
+            return True
 
         return cls._is_imperative_sentence(p)
 
@@ -141,7 +189,7 @@ class IntentEngine:
         return False
 
     @classmethod
-    def detect_false_refusal(cls, response_text: str) -> Optional[str]:
+    def detect_false_refusal(cls, response_text: str, capabilities: Optional[CapabilityContext] = None) -> Optional[str]:
         """
         Detects if the model generated a false safety/capability refusal when it
         actually has full tool capabilities.
@@ -150,6 +198,10 @@ class IntentEngine:
             return None
 
         if cls._FALSE_BROWSER_REFUSAL_RE.search(response_text):
+            if capabilities is not None:
+                if not capabilities.browser_available:
+                    return None
+                return "[OBSERVATION] capability_mismatch: Browser tools are available; use them for the requested action.[/OBSERVATION]"
             return (
                 "[OBSERVATION] CRITICAL ERROR — False Refusal / Missing Browser Tool Call.\n"
                 "You have full access to real Chromium browser automation tools (browser_navigate, browser_task, browser_act, browser_snapshot, browser_screenshot).\n"
@@ -162,6 +214,12 @@ class IntentEngine:
             )
 
         if cls._FALSE_CAPABILITY_REFUSAL_RE.search(response_text):
+            if capabilities is not None:
+                shell_denial = re.search(r"shell|execute\s+commands?", response_text, re.I)
+                file_denial = re.search(r"create\s+files?|file\s+access", response_text, re.I)
+                if not ((shell_denial and capabilities.shell_available) or (file_denial and capabilities.filesystem_available)):
+                    return None
+                return "[OBSERVATION] capability_mismatch: The requested runtime tools are available.[/OBSERVATION]"
             return (
                 "[OBSERVATION] CRITICAL ERROR — False Capability Refusal.\n"
                 "You have full filesystem, shell, and codebase capabilities in this environment.\n"
@@ -210,3 +268,14 @@ class IntentEngine:
                 )
 
         return None
+
+    @classmethod
+    def analyze(cls, prompt: str) -> IntentResult:
+        requires_action = cls.is_action_request(prompt)
+        return IntentResult(IntentKind.ACTION if requires_action else IntentKind.INFORMATIONAL,
+                            requires_action, 0.95 if requires_action else 0.75)
+
+    @classmethod
+    def detect_response_issue(cls, response_text: str, has_tool_call: bool = False) -> Optional[ResponseIssue]:
+        message = cls.detect_unexecuted_promise(response_text, has_tool_call)
+        return ResponseIssue(IssueKind.UNEXECUTED_PROMISE, message) if message else None
