@@ -486,3 +486,9 @@
 .entitySearchInput:focus {
   border-color: var(--color-primary-soft);
 }
+
+/* Keep navigation readable without increasing the content gutter. */
+.sidebar { height: 100%; }
+.sidebarLogo, .sidebarLogoCollapsed { min-height: 52px; }
+.navItem { font-size: 13px; min-height: 36px; }
+.navItemIcon { flex-shrink: 0; }

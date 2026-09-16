@@ -14,15 +14,15 @@
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-  padding: 44px 28px 72px;
+  padding: 24px 28px 32px;
 }
 
 .content {
-  max-width: 980px;
+  max-width: 1280px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 36px;
+  gap: 22px;
 }
 
 /* ── Hero Section ────────────────────────────────────────────── */
@@ -51,7 +51,7 @@
 }
 
 .heroTitle {
-  font-size: clamp(24px, 3.5vw, 32px);
+  font-size: 28px;
   font-weight: 700;
   color: var(--color-ink-strong, #ffffff);
   margin: 0;

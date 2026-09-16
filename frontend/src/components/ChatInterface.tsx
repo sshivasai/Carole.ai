@@ -797,12 +797,12 @@ export default function ChatInterface({
     }
   }, [pendingChatInputAppend, onAppendConsumed]);
 
-  // Auto-grow textarea height up to 4 inches (384px)
+  // Grow only as needed, preserving room for the conversation.
   useEffect(() => {
     const textarea = inputRef.current;
     if (textarea) {
       textarea.style.height = "auto";
-      textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 40), 384)}px`;
+      textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 40), 160)}px`;
     }
   }, [inputText]);
 
@@ -1421,6 +1421,7 @@ export default function ChatInterface({
   return (
     <div className="cw-workspace" style={{ flex: 1, minHeight: 0, height: "100%", width: "100%", position: "relative" }}>
       <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div className="cw-team-reveal" tabIndex={0} aria-label="Show team controls">
         <header className="cw-header" style={{ position: "relative", zIndex: 40 }}>
           <div className="cw-header-left">
             <div className="cw-title">
@@ -1455,6 +1456,7 @@ export default function ChatInterface({
             </div></details>
           </div>
         </header>
+        </div>
         {showBackground && <BackgroundWork work={backgroundWork} onClose={() => setShowBackground(false)} />}
 
         {/* Search bar */}
@@ -2430,7 +2432,7 @@ export default function ChatInterface({
                   flex: 1,
                   resize: "none",
                   minHeight: 40,
-                  maxHeight: 384,
+                  maxHeight: 160,
                   lineHeight: 1.5,
                   padding: "9px var(--sp-md)",
                   overflowY: "auto",
@@ -2439,7 +2441,7 @@ export default function ChatInterface({
                   boxShadow: "none"
                 }}
                 aria-label="Message your team"
-                placeholder="Message the team…"
+                placeholder="Ask a question, describe a task, or share an idea…"
                 disabled={!teamId}
                 value={inputText}
                 rows={1}
@@ -2468,7 +2470,7 @@ export default function ChatInterface({
               </button>
             </div>
           </div>
-          <div className="cw-composer-hint"><span>@ mention · / commands</span><span>Enter to send</span></div>
+          <div className="cw-composer-hint"><span>@ mention · / commands</span><span><kbd>Enter</kbd> send <span aria-hidden="true"> · </span><kbd>Shift Enter</kbd> new line</span></div>
         </div>
 
         <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>

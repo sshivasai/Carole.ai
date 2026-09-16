@@ -156,9 +156,9 @@ export default function PluginStudio({ onToast }: { onToast: (msg: string, type:
   }, [builtInTools, searchQuery]);
 
   return (
-    <div style={{ display: "flex", height: "100%", width: "100%", overflow: "hidden", background: "var(--color-canvas)" }}>
+    <div className="plugin-studio" style={{ display: "flex", height: "100%", width: "100%", overflow: "hidden", background: "var(--color-canvas)" }}>
       {/* Sidebar Navigation */}
-      <div style={{ width: 280, borderRight: "1px solid var(--color-hairline)", display: "flex", flexDirection: "column", background: "var(--color-canvas-soft)" }}>
+      <div className="plugin-navigation" style={{ width: 280, borderRight: "1px solid var(--color-hairline)", display: "flex", flexDirection: "column", background: "var(--color-canvas-soft)" }}>
         
         {/* Tabs */}
         <div style={{ display: "flex", borderBottom: "1px solid var(--color-hairline)" }}>
@@ -262,12 +262,12 @@ export default function PluginStudio({ onToast }: { onToast: (msg: string, type:
       {activeTab === "custom" ? (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           {/* Header toolbar */}
-          <div style={{ padding: "var(--sp-md) var(--sp-lg)", borderBottom: "1px solid var(--color-hairline)", display: "flex", gap: "var(--sp-md)", alignItems: "center" }}>
+          <div className="plugin-toolbar" style={{ padding: "var(--sp-md) var(--sp-lg)", borderBottom: "1px solid var(--color-hairline)", display: "flex", gap: "var(--sp-md)", alignItems: "center" }}>
             <div style={{ flex: 1, display: "flex", gap: "var(--sp-sm)", alignItems: "center", background: "var(--color-canvas-raised)", padding: "4px 4px 4px 12px", borderRadius: "var(--radius-full)", border: "1px solid var(--color-hairline)" }}>
               <Wand2 size={14} color="var(--color-primary)" />
               <input 
                 className="input-bare" 
-                style={{ flex: 1, fontSize: 13 }} 
+                style={{ flex: 1, minWidth: 0, fontSize: 13 }} 
                 placeholder="Describe a tool you want to build (e.g. 'A tool that searches Wikipedia')" 
                 value={prompt} 
                 onChange={e => setPrompt(e.target.value)}

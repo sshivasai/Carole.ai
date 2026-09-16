@@ -1933,3 +1933,25 @@ select.input {
     scroll-behavior: auto !important;
   }
 }
+
+/* Match the requested 90% workspace scale while filling the viewport. */
+.app-workspace {
+  zoom: .9;
+  height: calc(100dvh / .9) !important;
+  min-height: 0;
+}
+.app-workspace :is(.body-sm, .btn, .input) { font-size: 13px; }
+.app-workspace .caption { font-size: 11px; }
+
+
+.app-workspace .input-bare { color: var(--color-ink); background: transparent; border: 0; border-radius: 0; padding: 8px 4px; min-width: 0; outline-offset: 0; }
+.app-workspace .plugin-toolbar { flex-wrap: wrap; }
+.app-workspace .plugin-toolbar > div:first-child { min-width: 220px; border-radius: 10px !important; }
+.app-workspace .plugin-toolbar button { flex-shrink: 0; white-space: nowrap; }
+.app-workspace .plugin-navigation { flex-shrink: 0; }
+@media (max-width: 760px) {
+ .app-workspace .plugin-studio { flex-direction: column; }
+ .app-workspace .plugin-navigation { width: 100% !important; max-height: 180px; border-bottom: 1px solid var(--color-hairline); }
+ .app-workspace .plugin-toolbar { padding: 10px !important; gap: 8px !important; }
+ .app-workspace .plugin-toolbar > div:first-child { flex-basis: 100% !important; }
+}
