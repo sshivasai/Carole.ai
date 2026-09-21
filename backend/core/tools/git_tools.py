@@ -54,15 +54,9 @@ class GitTools:
         repo root). Falls back to the shared workspace root otherwise.
         """
         cmd = ["git"] + list(args)
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd or str(self.workspace_root)
-        )
-        stdout, stderr = await process.communicate()
-        out = stdout.decode("utf-8", errors="replace")
-        err = stderr.decode("utf-8", errors="replace")
+        from core.tools.process_runner import run_process
+        process = await run_process(cmd, cwd=cwd or str(self.workspace_root), text=True, timeout=120)
+        out, err = process.stdout, process.stderr
 
         if process.returncode != 0:
             return f"Git Error (exit {process.returncode}):\n{err}\n{out}".strip()

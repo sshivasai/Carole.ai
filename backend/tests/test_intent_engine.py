@@ -76,4 +76,4 @@ def test_browser_capability_mismatch() -> None:
     )
 
     assert result is not None
-    assert "capability_mismatch" in result
+    assert "native tool call" in result

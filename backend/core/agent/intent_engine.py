@@ -197,35 +197,15 @@ class IntentEngine:
         if not response_text:
             return None
 
-        if cls._FALSE_BROWSER_REFUSAL_RE.search(response_text):
-            if capabilities is not None:
-                if not capabilities.browser_available:
-                    return None
-                return "[OBSERVATION] capability_mismatch: Browser tools are available; use them for the requested action.[/OBSERVATION]"
-            return (
-                "[OBSERVATION] CRITICAL ERROR — False Refusal / Missing Browser Tool Call.\n"
-                "You have full access to real Chromium browser automation tools (browser_navigate, browser_task, browser_act, browser_snapshot, browser_screenshot).\n"
-                "NEVER tell the user you cannot open a browser or browse the web.\n"
-                "Execute the browser tool IMMEDIATELY NOW using this exact format:\n"
-                "  [ACTION]browser_navigate({\"url\": \"https://www.google.com\"})[/ACTION]\n"
-                "Or for autonomous goal execution:\n"
-                "  [ACTION]browser_task({\"task\": \"...\"})[/ACTION]\n"
-                "Execute the browser action NOW.[/OBSERVATION]"
-            )
-
-        if cls._FALSE_CAPABILITY_REFUSAL_RE.search(response_text):
-            if capabilities is not None:
-                shell_denial = re.search(r"shell|execute\s+commands?", response_text, re.I)
-                file_denial = re.search(r"create\s+files?|file\s+access", response_text, re.I)
-                if not ((shell_denial and capabilities.shell_available) or (file_denial and capabilities.filesystem_available)):
-                    return None
-                return "[OBSERVATION] capability_mismatch: The requested runtime tools are available.[/OBSERVATION]"
-            return (
-                "[OBSERVATION] CRITICAL ERROR — False Capability Refusal.\n"
-                "You have full filesystem, shell, and codebase capabilities in this environment.\n"
-                "Do not state that you cannot execute commands or write files.\n"
-                "Execute the required tool immediately using the [ACTION] tag.[/OBSERVATION]"
-            )
+        # Unknown capabilities never justify overriding a refusal or boundary.
+        if capabilities is None:
+            return None
+        if cls._FALSE_BROWSER_REFUSAL_RE.search(response_text) and capabilities.browser_available:
+            return "Browser tools are available. If the action is authorized, use a native tool call; otherwise explain the missing permission."
+        shell_denial = re.search(r"shell|execute\s+commands?", response_text, re.I)
+        file_denial = re.search(r"create\s+files?|file\s+access", response_text, re.I)
+        if (shell_denial and capabilities.shell_available) or (file_denial and capabilities.filesystem_available):
+            return "The relevant tools are available. Use native tool calls only within the user's authorization and current permissions."
 
         return None
 
@@ -246,26 +226,13 @@ class IntentEngine:
             if not any(pat.search(cleaned_check) for pat in cls._UNEXECUTED_PROMISE_PATTERNS):
                 return None
 
-        # Check for delegation promise without action
-        if any(p in text_lower for p in ["i'll hire", "i will hire", "i'll spawn", "i will spawn", "i'll delegate", "spawning a"]):
+        if any(pattern.search(text_lower) for pattern in cls._UNEXECUTED_PROMISE_PATTERNS):
             return (
-                "[OBSERVATION] CRITICAL ERROR — Delegation Promise Without Execution.\n"
-                "You stated you would hire or spawn an agent but did not execute a tool call.\n"
-                "Saying you will do something is not doing it. You MUST call the tool immediately:\n"
-                "  [ACTION]spawn_agent({\"agent_name\": \"...\", \"task\": \"...\"})[/ACTION]\n"
-                "Execute the delegation tool call NOW.[/OBSERVATION]"
+                "You described a future action without executing a tool. If the user authorized that action, "
+                "use the available native tool schema with concrete arguments. If permission or information "
+                "is missing, ask for it; if no action is needed, answer directly. Never manufacture a tool "
+                "call in text or claim an unverified action succeeded."
             )
-
-        # Check for general unexecuted promise
-        for pat in cls._UNEXECUTED_PROMISE_PATTERNS:
-            if pat.search(text_lower):
-                return (
-                    "[OBSERVATION] Incomplete Response / Unexecuted Promise.\n"
-                    "You stated you would take an action, but did not actually call a tool.\n"
-                    "Saying you will do something is not doing it. If an action is required, call the real tool (e.g. [ACTION]read_file(...)[/ACTION]).\n"
-                    "Do NOT use placeholder names like 'tool_name'.\n"
-                    "Otherwise, if you have answered the user's question or no tool is needed, deliver your final direct answer without an [ACTION] tag.[/OBSERVATION]"
-                )
 
         return None
 

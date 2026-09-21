@@ -15,6 +15,7 @@ Production features:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone, timedelta
@@ -318,7 +319,8 @@ async def wake_agents(
                     task_id=task.id, agent_id=agent.id, details={"reason": reason, "dedupe_key": dedupe_key}
                 )
         except Exception as exc:
-            outbox_event.retry_count += 1
+            if not isinstance(exc, asyncio.QueueFull):
+                outbox_event.retry_count += 1
             outbox_event.error = str(exc)
             outbox_event.status = "pending"
             outbox_event.lease_timeout = None
@@ -369,7 +371,7 @@ async def dispatch_pending_outbox(db: Optional[AsyncSession] = None, limit: int 
             prompt = _compact_prompt(task, evt.reason, evt.actor_name, evt.comment)
             evt.prompt = prompt
             queued = await message_router._enqueue_agent(
-                agent, prompt, db, task_id=str(task.id), dedupe_key=evt.event_id,
+                agent, prompt, db, task_id=str(task.id), dedupe_key=evt.dedupe_key or evt.event_id,
             )
             evt.status = "completed"
             evt.processed_at = datetime.now(timezone.utc)
@@ -385,6 +387,10 @@ async def dispatch_pending_outbox(db: Optional[AsyncSession] = None, limit: int 
                     db, team_id=task.team_id, metric_type="duplicate_suppressed", value=1.0,
                     task_id=task.id, agent_id=agent.id, details={"reason": evt.reason}
                 )
+        except asyncio.QueueFull as exc:
+            evt.error = str(exc)
+            evt.status = "processing"
+            evt.lease_timeout = now + timedelta(seconds=30)
         except Exception as exc:
             evt.retry_count += 1
             evt.error = str(exc)

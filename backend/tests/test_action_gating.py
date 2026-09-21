@@ -51,10 +51,11 @@ def test_intent_engine_detect_false_browser_refusal():
     refusal_2 = "I don't have access to a browser to visit websites."
     refusal_3 = "I am unable to open a browser."
 
-    assert IntentEngine.detect_false_refusal(refusal_1) is not None
-    assert "False Refusal / Missing Browser Tool Call" in IntentEngine.detect_false_refusal(refusal_1)
-    assert IntentEngine.detect_false_refusal(refusal_2) is not None
-    assert IntentEngine.detect_false_refusal(refusal_3) is not None
+    from core.agent.intent_engine import CapabilityContext
+    assert IntentEngine.detect_false_refusal(refusal_1) is None
+    for refusal in (refusal_1, refusal_2, refusal_3):
+        result = IntentEngine.detect_false_refusal(refusal, capabilities=CapabilityContext(browser_available=True))
+        assert result is not None and "native tool call" in result
 
     # Normal response without refusal
     assert IntentEngine.detect_false_refusal("I navigated to google.com and found the results.") is None

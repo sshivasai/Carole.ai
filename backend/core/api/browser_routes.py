@@ -16,6 +16,7 @@ import json
 import logging
 
 from core.auth.auth_middleware import require_auth
+from core.auth.instance_owner import require_instance_owner, assert_instance_owner
 from core.tools.browser_tool import browser_tool, _get_page, _publish_screenshot
 from core.tools.interaction_tools import pending_questions, question_answers
 from core.memory.database import async_session
@@ -53,7 +54,7 @@ class ResolveHILRequest(BaseModel):
 @router.post("/act")
 async def browser_act_direct(
     body: BrowserActRequest,
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
 ):
     """
     Direct interactive browser action dispatcher for frontend Canvas takeover.
@@ -143,7 +144,7 @@ async def browser_act_direct(
 @router.get("/screenshot")
 async def get_browser_screenshot(
     agent_id: str = Query("global"),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
 ):
     """
     Fetches the current live screenshot of the browser page for an agent.
@@ -167,7 +168,7 @@ async def get_browser_screenshot(
 @router.post("/resolve-hil")
 async def resolve_browser_hil(
     body: ResolveHILRequest,
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
 ):
     """
     Resolves an active human-in-the-loop takeover request from in-chat card or canvas.
@@ -207,6 +208,7 @@ async def browser_stream_websocket(
             user = await auth_service.get_active_user(db, user_id)
             if not user:
                 raise HTTPException(401, "Inactive user")
+            await assert_instance_owner({"sub": str(user_id)}, db)
         await _owned_browser(agent_id, {"sub": str(user_id)})
     except HTTPException:
         await websocket.close(code=4003)

@@ -1,3 +1,4 @@
+from core.auth.instance_owner import require_instance_owner
 """
 # backend/core/api/observability_routes.py
 
@@ -36,7 +37,7 @@ class ObservabilityStats(BaseModel):
 async def get_traces(
     limit: int = Query(50, ge=1, le=200),
     agent: Optional[str] = Query(None, description="Filter by agent name"),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
 ):
     """Returns the most recent OpenLLMetry spans and agent traces."""
     traces = get_recent_traces(limit=limit, filter_agent=agent)
@@ -44,20 +45,20 @@ async def get_traces(
 
 
 @router.get("/stats", response_model=ObservabilityStats)
-async def get_stats(user: dict = Depends(require_auth)):
+async def get_stats(user: dict = Depends(require_instance_owner)):
     """Returns aggregate observability metrics (tokens, latency, error count, models)."""
     return get_observability_stats()
 
 
 @router.post("/clear")
-async def clear_telemetry(user: dict = Depends(require_auth)):
+async def clear_telemetry(user: dict = Depends(require_instance_owner)):
     """Clears the in-memory telemetry trace buffer."""
     clear_traces()
     return {"status": "cleared"}
 
 
 @router.post("/emit-sample")
-async def emit_sample_trace(user: dict = Depends(require_auth)):
+async def emit_sample_trace(user: dict = Depends(require_instance_owner)):
     """
     Emits a sample multi-agent swarm trace for testing and verification in the UI.
     Simulates Archer (Lead Orchestrator) dispatching a coder subagent and Judge AI verification.

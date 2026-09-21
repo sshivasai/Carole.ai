@@ -77,7 +77,7 @@ export default function GitPanel({ projectId, onClose, onOpenFile, onOpenDiffFil
         .then(res => {
           let slug = res.name.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
           if (!slug) slug = projectId.substring(0, 8);
-          setProjectName(slug);
+          setProjectName(projectId);
         })
         .catch(() => setProjectName("project"));
     } else {

@@ -55,7 +55,9 @@ def test_resolve_gate_level_non_weakening():
 
 
 @pytest.mark.asyncio
-async def test_tool_scope_enforcement():
+async def test_tool_scope_enforcement(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("core.auth.instance_owner.assert_team_instance_owner", AsyncMock())
     # Tool scoped to team-AAA
     spec_scoped = ToolSpec(
         name="test_scoped_team_tool",
@@ -92,7 +94,9 @@ async def test_tool_scope_enforcement():
 
 
 @pytest.mark.asyncio
-async def test_strip_reserved_arguments():
+async def test_strip_reserved_arguments(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("core.auth.instance_owner.assert_team_instance_owner", AsyncMock())
     captured_args = {}
 
     async def capture_handler(args, team_id):

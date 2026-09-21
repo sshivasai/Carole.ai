@@ -44,8 +44,13 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
     }
   }, [fetchGoogleStatus]);
 
-  const handleConnectGoogle = () => {
-    window.location.href = api.getGoogleAuthUrl();
+  const handleConnectGoogle = async () => {
+    try {
+      const { url } = await api.getGoogleAuthUrl();
+      window.location.href = url;
+    } catch {
+      onToast("Could not start Google authorization", "error");
+    }
   };
 
   const handleDisconnectGoogle = async () => {

@@ -84,9 +84,10 @@ async def test_sync_all_provider_models_smoke():
 
 
 @pytest.mark.asyncio
-async def test_sync_endpoint(client):
+async def test_sync_endpoint(client, monkeypatch):
     from tests.test_advanced_features import create_authenticated_user
-    headers, _, _ = await create_authenticated_user(client, "modelsync@carole.ai")
+    headers, owner_id, _ = await create_authenticated_user(client, "modelsync@carole.ai")
+    monkeypatch.setenv("CAROLE_OWNER_ID", owner_id)
     res = await client.post("/api/models/sync", headers=headers)
     assert res.status_code == 200
     data = res.json()

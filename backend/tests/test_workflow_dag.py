@@ -180,9 +180,10 @@ async def test_task_tools_dag_lifecycle_and_unblocking():
 
 
 @pytest.mark.asyncio
-async def test_plan_approval_guard():
+async def test_plan_approval_guard(monkeypatch):
     """Verify tool_executor blocks mutating tools when an agent's task plan is awaiting_approval."""
     user_id = uuid.uuid4()
+    monkeypatch.setenv("CAROLE_OWNER_ID", str(user_id))
     project_id = uuid.uuid4()
     team_uuid = uuid.uuid4()
     agent_uuid = uuid.uuid4()

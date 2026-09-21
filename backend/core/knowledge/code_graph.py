@@ -9,6 +9,8 @@ import os
 import re
 import json
 import posixpath
+import tempfile
+import logging
 from pathlib import Path
 import asyncio
 import networkx as nx
@@ -164,6 +166,7 @@ class CodeGraph:
         self._lock = asyncio.Lock()
         self._build_locks: Dict[str, asyncio.Lock] = {}
         self._disk_versions: Dict[str, Dict[str, tuple]] = {}
+        self._save_locks: Dict[str, asyncio.Lock] = {}
         
         self.start_listening_task()
 
@@ -215,33 +218,39 @@ class CodeGraph:
         if project_root.exists():
             phantom_nodes = [
                 n for n in list(g.nodes)
-                if not is_tracked_code_file(str(n)) or not (project_root / str(n)).is_file()
+                if not is_tracked_code_file(str(n)) or not (project_root / str(n)).resolve().is_relative_to(project_root.resolve()) or not (project_root / str(n)).is_file()
             ]
             if phantom_nodes:
                 g.remove_nodes_from(phantom_nodes)
                 for p in phantom_nodes:
-                    self._remove_file_from_index(str(p), pid)
-                try:
-                    graph_file = await self.get_graph_file(project_id)
-                    with open(graph_file, "w") as f:
-                        json.dump(nx.node_link_data(g, edges="links"), f)
-                except Exception:
-                    pass
+                    await self._remove_file_from_index(str(p), pid)
+                await self._save_graph(project_id)
 
         return self.graphs[pid]
 
     async def _save_graph(self, project_id: Optional[str]):
-        try:
-            graph_file = await self.get_graph_file(project_id)
-            graph_file.parent.mkdir(parents=True, exist_ok=True)
-            pid = project_id or "default"
-            g = self.graphs.get(pid)
-            if g is None:
-                g = await self.get_graph(project_id)
-            with open(graph_file, "w") as f:
-                json.dump(nx.node_link_data(g, edges="links"), f)
-        except Exception as e:
-            print(f"Error saving code graph for project {project_id}: {e}")
+        pid = project_id or "default"
+        # The graph is a derived cache. Serialize a coherent snapshot and replace
+        # atomically so cancellation cannot leave a half-written JSON file.
+        async with self._save_locks.setdefault(pid, asyncio.Lock()):
+            try:
+                graph = self.graphs.get(pid)
+                if graph is None:
+                    return
+                graph_file = await self.get_graph_file(project_id)
+                payload = json.dumps(nx.node_link_data(graph, edges="links"))
+                def persist():
+                    graph_file.parent.mkdir(parents=True, exist_ok=True)
+                    fd, temporary = tempfile.mkstemp(dir=graph_file.parent, prefix=".code-graph-")
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                            stream.write(payload)
+                        os.replace(temporary, graph_file)
+                    finally:
+                        Path(temporary).unlink(missing_ok=True)
+                await asyncio.to_thread(persist)
+            except Exception as exc:
+                logging.getLogger("carole.code_graph").warning("Could not persist code index: %s", type(exc).__name__)
 
     async def mark_file_active(self, path: str, agent_name: str, project_id: Optional[str] = None):
         if not is_tracked_code_file(path):
@@ -261,6 +270,11 @@ class CodeGraph:
             await self._save_graph(project_id)
 
     async def parse_file(self, relative_path: str, project_id: Optional[str] = None):
+        pid = project_id or "default"
+        async with self._build_locks.setdefault(pid, asyncio.Lock()):
+            await self._parse_file(relative_path, project_id)
+
+    async def _parse_file(self, relative_path: str, project_id: Optional[str] = None, persist: bool = True):
         """Parses a code file using the AST parser, updating the graph & symbol index."""
         pid = project_id or "default"
         if pid not in self.symbol_index:
@@ -278,7 +292,8 @@ class CodeGraph:
             graph = await self.get_graph(project_id)
             if graph.has_node(relative_path):
                 graph.remove_node(relative_path)
-                await self._save_graph(project_id)
+                if persist:
+                    await self._save_graph(project_id)
             return
 
         graph = await self.get_graph(project_id)
@@ -286,12 +301,18 @@ class CodeGraph:
         if not safe_path.is_file():
             if graph.has_node(relative_path):
                 graph.remove_node(relative_path)
-                await self._save_graph(project_id)
+                if persist:
+                    await self._save_graph(project_id)
             # Clean index
-            self._remove_file_from_index(relative_path, pid)
+            await self._remove_file_from_index(relative_path, pid)
             return
 
         try:
+            if safe_path.stat().st_size > 2 * 1024 * 1024:
+                await self._remove_file_from_index(relative_path, pid)
+                graph.remove_nodes_from([relative_path])
+                self.file_chunks[pid][relative_path] = []
+                return
             content = await asyncio.to_thread(safe_path.read_text, encoding="utf-8", errors="replace")
         except Exception:
             return
@@ -300,7 +321,7 @@ class CodeGraph:
         chunks, raw_imports = await asyncio.to_thread(parse_file_ast, content, relative_path)
         
         # 2. Update symbols while retaining the hybrid hash for unchanged files.
-        self._remove_file_from_index(relative_path, pid, remove_hybrid=False)
+        await self._remove_file_from_index(relative_path, pid, remove_hybrid=False)
         self.file_chunks[pid][relative_path] = chunks
 
         inh_graph = self.get_inheritance_graph(pid)
@@ -353,13 +374,14 @@ class CodeGraph:
         # 4. Notify hybrid search incrementally
         try:
             from core.knowledge.hybrid_search import hybrid_code_search
-            hybrid_code_search.update_file_chunks(project_id, relative_path, chunks, content=content)
+            await asyncio.to_thread(hybrid_code_search.update_file_chunks, project_id, relative_path, chunks, content=content)
         except Exception:
             pass
             
-        await self._save_graph(project_id)
+        if persist:
+            await self._save_graph(project_id)
 
-    def _remove_file_from_index(self, relative_path: str, pid: str, remove_hybrid: bool = True):
+    async def _remove_file_from_index(self, relative_path: str, pid: str, remove_hybrid: bool = True):
         """Clean old AST chunks when a file is re-parsed."""
         old_chunks = self.file_chunks.get(pid, {}).pop(relative_path, [])
         for c in old_chunks:
@@ -389,7 +411,7 @@ class CodeGraph:
         try:
             from core.knowledge.hybrid_search import hybrid_code_search
             if remove_hybrid:
-                hybrid_code_search.remove_file(pid, relative_path)
+                await asyncio.to_thread(hybrid_code_search.remove_file, pid, relative_path)
         except Exception:
             pass
 
@@ -423,7 +445,7 @@ class CodeGraph:
         corpus_changed = versions.keys() != previous.keys()
         for path, version in versions.items():
             if corpus_changed or previous.get(path) != version or path not in self.file_chunks.get(pid, {}):
-                await self.parse_file(path, project_id)
+                await self._parse_file(path, project_id, persist=False)
         existing_on_disk = set(versions)
 
         # Prune any nodes in graph that are no longer on disk
@@ -433,7 +455,7 @@ class CodeGraph:
         for stale in stale_nodes:
             if graph.has_node(stale):
                 graph.remove_node(stale)
-            self._remove_file_from_index(stale, pid)
+            await self._remove_file_from_index(stale, pid)
 
         await self._save_graph(project_id)
         self._disk_versions[pid] = versions
@@ -682,7 +704,7 @@ class CodeGraph:
                     project_id = event.get("project_id")
                     if path:
                         path = path.replace("\\", "/")
-                        await self.parse_file(path, project_id)
+                        await self._parse_file(path, project_id, persist=False)
             except Exception as e:
                 print(f"Error in CodeGraph listener: {e}")
 

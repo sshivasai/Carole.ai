@@ -106,7 +106,7 @@ async def test_orchestrator_can_write_markdown_files():
             agent_id="test-orch-id",
             agent_name="Archer",
             team_id="test-team-id",
-            permissions={"write_file": "block"},  # even with block permission, doc write fast-paths
+            permissions={"write_file": "safe"},  # role permits documentation when policy allows it
             context=exec_context
         )
 

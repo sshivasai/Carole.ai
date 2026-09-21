@@ -97,8 +97,9 @@ async def test_scratchpad_complete_flow(client: AsyncClient):
 # ============================================================
 
 @pytest.mark.asyncio
-async def test_plugin_studio_and_dynamic_registry(client: AsyncClient):
+async def test_plugin_studio_and_dynamic_registry(client: AsyncClient, monkeypatch):
     headers, user_id, email = await create_authenticated_user(client, "plugin_tester@carole.ai")
+    monkeypatch.setenv("CAROLE_OWNER_ID", str(user_id))
 
     plugin_code = '''
 from core.tools.plugin_decorator import carole_tool

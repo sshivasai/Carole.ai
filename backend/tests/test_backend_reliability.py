@@ -247,6 +247,8 @@ async def test_cross_user_http_memory_browser_and_process_access_is_denied(clien
         headers = {"Authorization": "Bearer " + account["token"]}
         project = (await client.post("/api/projects", json={"name": "Same project name"}, headers=headers)).json()
         team = (await client.post("/api/teams", json={"name": "Same team name", "project_id": project["id"]}, headers=headers)).json()
+        if not accounts:
+            monkeypatch.setenv("CAROLE_OWNER_ID", account["user"]["id"])
         accounts.append((headers, project, team))
     owner, project, team = accounts[0]
     outsider, other_project, other_team = accounts[1]

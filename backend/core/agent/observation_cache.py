@@ -46,7 +46,7 @@ def _scope_dir(scope: str | None) -> Path:
     return CACHE_DIR / hashlib.sha256(scope.encode()).hexdigest() if scope else CACHE_DIR
 
 
-def cache_observation(tool_name: str, content: str, scope: str | None = None) -> str:
+def cache_observation(tool_name: str, content: str, scope: str | None = None, inline_limit: int = MAX_INLINE_CHARS) -> str:
     """
     Return content verbatim if small, otherwise write excess to disk and return
     a head+tail summary with a disk reference.
@@ -64,7 +64,7 @@ def cache_observation(tool_name: str, content: str, scope: str | None = None) ->
     if not isinstance(content, str):
         content = str(content)
 
-    if len(content) <= MAX_INLINE_CHARS:
+    if len(content) <= inline_limit:
         return content
 
     # Write full output to disk
@@ -85,17 +85,16 @@ def cache_observation(tool_name: str, content: str, scope: str | None = None) ->
             tool_name, len(content), cache_file,
         )
     except OSError as e:
-        # If we can't write to disk, fall back to aggressive inline truncation
-        logger.warning("Could not write observation cache for '%s': %s", tool_name, e)
-        return (
-            content[:HEADER_CHARS]
-            + f"\n\n... [{len(content) - HEADER_CHARS - TAIL_CHARS:,} chars omitted — cache write failed] ...\n\n"
-            + content[-TAIL_CHARS:]
-        )
+        # Never silently destroy evidence when persistence fails. The normal
+        # context-pressure handler can stop the run without claiming completion.
+        logger.warning("Could not persist observation from '%s': %s", tool_name, type(e).__name__)
+        return content
 
-    head = content[:HEADER_CHARS]
-    tail = content[-TAIL_CHARS:]
-    dropped = len(content) - HEADER_CHARS - TAIL_CHARS
+    head_size = min(HEADER_CHARS, max(80, inline_limit // 2))
+    tail_size = min(TAIL_CHARS, max(40, inline_limit // 4))
+    head = content[:head_size]
+    tail = content[-tail_size:]
+    dropped = max(0, len(content) - head_size - tail_size)
 
     return (
         f"{head}\n"

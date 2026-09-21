@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+ENV CAROLE_HOME_DIR=/data/carole
 
 # Install system dependencies for Playwright
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,7 +20,7 @@ RUN playwright install chromium --with-deps
 COPY . .
 
 # Create non-root user for security
-RUN adduser --disabled-password --gecos '' appuser && chown -R appuser /app
+RUN adduser --disabled-password --gecos '' appuser && mkdir -p /data/carole && chown -R appuser /app /data /opt/playwright
 USER appuser
 
 # Expose port

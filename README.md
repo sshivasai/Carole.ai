@@ -22,14 +22,16 @@ Follow these steps to get Carole.ai running locally.
 
 ### 1. Prerequisites
 - Docker and Docker Compose
-- Node.js (v18+ recommended)
-- Python (v3.10+ recommended)
+- Node.js (v22 recommended)
+- Python (v3.11 or later)
 
 ### 2. Environment Variables
 Create a `.env` file in the root directory (or update the existing one) with the necessary variables. At a minimum, you'll need:
 
 ```env
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+# Optional recovery override. Normally the first account is the local owner.
+# CAROLE_OWNER_ID=your_account_uuid
 # Add other required API keys or database URLs as needed
 ```
 
@@ -56,3 +58,31 @@ npm run dev
 ### 5. Access the Application
 - Frontend: [http://localhost:3000](http://localhost:3000)
 - Backend API Docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+
+## Instance owner and upgrade notes
+
+The first account created is automatically the local instance owner. An operator
+can optionally set `CAROLE_OWNER_ID` to an account UUID as a recovery override.
+The instance owner controls host capabilities:
+terminal/shell access, Git, browser automation, plugins, MCP servers, external
+workspace paths, and instance settings/model/prompt administration. These
+operations are unavailable until an owner is configured. Project ownership alone
+does not grant access to the host machine. Host tools run with the backend OS
+account's privileges; this is not an OS sandbox for untrusted tenants.
+
+File, search, Git, and history APIs require an owned project UUID. Clients must
+use the backend Git API; the former Next.js Git endpoint returns HTTP 410.
+Attachments require authenticated downloads. Google accounts must reconnect
+through Settings after upgrading: credentials are now stored separately per
+account, and the old shared token is not reused. The OAuth start request must
+include browser credentials so its callback can verify the initiating browser.
+
+Docker stores application data in the `carole_data` volume at `/data/carole`.
+Back up and copy any existing `.carole` data into that volume before switching an
+existing deployment; creating the volume does not migrate old data. An explicit
+`DATABASE_URL` or `CAROLE_HOME_DIR` override must point to persistent storage.
+Playwright browsers are installed at a path available to the non-root app user.
+
+See [runtime repair notes](docs/RUNTIME_REPAIRS.md) for the implementation changes
+and verification boundaries.

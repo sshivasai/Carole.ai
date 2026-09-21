@@ -19,9 +19,9 @@ from core.api.google_auth_routes import get_google_credentials
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _get_creds():
+def _get_creds(user_id: str | None):
     """Returns valid Google credentials or None."""
-    creds = get_google_credentials()
+    creds = get_google_credentials(user_id)
     return creds
 
 _NOT_CONNECTED = (
@@ -31,12 +31,12 @@ _NOT_CONNECTED = (
 
 # ── Calendar / Meet ───────────────────────────────────────────────────────────
 
-def create_meeting(summary: str, start_time_iso: str, end_time_iso: str, attendees_emails: List[str]) -> str:
+def create_meeting(summary: str, start_time_iso: str, end_time_iso: str, attendees_emails: List[str], user_id: str | None = None) -> str:
     """
     Creates a Google Calendar event with a Google Meet link.
     Returns the Meet link on success.
     """
-    creds = _get_creds()
+    creds = _get_creds(user_id)
     if not creds:
         return _NOT_CONNECTED
 
@@ -75,11 +75,11 @@ def create_meeting(summary: str, start_time_iso: str, end_time_iso: str, attende
 
 # ── Gmail ─────────────────────────────────────────────────────────────────────
 
-def send_email(to_email: str, subject: str, body: str) -> str:
+def send_email(to_email: str, subject: str, body: str, user_id: str | None = None) -> str:
     """
     Sends an email via the Gmail API from the connected Google account.
     """
-    creds = _get_creds()
+    creds = _get_creds(user_id)
     if not creds:
         return _NOT_CONNECTED
 

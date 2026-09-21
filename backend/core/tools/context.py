@@ -53,3 +53,4 @@ class ToolExecutionContext:
     active_message_id: Optional[str] = None
     agent_role: Optional[str] = None
     run_id: Optional[str] = None
+    authorized_policy_fingerprint: Optional[str] = None

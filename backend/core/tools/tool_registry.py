@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+from copy import deepcopy
 from typing import Callable, Awaitable, Dict, List, Optional, Any, Set, Tuple
 
 logger = logging.getLogger("carole.tool_registry")
@@ -39,6 +40,27 @@ class ToolSpec:
     handler: Callable[..., Awaitable[str]]  # async (args: dict, team_id: str) -> str
     team_id: Optional[str] = None
     agent_id: Optional[str] = None
+    input_schema: Optional[Dict[str, Any]] = None
+    requires_instance_owner: bool = False
+
+
+def tool_input_schema(spec: ToolSpec) -> dict:
+    """Keep full MCP schemas, including definitions and nested required fields."""
+    if spec.input_schema is not None:
+        return deepcopy(spec.input_schema)
+    properties, required = {}, []
+    for name, info in spec.parameters.items():
+        prop = deepcopy(info)
+        if prop.pop("_required", prop.get("required") is True):
+            required.append(name)
+        if isinstance(prop.get("required"), bool):
+            prop.pop("required")
+        if not any(key in prop for key in ("type", "$ref", "anyOf", "oneOf", "allOf")):
+            prop["type"] = "string"
+        if prop.get("type") == "array":
+            prop.setdefault("items", {})
+        properties[name] = prop
+    return {"type": "object", "properties": properties, "required": required}
 
 
 class ToolRegistry:
@@ -47,6 +69,7 @@ class ToolRegistry:
 
     _tools: Dict[str, ToolSpec] = {}
     _schema_cache: Dict[Tuple, Any] = {}
+    _plugin_tools: Dict[str, Set[str]] = {}
 
     # ---- core CRUD ----
 
@@ -147,7 +170,7 @@ class ToolRegistry:
                 param_parts = []
                 for k, v in spec.parameters.items():
                     param_type = v.get("type", "string")
-                    required = v.get("required", False)
+                    required = v.get("_required", v.get("required") is True)
                     desc = v.get("description", "")
                     entry = f'"{k}": {param_type}' + (" (required)" if required else "")
                     if desc:
@@ -191,11 +214,11 @@ class ToolRegistry:
             "anthropic",
             team_id,
             agent_id,
-            tuple(sorted(categories)) if categories else None,
-            tuple(sorted(include_names)) if include_names else None,
+            tuple(sorted(categories)) if categories is not None else None,
+            tuple(sorted(include_names)) if include_names is not None else None,
         )
         if cache_key in cls._schema_cache:
-            return [dict(t) for t in cls._schema_cache[cache_key]]
+            return deepcopy(cls._schema_cache[cache_key])
 
         tools = []
         for spec in sorted(cls._tools.values(), key=lambda s: s.name):
@@ -207,26 +230,6 @@ class ToolRegistry:
                 continue
             if include_names is not None and spec.name not in include_names:
                 continue
-
-            properties: dict = {}
-            required: list = []
-            for param_name, param_info in (spec.parameters or {}).items():
-                if isinstance(param_info, dict):
-                    prop: dict = {
-                        "type": param_info.get("type", "string"),
-                        "description": param_info.get("description", ""),
-                    }
-                    # Pass through enum, items, default, minimum, maximum if present
-                    for extra_key in ("enum", "items", "default", "minimum", "maximum"):
-                        if extra_key in param_info:
-                            prop[extra_key] = param_info[extra_key]
-                    properties[param_name] = prop
-                    if param_info.get("required", False):
-                        required.append(param_name)
-                else:
-                    # Legacy plain-string param description
-                    properties[param_name] = {"type": "string", "description": str(param_info)}
-                    required.append(param_name)
 
             description = spec.description or ""
             if spec.name == "browser_navigate":
@@ -241,14 +244,10 @@ class ToolRegistry:
             tools.append({
                 "name": spec.name,
                 "description": description[:1024],
-                "input_schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
+                "input_schema": tool_input_schema(spec),
             })
         cls._schema_cache[cache_key] = tools
-        return [dict(t) for t in tools]
+        return deepcopy(tools)
 
     @classmethod
     def to_openai_tools(
@@ -269,12 +268,12 @@ class ToolRegistry:
             "openai",
             team_id,
             agent_id,
-            tuple(sorted(categories)) if categories else None,
-            tuple(sorted(include_names)) if include_names else None,
+            tuple(sorted(categories)) if categories is not None else None,
+            tuple(sorted(include_names)) if include_names is not None else None,
             strict,
         )
         if cache_key in cls._schema_cache:
-            return [dict(t) for t in cls._schema_cache[cache_key]]
+            return deepcopy(cls._schema_cache[cache_key])
 
         anthropic_tools = cls.to_anthropic_tools(
             team_id=team_id,
@@ -299,7 +298,7 @@ class ToolRegistry:
                 "function": fn_dict,
             })
         cls._schema_cache[cache_key] = res
-        return [dict(t) for t in res]
+        return deepcopy(res)
 
     @classmethod
     def to_gemini_tools(
@@ -314,11 +313,11 @@ class ToolRegistry:
             "gemini",
             team_id,
             agent_id,
-            tuple(sorted(categories)) if categories else None,
-            tuple(sorted(include_names)) if include_names else None,
+            tuple(sorted(categories)) if categories is not None else None,
+            tuple(sorted(include_names)) if include_names is not None else None,
         )
         if cache_key in cls._schema_cache:
-            return [dict(t) for t in cls._schema_cache[cache_key]]
+            return deepcopy(cls._schema_cache[cache_key])
 
         # Gemini uses uppercase type names: STRING, INTEGER, BOOLEAN, ARRAY, OBJECT
         _TYPE_MAP = {
@@ -351,16 +350,24 @@ class ToolRegistry:
             required: list = []
             for param_name, param_info in (spec.parameters or {}).items():
                 if isinstance(param_info, dict):
-                    raw_type = param_info.get("type", "string").lower()
-                    gemini_type = _TYPE_MAP.get(raw_type, "STRING")
-                    prop: dict = {
-                        "type": gemini_type,
-                        "description": param_info.get("description", ""),
-                    }
-                    if "enum" in param_info:
-                        prop["enum"] = param_info["enum"]
+                    def gemini_schema(schema):
+                        out = deepcopy(schema)
+                        out.pop("_required", None)
+                        if isinstance(out.get("required"), bool):
+                            out.pop("required")
+                        raw_type = out.get("type", "string")
+                        if isinstance(raw_type, list):
+                            out["nullable"] = "null" in raw_type
+                            raw_type = next((t for t in raw_type if t != "null"), "string")
+                        out["type"] = _TYPE_MAP.get(str(raw_type).lower(), "STRING")
+                        if "properties" in out:
+                            out["properties"] = {k: gemini_schema(v) for k, v in out["properties"].items()}
+                        if out["type"] == "ARRAY":
+                            out["items"] = gemini_schema(out.get("items", {"type": "string"}))
+                        return out
+                    prop = gemini_schema(param_info)
                     properties[param_name] = prop
-                    if param_info.get("required", False):
+                    if param_info.get("_required", param_info.get("required") is True):
                         required.append(param_name)
                 else:
                     properties[param_name] = {"type": "STRING", "description": str(param_info)}
@@ -381,76 +388,62 @@ class ToolRegistry:
 
         result = [{"functionDeclarations": declarations}] if declarations else []
         cls._schema_cache[cache_key] = result
-        return [dict(t) for t in result]
+        return deepcopy(result)
 
     # ---- plugin loading ----
 
     @classmethod
     def load_plugin_directory(cls, directory: str) -> int:
-        """Scans *directory* for .py files, imports them, and registers any
-        ToolSpecs they export via the `__carole_tools__` list or the
-        `@carole_tool` decorator.  Returns count of tools loaded.
-
-        Fast path (O(1) per module):
-          The module defines `__carole_tools__ = [spec1, spec2, ...]`.
-          The loader reads the list directly — no attribute scanning required.
-
-        Legacy fallback (O(n) per module):
-          If `__carole_tools__` is absent the loader scans all module attributes
-          for `._carole_tool_spec` markers (backward-compatible with old plugins).
-        """
-        if not os.path.isdir(directory):
-            logger.warning("[ToolRegistry] Plugin directory '%s' not found — skipping.", directory)
+        """Atomically replace each trusted plugin's registrations by provenance."""
+        from pathlib import Path
+        import hashlib
+        root = Path(directory).resolve()
+        if not root.is_dir():
             return 0
-
+        paths = {str(p.resolve()) for p in root.glob("*.py") if not p.name.startswith("_") and not p.is_symlink()}
+        for old_path in list(cls._plugin_tools):
+            if Path(old_path).parent == root and old_path not in paths:
+                for name in cls._plugin_tools.pop(old_path):
+                    cls.unregister(name)
         loaded = 0
-        for filename in sorted(os.listdir(directory)):
-            if not filename.endswith(".py") or filename.startswith("_"):
-                continue
-            filepath = os.path.join(directory, filename)
-            module_name = f"plugins.{filename[:-3]}"
+        for filepath in sorted(paths):
+            module_name = "carole_plugin_" + hashlib.sha256(filepath.encode()).hexdigest()[:20]
+            old_names = cls._plugin_tools.get(filepath, set())
+            previous_module = sys.modules.get(module_name)
             try:
                 mod_spec = importlib.util.spec_from_file_location(module_name, filepath)
                 mod = importlib.util.module_from_spec(mod_spec)
                 sys.modules[module_name] = mod
-                mod_spec.loader.exec_module(mod)
-
-                # ── Fast path: module explicitly lists its tools ──────────────
-                if hasattr(mod, "__carole_tools__"):
-                    raw_specs = getattr(mod, "__carole_tools__")
-                    if not isinstance(raw_specs, (list, tuple)):
-                        logger.warning("Plugin '%s' export __carole_tools__ is not a list/tuple — skipping.", filename)
-                        continue
-                    for tool_spec in raw_specs:
-                        if not isinstance(tool_spec, ToolSpec):
-                            logger.warning("Item in '%s' __carole_tools__ is not a ToolSpec — skipping.", filename)
-                            continue
-                        try:
-                            cls.register(tool_spec, force=False)
-                            logger.info("  ✓ Loaded plugin tool: %s (from __carole_tools__)", tool_spec.name)
-                            loaded += 1
-                        except (ValueError, TypeError) as dup:
-                            logger.debug("  ~ Plugin tool skipped (invalid or already registered): %s — %s", getattr(tool_spec, 'name', None), dup)
-
+                # Compile source directly: same-size edits within one timestamp
+                # tick must not silently reuse a stale .pyc.
+                source = Path(filepath).read_text(encoding="utf-8")
+                exec(compile(source, filepath, "exec"), mod.__dict__)
+                specs = getattr(mod, "__carole_tools__", None)
+                if specs is None:
+                    specs = [getattr(value, "_carole_tool_spec") for value in vars(mod).values()
+                             if hasattr(value, "_carole_tool_spec")]
+                if not isinstance(specs, (list, tuple)):
+                    raise ValueError("Plugin exports must be a list of ToolSpec")
+                names = set()
+                for spec in specs:
+                    cls.validate_spec(spec)
+                    spec.requires_instance_owner = True
+                    if spec.name in names or (spec.name in cls._tools and spec.name not in old_names):
+                        raise ValueError(f"Plugin cannot replace another source's tool: {spec.name}")
+                    names.add(spec.name)
+                replacement = {key: value for key, value in cls._tools.items() if key not in old_names}
+                replacement.update({spec.name: spec for spec in specs})
+                cls._tools = replacement
+                cls._plugin_tools[filepath] = names
+                cls._schema_cache.clear()
+                loaded += len(specs)
+            except Exception:
+                if previous_module is None:
+                    sys.modules.pop(module_name, None)
                 else:
-                    # ── Legacy fallback: scan all attributes for marker ───────
-                    for attr_name in dir(mod):
-                        attr = getattr(mod, attr_name, None)
-                        if attr is None:
-                            continue
-                        tool_spec = getattr(attr, "_carole_tool_spec", None)
-                        if isinstance(tool_spec, ToolSpec):
-                            try:
-                                cls.register(tool_spec, force=False)
-                                logger.info("  ✓ Loaded plugin tool: %s (legacy scan)", tool_spec.name)
-                                loaded += 1
-                            except ValueError as dup:
-                                logger.debug("  ~ Plugin tool skipped: %s — %s", tool_spec.name, dup)
-
-            except Exception as e:
-                logger.exception("  ✗ Failed to load plugin '%s': %s", filename, e)
-
-        logger.info("🔌 [ToolRegistry] Loaded %d plugin tool(s) from '%s'.", loaded, directory)
+                    sys.modules[module_name] = previous_module
+                logger.exception("Plugin reload rejected; previous tools retained: %s", filepath)
+                raise
         return loaded
 
     @classmethod

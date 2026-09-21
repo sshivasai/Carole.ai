@@ -75,6 +75,7 @@ import logging
 import importlib
 from typing import List
 from core.auth.auth_middleware import require_auth
+from core.auth.instance_owner import require_instance_owner
 
 # Rate limiting (Finding #7)
 from core.auth.rate_limiter import limiter as _limiter, SLOWAPI_AVAILABLE as _SLOWAPI_AVAILABLE, RateLimitExceeded
@@ -385,7 +386,7 @@ from fastapi.staticfiles import StaticFiles
 
 UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# Legacy uploads are never exposed through an unauthenticated static mount.
 
 app.include_router(crud_router)
 app.include_router(scratchpad_router)
@@ -842,7 +843,7 @@ class ToolRegisterRequest(BaseModel):
 
 
 @app.post("/api/tools/register")
-async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(require_auth)):
+async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(require_instance_owner)):
     """Register a tool at runtime. Requires authenticated user and a handler reference."""
     from core.tools.tool_registry import ToolSpec
 
@@ -883,6 +884,7 @@ async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(
         parameters=body.parameters,
         permission_default=body.permission_default,
         handler=handler,
+        requires_instance_owner=True,
     )
 
     ToolRegistry.register(spec)

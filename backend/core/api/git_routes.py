@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 import subprocess
+from core.tools.process_runner import run_process
 import os
 from typing import Optional, List
 
 from core.auth.auth_middleware import require_auth
+from core.auth.instance_owner import require_instance_owner
 from core.tools.file_tools import file_tools
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,67 +25,29 @@ class GitActionRequest(BaseModel):
     slug: Optional[str] = None
 
 async def _assert_git_project_access(project_id_or_slug: Optional[str], user_id: str, db: Optional[AsyncSession] = None) -> None:
+    # Names are display labels, never filesystem or authorization identities.
     if not project_id_or_slug:
-        return
-    import uuid
-    import re
-    from core.memory.models import Project
-    from sqlalchemy import select
+        raise HTTPException(422, "An owned project_id is required")
     from core.api.crud_routes import _assert_project_access
-
     if db is not None:
-        session = db
-        try:
-            uuid.UUID(str(project_id_or_slug))
-            await _assert_project_access(session, str(project_id_or_slug), user_id)
-            return
-        except ValueError:
-            pass
-
-        res = await session.execute(select(Project))
-        projects = res.scalars().all()
-        matched_proj = None
-        for p in projects:
-            slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', p.name).strip('-')
-            if slug.lower() == str(project_id_or_slug).lower() or p.name.lower() == str(project_id_or_slug).lower():
-                matched_proj = p
-                break
-        if matched_proj:
-            await _assert_project_access(session, str(matched_proj.id), user_id)
+        await _assert_project_access(db, project_id_or_slug, user_id)
     else:
         from core.memory.database import async_session
-        try:
-            uuid.UUID(str(project_id_or_slug))
-            async with async_session() as session:
-                await _assert_project_access(session, str(project_id_or_slug), user_id)
-            return
-        except ValueError:
-            pass
-
         async with async_session() as session:
-            res = await session.execute(select(Project))
-            projects = res.scalars().all()
-            matched_proj = None
-            for p in projects:
-                slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', p.name).strip('-')
-                if slug.lower() == str(project_id_or_slug).lower() or p.name.lower() == str(project_id_or_slug).lower():
-                    matched_proj = p
-                    break
-            if matched_proj:
-                await _assert_project_access(session, str(matched_proj.id), user_id)
+            await _assert_project_access(session, project_id_or_slug, user_id)
 
 
 @router.post("/init")
 async def init_repository(
     slug: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(project_id or slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(project_id or slug)
-        res = subprocess.run(
+        res = await run_process(
             ["git", "init"],
             cwd=str(workspace_root),
             capture_output=True,
@@ -117,7 +81,7 @@ async def init_repository(
 async def get_git_status(
     slug: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(project_id or slug, user["sub"], db=db)
@@ -129,7 +93,7 @@ async def get_git_status(
             return {"status": "success", "changes": [], "message": "Not a git repository. Initialize it first."}
 
         # Run git status porcelain
-        result = subprocess.run(
+        result = await run_process(
             ["git", "status", "--porcelain"],
             cwd=str(workspace_root),
             capture_output=True,
@@ -184,14 +148,14 @@ async def get_git_status(
 @router.post("/stage")
 async def stage_file(
     req: GitActionRequest,
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
-        res = subprocess.run(
-            ["git", "add", req.file],
+        res = await run_process(
+            ["git", "add", "--", req.file],
             cwd=str(workspace_root),
             capture_output=True,
             text=True
@@ -207,24 +171,24 @@ async def stage_file(
 @router.post("/unstage")
 async def unstage_file(
     req: GitActionRequest,
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
         # Check if HEAD exists (if not, we reset using git rm --cached)
-        head_check = subprocess.run(
+        head_check = await run_process(
             ["git", "rev-parse", "--verify", "HEAD"],
             cwd=str(workspace_root),
             capture_output=True
         )
         if head_check.returncode == 0:
-            cmd = ["git", "restore", "--staged", req.file]
+            cmd = ["git", "restore", "--staged", "--", req.file]
         else:
-            cmd = ["git", "rm", "--cached", req.file]
+            cmd = ["git", "rm", "--cached", "--", req.file]
 
-        res = subprocess.run(
+        res = await run_process(
             cmd,
             cwd=str(workspace_root),
             capture_output=True,
@@ -241,7 +205,7 @@ async def unstage_file(
 @router.post("/discard")
 async def discard_changes(
     req: GitActionRequest,
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
@@ -249,8 +213,8 @@ async def discard_changes(
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug)
         
         # Check if file is untracked
-        status_res = subprocess.run(
-            ["git", "status", "--porcelain", req.file],
+        status_res = await run_process(
+            ["git", "status", "--porcelain", "--", req.file],
             cwd=str(workspace_root),
             capture_output=True,
             text=True
@@ -261,7 +225,7 @@ async def discard_changes(
 
         if is_untracked:
             # For untracked files, discard means delete
-            full_path = os.path.join(workspace_root, req.file)
+            full_path = await file_tools._resolve_safe_path(req.file, req.project_id or req.slug)
             if os.path.exists(full_path):
                 if os.path.isdir(full_path):
                     import shutil
@@ -271,8 +235,8 @@ async def discard_changes(
             return {"status": "success", "message": f"Deleted untracked file {req.file}"}
         else:
             # For tracked files, restore working tree changes
-            res = subprocess.run(
-                ["git", "restore", req.file],
+            res = await run_process(
+                ["git", "restore", "--", req.file],
                 cwd=str(workspace_root),
                 capture_output=True,
                 text=True
@@ -288,7 +252,7 @@ async def discard_changes(
 @router.post("/ignore")
 async def add_to_gitignore(
     req: GitActionRequest,
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
@@ -310,7 +274,7 @@ async def commit_changes(
     req: GitCommitRequest,
     slug: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(req.project_id or req.slug or project_id or slug, user["sub"], db=db)
@@ -318,7 +282,7 @@ async def commit_changes(
         workspace_root = await file_tools.get_workspace_root(req.project_id or req.slug or project_id or slug)
         
         # Commit staged files
-        res = subprocess.run(
+        res = await run_process(
             ["git", "commit", "-m", req.message],
             cwd=str(workspace_root),
             capture_output=True,
@@ -326,19 +290,8 @@ async def commit_changes(
         )
         
         if res.returncode != 0:
-            # Try to commit all changes if nothing is staged
-            # (VS Code does this or prompts to stage all if nothing is staged)
-            # But let's run git commit -a -m message if they had unstaged changes
-            res_all = subprocess.run(
-                ["git", "commit", "-a", "-m", req.message],
-                cwd=str(workspace_root),
-                capture_output=True,
-                text=True
-            )
-            if res_all.returncode != 0:
-                return {"status": "error", "message": res_all.stderr or res.stdout or "Commit failed. Stage changes first."}
-            return {"status": "success", "message": "Changes committed successfully (staged all first)."}
-            
+            return {"status": "error", "message": res.stderr or res.stdout or "Commit failed. Stage changes first."}
+
         return {"status": "success", "message": "Staged changes committed successfully."}
     except HTTPException:
         raise
@@ -350,13 +303,13 @@ async def show_git_file(
     file: str,
     slug: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(project_id or slug, user["sub"], db=db)
     try:
         workspace_root = await file_tools.get_workspace_root(project_id or slug)
-        res = subprocess.run(
+        res = await run_process(
             ["git", "show", f"HEAD:{file}"],
             cwd=str(workspace_root),
             capture_output=True,
@@ -376,7 +329,7 @@ async def get_commit_history(
     slug: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
     limit: int = Query(50),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(project_id or slug, user["sub"], db=db)
@@ -389,7 +342,7 @@ async def get_commit_history(
 
         # Run git log with custom format
         # Format: hash|author|date(iso)|message
-        res = subprocess.run(
+        res = await run_process(
             ["git", "log", f"-n", str(limit), "--pretty=format:%h|%an|%ad|%s", "--date=short"],
             cwd=str(workspace_root),
             capture_output=True,
@@ -442,7 +395,7 @@ class GitCheckpointRollbackRequest(BaseModel):
 @router.post("/checkpoint/create")
 async def create_checkpoint(
     req: GitCheckpointCreateRequest,
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
@@ -461,7 +414,7 @@ async def create_checkpoint(
 async def list_checkpoints(
     slug: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(project_id or slug, user["sub"], db=db)
@@ -479,7 +432,7 @@ async def list_checkpoints(
 @router.post("/checkpoint/rollback")
 async def rollback_checkpoint(
     req: GitCheckpointRollbackRequest,
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(req.project_id or req.slug, user["sub"], db=db)
@@ -499,7 +452,7 @@ async def diff_checkpoint(
     checkpoint_id: str = Query(...),
     slug: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
-    user: dict = Depends(require_auth),
+    user: dict = Depends(require_instance_owner),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_git_project_access(project_id or slug, user["sub"], db=db)

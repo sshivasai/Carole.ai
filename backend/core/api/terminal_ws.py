@@ -72,11 +72,12 @@ from collections import deque
 import time
 
 class TerminalSession:
-    def __init__(self, session_id: str, session_type: str, process: Any, cwd: str, master_fd: Optional[int] = None):
+    def __init__(self, session_id: str, session_type: str, process: Any, cwd: str, master_fd: Optional[int] = None, project_id: Optional[str] = None):
         self.session_id = session_id
         self.session_type = session_type
         self.process = process
         self.cwd = cwd
+        self.project_id = project_id
         self.master_fd = master_fd
         self.scrollback: deque[str] = deque(maxlen=2000)
         self.connected_sockets: list[WebSocket] = []
@@ -161,6 +162,10 @@ class TerminalSessionManager:
         self.terminate_session(session_id)
 
     async def connect(self, websocket: WebSocket, session_id: str, project_id: Optional[str] = None, shell: str = "default"):
+        existing = self.active_sessions.get(session_id)
+        if existing is not None and existing.project_id != project_id:
+            await websocket.close(code=4003)
+            return
         await websocket.accept()
 
         # Check for existing persistent session reattachment
@@ -215,7 +220,7 @@ class TerminalSessionManager:
             if sys.platform == "win32" and HAS_WINPTY:
                 process = winpty.PTY(80, 24)
                 process.spawn(shell_cmd, cwd=str(cwd))
-                session = TerminalSession(session_id, "winpty", process, str(cwd))
+                session = TerminalSession(session_id, "winpty", process, str(cwd), project_id=project_id)
                 session.connected_sockets.append(websocket)
                 self.active_sessions[session_id] = session
 
@@ -257,7 +262,7 @@ class TerminalSessionManager:
                 )
                 os.close(slave_fd)
 
-                session = TerminalSession(session_id, "unix_pty", process, str(cwd), master_fd=master_fd)
+                session = TerminalSession(session_id, "unix_pty", process, str(cwd), master_fd=master_fd, project_id=project_id)
                 session.connected_sockets.append(websocket)
                 self.active_sessions[session_id] = session
 
@@ -293,7 +298,7 @@ class TerminalSessionManager:
                     bufsize=0,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
-                session = TerminalSession(session_id, "win_fallback", process, str(cwd))
+                session = TerminalSession(session_id, "win_fallback", process, str(cwd), project_id=project_id)
                 session.connected_sockets.append(websocket)
                 self.active_sessions[session_id] = session
 
@@ -421,6 +426,13 @@ async def terminal_websocket(
         if not user:
             await websocket.close(code=4001)
             return
+        from core.auth.instance_owner import assert_instance_owner
+        from fastapi import HTTPException
+        try:
+            await assert_instance_owner({"sub": str(user.id)}, db)
+        except HTTPException:
+            await websocket.close(code=4003)
+            return
         target_project_id = None
         if project_id and project_id != "default":
             try:
@@ -433,7 +445,7 @@ async def terminal_websocket(
             except ValueError:
                 target_project_id = None
 
-        if not target_project_id:
+        if not target_project_id and project_id == "default":
             # Fallback to user's first available project
             first_project = (await db.execute(
                 select(Project.id).where(Project.owner_id == user.id).limit(1)

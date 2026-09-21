@@ -8,9 +8,15 @@ import uuid
 from core.memory.database import get_db
 from core.auth.auth_middleware import require_auth
 from core.api.crud_routes import _assert_team_access
-from core.memory.models import ScheduledTask
+from core.memory.models import ScheduledTask, Agent
+from croniter import croniter
 
 router = APIRouter(prefix="/api/cron", tags=["cron"])
+
+
+def validate_schedule(expression: str) -> None:
+    if len(expression.split()) != 5 or not croniter.is_valid(expression):
+        raise HTTPException(422, "Use a valid five-field cron expression (minute hour day month weekday)")
 
 class ScheduledTaskCreate(BaseModel):
     name: str = Field(..., max_length=100)
@@ -49,6 +55,10 @@ async def create_scheduled_task(
 ):
     await _assert_team_access(db, team_id, user["sub"])
     
+    validate_schedule(body.cron_expression)
+    agent = await db.get(Agent, uuid.UUID(body.agent_id))
+    if agent is None or str(agent.team_id) != team_id:
+        raise HTTPException(422, "Scheduled agent must belong to the selected team")
     new_task = ScheduledTask(
         team_id=uuid.UUID(team_id),
         agent_id=uuid.UUID(body.agent_id),
@@ -80,6 +90,7 @@ async def update_scheduled_task(
     if body.name is not None:
         task.name = body.name
     if body.cron_expression is not None:
+        validate_schedule(body.cron_expression)
         task.cron_expression = body.cron_expression
     if body.prompt is not None:
         task.prompt = body.prompt

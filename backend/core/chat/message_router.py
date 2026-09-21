@@ -172,6 +172,9 @@ class MessageRouter:
                 logger.warning("Team %s not found. Dropping message from %s.", team_id, sender_id)
                 return
             project_id = str(team_row.project_id) if team_row.project_id else ""
+            if sender_id == "human" and attachments:
+                from core.chat.attachments import normalize_chat_attachments
+                attachments = await normalize_chat_attachments(attachments, team_id, project_id)
 
             # If sender_id is an agent UUID, verify that the agent belongs to this team
             if sender_id not in ("human", "system"):
@@ -378,21 +381,8 @@ class MessageRouter:
                             agent.name, t.exception(), exc_info=t.exception()
                         )
                     # Remove stale entries so the worker is recreated fresh on next trigger
-                # Build context snapshot for the worker (avoids closing over db_session)
-                agent_snapshot = _AgentSnapshot(agent, db_session, project_id=project_id)
-                worker_task = asyncio.create_task(
-                    self._agent_worker(agent_id, agent_snapshot),
-                    name=f"worker:{agent.name}",
-                )
-                self._workers[agent_id] = worker_task
-
-                def _on_worker_done(t: asyncio.Task):
-                    if not t.cancelled() and t.exception():
-                        logger.exception(
-                            "Worker for agent '%s' died unexpectedly: %s",
-                            agent.name, t.exception(), exc_info=t.exception()
-                        )
-                    # Remove stale entries so the worker is recreated fresh on next trigger
+                    if self._workers.get(agent_id) is not t:
+                        return
                     self._queues.pop(agent_id, None)
                     self._workers.pop(agent_id, None)
                     self._pending.pop(agent_id, None)
@@ -419,7 +409,7 @@ class MessageRouter:
                     "Queue full for agent '%s' (maxsize=%d). Dropping prompt.",
                     agent.name, self._queues[agent_id].maxsize
                 )
-                return False
+                raise asyncio.QueueFull(f"Agent {agent_id} is busy; retry the wakeup")
 
         # Broadcast queue depth change to UI
         depth = self._queues[agent_id].qsize()

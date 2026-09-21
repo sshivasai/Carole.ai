@@ -1,3 +1,4 @@
+from core.auth.instance_owner import require_instance_owner
 """
 # backend/core/api/crud_routes.py
 
@@ -311,6 +312,8 @@ async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)
 
     custom_path = None
     if body.custom_workspace_path and body.custom_workspace_path.strip():
+        from core.auth.instance_owner import assert_instance_owner
+        await assert_instance_owner(user, db)
         resolved_custom = Path(body.custom_workspace_path.strip()).resolve()
         resolved_custom.mkdir(parents=True, exist_ok=True)
         custom_path = str(resolved_custom)
@@ -348,6 +351,8 @@ async def update_project(project_id: str, body: ProjectUpdate, db: AsyncSession 
 
     if body.custom_workspace_path is not None:
         if body.custom_workspace_path.strip():
+            from core.auth.instance_owner import assert_instance_owner
+            await assert_instance_owner(user, db)
             resolved_custom = Path(body.custom_workspace_path.strip()).resolve()
             resolved_custom.mkdir(parents=True, exist_ok=True)
             project.custom_workspace_path = str(resolved_custom)
@@ -1271,7 +1276,9 @@ async def upload_file(request: Request, file: UploadFile = File(...), team_id: O
 
     filename = f"{file_id}{ext}"
     
-    upload_dir = _UPLOAD_DIR  # fallback
+    if not team_id:
+        raise HTTPException(422, "An owned team_id is required for uploads")
+    upload_dir = _UPLOAD_DIR  # legacy storage fallback
     url_path = f"/api/uploads/{filename}"
     
     if team_id:
@@ -1329,7 +1336,7 @@ from fastapi.responses import FileResponse
 import re as _re_slug
 
 @router.get("/media/{project_slug}/{team_slug}/{filename}")
-async def get_chat_media(project_slug: str, team_slug: str, filename: str):
+async def get_chat_media(project_slug: str, team_slug: str, filename: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
     """Serves chat media files from the workspace directory."""
     from core.config import CAROLE_HOME_DIR
     
@@ -1338,15 +1345,21 @@ async def get_chat_media(project_slug: str, team_slug: str, filename: str):
         if ".." in part or "/" in part or "\\" in part:
             raise HTTPException(status_code=400, detail="Invalid path component")
         
-    file_path = CAROLE_HOME_DIR / "workspaces" / project_slug / ".carole" / team_slug / "Chat_Media" / filename
+    team = await _assert_team_access(db, team_slug, user["sub"])
+    if str(team.project_id) != project_slug:
+        raise HTTPException(404, "Media not found")
+    directory = (CAROLE_HOME_DIR / "workspaces" / project_slug / ".carole" / team_slug / "Chat_Media").resolve()
+    file_path = (directory / filename).resolve()
+    if not file_path.is_relative_to(directory):
+        raise HTTPException(403, "Media path escapes storage")
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
         
-    return FileResponse(path=file_path)
+    return FileResponse(path=file_path, headers={"Content-Security-Policy": "sandbox; default-src 'none'", "Cache-Control": "private, no-store"})
 
 # Serve from the fallback uploads dir too
 @router.get("/uploads/{filename}")
-async def get_upload_file(filename: str):
+async def get_upload_file(filename: str, user: dict = Depends(require_instance_owner)):
     """Serves files from the fallback uploads directory."""
     from core.config import CAROLE_HOME_DIR
     
@@ -1356,7 +1369,7 @@ async def get_upload_file(filename: str):
     file_path = CAROLE_HOME_DIR / "uploads" / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path=file_path)
+    return FileResponse(path=file_path, headers={"Content-Security-Policy": "sandbox; default-src 'none'", "Cache-Control": "private, no-store"})
 
 class MessageEdit(BaseModel):
     text: str
@@ -2366,7 +2379,7 @@ async def get_default_model_catalog():
 
 
 @router.post("/models/catalog")
-async def save_model_catalog_endpoint(body: dict, user: dict = Depends(require_auth)):
+async def save_model_catalog_endpoint(body: dict, user: dict = Depends(require_instance_owner)):
     """
     Saves the model catalog to ~/.carole/supported_models.json.
     Accepts the full catalog object (same shape as GET response).
@@ -2380,7 +2393,7 @@ async def save_model_catalog_endpoint(body: dict, user: dict = Depends(require_a
 
 
 @router.post("/models/catalog/reset")
-async def reset_model_catalog_endpoint(user: dict = Depends(require_auth)):
+async def reset_model_catalog_endpoint(user: dict = Depends(require_instance_owner)):
     """
     Deletes ~/.carole/supported_models.json so factory defaults take effect.
     Returns the factory defaults so the UI can refresh immediately.
@@ -2409,7 +2422,7 @@ async def get_default_prompts():
 
 
 @router.post("/prompts")
-async def save_prompts_endpoint(body: dict, user: dict = Depends(require_auth)):
+async def save_prompts_endpoint(body: dict, user: dict = Depends(require_instance_owner)):
     """
     Saves prompts to ~/.carole/prompts.json.
     Accepts a flat dict of { slug: template_string }.
@@ -2420,7 +2433,7 @@ async def save_prompts_endpoint(body: dict, user: dict = Depends(require_auth)):
 
 
 @router.post("/prompts/reset")
-async def reset_prompts_endpoint(user: dict = Depends(require_auth)):
+async def reset_prompts_endpoint(user: dict = Depends(require_instance_owner)):
     """
     Deletes ~/.carole/prompts.json so factory defaults take effect.
     Returns the factory defaults so the UI can refresh immediately.
@@ -3400,7 +3413,7 @@ async def resolve_mcp_logo_endpoint(body: dict):
 
 
 @router.post("/mcp")
-async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+async def add_mcp_server(body: McpServerCreate, db: AsyncSession = Depends(get_db), user: dict = Depends(require_instance_owner)):
     await _assert_team_access(db, body.team_id, user["sub"])
     if body.agent_id:
         await _assert_agent_access(db, body.agent_id, user["sub"])
@@ -3496,7 +3509,7 @@ async def list_global_mcps():
     return results
 
 @router.post("/mcp/reload")
-async def reload_global_mcps(user: dict = Depends(require_auth)):
+async def reload_global_mcps(user: dict = Depends(require_instance_owner)):
     """Hot-reload all enabled global MCP servers without a full server restart.
 
     - Unregisters tools and clears status for any currently errored/disconnected global MCPs.
@@ -3571,7 +3584,7 @@ async def reload_global_mcps(user: dict = Depends(require_auth)):
 
 
 @router.post("/mcp/global/{server_name}/toggle")
-async def toggle_global_mcp(server_name: str, user: dict = Depends(require_auth)):
+async def toggle_global_mcp(server_name: str, user: dict = Depends(require_instance_owner)):
     import asyncio as _asyncio
     from core.config import GLOBAL_MCPS, DISABLED_GLOBAL_MCPS_FILE
     from core.tools.mcp_client import mcp_manager
@@ -3655,7 +3668,7 @@ async def list_mcp_servers(team_id: str, db: AsyncSession = Depends(get_db), use
     ]
 
 @router.delete("/mcp/{server_id}")
-async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db), user: dict = Depends(require_instance_owner)):
     from core.memory.models import McpServer
     from core.tools.mcp_client import mcp_manager
 
@@ -3709,7 +3722,7 @@ async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db), 
 
 
 @router.post("/mcp/disconnect/{server_name}")
-async def disconnect_mcp_by_name(server_name: str, body: dict = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_auth)):
+async def disconnect_mcp_by_name(server_name: str, body: dict = None, db: AsyncSession = Depends(get_db), user: dict = Depends(require_instance_owner)):
     from core.memory.models import McpServer
     from core.tools.mcp_client import mcp_manager
 
@@ -3745,7 +3758,7 @@ class AppSettings(BaseModel):
 
 
 @router.get("/settings")
-async def get_settings(user: dict = Depends(require_auth)):
+async def get_settings(user: dict = Depends(require_instance_owner)):
     """
     Returns the current application settings from ~/.carole/config.json.
     API key values are masked (last 4 chars visible) for security. Requires authentication.
@@ -3786,7 +3799,7 @@ async def get_settings(user: dict = Depends(require_auth)):
 
 
 @router.post("/settings")
-async def save_settings(body: AppSettings, user: dict = Depends(require_auth)):
+async def save_settings(body: AppSettings, user: dict = Depends(require_instance_owner)):
     """
     Saves API keys and provider config to ~/.carole/config.json and hot-reloads
     the LLM router so changes take effect immediately without a server restart.
@@ -3802,7 +3815,7 @@ async def save_settings(body: AppSettings, user: dict = Depends(require_auth)):
     for k, v in body.api_keys.items():
         if v == "":
             new_keys[k] = ""
-        elif v and not all(c == "*" for c in v.replace("-", "").replace("_", "")):
+        elif v and not v.startswith("****"):
             new_keys[k] = v.strip()
 
     new_providers = {**current.get("providers", {}), **body.providers}
@@ -3815,11 +3828,12 @@ async def save_settings(body: AppSettings, user: dict = Depends(require_auth)):
     for k, v in body.browser_automation.get("api_keys", {}).items():
         if v == "":
             new_ba_keys[k] = ""
-        elif v and not all(c == "*" for c in v.replace("-", "").replace("_", "")):
+        elif v and not v.startswith("****"):
             new_ba_keys[k] = v.strip()
     new_ba["api_keys"] = new_ba_keys
 
     updated_cfg = {
+        **current,
         "api_keys": new_keys,
         "providers": new_providers,
         "default_models": new_default_models,
@@ -3970,7 +3984,7 @@ async def get_prompt_blocks():
 
 
 @router.put("/settings/prompt-blocks")
-async def save_prompt_blocks(updates: list[dict], user: dict = Depends(require_auth)):
+async def save_prompt_blocks(updates: list[dict], user: dict = Depends(require_instance_owner)):
     """Save one or more prompt block overrides. Send a list of { key, enabled, content }."""
     from core.agent.prompt_blocks import save_blocks
     save_blocks(updates)
@@ -3979,7 +3993,7 @@ async def save_prompt_blocks(updates: list[dict], user: dict = Depends(require_a
 
 
 @router.post("/settings/prompt-blocks/{key}/reset")
-async def reset_prompt_block(key: str, user: dict = Depends(require_auth)):
+async def reset_prompt_block(key: str, user: dict = Depends(require_instance_owner)):
     """Reset a single prompt block back to its default content."""
     from core.agent.prompt_blocks import reset_block
     try:

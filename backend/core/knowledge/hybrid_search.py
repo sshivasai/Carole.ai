@@ -8,6 +8,11 @@ fused via Reciprocal Rank Fusion (RRF).
 """
 
 import re
+import asyncio
+import threading
+import inspect
+import time
+from functools import wraps
 import logging
 import hashlib
 import json
@@ -120,19 +125,20 @@ class StaticCodeEmbedder:
 
     _instance = None
     _model = None
+    _load_lock = threading.RLock()
+    _retry_after = 0.0
 
     @classmethod
     def get_model(cls):
-        if cls._model is None:
-            try:
-                from model2vec import StaticModel
-                logger.info("⚡ [Semble] Loading static code embedding model (minishlab/potion-base-8M)...")
-                cls._model = StaticModel.from_pretrained("minishlab/potion-base-8M")
-                logger.info("⚡ [Semble] Static code embedding model loaded successfully.")
-            except Exception as e:
-                logger.warning("Could not load Model2Vec, semantic search will fallback: %s", e)
-                cls._model = None
-        return cls._model
+        with cls._load_lock:
+            if cls._model is None and time.monotonic() >= cls._retry_after:
+                try:
+                    from model2vec import StaticModel
+                    cls._model = StaticModel.from_pretrained("minishlab/potion-base-8M")
+                except Exception as exc:
+                    cls._retry_after = time.monotonic() + 300
+                    logger.warning("Static embeddings unavailable; lexical retrieval remains active: %s", type(exc).__name__)
+            return cls._model
 
     @classmethod
     def encode(cls, texts: List[str]) -> Optional[np.ndarray]:
@@ -170,6 +176,7 @@ class ProjectIndex:
         self.combined_embeddings: Optional[np.ndarray] = None
         self.vector_chunk_indices: List[int] = []
         self._dirty: bool = False
+        self.revision = 0
 
     def _compute_hash(self, content: Optional[str], chunks: List[ASTChunk]) -> str:
         if content is not None:
@@ -189,6 +196,7 @@ class ProjectIndex:
         if norm_path in self.file_hashes and self.file_hashes[norm_path] == new_hash:
             return False
 
+        self.revision += 1
         self.file_hashes[norm_path] = new_hash
         self.file_chunks[norm_path] = chunks
 
@@ -222,6 +230,7 @@ class ProjectIndex:
             del self.file_hashes[norm_path]
             removed = True
         if removed:
+            self.revision += 1
             self._dirty = True
         return removed
 
@@ -289,6 +298,18 @@ class ProjectIndex:
 # Hybrid Search Engine (BM25 + Static Embeddings + RRF)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _index_serialized(method):
+    signature = inspect.signature(method)
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        project_id = signature.bind(self, *args, **kwargs).arguments.get("project_id") or "default"
+        with self._index_lock:
+            lock = self._project_locks.setdefault(project_id, threading.RLock())
+        with lock:
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class HybridCodeSearch:
     """
     Dual Retrieval Pipeline combining BM25 exact symbol matching with
@@ -297,10 +318,14 @@ class HybridCodeSearch:
     """
 
     def __init__(self):
+        self._index_lock = threading.RLock()
+        self._project_locks = {}
+        self._ranker_lock = threading.Lock()
         self._project_indices: Dict[str, ProjectIndex] = {}
         self._ranker = None
         self._ranker_loaded = False
 
+    @_index_serialized
     def get_project_index(self, project_id: Optional[str] = None) -> ProjectIndex:
         pid = project_id or "default"
         if pid not in self._project_indices:
@@ -325,6 +350,10 @@ class HybridCodeSearch:
         return self.get_project_index("default").combined_embeddings
 
     def _get_ranker(self):
+        with self._ranker_lock:
+            return self._load_ranker()
+
+    def _load_ranker(self):
         if not self._ranker_loaded:
             try:
                 from flashrank import Ranker
@@ -336,6 +365,7 @@ class HybridCodeSearch:
             self._ranker_loaded = True
         return self._ranker
 
+    @_index_serialized
     def update_file_chunks(
         self,
         project_id: Optional[str],
@@ -347,11 +377,13 @@ class HybridCodeSearch:
         idx = self.get_project_index(project_id)
         return idx.update_file(file_path, chunks, content)
 
+    @_index_serialized
     def remove_file(self, project_id: Optional[str], file_path: str) -> bool:
         """Remove a file from the project index."""
         idx = self.get_project_index(project_id)
         return idx.remove_file(file_path)
 
+    @_index_serialized
     def index_workspace_chunks(self, chunks: List[ASTChunk], project_id: Optional[str] = None) -> None:
         """Indexes workspace AST chunks using incremental per-file caching."""
         idx = self.get_project_index(project_id)
@@ -369,6 +401,7 @@ class HybridCodeSearch:
 
         idx.sync_index()
 
+    @_index_serialized
     def search_vectors(self, query: str, top_k: int = 20, project_id: Optional[str] = None) -> List[Tuple[int, float]]:
         """Performs fast cosine similarity search over static code embeddings."""
         idx = self.get_project_index(project_id)
@@ -396,12 +429,37 @@ class HybridCodeSearch:
         sorted_rrf = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
         return sorted_rrf
 
-    async def search(
+    async def search(self, query: str, project_id: Optional[str] = None, top_k: int = 10,
+                     vector_search_fn=None, file_filter: Optional[str] = None, kind: Optional[str] = None):
+        # CPU inference/model loading never runs on the application's event loop.
+        override = None
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 100:
+            raise ValueError("top_k must be an integer between 1 and 100")
+        if not isinstance(query, str) or not query.strip():
+            return []
+        query = query[:8000]
+        if vector_search_fn is not None:
+            try:
+                revision = await asyncio.to_thread(self._index_revision, project_id)
+                values = await asyncio.wait_for(vector_search_fn(query, top_k=top_k * 3), timeout=10)
+                override = (revision, values)
+            except Exception:
+                pass
+        return await asyncio.to_thread(self._search_sync, query, project_id, top_k, override, file_filter, kind)
+
+    @_index_serialized
+    def _index_revision(self, project_id):
+        index = self.get_project_index(project_id)
+        index.sync_index()
+        return index.revision
+
+    @_index_serialized
+    def _search_sync(
         self,
         query: str,
         project_id: Optional[str] = None,
         top_k: int = 10,
-        vector_search_fn: Optional[Any] = None,
+        vector_results_override=None,
         file_filter: Optional[str] = None,
         kind: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -410,6 +468,9 @@ class HybridCodeSearch:
         """
         if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 100:
             raise ValueError("top_k must be an integer between 1 and 100")
+        if not isinstance(query, str) or not query.strip():
+            return []
+        query = query[:8000]
         idx = self.get_project_index(project_id)
         idx.sync_index()
 
@@ -422,17 +483,21 @@ class HybridCodeSearch:
         bm25_results = idx.bm25.search(query, top_k=candidate_limit)
 
         # 2. Vector Ranking
-        if vector_search_fn is not None:
-            try:
-                vector_results = await vector_search_fn(query, top_k=candidate_limit)
-            except Exception:
-                vector_results = idx.search_vectors(query, top_k=candidate_limit)
+        if vector_results_override is not None and vector_results_override[0] == idx.revision and isinstance(vector_results_override[1], (list, tuple)):
+            vector_results = vector_results_override[1]
         else:
-            vector_results = idx.search_vectors(query, top_k=candidate_limit)
+            try:
+                vector_results = idx.search_vectors(query, top_k=candidate_limit)
+            except (ValueError, TypeError, IndexError):
+                vector_results = []
 
         def eligible(pair):
-            doc_idx, _ = pair
-            if not isinstance(doc_idx, int) or not 0 <= doc_idx < len(idx.combined_chunks):
+            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                return False
+            doc_idx, score = pair
+            if not isinstance(score, (int, float, np.number)) or not np.isfinite(score):
+                return False
+            if isinstance(doc_idx, bool) or not isinstance(doc_idx, int) or not 0 <= doc_idx < len(idx.combined_chunks):
                 return False
             chunk = idx.combined_chunks[doc_idx]
             if kind and chunk.kind.lower() != kind.lower():
@@ -469,9 +534,14 @@ class HybridCodeSearch:
                     for doc_idx, _ in candidate_pool
                 ]
                 rerank_req = RerankRequest(query=query, passages=passages)
-                reranked = ranker.rerank(rerank_req)
+                with self._ranker_lock:
+                    reranked = ranker.rerank(rerank_req)
+                candidates = {doc_idx for doc_idx, _ in candidate_pool}
                 for item in reranked:
-                    final_ranked.append((item["id"], float(item["score"])))
+                    if item.get("id") in candidates:
+                        final_ranked.append((item["id"], float(item["score"])))
+                if not final_ranked:
+                    final_ranked = fused
             except Exception as e:
                 logger.debug("FlashRank rerank error, using RRF: %s", e)
                 final_ranked = fused
@@ -480,8 +550,14 @@ class HybridCodeSearch:
 
         # 5. Assemble Top Snippets with optional file/kind filtering
         results = []
+        seen = set()
         for doc_idx, score in final_ranked:
-            if doc_idx >= len(idx.combined_chunks):
+            if not eligible((doc_idx, score)):
+                continue
+            if doc_idx in seen:
+                continue
+            seen.add(doc_idx)
+            if not eligible((doc_idx, score)) or not np.isfinite(score):
                 continue
             chunk = idx.combined_chunks[doc_idx]
 
@@ -502,7 +578,11 @@ class HybridCodeSearch:
                 "kind": chunk.kind,
                 "start_line": chunk.start_line,
                 "end_line": chunk.end_line,
-                "code": chunk.code,
+                "code": chunk.code[:12000],
+                "truncated": len(chunk.code) > 12000,
+                "source": "workspace_code",
+                "content_sha256": idx.file_hashes.get(chunk.file_path.replace("\\", "/")),
+                "index_revision": idx.revision,
                 "params": chunk.params,
                 "docstring": chunk.docstring,
                 "parent_symbol": chunk.parent_symbol,

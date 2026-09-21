@@ -157,7 +157,7 @@ async def test_concurrent_enqueue_deduplication():
 
 
 @pytest.mark.asyncio
-async def test_queue_capacity_overflow_graceful_drop():
+async def test_queue_capacity_overflow_signals_retry():
     """Verify that enqueuing into a full agent queue drops gracefully without crashing."""
     agent_id = str(uuid.uuid4())
     team_id = str(uuid.uuid4())
@@ -184,8 +184,9 @@ async def test_queue_capacity_overflow_graceful_drop():
         await message_router._enqueue_agent(mock_agent, "Task 2", None)
         assert small_queue.qsize() == 2
 
-        # Enqueue 3rd item - should not throw QueueFull exception
-        await message_router._enqueue_agent(mock_agent, "Task 3", None)
+        # Backpressure is retryable, never confused with deduplication.
+        with pytest.raises(asyncio.QueueFull):
+            await message_router._enqueue_agent(mock_agent, "Task 3", None)
         assert small_queue.qsize() == 2
         # Task 3 should not be in pending
         assert "Task 3" not in message_router._pending[agent_id]

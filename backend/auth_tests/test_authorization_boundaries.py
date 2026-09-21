@@ -68,7 +68,7 @@ async def api_client(auth_app):
 
 
 @pytest.fixture
-async def setup_resources(db):
+async def setup_resources(db, monkeypatch):
     """Creates User A (owner) and User B (attacker/stranger) with an entity hierarchy."""
     user_a = User(
         email="owner_a@example.com",
@@ -85,6 +85,7 @@ async def setup_resources(db):
     db.add_all([user_a, user_b])
     await db.flush()
 
+    monkeypatch.setenv("CAROLE_OWNER_ID", str(user_a.id))
     token_a = auth_service._generate_token(user_a)
     token_b = auth_service._generate_token(user_b)
 

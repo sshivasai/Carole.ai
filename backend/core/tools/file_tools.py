@@ -83,11 +83,10 @@ def _validate_code_syntax(path_str: str, content: str) -> Optional[str]:
     elif ext in (".js", ".jsx", ".ts", ".tsx"):
         # A delimiter balancer cannot distinguish regex literals, templates, or
         # JSX. Use the language grammar already used by code indexing.
-        from core.knowledge.ast_parser import _TS_PARSERS
+        from core.knowledge.ast_parser import syntax_has_error
         language = {".js": "javascript", ".jsx": "javascript",
                     ".ts": "typescript", ".tsx": "tsx"}[ext]
-        parser = _TS_PARSERS.get(language)
-        if parser is not None and parser.parse(content.encode("utf-8")).root_node.has_error:
+        if syntax_has_error(content, language):
             return f"✗ Syntax Error in '{path_str}'. File was NOT written to disk. Correct the syntax and retry."
 
     return None
@@ -265,6 +264,12 @@ class FileTools:
                 except ValueError:
                     is_inside = False
 
+        if allow_out_of_bounds and not is_inside and project_id:
+            from core.auth.instance_owner import assert_project_instance_owner
+            try:
+                await assert_project_instance_owner(project_id)
+            except Exception as exc:
+                raise PermissionError("External host files require the configured instance owner") from exc
         if not allow_out_of_bounds and not is_inside:
             raise PermissionError(
                 f"Access Denied: Path traversal to '{resolved_path}' outside sandbox '{root}'."
@@ -400,7 +405,7 @@ class FileTools:
                 )
 
             # Proactive AST Syntax Gate (SWE-agent ACI pattern)
-            syntax_err = _validate_code_syntax(relative_path, content)
+            syntax_err = await asyncio.to_thread(_validate_code_syntax, relative_path, content)
             if syntax_err:
                 return FileChangeResult(message=syntax_err)
 

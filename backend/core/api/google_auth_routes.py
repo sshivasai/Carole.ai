@@ -4,13 +4,16 @@
 Google OAuth 2.0 web flow for Calendar + Gmail integration.
 
 Endpoints:
-  GET  /api/auth/google/authorize   — Generate & redirect to Google consent URL
+  GET  /api/auth/google/authorize   — Generate Google consent URL for an authenticated client
   GET  /api/auth/google/callback    — Receive auth code, exchange for tokens, save
   GET  /api/auth/google/status      — Check if Google account is connected
   POST /api/auth/google/disconnect  — Delete token, revoke connection
 """
 
 import json
+import asyncio
+import uuid
+import tempfile
 import logging
 import os
 from pathlib import Path
@@ -30,7 +33,9 @@ router = APIRouter(prefix="/api/auth/google", tags=["google_oauth"])
 from core.config import CAROLE_HOME_DIR
 
 _CREDS_PATH = Path(__file__).parent.parent.parent / "credentials.json"
-_TOKEN_PATH = CAROLE_HOME_DIR / "google_token.json"
+def _token_path(user_id: str) -> Path:
+    return CAROLE_HOME_DIR / "google_tokens" / f"{uuid.UUID(str(user_id))}.json"
+
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
@@ -66,34 +71,42 @@ def _credentials_file_exists() -> bool:
     return _CREDS_PATH.exists()
 
 
-def _load_token() -> Credentials | None:
+def _load_token(user_id: str) -> Credentials | None:
     """Load saved token from ~/.carole/google_token.json. Returns None if missing or invalid."""
-    if not _TOKEN_PATH.exists():
+    token_path = _token_path(user_id)
+    if not token_path.exists():
         return None
     try:
-        creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH), SCOPES)
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
         # Try to refresh if expired
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(GoogleRequest())
-                _save_token(creds)
+                _save_token(creds, user_id)
             except Exception:
-                _TOKEN_PATH.unlink(missing_ok=True)
+                token_path.unlink(missing_ok=True)
                 return None
         return creds if creds and creds.valid else None
     except Exception:
         return None
 
 
-def _save_token(creds: Credentials) -> None:
-    """Persist token to ~/.carole/google_token.json."""
-    with open(_TOKEN_PATH, "w") as f:
-        f.write(creds.to_json())
+def _save_token(creds: Credentials, user_id: str) -> None:
+    """Atomically persist credentials in an owner-specific private file."""
+    path = _token_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".token-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(creds.to_json())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
-def get_google_credentials() -> Credentials | None:
-    """Public helper used by google_workspace_tools to get valid creds."""
-    return _load_token()
+def get_google_credentials(user_id: str | None = None) -> Credentials | None:
+    """No global credential fallback: the caller must supply a trusted owner ID."""
+    return _load_token(user_id) if user_id else None
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -104,7 +117,7 @@ async def google_status(user: dict = Depends(require_auth)):
     if not _credentials_file_exists():
         return {"connected": False, "reason": "credentials.json not found on server"}
 
-    creds = _load_token()
+    creds = await asyncio.to_thread(_load_token, user["sub"])
     if not creds:
         return {"connected": False, "reason": "not_authorized"}
 
@@ -177,11 +190,16 @@ async def google_authorize(user: dict = Depends(require_auth)):
 
         # Save the code verifier with TTL so state cannot be replayed indefinitely
         _AUTH_SESSIONS[state] = {
+            "user_id": user["sub"],
             "code_verifier": getattr(flow, "code_verifier", None),
             "expires_at": time.time() + _AUTH_SESSION_TTL,
         }
 
-        return RedirectResponse(auth_url)
+        response = JSONResponse({"url": auth_url})
+        response.set_cookie("carole_google_state", state, httponly=True, samesite="lax",
+                            secure=REDIRECT_URI.startswith("https:"), max_age=_AUTH_SESSION_TTL,
+                            path="/api/auth/google")
+        return response
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to build auth URL: {e}"})
@@ -192,7 +210,7 @@ async def google_callback(request: Request):
     """
     Handles the OAuth callback from Google.
     Exchanges the authorization code for access + refresh tokens,
-    saves them to ~/.carole/google_token.json, and redirects to the frontend.
+    saves them to the authenticated account token file, and redirects to the frontend.
     """
     code = request.query_params.get("code")
     state = request.query_params.get("state")
@@ -205,12 +223,21 @@ async def google_callback(request: Request):
     # Reject the callback if the state is unknown or has expired.
     import time
     _purge_expired_sessions()
-    if not state or state not in _AUTH_SESSIONS:
+    import secrets
+    browser_state = request.cookies.get("carole_google_state", "")
+    if not state or not browser_state or not secrets.compare_digest(state, browser_state) or state not in _AUTH_SESSIONS:
         logger.warning("OAuth callback rejected — unknown or expired state: %s", state)
         return RedirectResponse(FRONTEND_ERROR_URL + "&reason=invalid_state")
 
     session_data = _AUTH_SESSIONS.pop(state)  # Remove to prevent replay
     code_verifier = session_data.get("code_verifier")
+    user_id = session_data.get("user_id")
+    from core.memory.database import async_session
+    from core.auth.auth_service import auth_service
+    async with async_session() as db:
+        if not user_id or not await auth_service.get_active_user(db, user_id):
+            return RedirectResponse(FRONTEND_ERROR_URL)
+
 
     try:
         with open(_CREDS_PATH) as f:
@@ -233,11 +260,12 @@ async def google_callback(request: Request):
         if code_verifier:
             flow.code_verifier = code_verifier
 
-        flow.fetch_token(code=code)
-        _save_token(flow.credentials)
+        await asyncio.to_thread(flow.fetch_token, code=code)
+        await asyncio.to_thread(_save_token, flow.credentials, user_id)
         return RedirectResponse(FRONTEND_SUCCESS_URL)
     except Exception as e:
-        return RedirectResponse(f"{FRONTEND_ERROR_URL}&detail={str(e)[:100]}")
+        logger.warning("Google OAuth exchange failed (%s)", type(e).__name__)
+        return RedirectResponse(FRONTEND_ERROR_URL)
 
 
 @router.post("/disconnect")
@@ -245,7 +273,7 @@ async def google_disconnect(user: dict = Depends(require_auth)):
     """
     Revokes the Google token and deletes the local token file. Requires authentication.
     """
-    creds = _load_token()
+    creds = await asyncio.to_thread(_load_token, user["sub"])
     if creds:
         try:
             import httpx
@@ -258,5 +286,5 @@ async def google_disconnect(user: dict = Depends(require_auth)):
         except Exception:
             pass  # Best-effort revoke; always delete local token
 
-    _TOKEN_PATH.unlink(missing_ok=True)
+    _token_path(user["sub"]).unlink(missing_ok=True)
     return {"status": "disconnected"}

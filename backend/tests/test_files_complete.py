@@ -157,8 +157,9 @@ async def test_file_backup_and_rollback_restore(client: AsyncClient, db_session:
 
 
 @pytest.mark.asyncio
-async def test_search_and_git_routes(client: AsyncClient):
+async def test_search_and_git_routes(client: AsyncClient, monkeypatch):
     headers, user_id, email = await create_authenticated_user(client, "search_user@carole.ai")
+    monkeypatch.setenv("CAROLE_OWNER_ID", str(user_id))
 
     p_res = await client.post("/api/projects", json={"name": "Search Proj", "owner_id": user_id}, headers=headers)
     project_id = p_res.json()["id"]

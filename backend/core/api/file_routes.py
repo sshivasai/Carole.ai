@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 from fastapi.responses import StreamingResponse, FileResponse
 import os
+import asyncio
 import io
 import shutil
 import zipfile
@@ -14,6 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.memory.database import get_db
 
 router = APIRouter(prefix="/api/files", tags=["files"])
+
+
+def _safe_backup_path(history_dir: Path, name: str) -> Path:
+    path = (history_dir / name).resolve()
+    if not path.is_relative_to(history_dir.resolve()):
+        raise HTTPException(403, "Backup path escapes its storage directory")
+    return path
 
 
 class WriteFileRequest(BaseModel):
@@ -57,7 +65,7 @@ class BatchDeleteRequest(BaseModel):
 async def _assert_file_project_access(project_id: Optional[str], user_id: str, db: Optional[AsyncSession] = None) -> None:
     """Enforces that the requesting user owns the specified project if project_id is given."""
     if not project_id:
-        return
+        raise HTTPException(422, "An owned project_id is required")
     from core.api.crud_routes import _assert_project_access
     if db is not None:
         await _assert_project_access(db, project_id, user_id)
@@ -242,6 +250,8 @@ async def get_raw_file(
         user = await auth_service.get_current_user(db, auth_token)
         if not user:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
+        if not project_id:
+            raise HTTPException(422, "An owned project_id is required")
         if project_id:
             user_id = (user.get("id") or user.get("sub", "")) if isinstance(user, dict) else str(user.id)
             from core.api.crud_routes import _assert_project_access
@@ -690,11 +700,17 @@ async def get_file_logs(team_id: str, db: AsyncSession = Depends(get_db), user: 
 
         logs = []
         from core.config import CAROLE_HOME_DIR
+        workspace_root = (await file_tools.get_workspace_root_for_team(team_id)).resolve()
         for backup, sender_name in rows:
             current_content = ""
             try:
-                with open(backup.file_path, "r", encoding="utf-8") as f:
-                    current_content = f.read()
+                current_path = Path(backup.file_path).resolve()
+                if not current_path.is_relative_to(workspace_root):
+                    raise PermissionError("Historical path is outside its team's workspace")
+                def read_current():
+                    with current_path.open(encoding="utf-8") as stream:
+                        return stream.read(2 * 1024 * 1024)
+                current_content = await asyncio.to_thread(read_current)
             except Exception:
                 current_content = "[File Deleted or Binary]"
 
@@ -707,10 +723,9 @@ async def get_file_logs(team_id: str, db: AsyncSession = Depends(get_db), user: 
 
             original_content = ""
             if backup.backup_file_name:
-                from core.tools.file_tools import file_tools
                 team_carole_dir = await file_tools.get_team_carole_dir(team_id)
                 history_dir = team_carole_dir / "file-history"
-                backup_path = history_dir / backup.backup_file_name
+                backup_path = _safe_backup_path(history_dir, backup.backup_file_name)
                 try:
                     if backup_path.exists():
                         with open(backup_path, "r", encoding="utf-8") as f:
@@ -752,15 +767,16 @@ async def delete_file_log(log_id: str, db: AsyncSession = Depends(get_db), user:
     if not backup:
         raise HTTPException(status_code=404, detail="Log not found")
 
+    if not backup.team_id:
+        raise HTTPException(404, "Backup has no owner scope")
     if backup.team_id:
         await _assert_file_team_access(str(backup.team_id), user["sub"], db=db)
 
     # Delete the physical backup file if it exists
     if backup.backup_file_name:
-        from core.tools.file_tools import file_tools
         team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id))
         history_dir = team_carole_dir / "file-history"
-        backup_path = history_dir / backup.backup_file_name
+        backup_path = _safe_backup_path(history_dir, backup.backup_file_name)
         try:
             if backup_path.exists():
                 os.remove(backup_path)
@@ -795,13 +811,17 @@ async def list_file_history(
 
     # Resolve the absolute path for this relative path + project
     root = await file_tools.get_workspace_root(project_id)
-    abs_path = str((root / path).resolve()).replace("\\", "/").lower()
+    safe_history_path = await file_tools._resolve_safe_path(path, project_id)
+    abs_path = str(safe_history_path).replace("\\", "/").lower()
     norm_rel = path.replace("\\", "/").strip("/").lower()
     filename = pathlib.Path(path).name.lower()
 
+    from core.memory.models import Team
+    import uuid
     stmt = (
-        select(FileBackup)
+        select(FileBackup).join(Team, FileBackup.team_id == Team.id)
         .where(
+            Team.project_id == uuid.UUID(project_id),
             FileBackup.file_path.ilike(f"%{filename}")
         )
         .order_by(FileBackup.created_at.desc())
@@ -816,7 +836,6 @@ async def list_file_history(
         if b.file_path and (
             b.file_path.replace("\\", "/").lower() == abs_path
             or b.file_path.replace("\\", "/").lower().endswith("/" + norm_rel)
-            or pathlib.Path(b.file_path).name.lower() == filename
         )
     ]
 
@@ -852,6 +871,8 @@ async def get_backup_content(
     if not backup:
         raise HTTPException(status_code=404, detail="Backup not found")
 
+    if not backup.team_id:
+        raise HTTPException(404, "Backup has no owner scope")
     if backup.team_id:
         await _assert_file_team_access(str(backup.team_id), user["sub"], db=db)
 
@@ -860,7 +881,7 @@ async def get_backup_content(
 
     team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id), db=db)
     history_dir = team_carole_dir / "file-history"
-    backup_path = history_dir / backup.backup_file_name
+    backup_path = _safe_backup_path(history_dir, backup.backup_file_name)
 
     if not backup_path.exists():
         raise HTTPException(status_code=404, detail="Backup file not found on disk")
@@ -897,6 +918,8 @@ async def restore_backup(
     if not backup:
         raise HTTPException(status_code=404, detail="Backup not found")
 
+    if not backup.team_id:
+        raise HTTPException(404, "Backup has no owner scope")
     if backup.team_id:
         await _assert_file_team_access(str(backup.team_id), user["sub"], db=db)
     await _assert_file_project_access(project_id, user["sub"], db=db)
@@ -906,7 +929,7 @@ async def restore_backup(
 
     team_carole_dir = await file_tools.get_team_carole_dir(str(backup.team_id), db=db)
     history_dir = team_carole_dir / "file-history"
-    backup_path = history_dir / backup.backup_file_name
+    backup_path = _safe_backup_path(history_dir, backup.backup_file_name)
 
     if not backup_path.exists():
         raise HTTPException(status_code=404, detail="Backup file not found on disk")

@@ -12,6 +12,9 @@ import ast
 import re
 import logging
 import posixpath
+import multiprocessing
+import threading
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Set, Optional, Any, Tuple
 
@@ -130,11 +133,61 @@ def _get_node_text(node: Any, content_bytes: bytes) -> str:
     return content_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
 
 
+_native_pool = None
+_native_lock = threading.Lock()
+_failed_languages: Set[Tuple[str, str]] = set()
+
+
+def _native_request(operation: str, content: str, rel_path: str, lang_key: str):
+    """Keep native grammar crashes outside the API process; fail over to safe parsers."""
+    global _native_pool
+    if lang_key not in _TS_PARSERS or (operation, lang_key) in _failed_languages:
+        return None
+    with _native_lock:
+        if (operation, lang_key) in _failed_languages:
+            return None
+        if _native_pool is None:
+            _native_pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+        try:
+            return _native_pool.submit(_native_worker, operation, content, rel_path, lang_key).result(timeout=15)
+        except Exception:
+            logger.exception("Native parser failed for %s; using fallback", lang_key)
+            _failed_languages.add((operation, lang_key))
+            # A native hang cannot be cancelled as a Python future.
+            for process in list((_native_pool._processes or {}).values()):
+                if process.is_alive():
+                    process.terminate()
+            _native_pool.shutdown(wait=False, cancel_futures=True)
+            _native_pool = None
+            return None
+
+
+def _native_worker(operation, content, rel_path, lang_key):
+    if operation == "syntax":
+        from tree_sitter import Parser
+        parser = Parser(_TS_PARSERS[lang_key].language)
+        tree = parser.parse(content.encode("utf-8"))
+        return tree.root_node.has_error
+    return _parse_tree_sitter_local(content, rel_path, lang_key)
+
+
+def syntax_has_error(content: str, lang_key: str) -> Optional[bool]:
+    return _native_request("syntax", content, "", lang_key)
+
+
 def parse_tree_sitter(content: str, rel_path: str, lang_key: str) -> Tuple[List[ASTChunk], List[str]]:
+    return _native_request("parse", content, rel_path, lang_key) or ([], [])
+
+
+def _parse_tree_sitter_local(content: str, rel_path: str, lang_key: str) -> Tuple[List[ASTChunk], List[str]]:
     """Extracts functional units using Tree-sitter grammars."""
-    parser = _TS_PARSERS.get(lang_key)
-    if not parser:
+    template = _TS_PARSERS.get(lang_key)
+    if not template:
         return [], []
+    # Parser instances are mutable native state. Graph refresh and context
+    # folding run in different threads; never share an instance between calls.
+    from tree_sitter import Parser
+    parser = Parser(template.language)
 
     content_bytes = content.encode("utf-8")
     tree = parser.parse(content_bytes)

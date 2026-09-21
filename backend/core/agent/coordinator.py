@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.agent.react_agent import ReACTAgent
 from core.memory.models import Task
 from core.config import COORDINATOR_DIRECTIVES
+from core.agent.prompt_safety import reference_block
 
 
 class CoordinatorAgent(ReACTAgent):
@@ -37,6 +38,7 @@ class CoordinatorAgent(ReACTAgent):
             Task.team_id == team_uuid,
             Task.status.in_(["todo", "in_progress", "review"])
         )
+        task_stmt = task_stmt.order_by(Task.id).limit(100)
         task_result = await db_session.execute(task_stmt)
         active_tasks = task_result.scalars().all()
 
@@ -45,20 +47,21 @@ class CoordinatorAgent(ReACTAgent):
             tasks_block = "\n<active-tasks>\n"
             for t in active_tasks:
                 assignee = t.assigned_agent_id or "unassigned"
-                tasks_block += f"- [{t.status}] {t.title} (priority: {t.priority}, assigned: {assignee})\n"
+                tasks_block += f"- [{t.status}] {str(t.title)[:500]} (priority: {t.priority}, assigned: {assignee})\n"
             tasks_block += "</active-tasks>\n"
 
         # Prepend coordinator directives to the system prompt (before tool capabilities),
         # then let the base class append the full capabilities block (tools, memory, browser, etc.)
-        coordinator_prefix = f"{COORDINATOR_DIRECTIVES}{tasks_block}\n"
+        coordinator_prefix = COORDINATOR_DIRECTIVES + reference_block("active task board", tasks_block) + "\n"
 
         # Temporarily inject the prefix into self.system_prompt so assemble_system_prompt
         # includes it at the top of the assembled output, before the capabilities block.
         original_system_prompt = self.system_prompt
         self.system_prompt = coordinator_prefix + (self.system_prompt or "")
-        assembled = await super().assemble_system_prompt(db_session, current_task)
-        self.system_prompt = original_system_prompt  # restore
-        return assembled
+        try:
+            return await super().assemble_system_prompt(db_session, current_task)
+        finally:
+            self.system_prompt = original_system_prompt
 
 
 # Canonical role name alias

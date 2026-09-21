@@ -153,6 +153,8 @@ class MessageHistory:
         """
         if not note or not str(note).strip():
             return
+        if self._pending_tool_call_ids:
+            raise ValueError("Cannot add context while tool results are pending")
         text_block = {"type": "text", "text": str(note).strip()}
         if self._turns and self._turns[-1]["role"] == "user":
             self._turns[-1]["content"].append(text_block)

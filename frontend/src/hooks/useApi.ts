@@ -48,7 +48,7 @@ async function apiFetch<T>(path: string, options?: RequestInit, retry = 1): Prom
     ...((options?.headers as Record<string, string>) || {}),
   };
 
-  const key = `${options?.method || "GET"}:${path}`;
+  const key = `${token || "anonymous"}:${options?.method || "GET"}:${path}`;
   const isGet = !options?.method || options.method === "GET";
 
   const execute = async (): Promise<T> => {
@@ -598,7 +598,7 @@ export const api = {
   // ── Google OAuth ──
   getGoogleStatus: () => apiFetch<any>("/api/auth/google/status"),
   disconnectGoogle: () => apiFetch<any>("/api/auth/google/disconnect", { method: "POST" }),
-  getGoogleAuthUrl: () => `${getApiBase()}/api/auth/google/authorize`,
+  getGoogleAuthUrl: () => apiFetch<{ url: string }>("/api/auth/google/authorize", { credentials: "include" }),
 
   // ── Browser Automation Direct Interaction & Takeover ──
   browserAct: (data: { agent_id?: string; kind: string; x?: number; y?: number; text?: string; key?: string; ref?: number; selector?: string; url?: string }) =>

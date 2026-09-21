@@ -1,3 +1,4 @@
+from core.auth.instance_owner import require_instance_owner
 import logging
 from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,7 +18,7 @@ async def get_catalog(user: dict = Depends(require_auth)):
     return load_model_catalog()
 
 @router.post("/catalog")
-async def update_catalog(catalog: Dict[str, Any], user: dict = Depends(require_auth)):
+async def update_catalog(catalog: Dict[str, Any], user: dict = Depends(require_instance_owner)):
     try:
         save_model_catalog(catalog)
     except ValueError as e:
@@ -25,12 +26,12 @@ async def update_catalog(catalog: Dict[str, Any], user: dict = Depends(require_a
     return {"status": "ok"}
 
 @router.post("/catalog/reset")
-async def reset_catalog(user: dict = Depends(require_auth)):
+async def reset_catalog(user: dict = Depends(require_instance_owner)):
     reset_model_catalog()
     return load_model_catalog()
 
 @router.post("/sync")
-async def sync_models(user: dict = Depends(require_auth)):
+async def sync_models(user: dict = Depends(require_instance_owner)):
     """Dynamically discover and sync latest models from active providers."""
     try:
         result = await sync_all_provider_models()

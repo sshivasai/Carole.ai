@@ -204,7 +204,7 @@ async def test_execute_command_with_external_cwd(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_project_crud_custom_workspace_path(client, db_session, tmp_path):
+async def test_project_crud_custom_workspace_path(client, db_session, tmp_path, monkeypatch):
     """Verify REST API CRUD endpoints persist and return custom_workspace_path."""
     from main import app
     from core.auth.auth_middleware import require_auth
@@ -214,6 +214,7 @@ async def test_project_crud_custom_workspace_path(client, db_session, tmp_path):
     await db_session.commit()
 
     user_id_str = str(user.id)
+    monkeypatch.setenv("CAROLE_OWNER_ID", user_id_str)
     app.dependency_overrides[require_auth] = lambda: {"sub": user_id_str, "role": "admin"}
 
     try:

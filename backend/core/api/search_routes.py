@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-import subprocess
+from core.tools.process_runner import run_process
 
 from core.auth.auth_middleware import require_auth
 from core.tools.file_tools import file_tools
@@ -16,6 +16,8 @@ async def search_files(
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(require_auth)
 ):
+    if not project_id:
+        raise HTTPException(422, "An owned project_id is required")
     if project_id:
         await _assert_project_access(db, project_id, user["sub"])
     try:
@@ -26,8 +28,8 @@ async def search_files(
         # If it fails, fallback to something else or just standard grep
         
         # `-n` for line numbers, `-I` for ignoring binary files
-        res = subprocess.run(
-            ["git", "grep", "-n", "-I", q],
+        res = await run_process(
+            ["git", "grep", "-n", "-I", "-e", q, "--"],
             cwd=workspace_root,
             capture_output=True,
             text=True
@@ -59,13 +61,13 @@ async def search_files(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 class CodeSearchRequest(BaseModel):
-    query: str
+    query: str = Field(min_length=1, max_length=8000)
     project_id: Optional[str] = None
-    top_k: int = 10
+    top_k: int = Field(default=10, ge=1, le=100, strict=True)
     file_filter: Optional[str] = None
     kind: Optional[str] = None
 
@@ -79,6 +81,8 @@ async def search_code(
     Hybrid semantic (Model2Vec) and lexical (BM25Okapi) code retrieval
     with Reciprocal Rank Fusion and cross-encoder reranking.
     """
+    if not req.project_id:
+        raise HTTPException(422, "An owned project_id is required")
     if req.project_id:
         await _assert_project_access(db, req.project_id, user["sub"])
 
@@ -86,10 +90,7 @@ async def search_code(
         from core.knowledge.hybrid_search import hybrid_code_search
         from core.knowledge.code_graph import code_graph
 
-        p_idx = hybrid_code_search.get_project_index(req.project_id)
-        if not p_idx.file_chunks:
-            chunks = await code_graph.get_all_chunks(req.project_id)
-            hybrid_code_search.index_workspace_chunks(chunks, project_id=req.project_id)
+        await code_graph.build_graph(req.project_id)
 
         results = await hybrid_code_search.search(
             query=req.query,

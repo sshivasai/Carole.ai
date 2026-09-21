@@ -785,6 +785,8 @@ def _get_effective_permissions(permissions: Any) -> Dict[str, Any]:
     """
     from core.llm.config_manager import load_config
     global_cfg = load_config().get("access_control", {})
+    if not isinstance(global_cfg, dict):
+        global_cfg = {}
     if not isinstance(permissions, dict):
         permissions = {}
 
@@ -800,29 +802,35 @@ def _get_effective_permissions(permissions: Any) -> Dict[str, Any]:
                 else:
                     flat_overrides[k] = v
 
-        return {
-            "enable_judge": global_cfg.get("enable_judge", True),
-            "judge_fallback": global_cfg.get("judge_fallback", "always_ask"),
-            "categories": {**_CATEGORY_DEFAULTS, **global_cfg.get("categories", {}), **flat_categories},
-            "overrides": {**global_cfg.get("overrides", {}), **flat_overrides},
-            "custom_skip_judge": global_cfg.get("custom_skip_judge", {"file_patterns": [], "command_prefixes": []}),
-        }
+        permissions = {**permissions, "categories": flat_categories, "overrides": flat_overrides}
+
+    def restricted_merge(defaults, global_values, agent_values):
+        if not isinstance(global_values, dict) or not isinstance(agent_values, dict):
+            return {"__invalid__": "block"}
+        result = {**defaults, **global_values, **agent_values}
+        for name, global_gate in global_values.items():
+            result[name] = max((_normalize_gate(global_gate), _normalize_gate(result[name])), key=_GATE_RANK.__getitem__)
+        return result
 
     # Structured config: merge agent with global defaults
-    merged_categories = {**_CATEGORY_DEFAULTS, **global_cfg.get("categories", {}), **permissions.get("categories", {})}
-    merged_overrides = {**global_cfg.get("overrides", {}), **permissions.get("overrides", {})}
+    merged_categories = restricted_merge(_CATEGORY_DEFAULTS, global_cfg.get("categories", {}), permissions.get("categories", {}))
+    merged_overrides = restricted_merge({}, global_cfg.get("overrides", {}), permissions.get("overrides", {}))
     
     global_skip = global_cfg.get("custom_skip_judge", {})
     agent_skip = permissions.get("custom_skip_judge", {})
+    global_skip = global_skip if isinstance(global_skip, dict) else {}
+    agent_skip = agent_skip if isinstance(agent_skip, dict) else {}
+    def string_list(values):
+        return [v for v in values if isinstance(v, str)] if isinstance(values, list) else []
     merged_file_patterns = list(dict.fromkeys(
-        (global_skip.get("file_patterns") or []) + (agent_skip.get("file_patterns") or [])
+        string_list(global_skip.get("file_patterns")) + string_list(agent_skip.get("file_patterns"))
     ))
     merged_cmd_prefixes = list(dict.fromkeys(
-        (global_skip.get("command_prefixes") or []) + (agent_skip.get("command_prefixes") or [])
+        string_list(global_skip.get("command_prefixes")) + string_list(agent_skip.get("command_prefixes"))
     ))
 
     return {
-        "enable_judge": permissions.get("enable_judge", global_cfg.get("enable_judge", True)),
+        "enable_judge": global_cfg.get("enable_judge", True) or permissions.get("enable_judge", False),
         "judge_fallback": permissions.get("judge_fallback", global_cfg.get("judge_fallback", "always_ask")),
         "categories": merged_categories,
         "overrides": merged_overrides,
@@ -831,6 +839,19 @@ def _get_effective_permissions(permissions: Any) -> Dict[str, Any]:
             "command_prefixes": merged_cmd_prefixes,
         },
     }
+
+
+
+_PLAN_MUTATION_TOOLS = {
+    "write_file", "edit_file", "append_file", "delete_file", "execute_command", "copy_file",
+    "move_file", "create_directory", "git_add", "git_commit", "git_checkout", "git_pull", "git_push", "git_stash", "git_clone",
+}
+
+
+def _policy_fingerprint(effective, permissions, role):
+    import hashlib
+    import json
+    return hashlib.sha256(json.dumps({"effective": effective, "permissions": permissions, "role": role}, sort_keys=True, default=str).encode()).hexdigest()
 
 
 _GATE_RANK = {
@@ -862,7 +883,7 @@ def _resolve_gate_level(
     categories = permissions.get("categories", {})
     overrides = permissions.get("overrides", {})
 
-    if not isinstance(categories, dict) or not isinstance(overrides, dict):
+    if not isinstance(categories, dict) or not isinstance(overrides, dict) or "__invalid__" in categories or "__invalid__" in overrides:
         return "block"
 
     category_gate = _normalize_gate(
@@ -1133,6 +1154,8 @@ class ToolExecutor:
         Gated Execution entrypoint.
         Checks tool permissions and enforces safe execution or human-in-the-loop gating.
         """
+        if not isinstance(arguments, dict):
+            return "Error: Tool arguments must be a JSON object."
         spec = ToolRegistry.get(tool_name)
         if not spec:
             return f"Error: Tool '{tool_name}' is not registered in the system."
@@ -1189,34 +1212,56 @@ class ToolExecutor:
         # Check required parameters
         if spec.parameters:
             for param_name, param_info in spec.parameters.items():
-                if param_info.get("required", False):
+                if param_info.get("_required", param_info.get("required") is True):
                     if param_name not in arguments or arguments[param_name] is None or str(arguments[param_name]).strip() == "":
-                        usage_parts = [f'{k}="..."' if v.get("required", False) else f'[{k}="..."]' for k, v in spec.parameters.items()]
+                        usage_parts = [f'{k}="..."' if v.get("_required", v.get("required") is True) else f'[{k}="..."]' for k, v in spec.parameters.items()]
                         usage_str = f"{tool_name}({', '.join(usage_parts)})"
                         return f"Error: Missing required parameter '{param_name}'. Usage: {usage_str}"
+
+        # Validate native arguments before approval or side effects. Local $refs
+        # are supported; remote schemas never trigger network retrieval.
+        if not isinstance(arguments, dict):
+            return "Error: Tool arguments must be a JSON object."
+        try:
+            from jsonschema import Draft202012Validator
+            from referencing import Registry
+            from core.tools.tool_registry import tool_input_schema
+            validator = Draft202012Validator(tool_input_schema(spec), registry=Registry())
+            issue = next(validator.iter_errors(arguments), None)
+            if issue is not None:
+                path = ".".join(str(part) for part in issue.absolute_path) or "arguments"
+                return f"Error: Invalid tool argument at {path}: constraint '{issue.validator}' was not satisfied."
+        except Exception as exc:
+            logger.warning("Tool schema validation failed for %s: %s", tool_name, type(exc).__name__)
+            return "Error: Tool schema could not be validated; execution was not started."
 
         # ── Granular runtime context (always_deny / always_allow) takes top priority ──
         if permission_context:
             if tool_name in permission_context.always_deny:
                 logger.info("🛑 [Executor] Tool '%s' denied by always_deny rule.", tool_name)
                 return f"✗ Execution Cancelled: '{tool_name}' is explicitly denied by permission context."
-            if tool_name in permission_context.always_allow:
-                logger.info("✓ [Executor] Tool '%s' allowed by always_allow rule.", tool_name)
-                return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
-
         # ── Permission resolution ─────────────────────────────────────────────
         effective_permissions = _get_effective_permissions(permissions)
         gate_level = _resolve_gate_level(tool_name, effective_permissions)
+        if context:
+            context.authorized_policy_fingerprint = _policy_fingerprint(effective_permissions, permissions, context.agent_role)
 
         # 1. Block — hard deny, no override, no evaluation
         if gate_level == "block":
-            # Allow Orchestrator/Coordinator to write .md documentation even if the role default had write_file blocked
-            if context and getattr(context, "agent_role", None) in ("Orchestrator", "Coordinator") and _is_doc_write(tool_name, arguments):
-                pass
-            else:
-                logger.info("🛑 [Executor] Tool '%s' blocked by access control policy.", tool_name)
-                return (f"✗ Execution Blocked: '{tool_name}' is disabled by your Access Control policy. "
-                        "Update permissions in Agent Settings → Access Control.")
+            logger.info("Tool '%s' blocked by access control policy.", tool_name)
+            return f"Execution Blocked: '{tool_name}' is disabled by your Access Control policy."
+
+        if spec.requires_instance_owner or spec.category in {"shell", "mcp", "custom", "git", "browser"}:
+            from core.auth.instance_owner import assert_team_instance_owner
+            try:
+                await assert_team_instance_owner(team_id)
+            except Exception:
+                return "Execution Denied: Host execution requires a project owned by the configured instance owner."
+
+        # Explicit session allows may skip the judge, but never a hard deny or
+        # destructive-operation/plan-approval checks below.
+        if permission_context and tool_name in permission_context.always_allow and gate_level == "judge":
+            gate_level = "safe"
 
         # 2. Skip-judge whitelist fast-path
         if gate_level == "judge" and _matches_skip_judge(tool_name, arguments, effective_permissions):
@@ -1243,15 +1288,10 @@ class ToolExecutor:
                 logger.warning("🛑 High-risk destructive command: '%s'. Escalating gate to 'human'.", cmd)
                 gate_level = "human"
 
-        # ── Documentation fast-path (frictionless .md/.txt writes) ───────────
-        if _is_doc_write(tool_name, arguments):
-            logger.info("📝 [Executor] Frictionless doc write for '%s' (tool=%s).", agent_name, tool_name)
-            return await self._run_tool(spec, arguments, agent_id, agent_name, team_id, active_message_id, context)
-
         # ── Implementation Plan Approval Guard ────────────────────────────────
         # If the agent has a task currently awaiting human plan approval, block
         # mutating file actions and shell execution until approved.
-        if tool_name in ("write_file", "edit_file", "append_file", "delete_file", "execute_command"):
+        if not _is_doc_write(tool_name, arguments) and tool_name in _PLAN_MUTATION_TOOLS:
             try:
                 from core.memory.database import async_session
                 from core.memory.models import Task
@@ -1274,7 +1314,8 @@ class ToolExecutor:
                             f"an administrator reviews and approves your plan via the UI."
                         )
             except Exception as e:
-                logger.debug("[Executor] Plan approval guard notice: %s", e)
+                logger.warning("[Executor] Unable to verify plan approval: %s", type(e).__name__)
+                return "Execution Denied: Cannot verify implementation-plan approval. Retry when the database is available."
 
         # ── Gate dispatch ─────────────────────────────────────────────────────
         # 1. Safe — instant execution
@@ -1607,6 +1648,42 @@ class ToolExecutor:
         context: ToolExecutionContext | None = None,
     ) -> str:
         """Executes the tool handler and emits file_change events for file operations."""
+        if context and context.cancellation_token.is_cancelled:
+            raise asyncio.CancelledError()
+        if ToolRegistry.get(spec.name) is not spec:
+            return "Execution Denied: Tool changed while awaiting approval. Discover its current schema and retry."
+        if context and context.run_id:
+            # Approval may wait for minutes. Recheck live authority immediately
+            # before side effects, including account deactivation and policy changes.
+            from core.memory.database import async_session
+            from core.memory.models import Agent, Team, Project, User, Task
+            from sqlalchemy import select
+            try:
+                async with async_session() as db:
+                    live_agent = await db.scalar(select(Agent).join(Team, Agent.team_id == Team.id)
+                        .join(Project, Team.project_id == Project.id).join(User, Project.owner_id == User.id)
+                        .where(Agent.id == uuid.UUID(str(agent_id)), Team.id == uuid.UUID(str(team_id)),
+                               Agent.is_active.is_(True), User.is_active.is_(True)))
+                    if live_agent is None:
+                        return "Execution Denied: Agent, team, or account is no longer active."
+                    live_permissions = live_agent.tool_permissions or {}
+                    live_policy = _get_effective_permissions(live_permissions)
+                    live_fingerprint = _policy_fingerprint(live_policy, live_permissions, live_agent.role)
+                    if live_fingerprint != context.authorized_policy_fingerprint:
+                        return "Execution Denied: Permissions or agent role changed during this action. Retry using the current policy."
+                    if spec.name in _PLAN_MUTATION_TOOLS and not _is_doc_write(spec.name, arguments):
+                        pending_plan = await db.scalar(select(Task.id).where(Task.assigned_agent_id == live_agent.id,
+                            Task.team_id == live_agent.team_id, Task.plan_status == "awaiting_approval").limit(1))
+                        if pending_plan is not None:
+                            return "Execution Denied: The implementation plan is awaiting human approval."
+
+                if spec.requires_instance_owner or spec.category in {"shell", "mcp", "custom", "git", "browser"}:
+                    from core.auth.instance_owner import assert_team_instance_owner
+                    await assert_team_instance_owner(team_id)
+            except Exception as exc:
+                logger.warning("Cannot verify live execution authority: %s", type(exc).__name__)
+                return "Execution Denied: Live authorization could not be verified."
+
         # Inject agent identity + snapshot context into args.
         # Shallow-copy first so we don't mutate the caller's dict or leak
         # internal keys into persisted tool-call records.
@@ -1624,7 +1701,7 @@ class ToolExecutor:
             if asyncio.iscoroutinefunction(spec.handler):
                 result = await spec.handler(arguments, team_id)
             else:
-                result = spec.handler(arguments, team_id)
+                result = await asyncio.to_thread(spec.handler, arguments, team_id)
                 if asyncio.iscoroutine(result):
                     result = await result
 
@@ -3125,10 +3202,7 @@ async def _wrap_hybrid_code_search(args: Dict[str, Any], team_id: str) -> str:
     project_id = await _team_project_id(team_id)
 
     # Lazily initialize project index from code_graph chunks only if empty
-    p_idx = hybrid_code_search.get_project_index(project_id)
-    if not p_idx.file_chunks:
-        chunks = await code_graph.get_all_chunks(project_id)
-        hybrid_code_search.index_workspace_chunks(chunks, project_id=project_id)
+    await code_graph.build_graph(project_id)
 
     results = await hybrid_code_search.search(
         query,
@@ -3246,6 +3320,19 @@ def _uuid_or_none(val):
 
 # ---- Google Workspace Wrappers ----
 
+async def _google_owner(team_id: str) -> str:
+    from core.memory.database import async_session
+    from core.memory.models import Team, Project
+    from sqlalchemy import select
+    import uuid
+    async with async_session() as db:
+        owner = await db.scalar(select(Project.owner_id).join(Team, Team.project_id == Project.id)
+                                .where(Team.id == uuid.UUID(str(team_id))))
+    if not owner:
+        raise ValueError("Google tools require an owned team")
+    return str(owner)
+
+
 async def _wrap_create_meeting(args: Dict[str, Any], team_id: str) -> str:
     summary = args.get("summary", "")
     start_time_iso = args.get("start_time_iso", "")
@@ -3253,8 +3340,8 @@ async def _wrap_create_meeting(args: Dict[str, Any], team_id: str) -> str:
     attendees_emails = args.get("attendees_emails", [])
     if not summary or not start_time_iso or not end_time_iso:
         return "Error: Missing 'summary', 'start_time_iso', or 'end_time_iso'."
-    # create_meeting is a sync function (not a coroutine), so no await is needed.
-    return create_meeting(summary, start_time_iso, end_time_iso, attendees_emails)
+    # Resolve credentials from the server-owned team context.
+    return await asyncio.to_thread(create_meeting, summary, start_time_iso, end_time_iso, attendees_emails, await _google_owner(team_id))
 
 async def _wrap_send_email(args: Dict[str, Any], team_id: str) -> str:
     to_email = args.get("to_email", "")
@@ -3262,8 +3349,8 @@ async def _wrap_send_email(args: Dict[str, Any], team_id: str) -> str:
     body = args.get("body", "")
     if not to_email or not subject or not body:
         return "Error: Missing 'to_email', 'subject', or 'body'."
-    # send_email is a sync function (not a coroutine), so no await is needed.
-    return send_email(to_email, subject, body)
+    # Keep synchronous Google I/O off the event loop.
+    return await asyncio.to_thread(send_email, to_email, subject, body, await _google_owner(team_id))
 
 async def _wrap_generate_mom(args: Dict[str, Any], team_id: str) -> str:
     transcription = args.get("transcription", "")

@@ -100,12 +100,13 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture
-async def owned_browser(client):
+async def owned_browser(client, monkeypatch):
     """Real authenticated ownership chain for browser HTTP/WebSocket regressions."""
     import uuid
     signup = await client.post("/api/auth/signup", json={"email": f"{uuid.uuid4()}@example.com", "password": "BrowserTest123!"})
     assert signup.status_code == 200, signup.text
     account = signup.json()
+    monkeypatch.setenv("CAROLE_OWNER_ID", account["user"]["id"])
     headers = {"Authorization": "Bearer " + account["token"]}
     project = (await client.post("/api/projects", json={"name": "Browser fixture"}, headers=headers)).json()
     team = (await client.post("/api/teams", json={"name": "Browser team", "project_id": project["id"]}, headers=headers)).json()

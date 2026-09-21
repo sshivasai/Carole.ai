@@ -44,7 +44,7 @@ def load_function(relative, name, **overrides):
 
 
 @pytest.fixture
-async def accounts(db):
+async def accounts(db, monkeypatch):
     owner = User(email="owner@example.com", hashed_password="unused")
     other = User(email="other@example.com", hashed_password="unused")
     db.add_all([owner, other])
@@ -55,6 +55,7 @@ async def accounts(db):
     team = Team(name="Owned", project_id=project.id)
     db.add(team)
     await db.commit()
+    monkeypatch.setenv("CAROLE_OWNER_ID", str(owner.id))
     return owner, other, project, team
 
 

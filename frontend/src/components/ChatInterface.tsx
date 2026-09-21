@@ -1,4 +1,5 @@
 "use client";
+import PrivateAttachment from "./PrivateAttachment";
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { ChatMessage, AgentConfig, CompactionEvent } from "@/lib/types";
 import {
@@ -2011,11 +2012,11 @@ export default function ChatInterface({
                             <div style={{ display: "flex", gap: "var(--sp-sm)", marginTop: "var(--sp-sm)", flexWrap: "wrap" }}>
                               {msg.attachments.map((att: any, i: number) => (
                                 att.type?.startsWith("image/") ? (
-                                  <img key={i} src={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(167, 139, 250, 0.2)" }} />
+                                  <PrivateAttachment image key={i} url={att.url} alt="attachment" style={{ maxWidth: 200, maxHeight: 200, borderRadius: "var(--radius-sm)", border: "1px solid rgba(167, 139, 250, 0.2)" }} />
                                 ) : (
-                                  <a key={i} href={att.url} target="_blank" rel="noreferrer" style={{ padding: "4px 8px", background: "rgba(167, 139, 250, 0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                  <PrivateAttachment key={i} url={att.url} style={{ padding: "4px 8px", background: "rgba(167, 139, 250, 0.1)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--color-primary)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
                                     📎 {att.name}
-                                  </a>
+                                  </PrivateAttachment>
                                 )
                               ))}
                             </div>
@@ -2243,7 +2244,7 @@ export default function ChatInterface({
                       ...(isImage ? { width: 56, height: 56 } : { height: 44, maxWidth: 180, padding: "0 10px", gap: 6 })
                     }}>
                       {isImage ? (
-                        <img src={att.url} alt={att.name ?? "attachment"} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        <PrivateAttachment image url={att.url} alt={att.name ?? "attachment"} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                       ) : (
                         <>
                           <span style={{
