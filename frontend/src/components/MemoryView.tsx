@@ -157,7 +157,7 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "var(--sp-2xl)", overflowY: "auto" }}>
       {/* Header */}
-      <div className="flex-between" style={{ marginBottom: "var(--sp-2xl)" }}>
+      <div className="flex-between" style={{ flexWrap: "wrap", gap: 16, marginBottom: "var(--sp-2xl)" }}>
         <div>
           <h2 className="display-md" style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
             <BrainCircuit size={22} color="var(--color-primary)" /> Long-Term Memory
@@ -271,7 +271,7 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
             <p>{query ? "Try a different search term" : "The AutoDream worker consolidates memories automatically after conversations."}</p>
           </div>
         ) : (
-          <div style={{ display: "grid", gap: "var(--sp-lg)", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))" }}>
+          <div style={{ display: "grid", gap: "var(--sp-lg)", gridTemplateColumns: "repeat(auto-fill, minmax(min(380px, 100%), 1fr))" }}>
             {filtered.map(l => (
               <div key={l.id} className="card" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
                 {/* Header row: label | date | actions — no absolute positioning */}
@@ -316,7 +316,7 @@ export default function MemoryView({ learnings, entityMemories = [], projectId, 
             <p>Explicit key-value facts haven't been recorded yet.</p>
           </div>
         ) : (
-          <div style={{ display: "grid", gap: "var(--sp-lg)", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))" }}>
+          <div style={{ display: "grid", gap: "var(--sp-lg)", gridTemplateColumns: "repeat(auto-fill, minmax(min(380px, 100%), 1fr))" }}>
             {filteredEntities.map(e => (
               <div key={e.id} className="card" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
                 {/* Header row: label | date | delete */}

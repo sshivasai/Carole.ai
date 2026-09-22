@@ -18,8 +18,9 @@ from sqlalchemy import select, func, delete
 
 from core.memory.database import async_session
 from core.memory.models import Agent, Team
-from core.config import DEFAULT_FAST_MODEL
+import core.config
 from core.prompts import get_prompt
+from core.llm.config_manager import load_config
 
 logger = logging.getLogger("carole.agent_tools")
 
@@ -289,7 +290,7 @@ class AgentTools:
                 name=clean_name,
                 role=role,
                 system_prompt=base_prompt,
-                model=model or DEFAULT_FAST_MODEL,
+                model=model or core.config.DEFAULT_FAST_MODEL,
                 personality=personality or "professional",
                 skills=extracted_skills,
                 tool_permissions={
@@ -532,7 +533,7 @@ class AgentTools:
             f"{base_prompt}\n\n"
             f"SPECIALIZATION & SCOPE:\nRole: {role} | Expertise: {expertise}\n\n"
             f"SUBAGENT COMPLETION PROTOCOL:\n"
-            "You were hired for this specific task. Execute the necessary actions (e.g. write_file, execute_command, etc.) using [ACTION]tool_name(...) tags.\n"
+            "You were hired for this specific task. Execute necessary actions using native tool calls. Textual action tags do not execute anything.\n"
             "When the task is complete, your final response MUST end with:\n"
             f"<task-notification>\n"
             f"  <task_id>{task_id}</task_id>\n"
@@ -566,7 +567,7 @@ class AgentTools:
                 name=subagent_name,
                 role=role,
                 system_prompt=sys_prompt,
-                model=model or DEFAULT_FAST_MODEL,
+                model=model or core.config.DEFAULT_FAST_MODEL,
                 tool_permissions=subagent_permissions,
             )
             db.add(new_agent)
@@ -587,7 +588,8 @@ class AgentTools:
             project_id=project_id,
             name=subagent_name,
             role=role,
-            model=model or DEFAULT_FAST_MODEL,
+            history_mode="isolated" if load_config().get("context_optimization", {}).get("worker_isolation", True) else "shared",
+            model=model or core.config.DEFAULT_FAST_MODEL,
             system_prompt=sys_prompt,
             parent_coordinator_id=_agent_id,
             task_id=task_id,

@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import type { AgentConfig } from "@/lib/types";
+import type { TokenUsageEvent } from "@/features/chat/contextUsage";
 import AgentAvatar from "./AgentAvatar";
 import { Activity, Cpu, Sparkles, Database, CheckCircle2, AlertTriangle, ArrowUpRight, Zap } from "lucide-react";
 import { getAvatarTheme } from "./PrettyAvatar";
@@ -10,19 +11,12 @@ import { getAvatarTheme } from "./PrettyAvatar";
 interface AgentContextAnalysisCardProps {
   agent: AgentConfig;
   totalTokens: number;
+  contextWindow?: number;
+  inputSource?: string;
   messages?: any[];
-  lastTokenEvent?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; agent_name?: string } | null;
+  lastTokenEvent?: TokenUsageEvent | null;
   children: React.ReactNode;
 }
-
-const contextLimit = (model = "") => {
-  const value = model.toLowerCase();
-  if (value.includes("gemini")) return 1_000_000;
-  if (value.includes("claude")) return 200_000;
-  if (value.includes("32k") || value.includes("mistral")) return 32_768;
-  if (value.includes("16k") || value.includes("gpt-3.5")) return 16_384;
-  return 128_000;
-};
 
 const tone = (percent: number) => {
   if (percent >= 85) return "#ef6464";
@@ -42,6 +36,8 @@ export default function AgentContextAnalysisCard({
   totalTokens,
   messages = [],
   lastTokenEvent,
+  contextWindow,
+  inputSource = "estimated",
   children,
 }: AgentContextAnalysisCardProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -61,8 +57,9 @@ export default function AgentContextAnalysisCard({
     };
   }, []);
 
-  const agentLimit = contextLimit(agent.model);
-  const agentPct = totalTokens === 0 ? 0 : Math.min(100, Math.round((totalTokens / agentLimit) * 1000) / 10);
+  const agentLimit = contextWindow ?? 0;
+  const hasMeasurement = agentLimit > 0;
+  const agentPct = !hasMeasurement || totalTokens === 0 ? 0 : Math.min(100, Math.round((totalTokens / agentLimit) * 1000) / 10);
   const remainingTokens = Math.max(0, agentLimit - totalTokens);
   const meterColor = tone(agentPct);
   const avatarTheme = getAvatarTheme(agent.name, agent.role, agent.id);
@@ -79,11 +76,6 @@ export default function AgentContextAnalysisCard({
     const toolMatches = (m.reasoning || "").match(/<tool_call>|\[ACTION\]|🛠️/g);
     return acc + (toolMatches ? toolMatches.length : 0);
   }, 0);
-
-  const generatedChars = agentMsgs.reduce((acc: number, m: any) => {
-    return acc + (m.text?.length || 0) + (m.reasoning?.length || 0);
-  }, 0);
-  const generatedTokens = Math.round(generatedChars / 4);
 
   const isLastAgent =
     lastTokenEvent?.agent_name?.toLowerCase() === agent.name.toLowerCase();
@@ -133,7 +125,7 @@ export default function AgentContextAnalysisCard({
   };
 
   const statusLabel =
-    agentPct >= 85 ? "Critical" : agentPct >= 65 ? "Elevated" : "Optimal";
+    !hasMeasurement ? "Not measured" : agentPct >= 85 ? "Critical" : agentPct >= 65 ? "Elevated" : "Available";
   const StatusIcon =
     agentPct >= 85 ? AlertTriangle : agentPct >= 65 ? Activity : CheckCircle2;
 
@@ -239,10 +231,10 @@ export default function AgentContextAnalysisCard({
               </span>
               <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
                 <strong style={{ fontSize: 14, color: meterColor, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                  {compact(Math.round(totalTokens))}
+                  {hasMeasurement ? compact(Math.round(totalTokens)) : "—"}
                 </strong>
                 <span style={{ fontSize: 11, color: "rgba(255, 255, 255, 0.4)" }}>
-                  / {compact(agentLimit)} ({agentPct.toFixed(1)}%)
+                  {hasMeasurement ? `/ ${compact(agentLimit)} (${agentPct.toFixed(1)}%)` : "No request yet"}
                 </span>
               </div>
             </div>
@@ -262,7 +254,7 @@ export default function AgentContextAnalysisCard({
               <div
                 style={{
                   height: "100%",
-                  width: `${Math.max(agentPct, 2)}%`,
+                  width: `${hasMeasurement ? agentPct : 0}%`,
                   background: meterColor,
                   borderRadius: 999,
                   transition: "width 0.3s ease",
@@ -273,7 +265,7 @@ export default function AgentContextAnalysisCard({
 
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "rgba(255, 255, 255, 0.5)", marginBottom: 14 }}>
               <span>Headroom left:</span>
-              <strong style={{ color: "#e2e8f0", fontWeight: 600 }}>{compact(remainingTokens)} tokens free</strong>
+              <strong style={{ color: "#e2e8f0", fontWeight: 600 }}>{hasMeasurement ? `${compact(remainingTokens)} tokens before output reservation` : "Unavailable"}</strong>
             </div>
 
             {/* Token & Turn Metrics Grid */}
@@ -294,10 +286,10 @@ export default function AgentContextAnalysisCard({
                 }}
               >
                 <div style={{ fontSize: 10, color: "rgba(255, 255, 255, 0.4)", marginBottom: 3, display: "flex", alignItems: "center", gap: 4 }}>
-                  <Database size={10} /> Active Prompt
+                  <Database size={10} /> Last Request Input
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#f8fafc" }}>
-                  {compact(Math.round(totalTokens))} <span style={{ fontSize: 10, fontWeight: 400, color: "rgba(255, 255, 255, 0.4)" }}>tokens</span>
+                  {hasMeasurement ? compact(Math.round(totalTokens)) : "—"} <span style={{ fontSize: 10, fontWeight: 400, color: "rgba(255, 255, 255, 0.4)" }}>{inputSource} tokens</span>
                 </div>
               </div>
 
@@ -310,10 +302,10 @@ export default function AgentContextAnalysisCard({
                 }}
               >
                 <div style={{ fontSize: 10, color: "rgba(255, 255, 255, 0.4)", marginBottom: 3, display: "flex", alignItems: "center", gap: 4 }}>
-                  <ArrowUpRight size={10} /> Output Created
+                  <ArrowUpRight size={10} /> Last Call Output
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#f8fafc" }}>
-                  {compact(generatedTokens)} <span style={{ fontSize: 10, fontWeight: 400, color: "rgba(255, 255, 255, 0.4)" }}>est. tokens</span>
+                  {lastTokenEvent?.completion_tokens == null ? "—" : compact(lastTokenEvent.completion_tokens)} <span style={{ fontSize: 10, fontWeight: 400, color: "rgba(255, 255, 255, 0.4)" }}>{lastTokenEvent?.output_source === "provider" ? "reported" : "estimated"} tokens</span>
                 </div>
               </div>
 
@@ -351,7 +343,7 @@ export default function AgentContextAnalysisCard({
             </div>
 
             {/* Last Execution Telemetry (if this agent participated in the latest event) */}
-            {isLastAgent && lastTokenEvent?.prompt_tokens && (
+            {isLastAgent && lastTokenEvent?.prompt_tokens !== undefined && (
               <div
                 style={{
                   background: `${avatarTheme.bgGrad[0]}10`,
@@ -366,7 +358,7 @@ export default function AgentContextAnalysisCard({
                   marginBottom: 10,
                 }}
               >
-                <span>Latest Turn:</span>
+                <span>Latest model call:</span>
                 <span style={{ fontVariantNumeric: "tabular-nums" }}>
                   <strong style={{ color: "#fff" }}>{lastTokenEvent.prompt_tokens}</strong> prompt +{" "}
                   <strong style={{ color: "#fff" }}>{lastTokenEvent.completion_tokens || 0}</strong> completion
@@ -386,11 +378,11 @@ export default function AgentContextAnalysisCard({
                 border: "1px solid rgba(255, 255, 255, 0.04)",
               }}
             >
-              {agentPct >= 85
+              {!hasMeasurement ? "Context usage will appear after this agent makes a model request." : agentPct >= 85
                 ? "⚠️ Working memory is nearly exhausted. Compaction is urgently recommended to prevent token cutoff."
                 : agentPct >= 65
                 ? "⚡ Context is elevated. Monitor response accuracy or run compaction for extended tasks."
-                : "✨ Context is running optimally with generous working headroom."}
+                : "Working context remains. Low utilization alone does not establish token efficiency."}
             </div>
           </div>
         </div>,

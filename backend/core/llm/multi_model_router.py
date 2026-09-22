@@ -161,7 +161,9 @@ class LLMProviderError(Exception):
         if status_code == 429:
             return LLMProviderError(ERROR_RATE_LIMITED, provider, model, status_code=status_code)
 
-        if status_code == 404 or "model_not_found" in body_lower or "does not exist" in body_lower:
+        if status_code == 404 or any(term in body_lower for term in (
+            "model_not_found", "does not exist", "invalid model", "invalid_model",
+        )):
             return LLMProviderError(ERROR_MODEL_NOT_FOUND, provider, model, status_code=status_code)
 
         if status_code >= 500:
@@ -178,8 +180,21 @@ class LLMProviderError(Exception):
             status_code=status_code,
         )
 
+def normalize_model_id(model: str) -> str:
+    """Remove direct-provider aliases; preserve gateway/vendor model paths."""
+    model = model.strip()
+    for prefix in ("openai/", "anthropic/", "google/", "gemini/"):
+        if model.startswith(prefix):
+            return model[len(prefix):]
+    return model
+
+
 def get_model_context_window(model: str) -> int:
     """Returns the approximate context window limit in tokens for a given model string."""
+    from core.llm.model_catalog import model_limits
+    explicit = model_limits(model).get("context_window")
+    if explicit:
+        return explicit
     m = (model or "").lower()
     if "gemini" in m:
         return 1_000_000
@@ -196,7 +211,7 @@ def get_model_context_window(model: str) -> int:
     if "4k" in m:
         return 4_096
     if "free" in m or "auto" in m:
-        return 128_000
+        return 16_384  # Conservative routing-alias fallback; actual capacity is unknown.
     return 65_536
 
 
@@ -362,17 +377,27 @@ class MultiModelRouter:
         agent_id: Optional[str] = None,
         agent_name: Optional[str] = None,
         reasoning_effort: str = "none",
+        purpose: str = "completion",
     ) -> str:
         """
-        Generates a standard non-streaming text completion.
+        Text completion through the same preflight, reservation and usage ledger
+        as agent calls. Auxiliary calls inherit the owning run's scope.
         """
         response_text = ""
-        async for chunk in self.generate_stream(
-            model, system_prompt, messages, temperature, max_tokens,
-            project_id, team_id, agent_id, agent_name,
-            reasoning_effort=reasoning_effort,
+        from core.agent.run_budget import request_scope, root_budget_id
+        scope = request_scope.get() or {}
+        async for event in self.generate_with_tools(
+            model, system_prompt, messages, tools=[],
+            temperature=temperature, max_tokens=max_tokens,
+            project_id=project_id or scope.get("project_id"),
+            team_id=team_id or scope.get("team_id"),
+            agent_id=agent_id or scope.get("agent_id"),
+            agent_name=agent_name or scope.get("agent_name"),
+            reasoning_effort=reasoning_effort, purpose=purpose,
+            run_id=root_budget_id.get(), allow_fallback=False,
         ):
-            response_text += chunk
+            if event.get("type") == "text_delta":
+                response_text += event.get("delta", "")
         return response_text
 
     async def generate_stream_with_fallback(
@@ -471,6 +496,7 @@ class MultiModelRouter:
         Routes to the correct provider based on model name prefix.
         Tracks token usage upon completion.
         """
+        model = normalize_model_id(model)
         response_text = ""
         provider = "unknown"
 
@@ -702,6 +728,10 @@ class MultiModelRouter:
         agent_name: Optional[str],
         reported_usage: Optional[dict] = None,
         tools: Optional[list] = None,
+        call_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        purpose: str = "completion",
+        accounting: Optional[dict] = None,
     ):
         try:
             def _get_len(c):
@@ -715,14 +745,12 @@ class MultiModelRouter:
             prompt_tokens = int(prompt_chars / 4)
             completion_tokens = int(len(response_text) / 4)
             reported_usage = reported_usage or {}
-            if reported_usage.get("prompt_tokens") is not None:
-                prompt_tokens = max(0, int(reported_usage["prompt_tokens"]))
-            elif reported_usage.get("input_tokens") is not None:
-                prompt_tokens = max(0, int(reported_usage["input_tokens"])) + max(0, int(reported_usage.get("cache_read_input_tokens", 0))) + max(0, int(reported_usage.get("cache_creation_input_tokens", 0)))
-            if reported_usage.get("completion_tokens") is not None:
-                completion_tokens = max(0, int(reported_usage["completion_tokens"]))
-            elif reported_usage.get("output_tokens") is not None:
-                completion_tokens = max(0, int(reported_usage["output_tokens"]))
+            from core.llm.usage_accounting import normalize_usage
+            from core.agent.context_compiler import count_tokens
+            normalized = normalize_usage(reported_usage,
+                (accounting or {}).get("estimated_tokens", prompt_tokens), count_tokens(response_text, model))
+            prompt_tokens = normalized.prompt_tokens
+            completion_tokens = normalized.completion_tokens
             total_tokens = prompt_tokens + completion_tokens
 
             # Pricing mappings (per 1M tokens)
@@ -735,7 +763,7 @@ class MultiModelRouter:
                 "claude-sonnet-4": (3.00, 15.00),
                 "claude-opus-4": (15.00, 75.00),
                 "claude-3-5-sonnet-20241022": (3.00, 15.00),
-                "gemini-2.0-flash": (0.075, 0.30),
+                "gemini-3.6-flash": (0.75, 3.75),
                 "gemini-2.5-pro": (1.25, 5.00),
                 "anthropic/claude-3.5-sonnet": (3.00, 15.00),
             }
@@ -756,9 +784,15 @@ class MultiModelRouter:
             # Missing pricing is unknown, never silently free. OpenRouter may
             # report the actual billed cost including cache/reasoning discounts.
             if reported_usage.get("cost") is not None:
-                cost = Decimal(str(reported_usage["cost"]))
-                if not cost.is_finite() or cost < 0:
+                try:
+                    cost = Decimal(str(reported_usage["cost"]))
+                except Exception:
                     cost = None
+                if cost is not None and (not cost.is_finite() or cost < 0):
+                    cost = None
+            elif normalized.cache_read_tokens or normalized.cache_write_tokens:
+                # Cache tariffs vary by model, provider and TTL. Unknown is not full-price or free.
+                cost = None
             elif clean_model not in pricing and model not in pricing and not (
                 provider == "ollama" or (provider == "openrouter" and (model == "openrouter/free" or model.endswith(":free")))):
                 cost = None
@@ -769,6 +803,10 @@ class MultiModelRouter:
             import uuid
 
             async with async_session() as session:
+                if call_id:
+                    from sqlalchemy import select
+                    if await session.scalar(select(TokenUsage.id).where(TokenUsage.call_id == call_id)):
+                        return
                 usage = TokenUsage(
                     project_id=uuid.UUID(project_id) if isinstance(project_id, str) else project_id,
                     team_id=uuid.UUID(team_id) if isinstance(team_id, str) else team_id,
@@ -779,7 +817,14 @@ class MultiModelRouter:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
-                    estimated_cost_usd=cost
+                    estimated_cost_usd=cost,
+                    call_id=call_id, run_id=run_id, purpose=purpose,
+                    accounting={**(accounting or {}), **normalized.as_dict(),
+                                "requested_model": model,
+                                "resolved_model": reported_usage.get("_resolved_model"),
+                                "provider_request_id": reported_usage.get("_provider_request_id"),
+                                "pricing_version": "provider" if cost is not None and reported_usage.get("cost") is not None else "legacy-static-2026-09-21" if cost is not None else None,
+                                "cost_source": "provider" if cost is not None and reported_usage.get("cost") is not None else "estimated" if cost is not None else "unknown"},
                 )
                 session.add(usage)
                 
@@ -801,6 +846,11 @@ class MultiModelRouter:
                     from core.chat.event_bus import event_bus
                     await event_bus.publish(f"team:{team_id}", {
                         "type": "token_usage",
+                        "call_id": call_id, "run_id": run_id, "purpose": purpose,
+                        **normalized.as_dict(),
+                        "resolved_model": reported_usage.get("_resolved_model"),
+                        "context_window": (accounting or {}).get("context_window"),
+                        "status": (accounting or {}).get("status"),
                         "agent_id": str(agent_id) if agent_id else None,
                         "agent_name": agent_name,
                         "model": model,
@@ -809,7 +859,7 @@ class MultiModelRouter:
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens,
                         "estimated_cost_usd": f"{cost:.8f}" if cost is not None else None,
-                        "usage_source": "provider" if reported_usage else "estimated",
+                        "usage_source": normalized.as_dict()["usage_source"],
                     })
                 except Exception:
                     pass
@@ -834,7 +884,12 @@ class MultiModelRouter:
         Breakpoint 3: Penultimate user turn in formatted_messages (rolling history sliding window).
         """
         # 1. System Prompt Breakpoint
-        if len(system_prompt) > 1024:
+        if ("\n<carole-runtime-context>\n" in system_prompt
+                and load_config().get("context_optimization", {}).get("stable_cache_prefix", True)):
+            stable, volatile = system_prompt.split("\n<carole-runtime-context>\n", 1)
+            system_payload = [{"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
+                              {"type": "text", "text": volatile}]
+        elif len(system_prompt) > 1024:
             system_payload: Any = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
         else:
             system_payload = system_prompt
@@ -936,11 +991,12 @@ class MultiModelRouter:
 
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
-            f":streamGenerateContent?alt=sse&key={self.gemini_key}"
+            ":streamGenerateContent?alt=sse"
         )
+        headers = {"x-goog-api-key": self.gemini_key}
 
         try:
-            async with self._http_client.stream("POST", url, json=payload) as response:
+            async with self._http_client.stream("POST", url, headers=headers, json=payload) as response:
                 if response.status_code != 200:
                     err_body = await response.aread()
                     raise LLMProviderError.classify_http_error(response.status_code, err_body.decode('utf-8'), "google", model)
@@ -1258,6 +1314,12 @@ class MultiModelRouter:
         project_id: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         fallback_model: Optional[str] = None,
+        call_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        purpose: str = "agent",
+        context_snapshot: Optional[dict] = None,
+        allow_fallback: bool = True,
+        _visited: tuple = (),
     ):
         """
         Native tool-calling stream — unified across all providers.
@@ -1274,10 +1336,54 @@ class MultiModelRouter:
           - Gemini (gemini-*)               → non-streaming generateContent
           - Ollama / Nvidia / others        → fallback to text stream (no tools)
         """
+        model = normalize_model_id(model)
+        if model in _visited or len(_visited) >= 2:
+            raise LLMProviderError(ERROR_PROVIDER_DOWN, "router", model, message="Fallback cycle prevented.")
+        import time
+        import uuid
+        started = time.monotonic()
+        call_id = call_id or str(uuid.uuid4())
+        if project_id:
+            from core.memory.database import async_session
+            from core.memory.models import Project
+            from core.agent.run_budget import BudgetExceeded
+            async with async_session() as budget_db:
+                project = await budget_db.get(Project, uuid.UUID(str(project_id)))
+                if project and project.budget_limit_usd is not None and (project.total_spend_usd or 0) >= project.budget_limit_usd:
+                    raise BudgetExceeded("Project spending limit reached; raise the budget before continuing.")
+        from core.agent.context_compiler import compile_request, ContextPolicy, provider_schemas
+        schema_provider = ("google" if model.startswith("gemini") else "anthropic"
+                           if model.startswith("claude") and self.anthropic_key else "openai")
+        tools = provider_schemas(tools, schema_provider)
+        from core.llm.model_catalog import model_limits
+        limits = model_limits(model)
+        max_tokens = min(max_tokens, limits.get("output_limit", max_tokens))
+        plan = compile_request(system_prompt, messages, tools, model=model,
+            context_window=get_model_context_window(model),
+            policy=ContextPolicy((context_snapshot or {}).get("profile", "provider"),
+                                 (context_snapshot or {}).get("input_target", 24000), 0, max_tokens))
+        if plan.estimated_tokens + plan.uncertainty_reserve > limits.get("input_limit", plan.context_window):
+            from core.agent.context_compiler import ContextCapacityError
+            raise ContextCapacityError("Request exceeds the model's independent input limit.")
+        max_tokens = plan.output_reserve
+        context_snapshot = {**plan.event(), "call_id": call_id, "run_id": run_id,
+                            "purpose": purpose, "timestamp": time.time(),
+                            "shadow_profile": (context_snapshot or {}).get("shadow_profile"),
+                            "capacity_source": "catalog" if "context_window" in limits else "heuristic"}
+        from core.agent.run_budget import root_budget_id, reserve, settle
+        context_snapshot["root_budget_id"] = root_budget_id.get()
+        if team_id:
+            from core.chat.event_bus import event_bus
+            await event_bus.publish(f"team:{team_id}", {"type": "context_usage",
+                "sender_id": agent_id, "sender_name": agent_name, **context_snapshot})
         response_text = ""
         provider = "unknown"
         emitted_event = False
         reported_usage = {}
+        status = "failed"
+        budget_id = root_budget_id.get()
+        if budget_id:
+            await reserve(budget_id, call_id, plan.estimated_tokens + max_tokens)
 
         try:
             if model.startswith("claude"):
@@ -1452,7 +1558,13 @@ class MultiModelRouter:
                         emitted_event = True
                         yield event
 
+            status = "completed"
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
         except LLMProviderError as e:
+            if not allow_fallback or emitted_event or len(_visited) >= 1:
+                raise
             fallback_model = (fallback_model or "").strip()
             if not fallback_model:
                 try:
@@ -1465,19 +1577,7 @@ class MultiModelRouter:
                 except Exception:
                     fallback_model = ""
 
-            if not fallback_model or fallback_model == model:
-                # If model is openrouter/free, select the best active provider
-                if model == "openrouter/free":
-                    if self.openrouter_key:
-                        fallback_model = "openrouter/auto"
-                    elif self.anthropic_key:
-                        fallback_model = "claude-3-5-sonnet-latest"
-                    elif self.openai_key:
-                        fallback_model = "gpt-4o-mini"
-                    elif self.google_key:
-                        fallback_model = "gemini-2.0-flash"
-
-            if fallback_model and fallback_model != model:
+            if fallback_model and normalize_model_id(fallback_model) not in (*_visited, model):
                 logger.warning(
                     "[generate_with_tools] Primary model '%s' failed: %s. Falling back to '%s'.",
                     model, e, fallback_model
@@ -1496,12 +1596,17 @@ class MultiModelRouter:
                     project_id=project_id,
                     reasoning_effort=reasoning_effort,
                     fallback_model=None,
+                    run_id=run_id, purpose=purpose,
+                    allow_fallback=False, _visited=(*_visited, model),
                 ):
                     yield event
                 return
             raise
         finally:
-            if (project_id or team_id or agent_id) and (emitted_event or reported_usage):
+            if budget_id:
+                from core.agent.token_budget import reported_total
+                await asyncio.shield(settle(call_id, reported_total(reported_usage)))
+            if project_id or team_id or agent_id:
                 await self._log_usage(
                     provider=provider, model=model,
                     system_prompt=system_prompt, messages=messages,
@@ -1509,6 +1614,9 @@ class MultiModelRouter:
                     project_id=project_id, team_id=team_id,
                     agent_id=agent_id, agent_name=agent_name,
                     reported_usage=reported_usage, tools=tools,
+                    call_id=call_id, run_id=run_id, purpose=purpose,
+                    accounting={**context_snapshot, "status": status,
+                                "latency_ms": round((time.monotonic() - started) * 1000)},
                 )
 
     async def _anthropic_tool_stream(
@@ -1551,6 +1659,9 @@ class MultiModelRouter:
             "max_tokens": max_tokens,
             "stream": True,
         }
+        if not tools:
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
 
         thinking_budget = _anthropic_thinking_budget(reasoning_effort, max_tokens)
         if thinking_budget is not None:
@@ -1562,12 +1673,14 @@ class MultiModelRouter:
         else:
             payload["temperature"] = temperature
 
-        for attempt in range(3):
+        # One HTTP attempt per ledger entry; the agent/router owns bounded recovery.
+        for attempt in range(1):
             received_data = False
             stopped = False
             current_tool_id = None
             current_tool_name = None
             current_json_chunks = []
+            current_thinking = None
             try:
                 async with self._http_client.stream(
                     "POST", "https://api.anthropic.com/v1/messages",
@@ -1581,13 +1694,6 @@ class MultiModelRouter:
                             "anthropic",
                             model,
                         )
-                        if attempt < 2 and (
-                            error.error_type == ERROR_RATE_LIMITED
-                            or response.status_code >= 500
-                        ):
-                            await response.aclose()
-                            await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
-                            continue
                         raise error
 
                     stop_reason: Optional[str] = None
@@ -1611,7 +1717,8 @@ class MultiModelRouter:
 
                         if event_type == "message_start":
                             msg_obj = data.get("message", {})
-                            usage = msg_obj.get("usage", {})
+                            usage = {**msg_obj.get("usage", {}), "_resolved_model": msg_obj.get("model"),
+                                     "_provider_request_id": msg_obj.get("id")}
                             yield {"type": "usage", "usage": usage}
                             cache_read = usage.get("cache_read_input_tokens", 0)
                             cache_creation = usage.get("cache_creation_input_tokens", 0)
@@ -1623,6 +1730,8 @@ class MultiModelRouter:
 
                         elif event_type == "content_block_start":
                             block = data.get("content_block", {})
+                            if block.get("type") in {"thinking", "redacted_thinking"}:
+                                current_thinking = dict(block)
                             if block.get("type") == "tool_use":
                                 current_tool_id = block.get("id")
                                 current_tool_name = block.get("name")
@@ -1639,10 +1748,17 @@ class MultiModelRouter:
                                 current_json_chunks.append(delta.get("partial_json", ""))
                             elif dtype == "thinking_delta":
                                 thinking = delta.get("thinking", "")
+                                if current_thinking is not None:
+                                    current_thinking["thinking"] = current_thinking.get("thinking", "") + thinking
                                 if thinking:
                                     yield {"type": "reasoning_delta", "delta": thinking}
+                            elif dtype == "signature_delta" and current_thinking is not None:
+                                current_thinking["signature"] = current_thinking.get("signature", "") + delta.get("signature", "")
 
                         elif event_type == "content_block_stop":
+                            if current_thinking is not None:
+                                yield {"type": "reasoning_block", "block": current_thinking}
+                                current_thinking = None
                             if current_tool_id and current_tool_name:
                                 json_str = "".join(current_json_chunks)
                                 try:
@@ -1685,11 +1801,7 @@ class MultiModelRouter:
                 return  # Success
 
             except httpx.TransportError as e:
-                if not received_data and attempt < 2:
-                    logger.warning("Anthropic tool stream connection error: %s. Retrying...", e)
-                    await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
-                else:
-                    raise LLMProviderError(ERROR_PROVIDER_DOWN, "anthropic", model, message=f"Connection Error: {e}")
+                raise LLMProviderError(ERROR_PROVIDER_DOWN, "anthropic", model, message=f"Connection Error: {e}") from e
             except LLMProviderError:
                 raise
 
@@ -1744,10 +1856,13 @@ class MultiModelRouter:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if not tools:
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
 
-        for attempt in range(3):
+        # One HTTP attempt per ledger entry; the agent/router owns bounded recovery.
+        for attempt in range(1):
             tool_calls_acc = {}
-            accumulated_text = []
             finish_reason = None
             received_data = False
             stopped = False
@@ -1761,13 +1876,6 @@ class MultiModelRouter:
                             provider,
                             model,
                         )
-                        if attempt < 2 and (
-                            error.error_type == ERROR_RATE_LIMITED
-                            or response.status_code >= 500
-                        ):
-                            await response.aclose()
-                            await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
-                            continue
                         raise error
 
                     async for line in response.aiter_lines():
@@ -1788,7 +1896,8 @@ class MultiModelRouter:
                             raise error
 
                         if data.get("usage"):
-                            yield {"type": "usage", "usage": data["usage"]}
+                            yield {"type": "usage", "usage": {**data["usage"],
+                                "_resolved_model": data.get("model"), "_provider_request_id": data.get("id")}}
                         choices = data.get("choices", [])
                         if not choices:
                             continue
@@ -1807,7 +1916,6 @@ class MultiModelRouter:
                         # Stream text content
                         text = delta.get("content") or ""
                         if text:
-                            accumulated_text.append(text)
                             yield {"type": "text_delta", "delta": text}
 
                         # Accumulate tool call chunks
@@ -1864,52 +1972,8 @@ class MultiModelRouter:
                         "input": tool_input,
                     })
 
-                # Fallback: check if an open-source model leaked tool calls as raw text/XML tags
-                if not completed_calls and accumulated_text:
-                    full_text = "".join(accumulated_text)
-                    if "<dots_function_call>" in full_text or "<invoke" in full_text:
-                        import uuid as _uuid
-                        # 1. Dots studio format: <dots_function_call> <fn_name> args </fn_name> </dots_function_call>
-                        for m in re.finditer(r"<dots_function_call>\s*<([a-zA-Z0-9_-]+)>\s*(.*?)\s*</\1>\s*</dots_function_call>", full_text, re.DOTALL):
-                            fn_name = m.group(1).strip()
-                            fn_arg = m.group(2).strip()
-                            tool_input = {}
-                            if fn_arg.startswith("{") and fn_arg.endswith("}"):
-                                try:
-                                    tool_input = json.loads(fn_arg)
-                                except Exception:
-                                    tool_input = {"raw": fn_arg}
-                            elif fn_arg:
-                                if fn_name in ("list_directory", "list_dir"):
-                                    tool_input = {"path": fn_arg}
-                                elif fn_name in ("read_file", "view_file"):
-                                    tool_input = {"path": fn_arg}
-                                else:
-                                    tool_input = {"input": fn_arg}
-                            completed_calls.append({
-                                "type": "tool_use",
-                                "id": f"call_{_uuid.uuid4().hex[:12]}",
-                                "name": fn_name,
-                                "input": tool_input,
-                            })
-                        # 2. Invoke XML format: <invoke name="..."><parameter name="...">...</parameter></invoke>
-                        for m in re.finditer(r'<invoke\s+name=["\']([a-zA-Z0-9_-]+)["\']\s*>(.*?)</invoke>', full_text, re.DOTALL):
-                            fn_name = m.group(1).strip()
-                            fn_body = m.group(2).strip()
-                            params = {}
-                            for pm in re.finditer(r'<parameter\s+name=["\']([a-zA-Z0-9_-]+)["\']\s*>(.*?)</parameter>', fn_body, re.DOTALL):
-                                params[pm.group(1).strip()] = pm.group(2).strip()
-                            if not params and fn_body.startswith("{") and fn_body.endswith("}"):
-                                try:
-                                    params = json.loads(fn_body)
-                                except Exception:
-                                    pass
-                            completed_calls.append({
-                                "type": "tool_use",
-                                "id": f"call_{_uuid.uuid4().hex[:12]}",
-                                "name": fn_name,
-                                "input": params or {"input": fn_body},
-                            })
+                # Text/XML examples are evidence, never executable tool calls.
+                # Only provider-native calls validated above may reach execution.
 
                 for event in completed_calls:
                     yield event
@@ -1918,14 +1982,10 @@ class MultiModelRouter:
                 return  # Success
 
             except httpx.TransportError as e:
-                if not received_data and attempt < 2:
-                    logger.warning("OpenAI tool stream connection error: %s. Retrying...", e)
-                    await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
-                else:
-                    raise LLMProviderError(
-                        ERROR_PROVIDER_DOWN, provider, model,
-                        message=f"Provider connection failed ({type(e).__name__}).",
-                    ) from e
+                raise LLMProviderError(
+                    ERROR_PROVIDER_DOWN, provider, model,
+                    message=f"Provider connection failed ({type(e).__name__}).",
+                ) from e
             except LLMProviderError:
                 raise
             except Exception as e:
@@ -1968,14 +2028,18 @@ class MultiModelRouter:
                 "maxOutputTokens": max_tokens,
             },
         }
+        if not tools:
+            payload.pop("tools", None)
+            payload.pop("tool_config", None)
 
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
-            f":generateContent?key={self.gemini_key}"
+            ":generateContent"
         )
+        headers = {"x-goog-api-key": self.gemini_key}
 
         try:
-            response = await self._http_client.post(url, json=payload)
+            response = await self._http_client.post(url, headers=headers, json=payload)
             if response.status_code != 200:
                 raise LLMProviderError.classify_http_error(
                     response.status_code, response.text, "google", model
@@ -1985,8 +2049,12 @@ class MultiModelRouter:
             usage = data.get("usageMetadata", {})
             if usage:
                 yield {"type": "usage", "usage": {
-                    "prompt_tokens": usage.get("promptTokenCount", 0),
-                    "completion_tokens": usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0)}}
+                    "prompt_tokens": usage.get("promptTokenCount"),
+                    "completion_tokens": (usage["candidatesTokenCount"] + usage.get("thoughtsTokenCount", 0))
+                        if isinstance(usage.get("candidatesTokenCount"), int) else None,
+                    "prompt_tokens_details": {"cached_tokens": usage.get("cachedContentTokenCount")},
+                    "completion_tokens_details": {"reasoning_tokens": usage.get("thoughtsTokenCount")},
+                    "_resolved_model": data.get("modelVersion"), "_provider_request_id": data.get("responseId")}}
             candidates = data.get("candidates", [])
             if not candidates:
                 yield {"type": "message_stop", "stop_reason": "stop"}
@@ -2088,6 +2156,7 @@ class MultiModelRouter:
         Core rich-stream implementation yielding {content, reasoning} dicts.
         Re-uses existing per-provider SSE parsing with the updated extractor.
         """
+        model = normalize_model_id(model)
         system_prompt, messages, max_tokens = clamp_context_for_model(
             model, system_prompt, messages, max_tokens
         )
@@ -2273,11 +2342,12 @@ class MultiModelRouter:
             return None
 
     async def _embeddings_gemini(self, text: str, model: str = "gemini-embedding-001") -> Optional[List[float]]:
-        """Google Gemini text-embedding-004 (768 dimensions, zero-padded to 1536)."""
+        """Google Gemini embeddings, normalized to the 1536-dimension store."""
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
-            f":embedContent?key={self.gemini_key}"
+            ":embedContent"
         )
+        headers = {"x-goog-api-key": self.gemini_key}
         payload = {
             "model": f"models/{model}",
             "content": {
@@ -2286,7 +2356,7 @@ class MultiModelRouter:
         }
 
         try:
-            response = await self._http_client.post(url, json=payload)
+            response = await self._http_client.post(url, headers=headers, json=payload)
             if response.status_code == 200:
                 data = response.json()
                 values = data.get("embedding", {}).get("values", [])

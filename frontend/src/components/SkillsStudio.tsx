@@ -589,7 +589,8 @@ export default function SkillsStudio({
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        background: "rgba(18, 18, 37, 0.7)",
+        background: "var(--color-canvas-soft)",
+        flexWrap: "wrap", gap: 12,
         backdropFilter: "blur(12px)",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -615,7 +616,7 @@ export default function SkillsStudio({
         {/* Tab Controls */}
         <div style={{
           display: "flex",
-          background: "rgba(10, 10, 22, 0.8)",
+          background: "var(--color-canvas-soft)",
           padding: 3,
           borderRadius: 10,
           border: "1px solid var(--color-hairline)"
@@ -796,14 +797,14 @@ export default function SkillsStudio({
                 </div>
               </div>
             ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 16 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(350px, 100%), 1fr))", gap: 16 }}>
                 {discoveredSkills.map(skill => {
                   const isToggling = togglingSkill === skill.name;
                   return (
                     <div
                       key={skill.name}
                       style={{
-                        background: "rgba(18, 18, 37, 0.7)",
+                        background: "var(--color-canvas-soft)",
                         border: skill.is_active ? "1px solid rgba(99, 102, 241, 0.35)" : "1px solid var(--color-hairline)",
                         borderRadius: 12,
                         padding: 18,
@@ -1031,7 +1032,7 @@ export default function SkillsStudio({
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-lg)", maxWidth: 800 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-lg)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(230px, 100%), 1fr))", gap: "var(--sp-lg)" }}>
                 <div>
                   <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: "var(--sp-xs)" }}>Skill Name</label>
                   <input className="input" style={{ width: "100%" }} value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Python Expert" />
@@ -1115,7 +1116,7 @@ export default function SkillsStudio({
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-mute)", textTransform: "uppercase", marginBottom: 6 }}>
                 Choose Template
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))", gap: 8 }}>
                 {SKILL_TEMPLATES.map(tmpl => {
                   const isSelected = discName === tmpl.name;
                   return (
@@ -1237,7 +1238,7 @@ export default function SkillsStudio({
           {/* Builder Mode Form */}
           {editorTab === "builder" ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(230px, 100%), 1fr))", gap: 12 }}>
                 <div>
                   <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
                     Skill Slug / Package Name <span style={{ color: "var(--color-danger)" }}>*</span>
@@ -1306,7 +1307,7 @@ export default function SkillsStudio({
               </div>
 
               {/* Author, Version, Active */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))", gap: 12 }}>
                 <div>
                   <label style={{ display: "block", fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Author</label>
                   <input
@@ -1482,7 +1483,7 @@ export default function SkillsStudio({
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
               Target Destination
             </label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(230px, 100%), 1fr))", gap: 8 }}>
               <button
                 type="button"
                 onClick={() => setUploadTargetLocation("project")}

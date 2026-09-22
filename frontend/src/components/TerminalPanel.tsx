@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useRef, useEffect } from "react";
-import { Terminal as TerminalIcon, Trash2, X } from "lucide-react";
+import React, { useRef, useEffect, useState } from "react";
+import { Terminal as TerminalIcon, Trash2, X, RotateCw } from "lucide-react";
 import type { Terminal as TerminalType } from "@xterm/xterm";
-import type { FitAddon as FitAddonType } from "@xterm/addon-fit";
-import { getWsBase, getWsToken } from "@/hooks/useWebSocket";
+import { getWsBase } from "@/hooks/useWebSocket";
 import "@xterm/xterm/css/xterm.css";
+import styles from "./TerminalPanel.module.css";
 
 interface TerminalPanelProps {
   projectId?: string;
@@ -14,243 +14,140 @@ interface TerminalPanelProps {
   shell?: "bash" | "powershell" | "cmd" | "default";
 }
 
+type Connection = "connecting" | "connected" | "disconnected" | "error";
+
 export default function TerminalPanel({ projectId, onClose, triggerCommand, shell = "default" }: TerminalPanelProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<TerminalType | null>(null);
-  const fitAddonRef = useRef<FitAddonType | null>(null);
-
-  // Track the timestamp of the last executed trigger command.
-  // Using a timestamp instead of a boolean allows the same command text to
-  // fire again (e.g., re-running a file) as long as it's a new trigger event.
-  const lastExecutedTs = useRef<number>(0);
-
   const wsRef = useRef<WebSocket | null>(null);
-
-  // Expose executeCmd if a parent passes a command, but handle via WS
-  const executeCmd = (cmdToRun: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      // If we need to send raw commands, just write to WS
-      wsRef.current.send(JSON.stringify({ action: "input", data: cmdToRun + "\n" }));
-    }
-  };
+  const pendingCommand = useRef(triggerCommand);
+  const lastExecutedTs = useRef<number | null>(null);
+  const sessionIds = useRef(new Map<string, string>());
+  const [connection, setConnection] = useState<Connection>("connecting");
+  const [error, setError] = useState("");
+  const [session, setSession] = useState(0);
 
   useEffect(() => {
-    if (!terminalRef.current) return;
-
-    let term: TerminalType;
-    let fitAddon: FitAddonType;
-    let resizeObserver: ResizeObserver;
-    let isMounted = true;
-
-    const initTerminal = async () => {
-      const { Terminal } = await import("@xterm/xterm");
-      const { FitAddon } = await import("@xterm/addon-fit");
-
-      if (!isMounted) return;
-
-      term = new Terminal({
-        cursorBlink: true,
-        fontFamily: "var(--font-mono, 'Courier New', monospace)",
-        fontSize: 13,
-        allowTransparency: true,
-        theme: {
-          background: "transparent",
-          foreground: "var(--color-ink)",
-        }
-      });
-
-      fitAddon = new FitAddon();
-      term.loadAddon(fitAddon);
-
-      term.open(terminalRef.current!);
-
-      term.attachCustomKeyEventHandler((e) => {
-        if (e.key === "Tab") {
-          e.preventDefault();
-          if (e.type === "keydown" && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ action: "input", data: "\t" }));
-          }
-          return false;
-        }
-
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
-          if (term.hasSelection()) {
-            navigator.clipboard.writeText(term.getSelection());
-            return false;
-          }
-          return true;
-        }
-
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
-          if (e.type === "keydown") {
-            navigator.clipboard.readText().then((text) => {
-              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify({ action: "input", data: text }));
-              }
-            }).catch((err) => {
-              console.error("Clipboard paste failed:", err);
-            });
-          }
-          e.preventDefault();
-          return false;
-        }
-
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "x") {
-          e.preventDefault();
-          if (e.type === "keydown") {
-            if (onClose) onClose();
-          }
-          return false;
-        }
-
-        return true;
-      });
-
-      // Wait for fonts to load before fitting
-      if (document.fonts) {
-        await document.fonts.ready;
-      }
-      fitAddon.fit();
-
-      xtermRef.current = term;
-      fitAddonRef.current = fitAddon;
-
-      let ticket = "";
-      try {
-        const { api } = await import("@/hooks/useApi");
-        const res = await api.getWsTicket();
-        ticket = res.ticket;
-      } catch (err) {
-        console.warn("Failed to fetch terminal WS ticket:", err);
-      }
-
-      if (!isMounted) return;
-
-      const params = new URLSearchParams();
-      if (ticket) params.set("ticket", ticket);
-      if (shell) params.set("shell", shell);
-      const queryStr = params.toString();
-
-      const wsUrl = `${getWsBase()}/api/terminal/ws/${projectId || "default"}${
-        queryStr ? `?${queryStr}` : ""
-      }`;
-
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      term.onResize(({ cols, rows }) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ action: "resize", cols, rows }));
-        }
-      });
-
-      ws.onopen = () => {
-        // Send initial size
-        ws.send(JSON.stringify({ action: "resize", cols: term.cols, rows: term.rows }));
-        // Execute trigger command if it arrived before init and hasn't been run yet
-        if (triggerCommand && triggerCommand.cmd && triggerCommand.ts > lastExecutedTs.current) {
-          ws.send(JSON.stringify({ action: "input", data: triggerCommand.cmd + "\n" }));
-          lastExecutedTs.current = triggerCommand.ts;
-        }
-      };
-
-      ws.onmessage = (event) => {
-        if (typeof event.data === "string") {
-          term.write(event.data);
-        }
-      };
-
-      ws.onclose = () => {
-        // Do nothing to avoid messing up the final screen state
-      };
-
-      term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          // For ctrl+c
-          if (data === '\x03') {
-            ws.send(JSON.stringify({ action: "interrupt" }));
-          } else {
-            ws.send(JSON.stringify({ action: "input", data }));
-          }
-        }
-      });
-
-      const handleResize = () => {
-        try {
-          // Add a small delay to ensure container dimensions are final
-          requestAnimationFrame(() => {
-            if (fitAddonRef.current) {
-              fitAddonRef.current.fit();
-            }
-          });
-        } catch (e) {
-          // ignore fit errors during unmount
-        }
-      };
-
-      resizeObserver = new ResizeObserver(() => {
-        handleResize();
-      });
-      resizeObserver.observe(terminalRef.current!);
-    };
-
-    void initTerminal();
-
-    return () => {
-      isMounted = false;
-      if (resizeObserver) resizeObserver.disconnect();
-      if (wsRef.current) wsRef.current.close();
-      if (term) term.dispose();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    // Handle triggers that happen after terminal is initialized
-    if (triggerCommand && triggerCommand.cmd && xtermRef.current && triggerCommand.ts > lastExecutedTs.current) {
-      executeCmd(triggerCommand.cmd);
-      lastExecutedTs.current = triggerCommand.ts;
-    }
+    pendingCommand.current = triggerCommand;
   }, [triggerCommand]);
 
-  const handleClear = () => {
-    if (xtermRef.current) {
-      xtermRef.current.clear();
+  useEffect(() => {
+    const container = terminalRef.current;
+    if (!container) return;
+    let disposed = false;
+    let term: TerminalType | undefined;
+    let ws: WebSocket | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    let themeObserver: MutationObserver | undefined;
+    let frame = 0;
+    setConnection("connecting");
+    setError("");
+
+    const init = async () => {
+      const [{ Terminal }, { FitAddon }, { api }] = await Promise.all([
+        import("@xterm/xterm"), import("@xterm/addon-fit"), import("@/hooks/useApi"),
+      ]);
+      if (disposed) return;
+      const palette = () => {
+        const css = getComputedStyle(container);
+        return {
+          background: css.getPropertyValue("--color-canvas").trim() || "#09090b",
+          foreground: css.getPropertyValue("--color-ink").trim() || "#f8fafc",
+          cursor: css.getPropertyValue("--color-primary-soft").trim() || "#7c8cff",
+          selectionBackground: "#5d6ff755",
+        };
+      };
+      term = new Terminal({ cursorBlink: true, fontFamily: getComputedStyle(container).getPropertyValue("--font-family-mono").trim() || "monospace", fontSize: 13, lineHeight: 1.3, scrollback: 5000, theme: palette() });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(container);
+      xtermRef.current = term;
+      const resize = () => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          if (!disposed && container.clientWidth > 0 && container.clientHeight > 0) fit.fit();
+        });
+      };
+      resizeObserver = new ResizeObserver(resize);
+      resizeObserver.observe(container);
+      themeObserver = new MutationObserver(() => { if (term && !disposed) term.options.theme = palette(); });
+      // Theme classes can live on the document or on a preview/workspace ancestor.
+      for (let el: HTMLElement | null = container; el; el = el.parentElement) themeObserver.observe(el, { attributes: true, attributeFilter: ["class"] });
+      term.attachCustomKeyEventHandler(event => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && term?.hasSelection()) {
+          if (event.type === "keydown") void navigator.clipboard.writeText(term.getSelection()).catch(() => setError("Could not copy the selection. Check clipboard permissions."));
+          return false;
+        }
+        // Let xterm handle paste, Tab and control sequences natively.
+        return true;
+      });
+      await document.fonts.ready;
+      if (disposed) return;
+      resize();
+      const { ticket } = await api.getWsTicket();
+      if (disposed) return;
+      if (!ticket) throw new Error("Could not authenticate the terminal. Sign in and reconnect.");
+      const key = `${projectId || "default"}:${shell}`;
+      if (!sessionIds.current.has(key)) sessionIds.current.set(key, crypto.randomUUID());
+      const params = new URLSearchParams({ ticket, shell, session_id: sessionIds.current.get(key)! });
+      ws = new WebSocket(`${getWsBase()}/api/terminal/ws/${encodeURIComponent(projectId || "default")}?${params}`);
+      wsRef.current = ws;
+      const socket = ws;
+      term.onResize(({ cols, rows }) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ action: "resize", cols, rows })); });
+      term.onData(data => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data === "\x03" ? { action: "interrupt" } : { action: "input", data }));
+      });
+      socket.onopen = () => {
+        if (disposed || !term) return;
+        setConnection("connected");
+        setError("");
+        socket.send(JSON.stringify({ action: "resize", cols: term.cols, rows: term.rows }));
+        const command = pendingCommand.current;
+        if (command?.cmd && command.ts !== lastExecutedTs.current) {
+          socket.send(JSON.stringify({ action: "input", data: command.cmd + "\r" }));
+          lastExecutedTs.current = command.ts;
+        }
+      };
+      socket.onmessage = event => { if (!disposed && typeof event.data === "string") term?.write(event.data); };
+      socket.onerror = () => { if (!disposed) { setConnection("error"); setError("Terminal connection failed. Check that the backend is running and you have terminal access."); } };
+      socket.onclose = () => { if (!disposed) setConnection(current => current === "error" ? "error" : "disconnected"); };
+    };
+    void init().catch(reason => {
+      if (!disposed) { setConnection("error"); setError(reason instanceof Error ? reason.message : "Unable to start the terminal."); }
+    });
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      themeObserver?.disconnect();
+      ws?.close();
+      term?.dispose();
+      if (wsRef.current === ws) wsRef.current = null;
+      if (xtermRef.current === term) xtermRef.current = null;
+    };
+  }, [projectId, shell, session]);
+
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (triggerCommand?.cmd && ws?.readyState === WebSocket.OPEN && triggerCommand.ts !== lastExecutedTs.current) {
+      ws.send(JSON.stringify({ action: "input", data: triggerCommand.cmd + "\r" }));
+      lastExecutedTs.current = triggerCommand.ts;
     }
-  };
+  }, [triggerCommand, projectId, shell]);
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "transparent", color: "var(--color-ink)" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 12px", background: "var(--bg-surface)", borderBottom: "1px solid var(--border-subtle)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <TerminalIcon size={14} style={{ color: "var(--color-mute)" }} />
-          <span style={{ fontWeight: 600, fontSize: 12 }}>Terminal</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button
-            onClick={handleClear}
-            style={{ color: "var(--color-mute)", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}
-            className="hover:text-white"
-            title="Clear Terminal"
-          >
-            <Trash2 size={14} />
-          </button>
-          {onClose && (
-            <button
-              onClick={onClose}
-              style={{ color: "var(--color-mute)", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}
-              className="hover:text-white"
-              title="Close Terminal"
-            >
-              <X size={14} />
-            </button>
-          )}
-        </div>
+  return <section className={styles.panel} aria-label="Terminal">
+    <header className={styles.header}>
+      <div className={styles.identity}><TerminalIcon size={16} /><strong>Terminal</strong><span className={styles.shell}>{shell === "default" ? "Default shell" : shell}</span></div>
+      <div className={styles.actions}>
+        <span className={styles.status} data-state={connection} role="status"><i />{connection}</span>
+        <button onClick={() => { xtermRef.current?.clear(); xtermRef.current?.focus(); }} aria-label="Clear terminal" title="Clear terminal"><Trash2 size={15} /></button>
+        {(connection === "disconnected" || connection === "error") && <button onClick={() => setSession(value => value + 1)} aria-label="Reconnect terminal" title="Reconnect terminal"><RotateCw size={15} /></button>}
+        {onClose && <button onClick={onClose} aria-label="Close terminal" title="Close terminal"><X size={16} /></button>}
       </div>
-
-      <div style={{ flex: 1, padding: "8px", overflow: "hidden" }}>
-        <div ref={terminalRef} style={{ width: "100%", height: "100%" }} />
-      </div>
-    </div>
-  );
+    </header>
+    {error && <div className={styles.notice} role="alert">{error}</div>}
+    {connection === "disconnected" && <div className={styles.notice}>Connection closed. Reconnect to resume your terminal.</div>}
+    <div className={styles.viewport}><div ref={terminalRef} /></div>
+    <footer className={styles.footer}><span>Ctrl+C to interrupt · Select text to copy</span><span>{connection === "connected" ? "Shell ready" : "Input unavailable"}</span></footer>
+  </section>;
 }

@@ -1,5 +1,6 @@
 "use client";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { agentContext, type ContextSnapshot, type TokenUsageEvent } from "@/features/chat/contextUsage";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import AgentAvatar from "./AgentAvatar";
 import AgentContextAnalysisCard from "./AgentContextAnalysisCard";
@@ -17,16 +18,9 @@ interface Props {
   messages?: any[];
   agents?: AgentConfig[];
   lastTokenEvent?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; agent_name?: string } | null;
+  contextByAgent?: Record<string, ContextSnapshot>;
+  usageByAgent?: Record<string, TokenUsageEvent>;
 }
-
-const contextLimit = (model = "") => {
-  const value = model.toLowerCase();
-  if (value.includes("gemini")) return 1_000_000;
-  if (value.includes("claude")) return 200_000;
-  if (value.includes("32k") || value.includes("mistral")) return 32_768;
-  if (value.includes("16k") || value.includes("gpt-3.5")) return 16_384;
-  return 128_000;
-};
 
 const tone = (percent: number) => {
   if (percent >= 85) return "#ef6464";
@@ -43,12 +37,11 @@ const compact = (value: number) => {
 
 export default function ContextUsageGauge({
   projectId,
-  estimatedTokens,
-  contextWindow,
-  usagePercent,
   messages,
   agents = [],
   lastTokenEvent,
+  contextByAgent = {},
+  usageByAgent = {},
 }: Props) {
   const [open, setOpen] = useState(false);
   const [cycle, setCycle] = useState(0);
@@ -77,30 +70,12 @@ export default function ContextUsageGauge({
 
   const current = agents[cycle % Math.max(1, agents.length)];
 
-  // Accurately compute active conversation context tokens
-  const tokens = useMemo(() => {
-    // If the conversation has no messages, active context is empty
-    if (!messages || messages.length === 0) {
-      return 0;
-    }
-    // If agent is actively running or provided an estimated context usage
-    if (estimatedTokens !== undefined && estimatedTokens > 0) {
-      return estimatedTokens;
-    }
-    // If the last token event had prompt tokens for this conversation turn
-    if (lastTokenEvent?.prompt_tokens && lastTokenEvent.prompt_tokens > 0) {
-      return lastTokenEvent.prompt_tokens;
-    }
-    // Fallback: estimate from message text & reasoning
-    const chars = messages.reduce((sum, item) => sum + (item.text?.length || 0) + (item.reasoning?.length || 0), 0);
-    const msgTokens = Math.round(chars / 4);
-    return msgTokens > 0 ? msgTokens + 2200 : 0;
-  }, [messages, estimatedTokens, lastTokenEvent]);
-
-  const limit = contextWindow || contextLimit(current?.model) || 128_000;
-  const percent = tokens === 0
-    ? 0
-    : Math.min(100, usagePercent ?? (limit > 0 ? Math.round((tokens / limit) * 1000) / 10 : 0));
+  const snapshot = current ? contextByAgent[current.id] : undefined;
+  const usage = current ? usageByAgent[current.id] : undefined;
+  const measured = agentContext(snapshot, usage);
+  const tokens = measured.tokens ?? 0;
+  const limit = measured.limit ?? 0;
+  const percent = measured.percent ?? 0;
   const color = tone(percent);
 
   return (
@@ -109,7 +84,7 @@ export default function ContextUsageGauge({
         className="cw-context-trigger"
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
-        title={`Team context: ${percent.toFixed(0)}% used (${compact(Math.round(tokens))} / ${compact(limit)})`}
+        title={`${current?.name || "Agent"}: ${measured.percent === undefined ? "No request measurement yet" : `${percent.toFixed(0)}% context (${measured.source})`}`}
       >
         <span className="cw-context-orbit" style={{ "--meter": color, "--fill": percent + "%" } as React.CSSProperties}>
           <span className="cw-context-avatar" key={current?.id || "team"}>
@@ -121,7 +96,7 @@ export default function ContextUsageGauge({
           </span>
         </span>
         <span className="cw-context-copy">
-          <strong>{percent.toFixed(0)}%</strong>
+          <strong>{measured.percent === undefined ? "—" : `${percent.toFixed(0)}%`}</strong>
           <small>context</small>
         </span>
         <ChevronDown size={13} />
@@ -130,43 +105,51 @@ export default function ContextUsageGauge({
       {open && (
         <div className="cw-context-popover">
           <div className="cw-context-summary">
-            <span>Team context</span>
-            <strong style={{ color }}>{compact(Math.round(tokens))} / {compact(limit)}</strong>
+            <span>{current?.name || "Agent"} context</span>
+            <strong style={{ color }}>{measured.percent === undefined ? "Not measured" : `${compact(tokens)} / ${compact(limit)}`}</strong>
           </div>
           <div className="cw-context-track">
             <i style={{ width: percent + "%", background: color }} />
           </div>
           <p>
-            {tokens === 0
-              ? "Context is clear. Ready for your next message."
+            {measured.percent === undefined
+              ? "No request measurement yet. Each agent has its own context window."
               : percent >= 85
               ? "Near the context limit. Compact soon to keep the conversation reliable."
               : percent >= 65
               ? "Context is filling up. Longer work may benefit from compaction."
               : "Plenty of working context remains."}
           </p>
+          {snapshot && <p>Input {measured.source}. Capacity: {snapshot.capacity_source || "estimated"}. Output reserve: {compact(snapshot.output_reserve || 0)}.</p>}
+          {snapshot?.components && <details><summary>Request breakdown</summary>
+            {Object.entries(snapshot.components).map(([name, count]) => <div key={name}>{name}: {compact(count)}</div>)}
+          </details>}
+          {usage && <p>Latest model call: {compact(usage.prompt_tokens || 0)} input + {compact(usage.completion_tokens || 0)} output ({usage.usage_source || "estimated"}). Cache read: {usage.cache_read_tokens == null ? "unavailable" : compact(usage.cache_read_tokens)}; reasoning: {usage.reasoning_tokens == null ? "unavailable" : compact(usage.reasoning_tokens)}.</p>}
 
           {agents.length > 0 && (
             <div className="cw-context-team">
               {agents.map(agent => {
-                const agentLimit = contextLimit(agent.model);
-                const agentPct = tokens === 0 ? 0 : Math.min(100, Math.round((tokens / agentLimit) * 100));
+                const data = agentContext(contextByAgent[agent.id], usageByAgent[agent.id]);
+                const agentLimit = data.limit || 0;
+                const agentPct = data.percent || 0;
                 const agentColor = tone(agentPct);
                 return (
                   <AgentContextAnalysisCard
                     key={agent.id}
-                    agent={agent}
-                    totalTokens={tokens}
+                    agent={{...agent, model: usageByAgent[agent.id]?.resolved_model || contextByAgent[agent.id]?.model || agent.model}}
+                    totalTokens={data.tokens || 0}
+                    contextWindow={agentLimit}
+                    inputSource={data.source}
                     messages={messages}
-                    lastTokenEvent={lastTokenEvent}
+                    lastTokenEvent={usageByAgent[agent.id]}
                   >
                     <button onClick={() => setCycle(agents.findIndex(item => item.id === agent.id))}>
                       <AgentAvatar name={agent.name} id={agent.id} role={agent.role} size={25} hideBadge />
                       <span>
                         <strong>{agent.name}</strong>
-                        <small>{compact(agentLimit)} window</small>
+                        <small>{agentLimit ? `${compact(agentLimit)} window` : "Not measured"}</small>
                       </span>
-                      <em style={{ color: agentColor }}>{agentPct.toFixed(0)}%</em>
+                      <em style={{ color: agentColor }}>{data.percent === undefined ? "—" : `${agentPct.toFixed(0)}%`}</em>
                     </button>
                   </AgentContextAnalysisCard>
                 );

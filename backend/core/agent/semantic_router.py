@@ -117,19 +117,17 @@ class SemanticRouter:
             return
 
         try:
-            from model2vec import StaticModel
-            # Load ultra-compact 8M parameter model (runs in ~2ms on CPU)
-            self._model = StaticModel.from_pretrained("minishlab/potion-base-8M")
-            logger.info("🧠 [SemanticRouter] Loaded model2vec (potion-base-8M) successfully.")
+            from core.knowledge.hybrid_search import StaticCodeEmbedder
+            self._model = StaticCodeEmbedder.get_model()
         except Exception as e:
-            logger.warning("🧠 [SemanticRouter] Model2Vec initialization failed: %s. Falling back to heuristic embeddings.", e)
+            logger.warning("Semantic intent routing unavailable; grammar rules remain active: %s", type(e).__name__)
             self._model = None
 
         # Precompute normalized embeddings for all routes
         for route in self.routes.values():
             self._index_route(route)
 
-        self._initialized = True
+        self._initialized = self._model is not None
 
     def _index_route(self, route: Route):
         if not route.utterances:

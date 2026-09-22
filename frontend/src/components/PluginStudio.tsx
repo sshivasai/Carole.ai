@@ -301,8 +301,8 @@ export default function PluginStudio({ onToast }: { onToast: (msg: string, type:
                 style={{
                   flex: 1,
                   width: "100%",
-                  background: "#1e1e1e",
-                  color: "#d4d4d4",
+                  background: "var(--color-canvas)",
+                  color: "var(--color-ink)",
                   fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
                   fontSize: 14,
                   lineHeight: 1.5,
@@ -327,8 +327,8 @@ export default function PluginStudio({ onToast }: { onToast: (msg: string, type:
                 style={{
                   flex: 1,
                   width: "100%",
-                  background: "#1e1e1e",
-                  color: "#d4d4d4",
+                  background: "var(--color-canvas)",
+                  color: "var(--color-ink)",
                   fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
                   fontSize: 14,
                   lineHeight: 1.5,
@@ -351,7 +351,7 @@ export default function PluginStudio({ onToast }: { onToast: (msg: string, type:
             <p className="body-sm text-mute">These tools are loaded into the registry by default and can be assigned to any agent.</p>
           </div>
           
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "var(--sp-md)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(320px, 100%), 1fr))", gap: "var(--sp-md)" }}>
             {filteredTools.map(t => (
               <div key={t.name} style={{ background: "var(--color-canvas-raised)", border: "1px solid var(--color-hairline)", borderRadius: "var(--radius-md)", padding: "var(--sp-md)", display: "flex", flexDirection: "column", gap: "var(--sp-sm)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>

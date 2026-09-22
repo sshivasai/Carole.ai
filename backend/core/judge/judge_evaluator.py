@@ -209,6 +209,7 @@ class JudgeEvaluator:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=600,
+            purpose="safety_review",
         )
 
         # 4. Parse reasoning

@@ -23,14 +23,13 @@
       { "value": "openrouter/openai/gpt-3.5-turbo",            "label": "GPT-3.5 Turbo (budget / $0.5/M)" },
 
       { "value": "openrouter/google/gemini-2.5-pro",           "label": "Gemini 2.5 Pro (top / $1.25/M)" },
-      { "value": "openrouter/google/gemini-2.0-flash-001",     "label": "Gemini 2.0 Flash (fast / $0.1/M)" },
+      { "value": "openrouter/google/gemini-3.6-flash",         "label": "Gemini 3.6 Flash (fast / $3.75/M out)" },
 
       { "value": "openrouter/deepseek/deepseek-r1",            "label": "DeepSeek R1 (reasoning / $0.55/M)" },
       { "value": "openrouter/meta-llama/llama-3.3-70b-instruct", "label": "Llama 3.3 70B (open / $0.59/M)" },
       { "value": "openrouter/mistralai/mistral-large",         "label": "Mistral Large (balanced / $2/M)" },
       { "value": "openrouter/xai/grok-3-beta",                 "label": "Grok 3 Beta (advanced / $3/M)" },
 
-      { "value": "openrouter/google/gemini-2.0-flash-exp:free",        "label": "Gemini 2.0 Flash (FREE)" },
       { "value": "openrouter/meta-llama/llama-3.1-8b-instruct:free",   "label": "Llama 3.1 8B (FREE)" },
       { "value": "openrouter/deepseek/deepseek-chat-v3-0324:free",     "label": "DeepSeek v3 (FREE)" },
       { "value": "openrouter/microsoft/phi-4-reasoning:free",           "label": "Phi-4 Reasoning (FREE)" },
@@ -70,8 +69,8 @@
     "models": [
       { "value": "gemini-2.5-pro",        "label": "Gemini 2.5 Pro      — top          · $5/M out" },
       { "value": "gemini-2.5-flash",      "label": "Gemini 2.5 Flash    — fast+think   · $0.6/M out" },
-      { "value": "gemini-2.0-flash",      "label": "Gemini 2.0 Flash    — balanced     · $0.3/M out" },
-      { "value": "gemini-2.0-flash-lite", "label": "Gemini 2.0 Flash Lite— cheapest    · $0.075/M out" },
+      { "value": "gemini-3.6-flash",      "label": "Gemini 3.6 Flash    — balanced     · $3.75/M out" },
+      { "value": "gemini-3.1-flash-lite", "label": "Gemini 3.1 Flash Lite — cheapest" },
       { "value": "gemini-1.5-pro",        "label": "Gemini 1.5 Pro      — large ctx    · $5/M out" },
       { "value": "gemini-1.5-flash",      "label": "Gemini 1.5 Flash    — budget       · $0.3/M out" },
       { "value": "gemini-1.5-flash-8b",   "label": "Gemini 1.5 Flash 8B — ultra cheap · $0.075/M out" }

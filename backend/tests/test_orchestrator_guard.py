@@ -4,8 +4,8 @@ from core.tools.context import ToolExecutionContext, CancellationToken
 from core.agent.coordinator import CoordinatorAgent, OrchestratorAgent
 
 @pytest.mark.asyncio
-async def test_orchestrator_write_tool_blocked():
-    """Verify that an Orchestrator is hard-blocked from file modifications."""
+async def test_orchestrator_write_tool_blocked_by_permission():
+    """Explicit permissions, rather than role titles, deny file modifications."""
     exec_context = ToolExecutionContext(
         agent_id="test-orch-id",
         agent_name="Archer",
@@ -16,22 +16,20 @@ async def test_orchestrator_write_tool_blocked():
 
     result = await tool_executor.execute(
         tool_name="write_file",
-        arguments={"path": "test.txt", "content": "hello"},
+        arguments={"relative_path": "test.txt", "content": "hello"},
         agent_id="test-orch-id",
         agent_name="Archer",
         team_id="test-team-id",
-        permissions={},
+        permissions={"write_file": "block"},
         context=exec_context
     )
 
-    assert "Execution Denied" in result
-    assert "As an Orchestrator, you must NOT write or modify project files directly" in result
-    assert "spawn_agent" in result
+    assert "Execution Blocked" in result
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_mkdir_blocked():
-    """Verify that an Orchestrator is blocked from create_directory."""
+async def test_orchestrator_mkdir_blocked_by_permission():
+    """Explicit permissions can still block directory creation."""
     exec_context = ToolExecutionContext(
         agent_id="test-orch-id",
         agent_name="Archer",
@@ -42,16 +40,15 @@ async def test_orchestrator_mkdir_blocked():
 
     result = await tool_executor.execute(
         tool_name="create_directory",
-        arguments={"directory_path": "new_dir"},
+        arguments={"path": "new_dir"},
         agent_id="test-orch-id",
         agent_name="Archer",
         team_id="test-team-id",
-        permissions={},
+        permissions={"create_directory": "block"},
         context=exec_context
     )
 
-    assert "Execution Denied" in result
-    assert "Orchestrator" in result
+    assert "Execution Blocked" in result
 
 
 @pytest.mark.asyncio
@@ -87,13 +84,20 @@ def test_orchestrator_agent_alias():
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_can_write_markdown_files():
-    """Verify that an Orchestrator IS allowed to author markdown planning files."""
+@pytest.mark.parametrize("path", ["plan.md", "app.py"])
+async def test_orchestrator_can_write_when_policy_allows(owned_browser, db_session, path):
+    """A role title cannot override an approved tool permission."""
     from unittest.mock import patch, AsyncMock
+    import uuid
+    from core.memory.models import Agent
+    from core.tools.context import ToolPermissionContext
+    agent = await db_session.get(Agent, uuid.UUID(owned_browser["agent_id"]))
+    agent.role = "Orchestrator"
+    await db_session.commit()
     exec_context = ToolExecutionContext(
-        agent_id="test-orch-id",
+        agent_id=str(agent.id),
         agent_name="Archer",
-        team_id="test-team-id",
+        team_id=str(agent.team_id),
         cancellation_token=CancellationToken(),
         agent_role="Orchestrator"
     )
@@ -102,12 +106,13 @@ async def test_orchestrator_can_write_markdown_files():
         mock_write.return_value = "✓ File 'plan.md' written successfully."
         result = await tool_executor.execute(
             tool_name="write_file",
-            arguments={"relative_path": "plan.md", "content": "# Implementation Plan"},
-            agent_id="test-orch-id",
+            arguments={"relative_path": path, "content": "# Implementation Plan"},
+            agent_id=str(agent.id),
             agent_name="Archer",
-            team_id="test-team-id",
-            permissions={"write_file": "safe"},  # role permits documentation when policy allows it
-            context=exec_context
+            team_id=str(agent.team_id),
+            permissions={"write_file": "safe"},
+            context=exec_context,
+            permission_context=ToolPermissionContext(always_allow={"write_file"}),
         )
 
         assert "Execution Denied" not in result

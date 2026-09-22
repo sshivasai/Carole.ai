@@ -129,11 +129,37 @@ def test_dynamic_model_selection_with_user_google_key(monkeypatch):
         "default_models": {}
     }
 
-    assert _get_default_model("DEFAULT_SMART_MODEL", user_cfg) == "gemini-2.0-flash"
-    assert _get_default_model("DEFAULT_CODER_MODEL", user_cfg) == "gemini-2.0-flash"
-    assert _get_default_model("DEFAULT_FAST_MODEL", user_cfg) == "gemini-2.0-flash"
-    assert _get_default_model("DEFAULT_JUDGE_MODEL", user_cfg) == "gemini-2.0-flash"
+    assert _get_default_model("DEFAULT_SMART_MODEL", user_cfg) == "gemini-3.6-flash"
+    assert _get_default_model("DEFAULT_CODER_MODEL", user_cfg) == "gemini-3.6-flash"
+    assert _get_default_model("DEFAULT_FAST_MODEL", user_cfg) == "gemini-3.6-flash"
+    assert _get_default_model("DEFAULT_JUDGE_MODEL", user_cfg) == "gemini-3.6-flash"
     assert _get_default_model("DEFAULT_EMBEDDING_MODEL", user_cfg) == "models/text-embedding-004"
+
+
+def test_google_auto_default_falls_forward_to_discovered_stable_flash(monkeypatch):
+    monkeypatch.setattr(
+        "core.config._available_google_model_ids",
+        lambda: {"gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.8-live"},
+    )
+    user_cfg = {
+        "api_keys": {"google": "user-key", "openai": "", "anthropic": ""},
+        "default_models": {},
+    }
+
+    assert _get_default_model("DEFAULT_FAST_MODEL", user_cfg) == "gemini-3.8-flash"
+
+
+def test_google_explicit_default_is_not_overridden_by_discovery(monkeypatch):
+    monkeypatch.setattr(
+        "core.config._available_google_model_ids",
+        lambda: {"gemini-3.8-flash"},
+    )
+    user_cfg = {
+        "api_keys": {"google": "user-key"},
+        "default_models": {"DEFAULT_FAST_MODEL": "gemini-custom-tuned"},
+    }
+
+    assert _get_default_model("DEFAULT_FAST_MODEL", user_cfg) == "gemini-custom-tuned"
 
 
 def test_dynamic_model_selection_with_user_anthropic_key(monkeypatch):

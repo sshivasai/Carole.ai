@@ -599,7 +599,7 @@ export default function GitPanel({ projectId, onClose, onOpenFile, onOpenDiffFil
             position: "fixed",
             top: contextMenu.y,
             left: contextMenu.x,
-            background: "#1e1e2e",
+            background: "var(--color-canvas-soft)",
             border: "1px solid var(--border-glass)",
             borderRadius: "4px",
             boxShadow: "0 4px 12px rgba(0,0,0,0.5)",

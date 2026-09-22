@@ -194,18 +194,19 @@ function ProductPreview() {
               {demoTabs.map((tab) => {
                 const Icon = tab.icon;
                 return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === tab.id}
-                  className={activeTab === tab.id ? styles.activeTab : ""}
-                  onClick={() => selectDemo(tab.id)}
-                >
-                  <Icon size={14} />{tab.label}
-                  {tab.count && <span className={styles.tabCount}>{tab.count}</span>}
-                </button>
-              )})}
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === tab.id}
+                    className={activeTab === tab.id ? styles.activeTab : ""}
+                    onClick={() => selectDemo(tab.id)}
+                  >
+                    <Icon size={14} />{tab.label}
+                    {tab.count && <span className={styles.tabCount}>{tab.count}</span>}
+                  </button>
+                )
+              })}
             </div>
 
             <div className={styles.detailPanel}>
@@ -500,5 +501,28 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
         <div><a href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer">GitHub</a><a href="#integrations">MCP tools</a><a href="#infrastructure">Infrastructure</a></div>
       </footer>
     </main>
+  );
+}
+                <span>{faq.q}</span><ChevronDown size={18} />
+              </button >
+  <div id={`faq-answer-${index}`} className={styles.faqAnswer} aria-hidden={openFaq !== index}><p>{faq.a}</p></div>
+            </div >
+          ))}
+        </div >
+      </section >
+
+      <section className={styles.finalCta}>
+        <div className={styles.finalGlow} />
+        <span className={styles.eyebrow}>Ready when you are</span>
+        <h2>Bring your next build.<br /><em>Carole brings the team.</em></h2>
+        <button className={styles.primaryCta} onClick={onSignUp}>Create your workspace <ArrowRight size={17} /></button>
+      </section>
+
+      <footer className={styles.footer}>
+        <a className={styles.logo} href="#top"><img className={styles.brandMark} src="/branding/logo-mark-animated.webp" alt="" /><img className={styles.brandWordmark} src={theme === "dark" ? "/branding/logo-wordmark-dark.png" : "/branding/logo-wordmark.png"} alt="Carole.ai" /></a>
+        <p>Open-source multi-agent workspace for building software.</p>
+        <div><a href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer">GitHub</a><a href="#integrations">MCP tools</a><a href="#infrastructure">Infrastructure</a></div>
+      </footer>
+    </main >
   );
 }

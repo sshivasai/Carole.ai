@@ -5,6 +5,7 @@ from core.llm.provider_sync import (
     _merge_provider_models,
     fetch_openrouter_models,
     fetch_openai_models,
+    fetch_google_models,
     fetch_ollama_models,
     sync_all_provider_models,
 )
@@ -34,6 +35,20 @@ def test_merge_provider_models_preserves_special():
     # No duplicate entries
     assert values.count("openrouter/custom/my-model") == 1
     assert "openrouter/anthropic/claude-3.7-sonnet" in values
+
+
+def test_google_merge_prunes_models_missing_from_discovery():
+    existing = [
+        {"value": "gemini-2.0-flash", "label": "Retired"},
+        {"value": "gemini-3.6-flash", "label": "Current"},
+    ]
+    fetched = [
+        {"value": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
+    ]
+
+    merged = _merge_provider_models(existing, fetched, "google")
+
+    assert [entry["value"] for entry in merged] == ["gemini-3.8-flash"]
 
 
 @pytest.mark.asyncio
@@ -66,6 +81,31 @@ async def test_fetch_openai_models_filters():
     assert "text-embedding-3-small" not in values
     assert "whisper-1" not in values
     assert "dall-e-3" not in values
+
+
+@pytest.mark.asyncio
+async def test_fetch_google_models_keeps_api_key_out_of_url():
+    from unittest.mock import MagicMock
+
+    mock_client = AsyncMock()
+    mock_res = MagicMock()
+    mock_res.json.return_value = {
+        "models": [{
+            "name": "models/gemini-3.6-flash",
+            "displayName": "Gemini 3.6 Flash",
+            "supportedGenerationMethods": ["generateContent"],
+        }]
+    }
+    mock_res.raise_for_status.return_value = None
+    mock_client.get.return_value = mock_res
+
+    models = await fetch_google_models(mock_client, "secret-google-key")
+
+    assert models[0]["value"] == "gemini-3.6-flash"
+    request_url = mock_client.get.await_args.args[0]
+    request_headers = mock_client.get.await_args.kwargs["headers"]
+    assert "secret-google-key" not in request_url
+    assert request_headers["x-goog-api-key"] == "secret-google-key"
 
 
 @pytest.mark.asyncio

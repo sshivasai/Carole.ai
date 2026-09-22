@@ -39,15 +39,15 @@ export class ErrorBoundary extends Component<Props, State> {
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          backgroundColor: "#0A0A0A",
-          color: "#EDEDED",
+          backgroundColor: "var(--color-canvas)",
+          color: "var(--color-ink)",
           fontFamily: "'Inter', system-ui, sans-serif",
           padding: "24px",
           textAlign: "center"
         }}>
           <div style={{
-            background: "#121212",
-            border: "1px solid #242424",
+            background: "var(--color-canvas-raised)",
+            border: "1px solid var(--color-hairline)",
             borderRadius: "12px",
             padding: "32px",
             maxWidth: "500px",
@@ -57,13 +57,13 @@ export class ErrorBoundary extends Component<Props, State> {
             <h2 style={{ fontSize: "1.25rem", fontWeight: 600, color: "#EF4444", marginBottom: "12px" }}>
               Something went wrong
             </h2>
-            <p style={{ fontSize: "0.875rem", color: "#A1A1AA", marginBottom: "20px", lineHeight: 1.5 }}>
+            <p style={{ fontSize: "0.875rem", color: "var(--color-body)", marginBottom: "20px", lineHeight: 1.5 }}>
               Carole.ai encountered an unexpected rendering error. You can try refreshing the page to recover.
             </p>
             {this.state.error && (
               <pre style={{
-                background: "#0A0A0A",
-                border: "1px solid #242424",
+                background: "var(--color-canvas)",
+                border: "1px solid var(--color-hairline)",
                 borderRadius: "6px",
                 padding: "12px",
                 fontSize: "0.75rem",

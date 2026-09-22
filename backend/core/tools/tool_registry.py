@@ -156,9 +156,9 @@ class ToolRegistry:
 
         lines = ["<available-tools>"]
         for spec in cls._tools.values():
-            if spec.team_id is not None and spec.team_id != team_id:
+            if spec.team_id is not None and str(spec.team_id) != str(team_id):
                 continue
-            if spec.agent_id is not None and spec.agent_id != agent_id:
+            if spec.agent_id is not None and str(spec.agent_id) != str(agent_id):
                 continue
 
             # Keep description concise (first sentence/line)
@@ -207,7 +207,7 @@ class ToolRegistry:
 
         Returns a list ready to pass as the ``tools`` parameter of the
         Anthropic Messages API. Optional ``categories`` and ``include_names``
-        filter the tools for role-based scoping and intent-based loading.
+        filter the tools for permission-aware selection and relevance-based loading.
         Tools are sorted alphabetically by name for deterministic prompt caching.
         """
         cache_key = (
@@ -222,9 +222,9 @@ class ToolRegistry:
 
         tools = []
         for spec in sorted(cls._tools.values(), key=lambda s: s.name):
-            if spec.team_id is not None and spec.team_id != team_id:
+            if spec.team_id is not None and str(spec.team_id) != str(team_id):
                 continue
-            if spec.agent_id is not None and spec.agent_id != agent_id:
+            if spec.agent_id is not None and str(spec.agent_id) != str(agent_id):
                 continue
             if categories is not None and spec.category not in categories:
                 continue
@@ -337,9 +337,9 @@ class ToolRegistry:
 
         declarations = []
         for spec in sorted(cls._tools.values(), key=lambda s: s.name):
-            if spec.team_id is not None and spec.team_id != team_id:
+            if spec.team_id is not None and str(spec.team_id) != str(team_id):
                 continue
-            if spec.agent_id is not None and spec.agent_id != agent_id:
+            if spec.agent_id is not None and str(spec.agent_id) != str(agent_id):
                 continue
             if categories is not None and spec.category not in categories:
                 continue

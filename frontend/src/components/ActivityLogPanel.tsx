@@ -1,3 +1,4 @@
+import { useTheme } from "@/hooks/useTheme";
 import React, { useState, useEffect, useCallback } from "react";
 import { api } from "@/hooks/useApi";
 import { FileCode, ChevronDown, ChevronRight, Activity, Trash2, RefreshCw } from "lucide-react";
@@ -10,6 +11,7 @@ interface ActivityLogPanelProps {
 const isValidTeamId = (t?: string) => !!t && t !== "undefined" && /^[0-9a-fA-F-]{8,}$/.test(t);
 
 export default function ActivityLogPanel({ teamId }: ActivityLogPanelProps) {
+  const { theme } = useTheme();
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -151,7 +153,7 @@ export default function ActivityLogPanel({ teamId }: ActivityLogPanelProps) {
                         original={log.original_content}
                         modified={log.new_content}
                         language={log.file_path.split('.').pop() === 'ts' ? 'typescript' : log.file_path.split('.').pop() === 'tsx' ? 'typescript' : log.file_path.split('.').pop()}
-                        theme="vs-dark"
+                        theme={theme === "light" ? "light" : "vs-dark"}
                         options={{
                           readOnly: true,
                           minimap: { enabled: false },

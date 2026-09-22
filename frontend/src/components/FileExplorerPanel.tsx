@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import {
   Folder,
   ChevronRight,
@@ -36,8 +37,10 @@ import { PanelGroup, Panel, PanelResizeHandle, ImperativePanelHandle } from "rea
 import { api, getApiBase } from "@/hooks/useApi";
 import { useAuth } from "@/hooks/useAuth";
 import Editor, { DiffEditor } from "@monaco-editor/react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import MarkdownViewer from "./MarkdownViewer";
+import { useTheme } from "@/hooks/useTheme";
+import { savedFileState } from "@/features/files/document";
+import "./file-workspace.css";
 import TerminalPanel from "./TerminalPanel";
 import GitPanel from "./GitPanel";
 import SearchPanel from "./SearchPanel";
@@ -137,7 +140,7 @@ const EXEC_EXTS = new Set(["py", "js", "ts", "sh", "bash", "rb", "php"]);
 function isExecutable(path: string) {
   return EXEC_EXTS.has(path.split(".").pop()?.toLowerCase() || "");
 }
-const isMarkdownPath = (p: string) => /\.(md|markdown|txt)$/i.test(p);
+const isMarkdownPath = (p: string) => /\.(md|markdown)$/i.test(p);
 
 interface FileItem {
   name: string;
@@ -322,6 +325,19 @@ function FileHistoryPanel({
   );
 }
 
+function FileContextMenu({ x, y, children }: { x: number; y: number; children: React.ReactNode }) {
+  const menu = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const node = menu.current;
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    node.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+    node.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+    node.querySelector<HTMLButtonElement>('button')?.focus();
+  }, [x, y]);
+  return createPortal(<div ref={menu} className="fe-context-menu" aria-label="File actions" style={{ position: "fixed", top: y, left: x }} onClick={event => event.stopPropagation()}>{children}</div>, document.body);
+}
+
 function ContextMenuItem({
   children,
   onClick,
@@ -332,10 +348,11 @@ function ContextMenuItem({
   style?: React.CSSProperties;
 }) {
   return (
-    <div
+    <button type="button"
       onClick={onClick}
       style={{
-        padding: "6px 14px",
+        padding: "8px 12px",
+        border: "none", background: "transparent", color: "inherit", width: "100%", textAlign: "left",
         cursor: "pointer",
         fontSize: "12px",
         display: "flex",
@@ -346,7 +363,7 @@ function ContextMenuItem({
       className="hover:bg-gray-800 transition-colors"
     >
       {children}
-    </div>
+    </button>
   );
 }
 
@@ -363,6 +380,22 @@ export default function FileExplorerPanel({
 }: FileExplorerPanelProps) {
   const { addToast } = useToast();
   const { user } = useAuth();
+  const { theme } = useTheme();
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const container = workspaceRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(entries => setNarrow(entries[0].contentRect.width < 620));
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+  const projectRef = useRef(projectId);
+  const fileRequest = useRef(0);
+  const rootRequest = useRef(0);
+  const saveLock = useRef(false);
+  const [discardPath, setDiscardPath] = useState<string | null>(null);
+  const projectBuffers = useRef(new Map<string, { files: OpenFile[]; active: string | null }>());
   
   const getRawFileUrl = useCallback((filePath: string) => {
     const token = typeof window !== "undefined" ? localStorage.getItem("carole_token") : "";
@@ -463,6 +496,19 @@ export default function FileExplorerPanel({
   // Root directory items
   const [rootItems, setRootItems] = useState<FileItem[]>([]);
   const [rootLoading, setRootLoading] = useState(false);
+  const [rootError, setRootError] = useState("");
+
+  useEffect(() => {
+    if (projectRef.current === projectId) return;
+    projectBuffers.current.set(projectRef.current || "", { files: openFiles, active: activeFilePath });
+    projectRef.current = projectId;
+    fileRequest.current++;
+    rootRequest.current++;
+    const saved = projectBuffers.current.get(projectId || "");
+    setOpenFiles(saved?.files || []);
+    setActiveFilePath(saved?.active || null);
+    setRootItems([]); setLoadingContent(false); setSelectedPaths(new Set()); setClipboard(null); setDiscardPath(null);
+  }, [projectId, openFiles, activeFilePath]);
 
   // Load project name
   useEffect(() => {
@@ -482,16 +528,18 @@ export default function FileExplorerPanel({
       setRootItems([]);
       return;
     }
-    setRootLoading(true);
+    const request = ++rootRequest.current;
+    setRootLoading(true); setRootError("");
     try {
       const items = await api.listFiles(".", projectId);
+      if (request !== rootRequest.current || projectRef.current !== projectId) return;
       items.sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name) : a.is_dir ? -1 : 1));
       setRootItems(items);
     } catch (err) {
-      console.warn("Failed to load root files:", err);
-      setRootItems([]);
+      if (request !== rootRequest.current || projectRef.current !== projectId) return;
+      setRootError(err instanceof Error ? err.message : "Could not load files.");
     } finally {
-      setRootLoading(false);
+      if (request === rootRequest.current) setRootLoading(false);
     }
   }, [projectId]);
 
@@ -502,8 +550,10 @@ export default function FileExplorerPanel({
   // Global click to close context menu
   useEffect(() => {
     const close = () => setContextMenu(null);
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    document.addEventListener("keydown", escape);
     document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
+    return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", escape); };
   }, []);
 
   // Real-time Live Synchronization (WebSocket events)
@@ -526,7 +576,8 @@ export default function FileExplorerPanel({
       }
 
       const rp = lastFileChange.path.replace(/\\/g, "/");
-      const nc = lastFileChange.after_content ?? "";
+      if (lastFileChange.after_content === undefined) return;
+      const nc = lastFileChange.after_content;
       const sender = lastFileChange.sender_name || "Agent";
       
       setOpenFiles((prev) =>
@@ -566,8 +617,10 @@ export default function FileExplorerPanel({
   }, [openFiles]);
 
   const openFile = async (path: string) => {
+    const request = ++fileRequest.current;
     const ex = openFiles.find((f) => f.path === path);
     if (ex) {
+      setLoadingContent(false);
       setActiveFilePath(path);
       setViewMode(isMarkdownPath(path) ? "preview" : "edit");
       return;
@@ -575,34 +628,33 @@ export default function FileExplorerPanel({
     setLoadingContent(true);
     try {
       const res = await api.readFile(path, projectId);
+      if (request !== fileRequest.current || projectRef.current !== projectId) return;
       setOpenFiles((prev) =>
         prev.some((f) => f.path === path) ? prev : [...prev, { path, content: res.content, isDirty: false }]
       );
       setActiveFilePath(path);
       setViewMode(isMarkdownPath(path) ? "preview" : "edit");
     } catch (e) {
-      addToast({ type: "error", message: `Error: ${(e as Error).message}` });
+      if (request === fileRequest.current) addToast({ type: "error", message: `Error: ${(e as Error).message}` });
     } finally {
-      setLoadingContent(false);
+      if (request === fileRequest.current) setLoadingContent(false);
     }
   };
 
   const openDiffFile = async (path: string, originalContent: string) => {
+    const request = ++fileRequest.current;
     const tabPath = `diff:${path}`;
     const ex = openFiles.find((f) => f.path === tabPath);
     if (ex) {
+      setLoadingContent(false);
       setActiveFilePath(tabPath);
       return;
     }
     setLoadingContent(true);
     try {
-      let currentContent = "";
-      try {
-        const res = await api.readFile(path, projectId);
-        currentContent = res.content || "";
-      } catch (e) {
-        currentContent = "";
-      }
+      const res = await api.readFile(path, projectId);
+      const currentContent = res.content || "";
+      if (request !== fileRequest.current || projectRef.current !== projectId) return;
       setOpenFiles((prev) => [
         ...prev.filter(f => f.path !== tabPath),
         {
@@ -615,9 +667,9 @@ export default function FileExplorerPanel({
       ]);
       setActiveFilePath(tabPath);
     } catch (e) {
-      addToast({ type: "error", message: `Error loading diff: ${(e as Error).message}` });
+      if (request === fileRequest.current) addToast({ type: "error", message: `Error loading diff: ${(e as Error).message}` });
     } finally {
-      setLoadingContent(false);
+      if (request === fileRequest.current) setLoadingContent(false);
     }
   };
 
@@ -627,8 +679,9 @@ export default function FileExplorerPanel({
     );
   };
 
-  const closeFile = (path: string, e?: React.MouseEvent) => {
+  const closeFile = (path: string, e?: React.MouseEvent, discard = false) => {
     if (e) e.stopPropagation();
+    if (!discard && openFiles.some(file => file.path === path && file.isDirty)) { setDiscardPath(path); return; }
     setOpenFiles((prev) => {
       const f = prev.filter((x) => x.path !== path);
       if (activeFilePath === path) setActiveFilePath(f.length ? f[f.length - 1].path : null);
@@ -641,19 +694,25 @@ export default function FileExplorerPanel({
   };
 
   const handleSave = useCallback(async () => {
-    if (!activeFilePath) return;
+    if (!activeFilePath || saveLock.current || projectRef.current !== projectId) return;
     const file = openFiles.find((f) => f.path === activeFilePath);
-    if (!file || !file.isDirty) return;
+    if (!file || !file.isDirty || file.isDiff) return;
+    saveLock.current = true;
     setSaving(true);
     try {
       await api.writeFile(file.path, file.content, projectId);
-      setOpenFiles((prev) => prev.map((f) => (f.path === activeFilePath ? { ...f, isDirty: false } : f)));
+      if (projectRef.current !== projectId) {
+        const cached = projectBuffers.current.get(projectId || "");
+        if (cached) cached.files = savedFileState(cached.files, file.path, file.content);
+        return;
+      }
+      setOpenFiles(prev => savedFileState(prev, file.path, file.content));
       setRefreshKey((k) => k + 1);
       addToast({ type: "success", message: `Saved ${file.path}` });
     } catch (e) {
       addToast({ type: "error", message: `Save failed: ${(e as Error).message}` });
     } finally {
-      setSaving(false);
+      saveLock.current = false; setSaving(false);
     }
   }, [activeFilePath, openFiles, projectId, addToast]);
 
@@ -924,6 +983,7 @@ export default function FileExplorerPanel({
         return;
       }
 
+      if (!target.closest(".fe-workspace")) return;
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
         handleSave();
@@ -986,7 +1046,8 @@ export default function FileExplorerPanel({
   const filteredRootItems = rootItems.filter((c) => !lf || c.name.toLowerCase().includes(lf) || c.is_dir);
 
   return (
-    <div style={containerStyle} tabIndex={0}>
+    <div ref={workspaceRef} className="fe-workspace" style={containerStyle} tabIndex={0} aria-label="File workspace">
+      <Modal open={discardPath !== null} onClose={() => setDiscardPath(null)} title="Discard unsaved changes?" maxWidth={440}><p className="body-sm" style={{ marginBottom: 20 }}>Your edits to <strong>{discardPath?.split("/").pop()}</strong> have not been saved.</p><div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}><button className="btn btn-outline" onClick={() => setDiscardPath(null)}>Keep editing</button><button className="btn btn-danger" onClick={() => { if (discardPath) closeFile(discardPath, undefined, true); setDiscardPath(null); }}>Discard changes</button></div></Modal>
       {/* Left Navigation Bar */}
       <div
         style={{
@@ -1022,7 +1083,7 @@ export default function FileExplorerPanel({
                   }
                 }
               }}
-              title={title}
+              title={title} aria-label={title} aria-pressed={isActive}
               style={{
                 padding: 8,
                 borderRadius: "var(--radius-sm)",
@@ -1037,7 +1098,7 @@ export default function FileExplorerPanel({
         })}
       </div>
 
-      <PanelGroup direction="horizontal" autoSaveId="fe-h-v2">
+      <PanelGroup direction={narrow ? "vertical" : "horizontal"} autoSaveId={narrow ? "fe-mobile-v1" : "fe-h-v2"}>
         {/* Left Side Explorer View */}
         <Panel
           ref={leftPanelRef}
@@ -1099,14 +1160,14 @@ export default function FileExplorerPanel({
                   <button
                     className="btn btn-ghost btn-icon btn-sm"
                     onClick={() => handleCreateFilePrompt(".")}
-                    title="New File at Root"
+                    title="New File at Root" disabled={!projectId}
                   >
                     <FilePlus size={13} />
                   </button>
                   <button
                     className="btn btn-ghost btn-icon btn-sm"
                     onClick={() => handleCreateFolderPrompt(".")}
-                    title="New Folder at Root"
+                    title="New Folder at Root" disabled={!projectId}
                   >
                     <FolderPlus size={13} />
                   </button>
@@ -1174,6 +1235,7 @@ export default function FileExplorerPanel({
                 >
                   <Filter size={11} color="var(--color-mute)" style={{ flexShrink: 0 }} />
                   <input
+                    aria-label="Filter files by name"
                     placeholder="Filter files by name…"
                     value={filterText}
                     onChange={(e) => setFilterText(e.target.value)}
@@ -1188,6 +1250,7 @@ export default function FileExplorerPanel({
                   />
                   {filterText && (
                     <button
+                      aria-label="Clear file filter"
                       onClick={() => setFilterText("")}
                       style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-mute)", padding: 0 }}
                     >
@@ -1203,6 +1266,7 @@ export default function FileExplorerPanel({
                 onClick={() => setSelectedPaths(new Set())}
                 onContextMenu={(e) => {
                   e.preventDefault();
+                  if (!projectId) return;
                   setContextMenu({ x: e.clientX, y: e.clientY, path: ".", isDir: true, isMulti: false });
                 }}
               >
@@ -1231,6 +1295,8 @@ export default function FileExplorerPanel({
 
                     {/* Direct Top-Level Items (Clean VS Code Style) */}
                     <div style={{ paddingLeft: 4 }}>
+                      {rootError && <div className="fe-error" role="alert"><p>{rootError}</p><button className="btn btn-outline btn-sm" onClick={() => void loadRootItems()}>Retry</button></div>}
+                      {!rootLoading && !rootError && !filteredRootItems.length && <div className="fe-empty"><Folder size={24} /><p>{filterText ? "No files match this filter." : "This workspace has no files yet."}</p></div>}
                       {rootLoading && !rootItems.length && (
                         <div className="body-sm text-mute" style={{ padding: "8px 16px", fontSize: 12 }}>
                           Loading files…
@@ -1413,7 +1479,7 @@ export default function FileExplorerPanel({
           )}
         </Panel>
 
-        <PanelResizeHandle className="resize-handle" style={{ width: "4px", cursor: "col-resize", background: "var(--border-subtle)", flexShrink: 0 }} />
+        <PanelResizeHandle className="resize-handle" style={{ width: narrow ? "100%" : 4, height: narrow ? 4 : "100%", cursor: narrow ? "row-resize" : "col-resize", background: "var(--border-subtle)", flexShrink: 0 }} />
 
         {/* Right Side Editor / Terminal View */}
         <Panel id="fe-right" order={2} style={{ display: "flex", flexDirection: "column", minWidth: 0, background: "transparent" }}>
@@ -1431,7 +1497,7 @@ export default function FileExplorerPanel({
                       height: 35,
                       flexShrink: 0,
                     }}
-                    className="scrollbar-hide"
+                    className="fe-tabs"
                   >
                     {openFiles.map((file) => {
                       const isActive = file.path === activeFilePath;
@@ -1445,7 +1511,10 @@ export default function FileExplorerPanel({
                       return (
                         <div
                           key={file.path}
-                          onClick={() => setActiveFilePath(file.path)}
+                          role="button" tabIndex={0} title={file.path}
+                          aria-label={`Open ${fname}${file.isDirty ? ", unsaved changes" : ""}`}
+                          onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); fileRequest.current++; setLoadingContent(false); setActiveFilePath(file.path); } }}
+                          onClick={() => { fileRequest.current++; setLoadingContent(false); setActiveFilePath(file.path); }}
                           style={{
                             display: "flex",
                             alignItems: "center",
@@ -1467,7 +1536,7 @@ export default function FileExplorerPanel({
                           <span className="truncate body-sm font-mono" style={{ fontSize: "12px", flex: 1 }}>
                             {fname}
                           </span>
-                          {file.isDirty && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#fff", flexShrink: 0 }} />}
+                          {file.isDirty && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--color-primary)", flexShrink: 0 }} />}
                           <button
                             onClick={(e) => closeFile(file.path, e)}
                             style={{
@@ -1483,7 +1552,7 @@ export default function FileExplorerPanel({
                               color: "var(--color-mute)",
                             }}
                             className="hover:text-white transition-colors"
-                            title="Close"
+                            title="Close" aria-label={`Close ${fname}`}
                           >
                             <X size={12} />
                           </button>
@@ -1494,7 +1563,7 @@ export default function FileExplorerPanel({
 
                   {/* Breadcrumb & Action Toolbar */}
                   {activeFile && (
-                    <div
+                    <div className="fe-editor-toolbar"
                       style={{
                         padding: "3px 12px",
                         borderBottom: "1px solid var(--color-hairline)",
@@ -1512,6 +1581,7 @@ export default function FileExplorerPanel({
                           <div style={{ display: "flex", gap: 2, background: "var(--color-surface)", borderRadius: 4, padding: 2, flexShrink: 0 }}>
                             <button
                               className="btn btn-sm"
+                              aria-pressed={viewMode === "preview"}
                               onClick={() => setViewMode("preview")}
                               style={{
                                 padding: "1px 7px",
@@ -1526,6 +1596,7 @@ export default function FileExplorerPanel({
                             </button>
                             <button
                               className="btn btn-sm"
+                              aria-pressed={viewMode === "edit"}
                               onClick={() => setViewMode("edit")}
                               style={{
                                 padding: "1px 7px",
@@ -1623,7 +1694,7 @@ export default function FileExplorerPanel({
                             original={activeFile.originalContent || ""}
                             modified={activeFile.content}
                             language={getLanguageFromPath(activeFile.path.replace(/^diff:/, ""))}
-                            theme="vs-dark"
+                            theme={theme === "light" ? "light" : "vs-dark"}
                             options={{
                               renderSideBySide: true,
                               readOnly: true,
@@ -1635,24 +1706,9 @@ export default function FileExplorerPanel({
                             }}
                           />
                         ) : isMarkdownPath(activeFile.path) && viewMode === "preview" ? (
-                          <div style={{ height: "100%", overflowY: "auto", padding: "8px 24px 32px" }} className="markdown-body">
-                            {activeFile.content.trim() ? (
-                              <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                components={{
-                                  a: ({ node, ...p }) => <a {...p} target="_blank" rel="noopener noreferrer" />,
-                                }}
-                              >
-                                {activeFile.content}
-                              </ReactMarkdown>
-                            ) : (
-                              <div className="body-sm" style={{ color: "var(--color-mute)", fontStyle: "italic" }}>
-                                Empty — switch to Edit.
-                              </div>
-                            )}
-                          </div>
+                          <MarkdownViewer key={activeFile.path} content={activeFile.content} path={activeFile.path} onOpenFile={path => void openFile(path)} resolveAsset={getRawFileUrl} />
                         ) : getFileType(activeFile.path) === "image" ? (
-                          <div style={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center", background: "#11111b", overflow: "auto", padding: 24, height: "100%" }}>
+                          <div style={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center", background: "var(--color-canvas-soft)", overflow: "auto", padding: 24, height: "100%" }}>
                             <img
                               src={getRawFileUrl(activeFile.path)}
                               alt={activeFile.path}
@@ -1660,7 +1716,7 @@ export default function FileExplorerPanel({
                             />
                           </div>
                         ) : getFileType(activeFile.path) === "video" ? (
-                          <div style={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center", background: "#11111b", overflow: "hidden", padding: 24, height: "100%" }}>
+                          <div style={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center", background: "var(--color-canvas-soft)", overflow: "hidden", padding: 24, height: "100%" }}>
                             <video
                               controls
                               src={getRawFileUrl(activeFile.path)}
@@ -1668,7 +1724,7 @@ export default function FileExplorerPanel({
                             />
                           </div>
                         ) : getFileType(activeFile.path) === "audio" ? (
-                          <div style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#11111b", padding: 24, gap: 16, height: "100%" }}>
+                          <div style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center", background: "var(--color-canvas-soft)", padding: 24, gap: 16, height: "100%" }}>
                             <span style={{ color: "#aaa", fontSize: 13, fontFamily: "monospace" }}>{activeFile.path}</span>
                             <audio
                               controls
@@ -1677,14 +1733,14 @@ export default function FileExplorerPanel({
                             />
                           </div>
                         ) : getFileType(activeFile.path) === "pdf" ? (
-                          <div style={{ display: "flex", flex: 1, background: "#11111b", overflow: "hidden", height: "100%" }}>
-                            <iframe
+                          <div style={{ display: "flex", flex: 1, background: "var(--color-canvas-soft)", overflow: "hidden", height: "100%" }}>
+                            <iframe title={`Preview ${activeFile.path}`}
                               src={`${getRawFileUrl(activeFile.path)}#toolbar=0`}
                               style={{ width: "100%", height: "100%", border: "none" }}
                             />
                           </div>
                         ) : activeFile.content === "[Binary file: cannot display as text]" ? (
-                          <div style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#11111b", padding: 24, gap: 16, height: "100%", color: "#9ca3af" }}>
+                          <div style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center", background: "var(--color-canvas-soft)", padding: 24, gap: 16, height: "100%", color: "#9ca3af" }}>
                             <History size={48} style={{ color: "#4b5563" }} />
                             <span style={{ fontSize: 14, fontWeight: 500 }}>{activeFile.path.split('/').pop()}</span>
                             <span style={{ fontSize: 12, color: "#6b7280" }}>Binary file (cannot display as text)</span>
@@ -1702,7 +1758,8 @@ export default function FileExplorerPanel({
                           <Editor
                             height="100%"
                             language={getLanguageFromPath(activeFile.path)}
-                            theme="vs-dark"
+                            theme={theme === "light" ? "light" : "vs-dark"}
+                            path={`${projectId || "workspace"}/${activeFile.path}`}
                             value={activeFile.content}
                             onChange={(v) => updateFileContent(activeFile.path, v || "")}
                             onMount={(editor, monaco) => {
@@ -1954,23 +2011,7 @@ export default function FileExplorerPanel({
 
       {/* Context Menu */}
       {contextMenu && (
-        <div
-          style={{
-            position: "fixed",
-            top: contextMenu.y,
-            left: contextMenu.x,
-            background: "var(--color-surface)",
-            border: "1px solid var(--color-hairline)",
-            borderRadius: "6px",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
-            padding: "4px 0",
-            zIndex: 9999,
-            minWidth: "195px",
-            display: "flex",
-            flexDirection: "column",
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <FileContextMenu x={contextMenu.x} y={contextMenu.y}>
           {contextMenu.isMulti ? (
             <>
               <div style={{ padding: "4px 14px", fontSize: "11px", fontWeight: 700, color: "var(--color-mute)", textTransform: "uppercase" }}>
@@ -2058,7 +2099,7 @@ export default function FileExplorerPanel({
               </ContextMenuItem>
             </>
           )}
-        </div>
+        </FileContextMenu>
       )}
 
       {/* Confirmation & Input Dialogs */}
@@ -2290,17 +2331,11 @@ function TreeNode({
           borderRadius: "0 4px 4px 0",
           transition: "background-color 0.12s ease",
         }}
-        className="hover:bg-gray-800 transition-colors"
+        className="fe-tree-row"
+        role="button" tabIndex={0} aria-label={name} aria-expanded={isDir ? expanded : undefined}
+        onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); event.currentTarget.click(); } }}
         onClick={toggleExpand}
         onContextMenu={(e) => onContextMenu(e, path, isDir)}
-        onDoubleClick={(e) => {
-          if (!isDir) {
-            e.stopPropagation();
-            setIsEditing(true);
-            setEditName(name);
-            setTimeout(() => editRef.current?.select(), 50);
-          }
-        }}
         draggable={!defaultExpanded}
         onDragStart={(e) => {
           if (isSelected && selectedPaths.size > 1) {

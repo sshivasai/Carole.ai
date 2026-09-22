@@ -128,7 +128,7 @@ export default function BrowserSettings({ onToast }: Props) {
               <p className="caption text-mute" style={{ marginBottom: "var(--sp-md)" }}>
                 Controls how the agent reads the DOM tree and executes clicks, keystrokes, and form inputs.
               </p>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(240px, 100%), 1fr))", gap: "var(--sp-md)" }}>
                 <label
                   style={{
                     display: "flex",
@@ -209,7 +209,7 @@ export default function BrowserSettings({ onToast }: Props) {
               <p className="caption text-mute" style={{ marginBottom: "var(--sp-md)" }}>
                 Select where the Chromium browser instance runs and executes pages.
               </p>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(240px, 100%), 1fr))", gap: "var(--sp-md)" }}>
                 <label
                   style={{
                     display: "flex",
@@ -270,7 +270,7 @@ export default function BrowserSettings({ onToast }: Props) {
               </div>
 
               {settings.infrastructure === "browserbase" && (
-                <div style={{ marginTop: "var(--sp-md)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-md)" }}>
+                <div style={{ marginTop: "var(--sp-md)", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", gap: "var(--sp-md)" }}>
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <div style={{ display: "flex", alignItems: "center" }}>
                       <label className="form-label" style={{ fontSize: 11 }}>Browserbase API Key</label>
@@ -393,7 +393,7 @@ export default function BrowserSettings({ onToast }: Props) {
             </div>
 
             {/* ── Display Mode & Vision Model ── */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--sp-md)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(240px, 100%), 1fr))", gap: "var(--sp-md)" }}>
               <div
                 style={{
                   background: "var(--color-canvas-soft)",
@@ -461,7 +461,7 @@ export default function BrowserSettings({ onToast }: Props) {
                   <option value="inherit">Inherit Calling Agent's Active Model</option>
                   <option value="gpt-4o">OpenAI GPT-4o (High-Accuracy Vision)</option>
                   <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (Best Reasoning &amp; DOM)</option>
-                  <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (Fast &amp; Accurate Vision)</option>
+                  <option value="gemini-3.6-flash">Google Gemini 3.6 Flash (Fast &amp; Accurate Vision)</option>
                   <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Massive Context)</option>
                 </select>
                 <span className="caption text-mute" style={{ fontSize: 10 }}>

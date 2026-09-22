@@ -17,6 +17,7 @@ interface CostStats {
   total_prompt_tokens?: number;
   total_completion_tokens?: number;
   budget_limit_usd?: number | null;
+  unknown_cost_calls?: number;
 }
 
 interface UsageData {
@@ -140,7 +141,7 @@ export default function ProjectCostSettings({ teamId, projectId, onToast, onRequ
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
               {costStats && (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "var(--sp-md)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))", gap: "var(--sp-md)" }}>
                   <div
                     style={{
                       padding: "var(--sp-md) var(--sp-lg)",
@@ -149,10 +150,13 @@ export default function ProjectCostSettings({ teamId, projectId, onToast, onRequ
                       borderRadius: "var(--radius-sm)",
                     }}
                   >
-                    <div className="caption text-mute">Total Spend</div>
+                    <div className="caption text-mute">Recorded Spend</div>
                     <div style={{ fontSize: 20, fontWeight: 700, color: "var(--color-primary)", marginTop: 4 }}>
                       ${costStats.total_spend_usd?.toFixed(4) || "0.0000"}
                     </div>
+                    {(costStats.unknown_cost_calls ?? 0) > 0 && <div className="caption text-mute">
+                      Cost unavailable for {costStats.unknown_cost_calls} calls; total is incomplete.
+                    </div>}
                   </div>
                   <div
                     style={{
@@ -296,7 +300,7 @@ export default function ProjectCostSettings({ teamId, projectId, onToast, onRequ
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "var(--sp-md)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(180px, 100%), 1fr))", gap: "var(--sp-md)" }}>
             <div
               style={{
                 textAlign: "center",

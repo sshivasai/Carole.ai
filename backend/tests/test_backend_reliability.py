@@ -216,7 +216,7 @@ async def test_checkpoint_restart_preserves_goal_and_recent_evidence(scope, db_s
     history = await agent._load_conversation_history(db_session)
     monkeypatch.setattr(agent, "_get_compaction_config", lambda: {"recent_messages_to_keep": 2})
     monkeypatch.setattr(agent, "_pre_compaction_memory_flush", AsyncMock())
-    monkeypatch.setattr(llm_router, "generate_completion", AsyncMock(return_value="Completed the middle steps; recent verification is retained."))
+    monkeypatch.setattr(agent, "_maintenance_completion", AsyncMock(return_value="Completed the middle steps; recent verification is retained."))
     pruned = await agent._rolling_compact(history, db_session, triggered_by="emergency")
     assert len(pruned) < len(history)
     saved = await db_session.scalar(select(CompactionEvent).where(CompactionEvent.team_id == team.id))

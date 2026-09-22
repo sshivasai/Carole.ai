@@ -201,6 +201,7 @@ export const api = {
     apiFetch<Record<string, any>>("/api/settings", { method: "POST", body: JSON.stringify(data) }),
 
   // ── Agents ──
+  latestContextRequests: (teamId: string) => apiFetch<any[]>(`/api/cost/requests?team_id=${encodeURIComponent(teamId)}`),
   listAgents: (teamId: string) =>
     isInvalidId(teamId) ? Promise.resolve([]) : apiFetch<any[]>(`/api/agents/${teamId}`),
   createAgent: (data: any) => apiFetch<any>("/api/agents", { method: "POST", body: JSON.stringify(data) }),

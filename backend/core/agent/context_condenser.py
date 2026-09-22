@@ -69,6 +69,42 @@ the four-section WORKING STATE CHECKPOINT:
 
 
 class ContextCondenser:
+    @staticmethod
+    def recent_token_tail(messages: List[Dict[str, Any]], budget: int, model: str = "") -> int:
+        """Choose a recent tail by size; pruning bounds retain complete exchanges."""
+        from core.agent.context_compiler import count_tokens
+        used, keep = 0, 0
+        for message in reversed(messages):
+            size = count_tokens(message, model)
+            if keep >= 2 and used + size > budget:
+                break
+            used += size
+            keep += 1
+        return max(1, keep)
+
+    @staticmethod
+    def retained_constraint_evidence(messages: List[Dict[str, Any]], max_chars: int = 4000) -> str:
+        """Preserve literal constraint candidates as historical evidence, never policy.
+
+        Current authoritative user text is also kept separately by the pruning bounds.
+        If literal preservation is too large, decline compaction rather than truncate it.
+        """
+        lines = []
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content", "")
+            texts = [content] if isinstance(content, str) else [b.get("text", "")
+                for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            for text in texts:
+                for line in text.splitlines():
+                    if re.search(r"\b(must|never|do not|don't|constraint|only)\b", line, re.I) and line not in lines:
+                        lines.append(line)
+        if sum(len(line) + 1 for line in lines) > max_chars:
+            raise ValueError("Constraint evidence exceeds checkpoint budget")
+        return ("Historical constraint candidates; preserve provenance and verify against user requests:\n"
+                + json.dumps(lines, ensure_ascii=False)) if lines else ""
+
     _PATH_KEYS = frozenset(
         {"relative_path", "path", "filename", "file_path"}
     )

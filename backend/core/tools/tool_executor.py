@@ -109,7 +109,8 @@ def register_builtin_tools():
                  {"name": {"type": "string", "required": True}}, "safe", _wrap_read_skill),
         ToolSpec("read_observation", "Retrieve a range of a full cached tool result by its artifact_id.", "filesystem",
                  {"artifact_id": {"type": "string", "required": True}, "offset": {"type": "integer"},
-                  "limit": {"type": "integer", "description": "Maximum characters, from 1 to 2500"}}, "safe", _wrap_read_observation),
+                  "limit": {"type": "integer", "description": "Maximum characters, from 1 to 2500"},
+                  "query": {"type": "string", "description": "Optional literal search within this artifact"}}, "safe", _wrap_read_observation),
         # ---- Filesystem (Strict Verification Pattern) ----
         ToolSpec("read_file", "Reads a file from the workspace. You MUST call this before edit_file. Returns full file content or an unchanged stub if already read in this conversation.", "filesystem",
                  {"relative_path": {"type": "string", "required": True, "description": "Path to file relative to workspace root"},
@@ -155,8 +156,8 @@ def register_builtin_tools():
                  "judge", _wrap_execute_command),
 
         # ---- Git ----
-        ToolSpec("git_status", "Show current git status", "git", {}, "safe", _wrap_git_status),
-        ToolSpec("git_diff", "Show uncommitted changes", "git",
+        ToolSpec("git_status", "Inspect the repository or repo working tree to see which files changed, are staged, untracked, or uncommitted.", "git", {}, "safe", _wrap_git_status),
+        ToolSpec("git_diff", "Compare code changes in the repository since the last commit and inspect the uncommitted file differences.", "git",
                  {"staged": {"type": "boolean", "required": False}}, "safe", _wrap_git_diff),
         ToolSpec("git_add", "Stage files for commit", "git",
                  {"paths": {"type": "string", "required": False}}, "judge", _wrap_git_add),
@@ -236,7 +237,7 @@ def register_builtin_tools():
                  {"class_name": {"type": "string", "required": True}}, "safe", _wrap_get_class_hierarchy),
 
         # ---- Web ----
-        ToolSpec("web_search", "Search the web using Tavily API. Returns search result summaries with titles, URLs, and content snippets. Use for quick research, fact-checking, or finding resources. If direct links from a known static page are needed, prefer web_extract_links before launching a full browser. ALWAYS include a 'Sources:' section at the end of your response listing URLs as markdown hyperlinks [Title](URL).", "web",
+        ToolSpec("web_search", "Search the internet for current information, latest news, recent events, research, and answers to factual questions. Uses Tavily API and returns search result summaries with titles, URLs, and content snippets. If direct links from a known static page are needed, prefer web_extract_links before launching a full browser. ALWAYS include a 'Sources:' section at the end of your response listing URLs as markdown hyperlinks [Title](URL).", "web",
                  {"query": {"type": "string", "required": True},
                   "max_results": {"type": "integer", "required": False}},
                  "safe", _wrap_web_search),
@@ -255,7 +256,7 @@ def register_builtin_tools():
                  "judge", _wrap_http_request),
 
         # ---- Browser Automation ----
-        ToolSpec("browser_navigate", "Navigate to a URL in a real Chromium browser with full JavaScript execution. Returns page title, status code, visible text, and iframe count. Use this INSTEAD of web_fetch when: (1) the page requires JavaScript/SPA rendering, (2) you need to interact with forms or buttons, (3) the user explicitly says 'go to browser' or 'open in browser', (4) you need to extract exact/direct links from a page. IMPORTANT: After navigating to any page with forms, IMMEDIATELY call browser_get_interactive_elements to discover selectors.", "browser",
+        ToolSpec("browser_navigate", "Open a website or URL in the browser, navigate to another page, or preview a frontend running on localhost. Uses real Chromium with JavaScript execution and returns page title, status code, visible text, and iframe count. Use this INSTEAD of web_fetch when: (1) the page requires JavaScript/SPA rendering, (2) you need to interact with forms or buttons, (3) the user explicitly says 'go to browser' or 'open in browser', (4) you need to extract exact/direct links from a page. IMPORTANT: After navigating to any page with forms, IMMEDIATELY call browser_get_interactive_elements to discover selectors.", "browser",
                  {"url": {"type": "string", "required": True},
                   "wait_until": {"type": "string", "required": False}},
                  "judge", _wrap_browser_navigate),
@@ -539,7 +540,7 @@ def register_builtin_tools():
 
         # ---- Scheduled Tasks (Cron) ----
         ToolSpec("create_scheduled_task",
-                 "Create a recurring scheduled task that will automatically trigger an agent with a prompt on a cron schedule. "
+                 "Set recurring reminders and schedule an agent to perform a task automatically, such as every morning or each week. "
                  "Use standard 5-field cron syntax: '*/2 * * * *' = every 2 mins, '0 9 * * 1-5' = 9am weekdays, '0 * * * *' = hourly. "
                  "The task will be stored in the database and picked up by the background cron worker automatically.",
                  "scheduler",
@@ -580,11 +581,13 @@ def register_builtin_tools():
                  "safe", _wrap_ask_user),
         ToolSpec("fetch_tool_schemas",
                  "On-demand tool discovery. Request and activate full tool schemas for a specific tool family "
-                 "(e.g. 'git', 'browser', 'meetings', 'shell', 'database') or specific tool names. "
-                 "Use this when you need specialized tools outside your initial role toolset.",
+                 "or specific tool names, or describe what you need in query (e.g. 'read the article on this site'). "
+                 "Use this before claiming a tool is unavailable. Newly requested tools take priority over older ones; "
+                 "request specific tool names when a family exceeds the active tool limit. Permissions still apply.",
                  "coordination",
                  {"family": {"type": "string", "required": False, "description": "Tool family name (e.g. 'git', 'browser', 'meetings', 'shell')"},
-                  "tool_names": {"type": "array", "required": False, "description": "Specific tool names to activate"}},
+                  "tool_names": {"type": "array", "items": {"type": "string"}, "required": False, "description": "Specific tool names to activate"},
+                  "query": {"type": "string", "required": False, "description": "Describe the capability or action needed in natural language"}},
                  "safe", _wrap_fetch_tool_schemas),
         ToolSpec("sleep", "Pause execution for a number of seconds", "interaction",
                  {"seconds": {"type": "number", "required": True}},
@@ -899,6 +902,19 @@ def _resolve_gate_level(
     )
 
 
+def get_visible_tools(team_id: str, agent_id: str, permissions: dict, host_allowed: bool) -> list:
+    """Use the same visibility rules for the catalog, discovery, and native schemas."""
+    effective = _get_effective_permissions(permissions)
+    denied = permissions.get("always_deny", [])
+    return [spec for spec in sorted(ToolRegistry.list_all(), key=lambda spec: spec.name)
+            if (spec.team_id is None or str(spec.team_id) == str(team_id))
+            and (spec.agent_id is None or str(spec.agent_id) == str(agent_id))
+            and spec.name not in denied
+            and _resolve_gate_level(spec.name, effective) != "block"
+            and (host_allowed or not (spec.requires_instance_owner or spec.category in
+                                     {"shell", "mcp", "custom", "git", "browser"}))]
+
+
 def _matches_skip_judge(tool_name: str, arguments: Dict[str, Any], permissions: Dict[str, Any]) -> bool:
     """
     Returns True if the tool call matches a user-configured skip-judge
@@ -1045,7 +1061,7 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
             elif keys.get("anthropic"):
                 model_name = "claude-3-5-sonnet-latest"
             elif keys.get("google"):
-                model_name = "gemini-2.0-flash"
+                model_name = getattr(core.config, "DEFAULT_SMART_MODEL", "gemini-3.6-flash")
             elif keys.get("openrouter"):
                 model_name = "openrouter/auto"
             else:
@@ -1085,7 +1101,8 @@ async def _wrap_browser_use_task(args: Dict[str, Any], team_id: str) -> str:
             if keys.get("openai"):
                 model_name, model_lower = "gpt-4o", "gpt-4o"
             elif keys.get("google"):
-                model_name, model_lower = "gemini-2.0-flash", "gemini-2.0-flash"
+                model_name = getattr(core.config, "DEFAULT_SMART_MODEL", "gemini-3.6-flash")
+                model_lower = str(model_name).lower()
         elif "openrouter" in model_lower and not (keys.get("openrouter") or keys.get("browseruse")):
             if keys.get("openai"):
                 model_name, model_lower = "gpt-4o", "gpt-4o"
@@ -1166,32 +1183,12 @@ class ToolExecutor:
         if spec.agent_id is not None and str(spec.agent_id) != str(agent_id):
             return "Execution Denied: Tool is not available to this agent."
 
-        # ── Orchestrator Role Guard ──
-        # Orchestrators/Coordinators are hard-blocked from modifying project source code files directly,
-        # but ARE permitted to author planning/documentation Markdown files (*.md, *.markdown).
-        if context and getattr(context, "agent_role", None) in ("Orchestrator", "Coordinator"):
-            if tool_name in ("write_file", "edit_file", "append_file"):
-                rel = str(arguments.get("relative_path") or arguments.get("path") or arguments.get("filename") or "").strip()
-                is_md = rel.lower().endswith((".md", ".markdown"))
-                if not is_md:
-                    return (
-                        "Execution Denied: As an Orchestrator, you must NOT write or modify project files directly. "
-                        "Break the task down, create a task and assign it to the respective member of your team roster "
-                        "(e.g. create_task with assignee_name), or delegate using spawn_agent."
-                    )
-            elif tool_name in ("create_directory", "delete_file"):
-                return (
-                    "Execution Denied: As an Orchestrator, you must NOT write or modify project files directly. "
-                    "Break the task down, create a task and assign it to the respective member of your team roster "
-                    "(e.g. create_task with assignee_name), or delegate using spawn_agent."
-                )
-
         # ── Pre-validation & Sanitization of arguments ──
         # Strip reserved internal arguments to prevent authorization forgery (Recommendation 7.D)
         RESERVED_ARGS = {
             "_human_confirmed", "_server_approved", "_context",
             "_agent_id", "_agent_name", "_team_id", "_active_message_id",
-            "confirm_destructive",
+            "confirm_destructive", "_tool_permissions",
         }
         arguments = {k: v for k, v in arguments.items() if k not in RESERVED_ARGS}
 
@@ -1243,6 +1240,8 @@ class ToolExecutor:
         # ── Permission resolution ─────────────────────────────────────────────
         effective_permissions = _get_effective_permissions(permissions)
         gate_level = _resolve_gate_level(tool_name, effective_permissions)
+        if tool_name == "fetch_tool_schemas":
+            arguments["_tool_permissions"] = permissions
         if context:
             context.authorized_policy_fingerprint = _policy_fingerprint(effective_permissions, permissions, context.agent_role)
 
@@ -2964,30 +2963,22 @@ async def _wrap_ask_user(args: Dict[str, Any], team_id: str) -> str:
 
 async def _wrap_fetch_tool_schemas(args: Dict[str, Any], team_id: str) -> str:
     """On-demand dynamic tool schema fetching / discovery."""
-    family = (args.get("family") or args.get("category") or "").lower().strip()
-    raw_names = args.get("tool_names") or args.get("tool_name") or []
-    if isinstance(raw_names, str):
-        tool_names = [raw_names]
-    else:
-        tool_names = list(raw_names)
-
-    from core.tools.tool_registry import ToolRegistry
-    activated = []
-    for spec_name, spec in ToolRegistry._tools.items():
-        matched = False
-        if family and spec.category.lower() == family:
-            matched = True
-        elif spec_name in tool_names:
-            matched = True
-        if matched:
-            param_list = ", ".join(spec.parameters.keys()) if spec.parameters else "none"
-            activated.append(f"- **{spec.name}** ({spec.category}): {spec.description[:120]} (params: {param_list})")
+    from core.tools.tool_retrieval import discover_tools, catalog_summary
+    from core.auth.instance_owner import assert_team_instance_owner
+    try:
+        await assert_team_instance_owner(team_id)
+        host_allowed = True
+    except Exception:
+        host_allowed = False
+    visible = get_visible_tools(team_id, args.get("_agent_id"),
+                                args.get("_tool_permissions", {}), host_allowed)
+    matches = await asyncio.to_thread(discover_tools, args, visible)
+    activated = [f"- **{spec.name}** ({spec.category}): {spec.description[:120]}" for spec in matches[:20]]
 
     if not activated:
-        available_families = sorted(list(set(s.category for s in ToolRegistry._tools.values())))
-        return f"No tools found matching family '{family}' or tools '{tool_names}'. Available tool families: {', '.join(available_families)}"
+        return "No matching permitted tools found. Try another description or a family/name from this catalog:\n" + catalog_summary(visible)
 
-    return f"Successfully discovered and activated {len(activated)} tools for this session:\n" + "\n".join(activated)
+    return f"Found {len(matches)} permitted tools (showing up to 20). Schemas load within the active limit; request specific names when needed:\n" + "\n".join(activated)
 
 
 async def _wrap_sleep(args: Dict[str, Any], team_id: str) -> str:
@@ -3522,6 +3513,6 @@ async def _wrap_read_observation(args, team_id):
         return "Error: Observation access requires a team and agent"
     try:
         return await asyncio.to_thread(read_observation, args.get("artifact_id", ""),
-                                       f"{team_id}:{agent_id}", args.get("offset", 0), args.get("limit", 2500))
+                                       f"{team_id}:{agent_id}", args.get("offset", 0), args.get("limit", 2500), args.get("query"))
     except (OSError, ValueError, TypeError) as exc:
         return f"Error: Cannot read observation: {exc}"

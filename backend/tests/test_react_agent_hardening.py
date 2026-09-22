@@ -247,21 +247,14 @@ def test_react_agent_xml_notifications_escaping():
     assert parsed[0]["result"] == raw_result
 
 
-def test_react_agent_role_category_scoping():
-    """Verify ROLE_ALLOWED_CATEGORIES prunes tool schemas down to relevant subsets."""
-    from core.agent.react_agent import ROLE_ALLOWED_CATEGORIES
+def test_react_agent_tool_loading_is_bounded_without_role_authorization():
+    from core.agent.react_agent import resolve_active_tools
     from core.tools.tool_registry import ToolRegistry
 
-    # Orchestrator categories
-    orch_cats = ROLE_ALLOWED_CATEGORIES["orchestrator"]
-    assert "coordination" in orch_cats
-    assert "interaction" in orch_cats
-    assert "filesystem" in orch_cats
-    assert "git" not in orch_cats  # Deferred / on-demand
-
-    # Compare full tools vs pruned tools for orchestrator
+    categories, selected = resolve_active_tools("Orchestrator")
+    assert "git" in categories
     all_tools = ToolRegistry.to_anthropic_tools()
-    pruned_tools = ToolRegistry.to_anthropic_tools(categories=orch_cats)
+    pruned_tools = ToolRegistry.to_anthropic_tools(categories=categories, include_names=selected)
 
     assert len(pruned_tools) > 0
     assert len(pruned_tools) < len(all_tools)
@@ -272,9 +265,11 @@ def test_react_agent_role_category_scoping():
 
 
 @pytest.mark.asyncio
-async def test_react_agent_fetch_tool_schemas():
+async def test_react_agent_fetch_tool_schemas(monkeypatch):
     """Verify fetch_tool_schemas allows agents to discover on-demand tools by name or category."""
     from core.tools.tool_executor import tool_executor
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("core.auth.instance_owner.assert_team_instance_owner", AsyncMock())
 
     # 1. Fetch by category 'git'
     res = await tool_executor.execute(
@@ -384,13 +379,11 @@ def test_openai_message_formatter_preserves_tool_use_and_results():
 
 def test_universal_memory_category_for_all_roles():
     """Verify that 'memory' is in allowed categories for all roles by default."""
-    from core.agent.react_agent import ROLE_ALLOWED_CATEGORIES, UNIVERSAL_ALLOWED_CATEGORIES, resolve_active_tools
+    from core.agent.react_agent import UNIVERSAL_ALLOWED_CATEGORIES, resolve_active_tools
 
     assert "memory" in UNIVERSAL_ALLOWED_CATEGORIES
-    for role_name, cats in ROLE_ALLOWED_CATEGORIES.items():
-        assert "memory" in cats, f"Role '{role_name}' must have memory allowed by default"
 
-    allowed_cats, selected_tools = resolve_active_tools("custom_unknown_role", "hello world")
+    allowed_cats, selected_tools = resolve_active_tools("custom_unknown_role")
     assert "memory" in allowed_cats
     assert "search_memory" in selected_tools
     assert "add_memory" in selected_tools

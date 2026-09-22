@@ -94,7 +94,10 @@ async def test_block_permission_level():
 
 
 @pytest.mark.asyncio
-async def test_judge_disabled_fallback_allow():
+async def test_judge_disabled_fallback_allow(owned_browser, db_session, monkeypatch):
+    import uuid
+    from core.memory.models import Agent
+    agent = await db_session.get(Agent, uuid.UUID(owned_browser["agent_id"]))
     executor = ToolExecutor()
     config = {
         "enable_judge": False,
@@ -106,15 +109,18 @@ async def test_judge_disabled_fallback_allow():
         "custom_skip_judge": {"file_patterns": [], "command_prefixes": []},
     }
 
+    # Disabling the judge requires global policy too; an agent cannot weaken it.
+    monkeypatch.setattr("core.llm.config_manager.load_config", lambda: {"access_control": config})
+
     # Mock _run_tool to verify it executes without judge or human gating
     with patch.object(executor, "_run_tool", new_callable=AsyncMock) as mock_run:
         mock_run.return_value = "Success: edited"
         res = await executor.execute(
             tool_name="edit_file",
             arguments={"relative_path": "src/app.py", "target_content": "a", "replacement_content": "b"},
-            agent_id="agent-1",
+            agent_id=str(agent.id),
             agent_name="TestAgent",
-            team_id="team-1",
+            team_id=str(agent.team_id),
             permissions=config,
         )
         assert res == "Success: edited"

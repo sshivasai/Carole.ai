@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import {
   Settings,
   User,
@@ -14,8 +14,6 @@ import {
   AlertTriangle,
   Loader2,
   ChevronRight,
-  Sliders,
-  Sparkles,
   Activity,
 } from "lucide-react";
 import type { AgentConfig } from "@/lib/types";
@@ -58,7 +56,7 @@ const SETTINGS_TABS: TabDefinition[] = [
     id: "general",
     label: "General & Health",
     icon: User,
-    description: "Account profile, Google Workspace OAuth, and live backend health telemetry.",
+    description: "Manage your profile, connected Google account, and system health.",
     keywords: ["profile", "user", "email", "google", "calendar", "gmail", "meet", "health", "fastapi", "tools", "websocket"],
     group: "System & Access",
   },
@@ -66,7 +64,7 @@ const SETTINGS_TABS: TabDefinition[] = [
     id: "providers",
     label: "API Keys & Providers",
     icon: Key,
-    description: "API keys for OpenAI, Anthropic, Gemini, OpenRouter, NVIDIA, Tavily, and Ollama.",
+    description: "Connect model providers and manage the services your agents can use.",
     keywords: ["api", "keys", "openai", "anthropic", "claude", "gemini", "google", "openrouter", "deepseek", "nvidia", "tavily", "ollama", "localhost"],
     group: "System & Access",
   },
@@ -74,7 +72,7 @@ const SETTINGS_TABS: TabDefinition[] = [
     id: "models",
     label: "Models & Catalog",
     icon: Cpu,
-    description: "Global fallback models (Fast, Smart, Coder, Judge) and provider model catalog.",
+    description: "Choose default models for each role and manage available models.",
     keywords: ["models", "defaults", "catalog", "fast", "smart", "coder", "judge", "gpt", "claude", "gemini", "llama", "temperature"],
     group: "AI & Capabilities",
   },
@@ -82,7 +80,7 @@ const SETTINGS_TABS: TabDefinition[] = [
     id: "observability",
     label: "OpenLLMetry Tracing",
     icon: Activity,
-    description: "Native OpenTelemetry distributed traces, multi-agent swarm spans, latency, and token metrics.",
+    description: "Inspect agent runs, response times, and token usage.",
     keywords: ["openllmetry", "observability", "tracing", "spans", "telemetry", "opentelemetry", "tokens", "latency", "flamegraph", "metrics"],
     group: "AI & Capabilities",
   },
@@ -90,7 +88,7 @@ const SETTINGS_TABS: TabDefinition[] = [
     id: "runtime",
     label: "Safety & Runtime",
     icon: Shield,
-    description: "Access control matrix, safety judge arbiter, loop limits, and memory compaction.",
+    description: "Control permissions, execution limits, and how agents manage context.",
     keywords: ["access", "safety", "judge", "security", "permissions", "matrix", "loops", "timeout", "dream", "memory", "compaction"],
     group: "AI & Capabilities",
   },
@@ -98,7 +96,7 @@ const SETTINGS_TABS: TabDefinition[] = [
     id: "prompts",
     label: "Prompts & Capabilities",
     icon: MessageSquare,
-    description: "Agent persona roles and modular system capability instruction blocks.",
+    description: "Customize agent roles and the instructions that guide their work.",
     keywords: ["prompts", "roles", "personas", "system", "capabilities", "blocks", "instructions", "orchestrator", "coder", "debugger", "personality"],
     group: "AI & Capabilities",
   },
@@ -106,15 +104,15 @@ const SETTINGS_TABS: TabDefinition[] = [
     id: "browser",
     label: "Browser Automation",
     icon: Globe,
-    description: "3-tier browser engine, Browserbase cloud stealth, anti-bot proxies, and vision model.",
+    description: "Choose how agents browse the web and configure browser services.",
     keywords: ["browser", "web", "automation", "playwright", "browseruse", "browserbase", "cloud", "proxy", "scraperapi", "zenrows", "headless", "windowed", "captcha", "vision"],
     group: "Workspace & Data",
   },
   {
     id: "project",
-    label: "Project, Cost & Danger",
+    label: "Project & Usage",
     icon: DollarSign,
-    description: "Token spend tracking, budget caps, knowledge base documents, and data deletion.",
+    description: "Track spending, set budgets, manage project knowledge, and delete workspace data.",
     keywords: ["project", "cost", "spend", "tokens", "budget", "usage", "analytics", "knowledge", "upload", "pdf", "danger", "delete", "team"],
     group: "Workspace & Data",
   },
@@ -130,6 +128,7 @@ export default function SettingsPanel({
 }: Props) {
   const [activeTab, setActiveTab] = useState<TabKey>("general");
   const [searchQuery, setSearchQuery] = useState("");
+  const contentRef = useRef<HTMLElement>(null);
 
   // Deletion modals state
   const [confirmDelete, setConfirmDelete] = useState<"team" | "project" | null>(null);
@@ -206,19 +205,20 @@ export default function SettingsPanel({
             <p>Configure the workspace, agent capabilities, and safety boundaries.</p>
           </div>
         </div>
-        <div className={styles.agentStatus}><i />{agents.length} active {agents.length === 1 ? "agent" : "agents"}</div>
+        <div className={styles.agentStatus}><i />{agents.length} configured {agents.length === 1 ? "agent" : "agents"}</div>
       </header>
 
       {/* ── Main Two-Column Master-Detail Layout ── */}
       <div className={styles.layout}>
         {/* ── Left Sidebar Navigation ── */}
-        <aside className={styles.navigation}>
+        <aside className={styles.navigation} aria-label="Settings categories">
           {/* Search Bar */}
           <div className={styles.searchBox}>
             <div>
               <Search size={14} />
               <input
-                type="text"
+                type="search"
+                aria-label="Search settings"
                 placeholder="Search settings..."
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
@@ -242,7 +242,8 @@ export default function SettingsPanel({
                       <button
                         key={tab.id}
                         type="button"
-                        onClick={() => setActiveTab(tab.id)}
+                        aria-current={isActive ? "page" : undefined}
+                        onClick={() => { setActiveTab(tab.id); contentRef.current?.scrollTo({ top: 0, behavior: "instant" }); }}
                         className={`${styles.navItem} ${isActive ? styles.navItemActive : ""}`}
                       >
                         <span className={styles.navIcon}><Icon size={15} /></span>
@@ -264,7 +265,7 @@ export default function SettingsPanel({
         </aside>
 
         {/* ── Right Content Area ── */}
-        <main className={styles.content}>
+        <main ref={contentRef} className={styles.content} aria-label={activeTabDef.label}>
           {/* Active Tab Header */}
           <div className={styles.contentIntro}>
             <span>{activeTabDef.group}</span>
@@ -294,7 +295,7 @@ export default function SettingsPanel({
       </div>
 
       {/* ── Deletion Confirmation Modal ── */}
-      <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Confirm Deletion" maxWidth={450}>
+      <Modal open={!!confirmDelete} onClose={() => { if (!deleting) setConfirmDelete(null); }} title="Confirm Deletion" maxWidth={450}>
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
           <p className="body-sm">
             This action <strong>cannot be undone</strong>. You can choose to only delete the {confirmDelete} record from the database, or additionally delete all associated files and folders on disk.

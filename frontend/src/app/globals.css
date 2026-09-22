@@ -1955,3 +1955,29 @@ select.input {
  .app-workspace .plugin-toolbar { padding: 10px !important; gap: 8px !important; }
  .app-workspace .plugin-toolbar > div:first-child { flex-basis: 100% !important; }
 }
+
+/* Shared interaction polish across workspace tools. */
+.app-workspace :is(.card, .glass-card, .panel) { min-width: 0; }
+.app-workspace :is(button, a, input, select, textarea) { -webkit-tap-highlight-color: transparent; }
+.app-workspace :is(.btn, .input, select) { min-height: 36px; }
+.app-workspace :is(input, textarea)::placeholder { color: var(--color-mute); opacity: .85; }
+.app-workspace :is(.card, .glass-card) { overflow-wrap: anywhere; }
+.app-workspace .modal-backdrop { padding: 16px; overscroll-behavior: contain; }
+.app-workspace .modal-card { width: 100%; }
+@media (max-width: 760px) {
+  .app-workspace { zoom: 1; height: 100dvh !important; }
+  .app-workspace :is(input, textarea, select) { font-size: 16px; }
+}
+.app-workspace :is(.badge, .pill) { white-space: nowrap; flex-shrink: 0; }
+
+/* Resolve legacy surface aliases at the active theme boundary, including nested panels. */
+.theme-light, .theme-dark {
+  --bg-primary: var(--color-canvas); --bg-secondary: var(--color-canvas-soft);
+  --bg-surface: var(--color-canvas-soft); --bg-surface-raised: var(--color-canvas-raised);
+  --bg-app: var(--color-canvas); --color-surface: var(--color-canvas-soft); --bg-tertiary: var(--color-canvas-soft);
+  --text-primary: var(--color-ink); --text-secondary: var(--color-body); --text-tertiary: var(--color-mute);
+  --text-accent: var(--color-primary); --border-subtle: var(--color-hairline); --border-medium: var(--color-hairline);
+  --color-error: var(--color-danger); --color-text-mute: var(--color-mute);
+}
+.app-workspace .markdown-body img { max-width: 100%; height: auto; }
+.app-workspace .markdown-body :is(pre,table) { max-width: 100%; overflow-x: auto; }

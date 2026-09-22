@@ -32,6 +32,11 @@ class CoordinatorAgent(ReACTAgent):
         block (which is assembled by super()). This ensures the coordinator's core
         instructions are not buried after a long tool list in extended contexts.
         """
+        from core.agent.context_compiler import CHAT, budget_records
+        if getattr(self, "_context_policy", None) == CHAT:
+            return await super().assemble_system_prompt(db_session, current_task)
+        if self._cached_system_prompt is not None and self._cached_system_prompt_task == current_task:
+            return self._cached_system_prompt
         # Build the coordinator prefix: directives + active task board
         team_uuid = uuid.UUID(self.team_id) if isinstance(self.team_id, str) else self.team_id
         task_stmt = select(Task).where(
@@ -52,14 +57,19 @@ class CoordinatorAgent(ReACTAgent):
 
         # Prepend coordinator directives to the system prompt (before tool capabilities),
         # then let the base class append the full capabilities block (tools, memory, browser, etc.)
-        coordinator_prefix = COORDINATOR_DIRECTIVES + reference_block("active task board", tasks_block) + "\n"
+        coordinator_prefix = "" if COORDINATOR_DIRECTIVES in (self.system_prompt or "") else COORDINATOR_DIRECTIVES + "\n"
 
         # Temporarily inject the prefix into self.system_prompt so assemble_system_prompt
         # includes it at the top of the assembled output, before the capabilities block.
         original_system_prompt = self.system_prompt
         self.system_prompt = coordinator_prefix + (self.system_prompt or "")
         try:
-            return await super().assemble_system_prompt(db_session, current_task)
+            assembled = await super().assemble_system_prompt(db_session, current_task)
+            if tasks_block:
+                assembled += reference_block("active task board", budget_records(
+                    tasks_block.splitlines(), 800, current_task, self.model))
+            self._cached_system_prompt = assembled
+            return assembled
         finally:
             self.system_prompt = original_system_prompt
 

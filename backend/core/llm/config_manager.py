@@ -61,6 +61,14 @@ _DEFAULT_CONFIG = {
         "context_window_size": 128000,
         "recent_messages_to_keep": 8,
     },
+    "context_optimization": {
+        "profiles": True,
+        "tool_budgeting": True,
+        "compaction_policy": True,
+        "stable_cache_prefix": True,
+        "worker_isolation": True,
+        "shadow_mode": False,
+    },
     "browser_automation": {
         "provider": "local",
         "api_keys": {
@@ -427,4 +435,3 @@ def get_browser_key(config: dict, provider_key: str, env_var: Optional[str] = No
             return env_val
 
     return None
-

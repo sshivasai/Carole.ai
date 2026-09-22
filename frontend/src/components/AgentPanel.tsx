@@ -152,12 +152,15 @@ function detectProvider(model: string, catalog: Record<string, any>): string {
     if ((data.models as any[]).some((m: any) => m.value === model)) return id;
   }
   // Fallback: infer by prefix
+  if (model.startsWith("openai/")) return "openai";
+  if (model.startsWith("anthropic/")) return "anthropic";
+  if (model.startsWith("google/") || model.startsWith("gemini/")) return "google";
   if (model.startsWith("openrouter/")) return "openrouter";
   if (model.startsWith("nvidia/")) return "nvidia";
   if (model.startsWith("ollama/")) return "ollama";
   if (model.startsWith("gemini")) return "google";
   if (model.startsWith("claude")) return "anthropic";
-  if (model.startsWith("gpt") || model.startsWith("o4") || model.startsWith("o3")) return "openai";
+  if (model.startsWith("gpt") || /^o\d/.test(model)) return "openai";
   return Object.keys(catalog)[0] || "openrouter";
 }
 

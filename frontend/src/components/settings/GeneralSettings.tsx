@@ -81,7 +81,8 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
       setHealth(h);
       setWsStatus(ws);
     } catch {
-      // Ignore errors
+      setHealth(null);
+      setWsStatus(null);
     } finally {
       setHealthLoading(false);
     }
@@ -91,7 +92,7 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
     refreshHealth();
   }, [refreshHealth]);
 
-  const isHealthOk = health?.status === "ok";
+  const isHealthOk = health?.status === "ok" || health?.status === "healthy";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2xl)" }}>
@@ -127,7 +128,7 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "var(--sp-md)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", gap: "var(--sp-md)" }}>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label" style={{ fontSize: 11 }}>First Name</label>
               <input className="input" value={user.first_name || ""} readOnly style={{ background: "var(--color-canvas-raised)" }} />
@@ -168,7 +169,7 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
               </svg>
             </div>
             <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+              <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--sp-sm)" }}>
                 <h3 className="display-sm" style={{ margin: 0 }}>Google Workspace Integration</h3>
                 <SettingTooltip
                   title="Google OAuth"
@@ -189,7 +190,7 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
         </div>
 
         {googleLoading ? (
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", padding: "var(--sp-md)" }}>
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--sp-sm)", padding: "var(--sp-md)" }}>
             <Loader2 size={15} className="animate-spin" style={{ color: "var(--color-primary)" }} />
             <span className="caption">Checking Google connection status…</span>
           </div>
@@ -206,7 +207,7 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
                 borderRadius: "var(--radius-sm)",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}>
+              <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--sp-sm)" }}>
                 <CheckCircle size={15} color="var(--color-success)" />
                 <div>
                   <div className="body-sm-strong" style={{ color: "var(--color-success)" }}>
@@ -230,7 +231,7 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
               </button>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "var(--sp-sm)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(180px, 100%), 1fr))", gap: "var(--sp-sm)" }}>
               <div
                 style={{
                   display: "flex",
@@ -299,7 +300,7 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
                 id="connect-google"
                 className="btn btn-primary btn-sm"
                 onClick={handleConnectGoogle}
-                style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)" }}
+                style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--sp-sm)" }}
               >
                 <ExternalLink size={13} />
                 Connect Google Account
@@ -351,12 +352,12 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
         </div>
 
         {healthLoading ? (
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-sm)", padding: "var(--sp-md)" }}>
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--sp-sm)", padding: "var(--sp-md)" }}>
             <Loader2 size={15} className="animate-spin" style={{ color: "var(--color-primary)" }} />
             <span className="caption">Fetching diagnostic telemetry…</span>
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "var(--sp-md)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))", gap: "var(--sp-md)" }}>
             <div
               style={{
                 background: "var(--color-canvas-raised)",

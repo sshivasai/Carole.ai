@@ -1,0 +1,12 @@
+.panel { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--color-canvas); color: var(--color-ink); }
+.header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--color-hairline); background: var(--color-canvas-soft); }
+.identity, .actions { display: flex; align-items: center; gap: 10px; }
+.identity { font-size: 13px; }.identity > svg { color: var(--color-primary-soft); }
+.shell { color: var(--color-mute); font-size: 11px; border-left: 1px solid var(--color-hairline); padding-left: 10px; }
+.actions button { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--color-mute); cursor: pointer; }
+.actions button:hover { background: var(--color-canvas-raised); color: var(--color-ink); border-color: var(--color-hairline); }
+.status { display: flex; gap: 6px; align-items: center; text-transform: capitalize; color: var(--color-mute); font-size: 11px; }.status i { width: 6px; height: 6px; border-radius: 50%; background: var(--color-warning); }.status[data-state=connected] i { background: var(--color-success); }.status[data-state=error] i { background: var(--color-danger); }
+.notice { padding: 10px 16px; font-size: 12px; line-height: 1.6; color: var(--color-warning); border-bottom: 1px solid var(--color-hairline); overflow-wrap: anywhere; }
+.viewport { flex: 1; min-height: 0; overflow: hidden; padding: 12px; }.viewport > div { height: 100%; width: 100%; }
+.footer { display: flex; justify-content: space-between; gap: 12px; padding: 7px 16px; border-top: 1px solid var(--color-hairline); color: var(--color-mute); font-size: 10px; }
+@media (max-width: 500px) { .shell, .footer > span:last-child { display: none; } .header { padding: 8px 10px; } }

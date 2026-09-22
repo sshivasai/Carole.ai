@@ -247,7 +247,7 @@
 /* ── Attention Grid ──────────────────────────────────────────── */
 .attentionGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -281,7 +281,7 @@
 /* ── Task Grid ───────────────────────────────────────────────── */
 .taskGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -370,4 +370,22 @@
 .deliverableTime {
   font-size: 11px;
   color: var(--color-success);
+}
+
+/* Panel-aware dashboard layout keeps long names and narrow views contained. */
+.homeContainer { container-type: inline-size; }
+.content { max-width: 1120px; gap: 28px; }
+.heroTitle { font-size: clamp(25px, 3cqw, 36px); letter-spacing: -.035em; }
+.composerCard { background: var(--color-canvas-soft); box-shadow: 0 8px 28px rgb(0 0 0 / 10%); }
+.starterGrid { grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); }
+.starterCard { min-height: 54px; border-radius: 12px; padding: 12px 16px; }
+.starterIcon { flex-shrink: 0; }
+.contextPill { overflow-wrap: anywhere; min-width: 0; }
+.deliverableTitle { min-width: 0; overflow-wrap: anywhere; }
+@container (max-width: 600px) {
+  .scrollWrapper { padding: 20px 16px; }
+  .composerHeader, .composerFooter, .targetContext { flex-wrap: wrap; gap: 10px; }
+  .keyboardHint { display: none; }
+  .dispatchBtn { margin-left: auto; min-height: 40px; }
+  .deliverableRow { flex-wrap: wrap; }
 }

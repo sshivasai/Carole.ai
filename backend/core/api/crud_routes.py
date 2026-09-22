@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.memory.database import get_db
 from core.memory.models import User, Project, Team, Agent, Message, Task, FileBackup, TaskComment, PlanInlineComment, CompactionEvent
 from core.tools.tool_registry import ToolRegistry
-from core.config import DEFAULT_FAST_MODEL
+import core.config
 from core.auth.auth_middleware import require_auth
 
 router = APIRouter(prefix="/api", tags=["crud"])
@@ -206,7 +206,7 @@ class AgentCreate(BaseModel):
     team_id: str
     name: str
     role: str
-    model: str = DEFAULT_FAST_MODEL
+    model: str = Field(default_factory=lambda: core.config.DEFAULT_FAST_MODEL)
     fallback_model: Optional[str] = None
     reasoning_effort: str = "none"  # none | low | medium | high
     system_prompt: str = ""
@@ -641,9 +641,9 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
         agent.role = body.role
     if body.model is not None:
         agent.model = body.model
-    if body.fallback_model is not None:
-        # Allow clearing the fallback by sending empty string
-        agent.fallback_model = body.fallback_model.strip() or None
+    if "fallback_model" in body.model_fields_set:
+        # Both null (sent by the UI) and an empty string clear the fallback.
+        agent.fallback_model = (body.fallback_model or "").strip() or None
     if body.reasoning_effort is not None:
         agent.reasoning_effort = body.reasoning_effort
     if body.tool_permissions is not None:
@@ -2539,7 +2539,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
         {
             "name": "Archer",
             "role": "Orchestrator",
-            "model": DEFAULT_FAST_MODEL,
+            "model": core.config.DEFAULT_FAST_MODEL,
             "personality": "casual",
             "tool_permissions": {
                 "read_file": "safe", "list_directory": "safe",
@@ -2552,7 +2552,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
         {
             "name": "Nova",
             "role": "Coder",
-            "model": DEFAULT_FAST_MODEL,
+            "model": core.config.DEFAULT_FAST_MODEL,
             "personality": "witty",
             "tool_permissions": {
                 "read_file": "safe", "write_file": "judge", "edit_file": "judge",
@@ -2565,7 +2565,7 @@ async def seed_demo(db: AsyncSession = Depends(get_db)):
         {
             "name": "Sage",
             "role": "Reviewer",
-            "model": DEFAULT_FAST_MODEL,
+            "model": core.config.DEFAULT_FAST_MODEL,
             "personality": "mentor",
             "tool_permissions": {
                 "read_file": "safe", "list_directory": "safe",

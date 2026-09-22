@@ -1,183 +1,49 @@
 "use client";
-
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api } from "@/hooks/useApi";
-import { Search, Loader2, File, ChevronRight, ChevronDown } from "lucide-react";
-
-interface SearchPanelProps {
-  projectId?: string;
-  onFileSelect?: (path: string) => void;
-}
-
-export default function SearchPanel({ projectId, onFileSelect }: SearchPanelProps) {
-  const [query, setQuery] = useState("");
+import { Search, Loader2, FileText, ChevronRight } from "lucide-react";
+import styles from "./SearchPanel.module.css";
+interface Props { projectId?: string; onFileSelect?: (path: string) => void; }
+interface Match { file: string; line: string; content: string; }
+export default function SearchPanel(props: Props) { return <ProjectSearch key={props.projectId || 'none'} {...props} />; }
+function ProjectSearch({ projectId, onFileSelect }: Props) {
+  const [query, setQuery] = useState('');
+  const [submitted, setSubmitted] = useState('');
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<{ file: string; line: string; content: string }[]>([]);
-  const [hasSearched, setHasSearched] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Group by file
-  const groupedResults = results.reduce((acc, curr) => {
-    if (!acc[curr.file]) {
-      acc[curr.file] = [];
-    }
-    acc[curr.file].push(curr);
-    return acc;
-  }, {} as Record<string, typeof results>);
-
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-    
-    setLoading(true);
-    setError(null);
-    setHasSearched(true);
-    
+  const [results, setResults] = useState<Match[]>([]);
+  const [error, setError] = useState('');
+  const request = useRef(0);
+  useEffect(() => () => { request.current++; }, []);
+  const grouped = new Map<string, Match[]>();
+  results.forEach(match => grouped.set(match.file, [...(grouped.get(match.file) || []), match]));
+  const search = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!projectId || !query.trim()) return;
+    const id = ++request.current;
+    const term = query.trim();
+    setLoading(true); setError(''); setSubmitted(term); setResults([]);
     try {
-      const res = await api.searchFiles(query, projectId);
-      if (res.status === "success") {
-        setResults(res.results || []);
-      } else {
-        setError(res.message || "Search failed");
-        setResults([]);
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Error searching files";
-      setError(msg);
-      setResults([]);
-    } finally {
-      setLoading(false);
-    }
+      const response = await api.searchFiles(term, projectId);
+      if (request.current !== id) return;
+      if (response.status !== 'success') throw new Error(response.message || 'Search failed. Try again.');
+      setResults(response.results || []);
+    } catch (error) { if (request.current === id) setError(error instanceof Error ? error.message : 'Could not search files.'); }
+    finally { if (request.current === id) setLoading(false); }
   };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--color-canvas-soft)", color: "var(--color-body)" }}>
-      {/* Search Input Area */}
-      <div style={{ padding: "12px", borderBottom: "1px solid var(--color-hairline)" }}>
-        <form onSubmit={handleSearch} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ position: "relative" }}>
-            <input
-              type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Search in files..."
-              style={{
-                width: "100%",
-                background: "var(--color-canvas)",
-                border: "1px solid var(--color-hairline)",
-                color: "var(--color-body)",
-                padding: "6px 8px 6px 28px",
-                borderRadius: "4px",
-                outline: "none",
-                fontSize: "13px"
-              }}
-            />
-            <Search size={14} style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", color: "var(--color-mute)" }} />
-          </div>
-          <button
-            type="submit"
-            disabled={loading || !query.trim()}
-            className="btn btn-primary btn-sm"
-            style={{ display: "none" }} // Hidden but submit on enter
-          >
-            Search
-          </button>
-        </form>
-      </div>
-
-      {/* Results Area */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
-        {loading && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", color: "var(--color-mute)" }}>
-            <Loader2 size={16} className="animate-spin mr-2" />
-            <span className="body-sm">Searching...</span>
-          </div>
-        )}
-
-        {!loading && error && (
-          <div style={{ padding: "8px 16px", color: "var(--color-error)", fontSize: "13px" }}>
-            {error}
-          </div>
-        )}
-
-        {!loading && hasSearched && results.length === 0 && !error && (
-          <div style={{ padding: "16px", color: "var(--color-mute)", fontSize: "13px", textAlign: "center", fontStyle: "italic" }}>
-            No results found.
-          </div>
-        )}
-
-        {!loading && results.length > 0 && (
-          <div style={{ padding: "0 8px" }}>
-            {Object.keys(groupedResults).map(file => (
-              <FileResultGroup 
-                key={file} 
-                file={file} 
-                matches={groupedResults[file]} 
-                onFileSelect={onFileSelect} 
-              />
-            ))}
-          </div>
-        )}
-      </div>
+  return <section className={styles.panel} aria-label="Search workspace files">
+    <form onSubmit={search} className={styles.form}>
+      <label htmlFor="workspace-search">Search file contents</label>
+      <div className={styles.search}><Search size={15} /><input id="workspace-search" type="search" placeholder="Search this project…" value={query} onChange={event => setQuery(event.target.value)} disabled={!projectId} /></div>
+      <button className="btn btn-primary btn-sm" disabled={!projectId || !query.trim() || loading}>{loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}{loading ? 'Searching…' : 'Search'}</button>
+    </form>
+    <div className={styles.results}>
+      {error && <p className={styles.error} role="alert">{error}</p>}
+      {!submitted && <div className={styles.empty}><Search size={26} /><strong>{projectId ? 'Find something in your code' : 'Choose a project to search'}</strong><p>{projectId ? 'Search for a symbol, phrase, or line of code. Open a result to inspect its file.' : 'Search is scoped to the selected workspace.'}</p></div>}
+      {submitted && !loading && !error && <p className={styles.summary} role="status">{results.length ? `${results.length} matches in ${grouped.size} files` : `No matches for “${submitted}”`}</p>}
+      {Array.from(grouped, ([file, matches]) => <details key={file} open className={styles.group}>
+        <summary><ChevronRight size={14} /><FileText size={14} /><span title={file}>{file}</span><small>{matches.length}</small></summary>
+        {matches.map((match, index) => <button key={`${match.line}-${index}`} className={styles.match} onClick={() => onFileSelect?.(file)} title={`Open ${file}:${match.line}`}><span>{match.line}</span><code>{match.content}</code></button>)}
+      </details>)}
     </div>
-  );
-}
-
-function FileResultGroup({ file, matches, onFileSelect }: { 
-  file: string; 
-  matches: { line: string; content: string }[];
-  onFileSelect?: (path: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(true);
-
-  return (
-    <div style={{ marginBottom: 4 }}>
-      <div 
-        onClick={() => setExpanded(!expanded)}
-        style={{ 
-          display: "flex", 
-          alignItems: "center", 
-          cursor: "pointer", 
-          padding: "4px 0",
-          userSelect: "none"
-        }}
-        className="hover:bg-gray-800 rounded transition-colors"
-      >
-        <span style={{ width: 16, display: "flex", justifyContent: "center", marginRight: 2 }}>
-          {expanded ? <ChevronDown size={14} className="text-mute" /> : <ChevronRight size={14} className="text-mute" />}
-        </span>
-        <File size={14} className="text-gray-400 mr-2" />
-        <span className="body-sm font-semibold truncate" style={{ fontSize: "13px" }} title={file}>
-          {file}
-        </span>
-        <span className="ml-auto text-mute text-xs" style={{ background: "rgba(255,255,255,0.1)", padding: "1px 6px", borderRadius: "10px" }}>
-          {matches.length}
-        </span>
-      </div>
-      
-      {expanded && (
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          {matches.map((m, idx) => (
-            <div 
-              key={idx}
-              onClick={() => onFileSelect && onFileSelect(file)}
-              style={{ 
-                display: "flex", 
-                alignItems: "flex-start",
-                padding: "2px 8px 2px 34px",
-                cursor: "pointer",
-                fontSize: "12px",
-                fontFamily: "var(--font-mono, monospace)"
-              }}
-              className="hover:bg-gray-700 transition-colors"
-              title={m.content}
-            >
-              <span style={{ color: "#569cd6", marginRight: 8, minWidth: "24px", textAlign: "right" }}>{m.line}</span>
-              <span className="truncate" style={{ color: "#d4d4d4" }}>{m.content}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  </section>;
 }

@@ -78,7 +78,7 @@ const NAV_SECTIONS: NavSection[] = [
 ];
 
 
-function InlineForm({ placeholder, onSubmit, onCancel }: {
+function InlineForm({ label, placeholder, onSubmit, onCancel }: {
   label: string; placeholder: string; onSubmit: (val: string) => Promise<void>; onCancel: () => void;
 }) {
   const [val, setVal] = useState("");
@@ -91,13 +91,13 @@ function InlineForm({ placeholder, onSubmit, onCancel }: {
   };
   return (
     <form onSubmit={submit} className={styles.inlineForm}>
-      <input className={styles.inlineInput} placeholder={placeholder} value={val}
+      <input className={styles.inlineInput} aria-label={label} placeholder={placeholder} value={val}
         onChange={e => setVal(e.target.value)} autoFocus />
       <div style={{ display: "flex", gap: 6 }}>
         <button type="submit" className={`btn btn-primary btn-sm ${styles.inlineBtn}`} disabled={loading || !val.trim()}>
           {loading ? <Loader2 size={12} className="animate-spin" /> : "Add"}
         </button>
-        <button type="button" onClick={onCancel} className={`btn btn-ghost btn-sm ${styles.inlineBtn}`}>
+        <button type="button" aria-label="Cancel creation" onClick={onCancel} className={`btn btn-ghost btn-sm ${styles.inlineBtn}`}>
           <X size={12} />
         </button>
       </div>
@@ -134,7 +134,8 @@ export default function Sidebar({
 
   const handleNavClick = useCallback((id: string) => {
     onViewChange(id);
-  }, [onViewChange]);
+    if (window.matchMedia("(max-width: 760px)").matches) toggleCollapse(true);
+  }, [onViewChange, toggleCollapse]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -222,7 +223,7 @@ export default function Sidebar({
                 <button
                   key={id}
                   className={`${styles.navItem} ${activeView === id ? styles.active : ""}`}
-                  onClick={() => onViewChange(id)}
+                  onClick={() => handleNavClick(id)}
                   title={`${section.title}: ${label}`}
                   style={{ justifyContent: "center", padding: "8px 0", width: 44, borderRadius: "var(--radius-sm)" }}
                 >

@@ -151,7 +151,7 @@ export default function ModelsSettings({ onToast }: Props) {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-md)" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "var(--sp-md)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: "var(--sp-md)" }}>
                 {DEFAULT_MODEL_ROLES.map(({ key, label, fallbackModel, desc, why, how, subsystems }) => (
                   <div
                     key={key}

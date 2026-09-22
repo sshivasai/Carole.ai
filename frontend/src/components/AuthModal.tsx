@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { X, Eye, EyeOff, Loader2, Sparkles, Zap } from "lucide-react";
+import React, { useState, useEffect, useRef, useId } from "react";
+import { X, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import CaroleLogo from "./CaroleLogo";
 import styles from "./AuthModal.module.css";
@@ -13,12 +13,20 @@ interface AuthModalProps {
   onSuccess?: () => void;
 }
 
-export default function AuthModal({
+export default function AuthModal(props: AuthModalProps) {
+  return props.isOpen ? <AuthModalContent key={props.initialMode || "login"} {...props} /> : null;
+}
+
+function AuthModalContent({
   isOpen,
   initialMode = "login",
   onClose,
   onSuccess,
 }: AuthModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
   const { login, signup } = useAuth();
   const [mode, setMode] = useState<"login" | "signup">(initialMode);
   const [email, setEmail] = useState("");
@@ -29,28 +37,34 @@ export default function AuthModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Sync mode when initialMode prop changes
-  useEffect(() => {
-    setMode(initialMode);
-    setError("");
-  }, [initialMode, isOpen]);
-
-  // Handle escape key to close modal
   useEffect(() => {
     if (!isOpen) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialogRef.current?.querySelector<HTMLInputElement>('input[type="email"]')?.focus();
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
+      if (e.key === "Escape") { e.preventDefault(); closeRef.current(); }
+      if (e.key !== "Tab") return;
+      const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), a[href], [tabindex="0"]') || []);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
     };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus();
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     if (!email || !password) {
       setError("Email and password are required.");
       return;
@@ -69,13 +83,12 @@ export default function AuthModal({
         );
       }
       onSuccess?.();
-    } catch (err: any) {
-      const body = err.body || err.message || "An error occurred.";
-      try {
-        setError(JSON.parse(body)?.detail || body);
-      } catch {
-        setError(body);
-      }
+    } catch (err: unknown) {
+      const failure = err as { body?: unknown; message?: string };
+      const body = failure?.body || failure?.message || "An error occurred.";
+      let detail: unknown = body;
+      try { detail = typeof body === "string" ? JSON.parse(body)?.detail || body : body; } catch {}
+      setError(typeof detail === "string" ? detail : "Unable to sign in. Check your details and try again.");
     } finally {
       setLoading(false);
     }
@@ -91,8 +104,9 @@ export default function AuthModal({
       }}
       role="dialog"
       aria-modal="true"
+      aria-labelledby={titleId}
     >
-      <div className={styles.modalContent}>
+      <div ref={dialogRef} className={styles.modalContent}>
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -108,7 +122,7 @@ export default function AuthModal({
           <div className={styles.logoWrap}>
             <CaroleLogo variant="mark" size={32} />
           </div>
-          <h2 className={styles.modalTitle}>
+          <h2 id={titleId} className={styles.modalTitle}>
             {mode === "login" ? "Sign in to Carole.ai" : "Create your account"}
           </h2>
           <p className={styles.modalSubtitle}>
@@ -151,8 +165,8 @@ export default function AuthModal({
           {mode === "signup" && (
             <div className={styles.nameRow}>
               <div className={styles.formField}>
-                <label className={styles.formLabel}>First Name</label>
-                <input
+                <label htmlFor={`${titleId}-first`} className={styles.formLabel}>First Name</label>
+                <input id={`${titleId}-first`} autoComplete="given-name"
                   className={styles.formInput}
                   placeholder="Ada"
                   value={firstName}
@@ -161,8 +175,8 @@ export default function AuthModal({
                 />
               </div>
               <div className={styles.formField}>
-                <label className={styles.formLabel}>Last Name</label>
-                <input
+                <label htmlFor={`${titleId}-last`} className={styles.formLabel}>Last Name</label>
+                <input id={`${titleId}-last`} autoComplete="family-name"
                   className={styles.formInput}
                   placeholder="Lovelace"
                   value={lastName}
@@ -174,23 +188,22 @@ export default function AuthModal({
           )}
 
           <div className={styles.formField}>
-            <label className={styles.formLabel}>Email Address</label>
-            <input
+            <label htmlFor={`${titleId}-email`} className={styles.formLabel}>Email Address</label>
+            <input id={`${titleId}-email`} autoComplete="email"
               className={styles.formInput}
               type="email"
               placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              autoFocus
               required
               disabled={loading}
             />
           </div>
 
           <div className={styles.formField}>
-            <label className={styles.formLabel}>Password</label>
+            <label htmlFor={`${titleId}-password`} className={styles.formLabel}>Password</label>
             <div className={styles.inputWrap}>
-              <input
+              <input id={`${titleId}-password`} autoComplete={mode === "signup" ? "new-password" : "current-password"}
                 className={styles.formInput}
                 type={showPw ? "text" : "password"}
                 placeholder={
@@ -207,14 +220,15 @@ export default function AuthModal({
                 onClick={() => setShowPw((s) => !s)}
                 className={styles.eyeBtn}
                 title={showPw ? "Hide password" : "Show password"}
-                tabIndex={-1}
+                aria-label={showPw ? "Hide password" : "Show password"}
+                aria-pressed={showPw}
               >
                 {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
           </div>
 
-          {error && <div className={styles.errorBanner}>{error}</div>}
+          {error && <div role="alert" className={styles.errorBanner}>{error}</div>}
 
           <button
             className={styles.submitBtn}

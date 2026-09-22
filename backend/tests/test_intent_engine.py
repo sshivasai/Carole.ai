@@ -77,3 +77,21 @@ def test_browser_capability_mismatch() -> None:
 
     assert result is not None
     assert "native tool call" in result
+
+
+def test_nova_refusal_can_recover_through_discovery():
+    result = IntentEngine.detect_false_refusal(
+        "I don't have browser or web search tools in my schema right now.",
+        CapabilityContext(web_available=True, discovery_available=True),
+    )
+    assert "fetch_tool_schemas" in result
+
+
+@pytest.mark.parametrize("text", [
+    "I used the shell and created the files.",
+    "I cannot use the browser because approval was denied.",
+    "The browser tool failed with an error.",
+])
+def test_refusal_recovery_does_not_override_outcomes(text):
+    assert IntentEngine.detect_false_refusal(text, CapabilityContext(
+        browser_available=True, shell_available=True, filesystem_available=True, discovery_available=True)) is None

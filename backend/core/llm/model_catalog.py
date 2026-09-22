@@ -35,6 +35,16 @@ class ModelCatalogError(ValueError):
     """Raised when model catalog validation fails."""
 
 
+def model_limits(model_id: str) -> dict:
+    """Use explicit catalog metadata; never infer independent limits from a label."""
+    for provider in load_model_catalog().values():
+        for entry in provider.get("models", []):
+            if entry.get("value") == model_id:
+                return {key: entry[key] for key in ("context_window", "input_limit", "output_limit")
+                        if isinstance(entry.get(key), int) and not isinstance(entry[key], bool) and entry[key] > 0}
+    return {}
+
+
 def _validate_model_catalog(catalog: Any) -> None:
     """
     Validates that a model catalog conforms to the required shape:

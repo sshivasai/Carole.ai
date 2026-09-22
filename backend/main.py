@@ -118,8 +118,10 @@ async def lifespan(app: FastAPI):
     
     repo_plugins_dir = os.path.join(os.path.dirname(__file__), "plugins")
     
-    # Copy example_tool.py if it doesn't exist in the user's plugin dir
-    example_tool_src = os.path.join(repo_plugins_dir, "example_tool.py")
+    # Copy example_tool.py template if it doesn't exist in the user's plugin dir
+    example_tool_src = os.path.join(repo_plugins_dir, "_example_tool.py")
+    if not os.path.exists(example_tool_src):
+        example_tool_src = os.path.join(repo_plugins_dir, "example_tool.py")
     example_tool_dst = PLUGINS_DIR / "example_tool.py"
     if os.path.exists(example_tool_src) and not example_tool_dst.exists():
         try:
@@ -135,7 +137,10 @@ async def lifespan(app: FastAPI):
     # Load built-in repository plugins
     if os.path.exists(repo_plugins_dir):
         logger.info("🔌 [Lifespan] Loading repository plugins from %s...", repo_plugins_dir)
-        ToolRegistry.load_plugin_directory(repo_plugins_dir)
+        try:
+            ToolRegistry.load_plugin_directory(repo_plugins_dir)
+        except Exception as e:
+            logger.warning("⚠ [Lifespan] Repository plugins notice: %s", e)
 
     # Restore persistent MCP servers from the database
     logger.info("🔌 [Lifespan] Restoring persistent MCP servers...")
@@ -382,12 +387,6 @@ app.add_middleware(
 )
 
 # Register API routes
-from fastapi.staticfiles import StaticFiles
-
-UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-# Legacy uploads are never exposed through an unauthenticated static mount.
-
 app.include_router(crud_router)
 app.include_router(scratchpad_router)
 app.include_router(cost_router)

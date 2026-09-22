@@ -490,6 +490,21 @@ function AppShell() {
   const [lastTokenEvent, setLastTokenEvent] = useState<any | null>(null);
   const [lastTaskComment, setLastTaskComment] = useState<import("@/lib/types").TaskComment | null>(null);
   const [contextUsage, setContextUsage] = useState<any | null>(null);
+  const [contextByAgent, setContextByAgent] = useState<Record<string, import("@/features/chat/contextUsage").ContextSnapshot>>({});
+  const [usageByAgent, setUsageByAgent] = useState<Record<string, import("@/features/chat/contextUsage").TokenUsageEvent>>({});
+  useEffect(() => {
+    setContextByAgent({}); setUsageByAgent({});
+    setContextUsage(null); setLastTokenEvent(null);
+    let cancelled = false;
+    if (teamId) api.latestContextRequests(teamId).then(rows => {
+      if (cancelled) return;
+      const saved = Object.fromEntries(rows.map(row => [row.agent_id, row]));
+      // Fresh websocket events win over older persisted snapshots.
+      setContextByAgent(current => ({ ...saved, ...current }));
+      setUsageByAgent(current => ({ ...saved, ...current }));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [teamId]);
   // Compaction events — rendered as visible dividers in the chat timeline.
   // Populated on team load (from DB) and updated live via SSE.
   const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([]);
@@ -567,11 +582,14 @@ function AppShell() {
     }
     if (evt.type === "token_usage") {
       setLastTokenEvent(evt);
+      if (evt.agent_id) setUsageByAgent(prev => ({ ...prev, [evt.agent_id]: evt }));
     }
     if (evt.type === "context_usage") {
       setContextUsage(evt);
+      if (evt.sender_id) setContextByAgent(prev => ({ ...prev, [evt.sender_id]: evt }));
     }
     if (evt.type === "chat_cleared") {
+      setContextByAgent({}); setUsageByAgent({});
       setContextUsage(null);
       setLastTokenEvent(null);
     }
@@ -1051,6 +1069,7 @@ function AppShell() {
                       setMessages([]);
                       setContextUsage(null);
                       setLastTokenEvent(null);
+                      setContextByAgent({}); setUsageByAgent({});
                       toast.success("Chat cleared");
                     }}
                     teamId={teamId}
@@ -1058,6 +1077,8 @@ function AppShell() {
                     projectId={projectId}
                     lastTokenEvent={lastTokenEvent}
                     contextUsage={contextUsage}
+                    contextByAgent={contextByAgent}
+                    usageByAgent={usageByAgent}
                     onToggleExplorer={() => {
                       setContextPanelOpen(o => !o);
                       setActiveContextTab("files");

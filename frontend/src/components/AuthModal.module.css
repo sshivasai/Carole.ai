@@ -348,3 +348,14 @@
   background: #1e293b;
   border-color: #1e293b;
 }
+
+/* Theme-aware authentication surface and short viewport support. */
+.modalContent { max-height: calc(100dvh - 40px); overflow-y: auto; background: var(--color-canvas-raised); border-color: var(--color-hairline); color: var(--color-ink); }
+.modalTitle { color: var(--color-ink); }
+.modalSubtitle, .footerNote, .formLabel { color: var(--color-body); }
+.formInput { background: var(--color-canvas); border-color: var(--color-hairline); color: var(--color-ink); }
+.tabToggle, .closeBtn { background: var(--color-canvas-soft); border-color: var(--color-hairline); }
+.tabBtn, .eyeBtn, .closeBtn { color: var(--color-body); }
+.tabBtnActive { background: var(--color-canvas-raised); color: var(--color-ink); }
+.closeBtn:hover { background: var(--color-canvas-soft); color: var(--color-ink); }
+@media (max-width: 420px) { .modalBackdrop { padding: 12px; } .modalContent { padding: 28px 20px 20px; max-height: calc(100dvh - 24px); } }

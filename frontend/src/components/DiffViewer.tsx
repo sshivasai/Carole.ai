@@ -19,6 +19,7 @@ interface ParsedDiffLine {
 export function DiffViewer({ diff, path, maxLinesVisible = 40 }: DiffViewerProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
 
   const parsedLines = useMemo(() => {
     if (!diff) return [];
@@ -33,7 +34,7 @@ export function DiffViewer({ diff, path, maxLinesVisible = 40 }: DiffViewerProps
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      if (line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git") || line.startsWith("index ")) {
+      if (line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("\\ No newline")) {
         result.push({
           type: "header",
           content: line
@@ -90,11 +91,10 @@ export function DiffViewer({ diff, path, maxLinesVisible = 40 }: DiffViewerProps
   const isLargeDiff = parsedLines.length > maxLinesVisible;
   const visibleLines = isExpanded ? parsedLines : parsedLines.slice(0, maxLinesVisible);
 
-  const handleCopy = (e: React.MouseEvent) => {
+  const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(diff);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try { await navigator.clipboard.writeText(diff); setCopied(true); setCopyError(false); }
+    catch { setCopied(false); setCopyError(true); }
   };
 
   return (
@@ -126,7 +126,7 @@ export function DiffViewer({ diff, path, maxLinesVisible = 40 }: DiffViewerProps
         >
           <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 600 }}>
             <FileCode size={14} color="#38bdf8" />
-            <span>{path}</span>
+            <span style={{ overflowWrap: "anywhere", minWidth: 0 }}>{path}</span>
           </div>
 
           <button
@@ -151,6 +151,7 @@ export function DiffViewer({ diff, path, maxLinesVisible = 40 }: DiffViewerProps
         </div>
       )}
 
+      {copyError && <p role="status" style={{ padding: "8px 12px", color: "var(--color-danger)" }}>Could not copy. Select the patch text to copy it manually.</p>}
       {/* Code Diff Body */}
       <div
         style={{
@@ -168,12 +169,12 @@ export function DiffViewer({ diff, path, maxLinesVisible = 40 }: DiffViewerProps
 
           if (line.type === "add") {
             bgColor = "rgba(34, 197, 94, 0.12)";
-            textColor = "#4ade80";
+            textColor = "var(--color-diff-add-text)";
             marker = "+";
             markerColor = "#22c55e";
           } else if (line.type === "delete") {
             bgColor = "rgba(239, 68, 68, 0.12)";
-            textColor = "#f87171";
+            textColor = "var(--color-diff-del-text)";
             marker = "-";
             markerColor = "#ef4444";
           } else if (line.type === "hunk") {

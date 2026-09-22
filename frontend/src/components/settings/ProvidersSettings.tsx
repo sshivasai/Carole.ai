@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Key, Eye, EyeOff, Save, Loader2, Cpu, CheckCircle, Sparkles, Globe, Terminal } from "lucide-react";
 import { api } from "@/hooks/useApi";
 import SettingTooltip from "./SettingTooltip";
@@ -83,17 +83,22 @@ export default function ProvidersSettings({ onToast }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  const [loadError, setLoadError] = useState("");
+  const loadConfig = useCallback(() => {
+    setLoading(true);
+    setLoadError("");
     api.getAppConfig()
       .then((cfg: any) => {
         setKeys(cfg.api_keys || {});
         setOllamaUrl(cfg.providers?.ollama_base_url || "");
       })
-      .catch(() => {})
+      .catch(() => setLoadError("Provider settings could not be loaded. Check your connection and account access, then retry."))
       .finally(() => setLoading(false));
   }, []);
+  useEffect(() => { loadConfig(); }, [loadConfig]);
 
   const handleSave = async () => {
+    if (loading || saving || loadError) return;
     setSaving(true);
     try {
       await api.updateAppConfig({
@@ -139,7 +144,7 @@ export default function ProvidersSettings({ onToast }: Props) {
                 </span>
               </div>
               <p className="caption text-mute" style={{ margin: 0 }}>
-                Encrypted and saved to <code style={{ background: "var(--color-canvas-raised)", padding: "1px 6px", borderRadius: 4, fontSize: 11 }}>.carole/config.json</code> with zero-restart hot reloading.
+                Connect your providers here. Saved changes apply without restarting the workspace.
               </p>
             </div>
           </div>
@@ -151,9 +156,9 @@ export default function ProvidersSettings({ onToast }: Props) {
               <div key={i} className="skeleton skeleton-text" style={{ height: 36 }} />
             ))}
           </div>
-        ) : (
+        ) : loadError ? <div role="alert" style={{ display: "grid", gap: 12, padding: 16, border: "1px solid var(--color-hairline)", borderRadius: 12 }}><p className="body-sm">{loadError}</p><button className="btn btn-outline" onClick={loadConfig}>Retry loading settings</button></div> : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-lg)" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "var(--sp-md)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: "var(--sp-md)" }}>
               {PROVIDER_FIELDS.map(({ key, label, placeholder, description, why, how }) => {
                 const isSet = !!(keys[key] && keys[key].trim().length > 0);
                 return (
@@ -171,7 +176,7 @@ export default function ProvidersSettings({ onToast }: Props) {
                   >
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                       <div style={{ display: "flex", alignItems: "center" }}>
-                        <label className="form-label" style={{ fontSize: 11, fontWeight: 600, margin: 0 }}>
+                        <label htmlFor={`apikey-${key}`} className="form-label" style={{ fontSize: 11, fontWeight: 600, margin: 0 }}>
                           {label}
                         </label>
                         <SettingTooltip title={`${label} API Key`} why={why} how={how} />
@@ -187,6 +192,9 @@ export default function ProvidersSettings({ onToast }: Props) {
                     <div style={{ position: "relative" }}>
                       <input
                         id={`apikey-${key}`}
+                        disabled={saving}
+                        autoComplete="off"
+                        spellCheck={false}
                         className="input"
                         type={visible[key] ? "text" : "password"}
                         placeholder={placeholder}
@@ -208,6 +216,8 @@ export default function ProvidersSettings({ onToast }: Props) {
                           color: "var(--color-mute)",
                           padding: 2,
                         }}
+                        aria-label={`${visible[key] ? "Hide" : "Show"} ${label} API key`}
+                        aria-pressed={!!visible[key]}
                         title={visible[key] ? "Hide API key" : "Show API key"}
                       >
                         {visible[key] ? <EyeOff size={13} /> : <Eye size={13} />}
@@ -237,7 +247,7 @@ export default function ProvidersSettings({ onToast }: Props) {
             >
               <div style={{ display: "flex", alignItems: "center" }}>
                 <Terminal size={14} color="var(--color-primary)" style={{ marginRight: 6 }} />
-                <label className="form-label" style={{ fontSize: 11, fontWeight: 600, margin: 0 }}>
+                <label htmlFor="ollama-url" className="form-label" style={{ fontSize: 11, fontWeight: 600, margin: 0 }}>
                   Ollama Local Inference Gateway
                 </label>
                 <SettingTooltip
@@ -248,6 +258,7 @@ export default function ProvidersSettings({ onToast }: Props) {
               </div>
               <input
                 id="ollama-url"
+                disabled={saving}
                 className="input"
                 type="text"
                 placeholder="http://localhost:11434/v1"

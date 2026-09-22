@@ -21,6 +21,7 @@ import {
   Layers,
   Search,
 } from "lucide-react";
+import { isPendingApproval } from "@/features/chat/approval";
 import AgentAvatar from "./AgentAvatar";
 import type { AgentConfig, TaskItem, ChatMessage } from "@/lib/types";
 import styles from "./WorkspaceHome.module.css";
@@ -62,13 +63,7 @@ export default function WorkspaceHome({
   const currentTeam = teams.find((t) => t.id === teamId);
 
   // Derive pending approvals & questions
-  const pendingApprovals = messages.filter(
-    (m) =>
-      (m.type === "approval_request" && m.status !== "approved" && m.status !== "denied") ||
-      (m.pending_approval &&
-        m.pending_approval.status !== "approved" &&
-        m.pending_approval.status !== "denied")
-  );
+  const pendingApprovals = messages.filter(isPendingApproval);
 
   const pendingQuestions = messages.filter(
     (m) => (m.type === "agent_question" || m.type === "ask_user") && !m.is_answered && !m.answer
@@ -142,12 +137,13 @@ export default function WorkspaceHome({
 
               <textarea
                 className={styles.composerTextarea}
+                aria-label="Describe your objective"
                 placeholder="Describe an objective (e.g., 'Refactor the authentication flow with JWT refresh tokens and write unit tests')..."
                 value={objectiveInput}
                 onChange={(e) => setObjectiveInput(e.target.value)}
                 rows={3}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                  if (!e.nativeEvent.isComposing && e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                     handleSubmit(e);
                   }
                 }}

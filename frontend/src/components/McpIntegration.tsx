@@ -372,7 +372,7 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
               Add Custom Stdio / SSE Server
             </span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-sm)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(230px, 100%), 1fr))", gap: "var(--sp-sm)" }}>
             <input
               className="input input-sm"
               placeholder="Server name (e.g. internal-db)"
@@ -479,7 +479,7 @@ export default function McpIntegration({ teamId, agents, onToast }: Props) {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fill, minmax(min(280px, 100%), 1fr))",
           gap: "var(--sp-md)",
           overflowY: "auto",
         }}

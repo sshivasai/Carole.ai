@@ -68,20 +68,8 @@ class ErrorNode(ASTNode):
     pass
 
 
-# Mode & Role-based tool category mapping (Claude Code / Roo Code architecture)
-# Restricts heavy, specialized tools to agents/modes that actually need them.
+# Roles influence loading preferences, never tool authorization.
 UNIVERSAL_ALLOWED_CATEGORIES: Set[str] = {"filesystem", "search", "interaction", "memory"}
-
-ROLE_ALLOWED_CATEGORIES: Dict[str, Set[str]] = {
-    "orchestrator": {"coordination", "task", "interaction", "web", "filesystem", "memory"},
-    "coordinator": {"coordination", "task", "interaction", "web", "filesystem", "memory"},
-    "architect": {"coordination", "task", "interaction", "web", "filesystem", "memory", "code_analysis"},
-    "coder": {"filesystem", "shell", "git", "task", "coordination", "interaction", "web", "memory", "code_analysis"},
-    "developer": {"filesystem", "shell", "git", "task", "coordination", "interaction", "web", "memory", "code_analysis"},
-    "reviewer": {"filesystem", "git", "task", "coordination", "interaction", "shell", "memory", "code_analysis"},
-    "qa": {"filesystem", "git", "task", "coordination", "interaction", "shell", "browser", "memory"},
-    "researcher": {"web", "filesystem", "coordination", "interaction", "task", "browser", "memory"},
-}
 
 UNIVERSAL_CORE_TOOLS: List[str] = [
     "read_file",
@@ -105,182 +93,32 @@ ROLE_DEFAULT_TOOLS: Dict[str, List[str]] = {
     "architect": ["find_function", "get_file_outline"],
 }
 
-INTENT_TRIGGERS: Dict[str, Dict[str, Any]] = {
-    "browser": {
-        "keywords": (
-            "browser", "website", "navigate", "url", "scrape", "ui", "frontend",
-            "preview", "localhost", "page", "component", "css", "html", "screenshot",
-            "dom", "click", "web page", "view in browser", "render"
-        ),
-        "tools": ("browser_navigate", "browser_screenshot", "browser_click", "browser_snapshot"),
-    },
-    "git": {
-        "keywords": (
-            "git", "commit", "push", "pull", "branch", "pr", "pull request",
-            "merge", "rebase", "diff", "stash", "checkout", "repo", "repos",
-            "repository", "github", "version control", "changes", "modified",
-            "uncommitted", "sync", "remote", "stage", "patch"
-        ),
-        "tools": ("git_status", "git_diff", "git_commit", "git_log"),
-    },
-    "shell": {
-        "keywords": (
-            "run", "exec", "terminal", "bash", "powershell", "cmd", "command",
-            "test", "tests", "pytest", "npm", "pip", "build", "compile",
-            "install", "script", "server", "execute"
-        ),
-        "tools": ("execute_command",),
-    },
-    "code_analysis": {
-        "keywords": (
-            "caller", "callees", "callers", "ast", "syntax", "dependency",
-            "dependencies", "symbol", "import", "imports", "impact", "hierarchy",
-            "outline", "definition", "definitions", "refactor", "signature"
-        ),
-        "tools": ("find_function", "find_symbol_definition", "get_file_outline", "check_syntax"),
-    },
-    "search": {
-        "keywords": (
-            "grep", "search", "find in files", "pattern", "glob", "locate", "where is"
-        ),
-        "tools": ("grep_search", "glob_search"),
-    },
-    "task": {
-        "keywords": (
-            "task", "kanban", "todo", "plan", "checklist", "board", "milestone",
-            "progress", "subtask"
-        ),
-        "tools": ("create_task", "list_tasks", "update_task", "write_task_plan"),
-    },
-    "coordination": {
-        "keywords": (
-            "subagent", "delegate", "teammate", "hire", "spawn", "assign",
-            "team member", "roster", "hand off"
-        ),
-        "tools": ("spawn_agent", "hire_subagent", "send_message"),
-    },
-    "web": {
-        "keywords": (
-            "web", "google", "search the web", "online", "fetch", "http",
-            "api", "docs", "documentation", "latest", "release notes", "internet"
-        ),
-        "tools": ("web_search", "web_fetch", "http_request"),
-    },
-    "scheduler": {
-        "keywords": (
-            "cron", "schedule", "recurring", "daily", "hourly", "every morning",
-            "every minute", "interval", "timer", "periodic"
-        ),
-        "tools": ("create_scheduled_task", "list_scheduled_tasks", "update_scheduled_task"),
-    },
-    "workspace": {
-        "keywords": (
-            "meeting", "email", "mom", "minutes", "calendar", "invite", "agenda",
-            "zoom", "meet", "google meet"
-        ),
-        "tools": ("create_meeting", "send_email", "generate_mom"),
-    },
-    "memory": {
-        "keywords": (
-            "memory", "remember", "recall", "forget", "scratchpad", "fact",
-            "notes", "context", "history", "preference", "learned"
-        ),
-        "tools": ("search_memory", "add_memory", "read_scratchpad", "write_scratchpad"),
-    },
-    "filesystem": {
-        "keywords": (
-            "file", "read", "write", "edit", "create file", "folder", "directory"
-        ),
-        "tools": ("read_file", "edit_file", "write_file", "list_directory"),
-    },
-    "interaction": {
-        "keywords": (
-            "ask", "question", "clarify", "sleep", "pause"
-        ),
-        "tools": ("ask_user", "sleep"),
-    },
-}
-
-
 def resolve_active_tools(
     role: str,
     initial_prompt: str = "",
-    dynamically_requested_tools: Optional[Set[str]] = None,
+    dynamically_requested_tools=None,
     max_tools: int = 12,
-) -> Tuple[Set[str], Set[str]]:
-    """Resolves (allowed_categories, selected_tool_names) for an agent turn.
-
-    Ensures:
-    1. Base universal categories (filesystem, interaction, memory) are always available to all agents.
-    2. Role categories are respected as authorization boundaries.
-    3. Intent keywords dynamically activate appropriate category tools (e.g. browser for frontend coder).
-    4. Selected tools are capped at max_tools (default 12) to prevent prompt bloat.
-    """
-    role_key = (role or "").lower().strip()
-    allowed_categories = set(UNIVERSAL_ALLOWED_CATEGORIES)
-    for r_name, cats in ROLE_ALLOWED_CATEGORIES.items():
-        if r_name in role_key:
-            allowed_categories.update(cats)
-            break
-
-    init_lower = (initial_prompt or "").lower()
-    intent_tools: List[str] = []
-
-    for cat, trigger in INTENT_TRIGGERS.items():
-        if any(kw in init_lower for kw in trigger["keywords"]):
-            # Allow coder/developer/orchestrator/coordinator/researcher/qa to use browser when browser/preview intent is detected
-            if cat == "browser" and any(r in role_key for r in ("coder", "developer", "orchestrator", "coordinator", "researcher", "qa")):
-                allowed_categories.add("browser")
-            if cat in allowed_categories:
-                intent_tools.extend(trigger["tools"])
+    available_tools=None,
+) -> Tuple[Set[str], List[str]]:
+    """Rank a bounded working set from tools already filtered by access policy."""
+    from core.tools.tool_retrieval import rank_tools
 
     if isinstance(max_tools, bool) or not isinstance(max_tools, int) or max_tools < 3:
         raise ValueError("max_tools must be an integer of at least 3")
-    # Discovery must actually load requested tools, evicting inactive defaults.
-    selected: List[str] = ["fetch_tool_schemas", "read_file", "ask_user"]
-    for t in sorted(dynamically_requested_tools or ()):
-        if t not in selected:
-            selected.append(t)
-    for t in intent_tools + UNIVERSAL_CORE_TOOLS:
-        if t not in selected:
-            selected.append(t)
-
-    # 2. Role-specific default tools
-    role_defaults = []
-    for r_name, def_tools in ROLE_DEFAULT_TOOLS.items():
-        if r_name in role_key:
-            role_defaults.extend(def_tools)
-            break
-    for t in role_defaults:
-        if t not in selected:
-            selected.append(t)
-
-    # 3. Intent-activated tools
-    for t in intent_tools:
-        if t not in selected:
-            selected.append(t)
-
-    # 4. Dynamically requested tools (via fetch_tool_schemas)
-    if dynamically_requested_tools:
-        for t in dynamically_requested_tools:
-            if t not in selected:
-                selected.append(t)
-
-    # Filter selected tools to those whose ToolSpec category is allowed
-    from core.tools.tool_registry import ToolRegistry
-    valid_selected = []
-    for t_name in selected:
-        spec = ToolRegistry.get(t_name)
-        if spec and (spec.category in allowed_categories or spec.category in UNIVERSAL_ALLOWED_CATEGORIES):
-            valid_selected.append(t_name)
-        elif not spec:
-            valid_selected.append(t_name)
-
-    # Cap at max_tools while prioritizing universal core and intent tools
-    if len(valid_selected) > max_tools:
-        valid_selected = valid_selected[:max_tools]
-
-    return allowed_categories, set(valid_selected)
+    specs = list(ToolRegistry.list_all() if available_tools is None else available_tools)
+    available = {spec.name for spec in specs}
+    categories = {spec.category for spec in specs}
+    role_key = (role or "").lower().strip()
+    if role_key == "software engineer":
+        role_key = "coder"
+    defaults = next((names for role_name, names in ROLE_DEFAULT_TOOLS.items() if role_name in role_key), [])
+    requested = dynamically_requested_tools or []
+    if isinstance(requested, set):
+        requested = sorted(requested)
+    priority = (["fetch_tool_schemas", "read_file", "ask_user"] + list(requested)
+                + rank_tools(initial_prompt, specs) + UNIVERSAL_CORE_TOOLS + defaults)
+    selected = list(dict.fromkeys(name for name in priority if name in available))[:max_tools]
+    return categories, selected
 
 
 class ReACTAgent:
@@ -292,6 +130,8 @@ class ReACTAgent:
         fallback_model: Optional[str] = None,
         reasoning_effort: str = "none",
         parent_message_id: Optional[str] = None,
+        history_mode: str = "shared",
+        selected_history: Optional[List[Dict[str, Any]]] = None,
     ):
         self.agent_id = agent_id
         self.team_id = team_id
@@ -306,6 +146,10 @@ class ReACTAgent:
         self.parent_coordinator_id = parent_coordinator_id
         self.task_id = task_id
         self.parent_message_id = parent_message_id
+        if history_mode not in {"shared", "isolated", "selected", "fork"}:
+            raise ValueError("Invalid worker history mode")
+        self.history_mode = history_mode
+        self.selected_history = selected_history or []
         # Tracks the DB id of the current response message (for file snapshotting)
         self.active_message_id: str | None = None
         self._worker_results: List[Dict[str, Any]] = []
@@ -326,7 +170,7 @@ class ReACTAgent:
         self._no_progress_count: int = 0
         self._consecutive_tool_errors: int = 0
         self._modified_files: set = set()
-        self._dynamically_requested_tools: Set[str] = set()
+        self._dynamically_requested_tools: List[str] = []
 
     @staticmethod
     def _as_uuid(value: Any) -> uuid.UUID:
@@ -512,6 +356,34 @@ class ReACTAgent:
         roster_result = await db_session.execute(stmt)
         teammates = roster_result.scalars().all()
 
+        from core.agent.context_compiler import CHAT
+        if getattr(self, "_context_policy", None) == CHAT:
+            from core.agent.prompt_safety import TRUST_BOUNDARY
+            from core.prompts import build_agent_system_prompt, get_prompt
+            from core.tools.tool_executor import get_visible_tools
+            from core.auth.instance_owner import assert_team_instance_owner
+            try:
+                await assert_team_instance_owner(self.team_id)
+                self._host_capabilities_allowed = True
+            except Exception:
+                self._host_capabilities_allowed = False
+            own = next((a for a in teammates if str(a.id) == self.agent_id), None)
+            permissions = (own.tool_permissions or {}) if own else {}
+            capabilities = sorted({spec.category for spec in get_visible_tools(
+                self.team_id, self.agent_id, permissions, self._host_capabilities_allowed)})
+            # Only replace shipped templates. A custom agent prompt is authoritative.
+            known = {build_agent_system_prompt(self.name, self.role, p)
+                     for p in ("professional", "casual", "witty", "mentor", "subagent")}
+            base = self.system_prompt if self.system_prompt not in known else (
+                f"You are {self.name}, the team's {self.role}. Speak in the first person.\n"
+                + get_prompt("system.behavioral_rules", name=self.name, role=self.role))
+            assembled = (f"{TRUST_BOUNDARY}\n{base}\n"
+                "Answer this conversational request briefly. Do not claim to have executed actions.\n"
+                f"Permitted capability categories (individual actions remain subject to approval): {', '.join(capabilities)}.\n")
+            self._cached_system_prompt = assembled
+            self._cached_system_prompt_task = current_task
+            return assembled
+
         roster_block = ""
         has_teammates = any(str(t.id) != self.agent_id for t in teammates)
         if has_teammates:
@@ -565,6 +437,7 @@ class ReACTAgent:
 
         # 3. Format past learnings
         learnings_block = ""
+        memory_records = []
         if past_learnings:
             valid_learnings = []
             for l in past_learnings:
@@ -579,6 +452,8 @@ class ReACTAgent:
                     "Do NOT adopt file names, function signatures, or task parameters from past experiences unless explicitly requested by the user):\n"
                 )
                 for learning in valid_learnings:
+                    memory_records.append(json.dumps({"source": "past_learning", "situation": learning.get("task_summary"),
+                                                      "heuristic": learning.get("lesson_rule")}, ensure_ascii=False))
                     learnings_block += f"- Past Situation: {learning.get('task_summary')}\n  Heuristic: {learning.get('lesson_rule')}\n"
                 learnings_block += "\n"
 
@@ -600,6 +475,9 @@ class ReACTAgent:
         if entity_facts:
             learnings_block += "STORED ENTITY CLAIMS (verify when relevant):\n"
             for fact in entity_facts:
+                memory_records.append(json.dumps({"source": "entity_claim", "id": str(fact.id),
+                                                  "key": fact.key, "value": fact.value,
+                                                  "updated_at": str(fact.updated_at)}, ensure_ascii=False))
                 learnings_block += f"- {fact.key}: {fact.value}\n"
             learnings_block += "\n"
 
@@ -613,11 +491,16 @@ class ReACTAgent:
         if triples:
             learnings_block += "KNOWLEDGE GRAPH RELATIONS (Subject-Predicate-Object Triples):\n"
             for t in triples:
+                memory_records.append(json.dumps({"source": "graph_claim", "subject": t.subject,
+                                                  "predicate": t.predicate, "object": t.object_val}, ensure_ascii=False))
                 learnings_block += f"- ({t.subject}) --[{t.predicate}]--> ({t.object_val})\n"
             learnings_block += "\n"
 
         from core.agent.prompt_safety import reference_block, TRUST_BOUNDARY
         if learnings_block:
+            from core.agent.context_compiler import budget_records, WORK
+            learnings_block = budget_records(memory_records,
+                getattr(self, "_context_policy", WORK).memory_budget, current_task, self.model)
             capabilities_block += reference_block("retrieved memory and graph claims", learnings_block)
 
         # 3.7 Structural Repo Map (PageRank Context Map - Aider Pattern)
@@ -652,7 +535,7 @@ class ReACTAgent:
         # 5. Tool Capabilities Index (Compact ~200 tokens)
         # Build capability hints from the registry and current policy, rather
         # than promising tools that may be unavailable to this agent.
-        from core.tools.tool_executor import _get_effective_permissions, _resolve_gate_level
+        from core.tools.tool_executor import get_visible_tools
         from core.auth.instance_owner import assert_team_instance_owner
         try:
             await assert_team_instance_owner(self.team_id)
@@ -660,24 +543,20 @@ class ReACTAgent:
         except Exception:
             self._host_capabilities_allowed = False
         own_agent = next((member for member in teammates if str(member.id) == self.agent_id), None)
-        effective_policy = _get_effective_permissions(own_agent.tool_permissions or {} if own_agent else {})
-        role_categories, _ = resolve_active_tools(self.role, current_task or "")
+        permissions = (own_agent.tool_permissions or {}) if own_agent else {}
+        visible_tools = get_visible_tools(self.team_id, self.agent_id, permissions, self._host_capabilities_allowed)
+        self._tool_catalog_signature = tuple((spec.name, spec.category, spec.description) for spec in visible_tools)
         families = {}
-        for spec in sorted(ToolRegistry.list_all(), key=lambda spec: spec.name):
-            if spec.team_id is not None and str(spec.team_id) != str(self.team_id):
-                continue
-            if spec.agent_id is not None and str(spec.agent_id) != str(self.agent_id):
-                continue
-            if spec.category not in role_categories or _resolve_gate_level(spec.name, effective_policy) == "block":
-                continue
-            if (spec.requires_instance_owner or spec.category in {"shell", "mcp", "custom", "git", "browser"}) and not self._host_capabilities_allowed:
-                continue
+        for spec in visible_tools:
             families.setdefault(spec.category, []).append(spec.name)
-        catalog = "\n".join(f"- {category}: {', '.join(names[:20])}" for category, names in families.items())
+        from core.tools.tool_retrieval import catalog_summary
+        catalog = catalog_summary(visible_tools)
         capabilities_block += (
             "TOOL DISCOVERY CATALOG (availability remains subject to current authorization):\n"
-            + catalog[:5000] + "\nOnly native tool calls execute actions. The supplied schemas define the current arguments. "
+            + catalog + "\nOnly native tool calls execute actions. The supplied schemas define the current arguments. "
             "Use fetch_tool_schemas to discover additional permitted tools when available. "
+            "An unloaded schema is not a missing capability. Discover the needed tool before claiming it is unavailable. "
+            "Roles guide specialization; tool permissions determine access and judge or human review. "
             "If a required capability is unavailable or permission is denied, explain the limitation instead of claiming success.\n\n"
         )
 
@@ -731,11 +610,8 @@ class ReACTAgent:
         if _workspace:
             capabilities_block += _workspace
 
-        # Role-guard specialized blocks (only inject if category is allowed)
-        allowed_categories, _ = resolve_active_tools(self.role, current_task or "")
-
         # Scheduler awareness
-        if "scheduler" in allowed_categories:
+        if "scheduler" in families:
             _scheduler = get_block("scheduler")
             if _scheduler:
                 capabilities_block += _scheduler
@@ -750,7 +626,7 @@ class ReACTAgent:
         identity_rule = f"\n\nCRITICAL IDENTITY RULE: You are {self.name} ({self.role}). You MUST speak in the first person ('I', 'me'). NEVER refer to {self.name} in the third person. NEVER pretend to be someone else."
         output_efficiency = getattr(core.config, "OUTPUT_EFFICIENCY_PROMPT", "")
 
-        assembled = f"{TRUST_BOUNDARY}\n{self.system_prompt}{identity_rule}\n\n{output_efficiency}\n\n{capabilities_block}"
+        assembled = f"{TRUST_BOUNDARY}\n{self.system_prompt}{identity_rule}\n\n{output_efficiency}\n<carole-runtime-context>\n{capabilities_block}"
         self._cached_system_prompt = assembled
         self._cached_system_prompt_task = current_task
         return assembled
@@ -765,19 +641,18 @@ class ReACTAgent:
     def _build_tools_schema(
         self,
         allowed_categories: Set[str],
-        selected_tool_names: Set[str],
+        selected_tool_names,
         permissions: Dict[str, Any],
     ) -> List[dict]:
         """Compile native tool schemas for the active model provider."""
-        from core.tools.tool_executor import _get_effective_permissions, _resolve_gate_level
-        effective = _get_effective_permissions(permissions)
+        if isinstance(selected_tool_names, set):
+            selected_tool_names = sorted(selected_tool_names)
+        from core.tools.tool_executor import get_visible_tools
+        visible_names = {spec.name for spec in get_visible_tools(
+            self.team_id, self.agent_id, permissions, getattr(self, "_host_capabilities_allowed", False))}
         def visible(name):
-            spec = ToolRegistry.get(name)
-            if not spec or _resolve_gate_level(name, effective) == "block":
-                return False
-            host_tool = spec.requires_instance_owner or spec.category in {"shell", "mcp", "custom", "git", "browser"}
-            return not host_tool or getattr(self, "_host_capabilities_allowed", False)
-        model = self.model
+            return name in visible_names
+        model = getattr(self, "_active_model", self.model)
         if model.startswith("gemini"):
             all_tools = ToolRegistry.to_gemini_tools(
                 team_id=self.team_id, agent_id=self.agent_id,
@@ -788,6 +663,8 @@ class ReACTAgent:
                     d for d in all_tools[0]["functionDeclarations"]
                     if visible(d.get("name"))
                 ]
+                priority = {name: index for index, name in enumerate(selected_tool_names)}
+                filtered_decls.sort(key=lambda item: priority.get(item["name"], len(priority)))
                 return [{"functionDeclarations": filtered_decls}] if filtered_decls else []
             return all_tools
         elif (model.startswith("claude") or model.startswith("anthropic")) and getattr(llm_router, "anthropic_key", None):
@@ -795,13 +672,55 @@ class ReACTAgent:
                 team_id=self.team_id, agent_id=self.agent_id,
                 categories=allowed_categories, include_names=selected_tool_names,
             )
-            return [t for t in all_tools if visible(t.get("name"))]
+            filtered = [t for t in all_tools if visible(t.get("name"))]
         else:
             all_tools = ToolRegistry.to_openai_tools(
                 team_id=self.team_id, agent_id=self.agent_id,
                 categories=allowed_categories, include_names=selected_tool_names,
             )
-            return [t for t in all_tools if visible(t.get("function", {}).get("name"))]
+            filtered = [t for t in all_tools if visible(t.get("function", {}).get("name"))]
+        from core.agent.context_compiler import tool_name
+        priority = {name: index for index, name in enumerate(selected_tool_names)}
+        return sorted(filtered, key=lambda item: priority.get(tool_name(item), len(priority)))
+
+    def _prepare_tools(self, categories, names, permissions, model, optimization):
+        from core.agent.context_compiler import CHAT, select_schemas
+        if self._context_policy == CHAT:
+            return []
+        tools = self._build_tools_schema(categories, names, permissions)
+        if optimization.get("tool_budgeting", True) and not optimization.get("shadow_mode", False):
+            tools = select_schemas(tools, self._context_policy.schema_budget, model,
+                                   self._dynamically_requested_tools)
+        return tools
+
+    async def _select_tools(self, query: str, permissions: dict):
+        from core.tools.tool_executor import get_visible_tools
+        visible = get_visible_tools(self.team_id, self.agent_id, permissions,
+                                    getattr(self, "_host_capabilities_allowed", False))
+        signature = tuple((spec.name, spec.category, spec.description) for spec in visible)
+        if signature != getattr(self, "_tool_catalog_signature", None):
+            self._invalidate_system_prompt_cache()
+        return await asyncio.to_thread(resolve_active_tools, self.role, query,
+                                       self._dynamically_requested_tools, available_tools=visible)
+
+    def _activate_discovered_tools(self, args: dict, permissions: dict) -> str:
+        from core.tools.tool_executor import get_visible_tools
+        from core.tools.tool_retrieval import discover_tools
+
+        visible = get_visible_tools(self.team_id, self.agent_id, permissions,
+                                    getattr(self, "_host_capabilities_allowed", False))
+        matches = discover_tools(args, visible)
+        requested = list(dict.fromkeys([spec.name for spec in matches] + list(self._dynamically_requested_tools)))
+        _, selected = resolve_active_tools(self.role, dynamically_requested_tools=requested, available_tools=visible)
+        self._dynamically_requested_tools = [name for name in requested if name in selected]
+        loaded = [spec.name for spec in matches if spec.name in selected]
+        deferred = [spec.name for spec in matches if spec.name not in selected]
+        result = "Schemas loaded for the next model call: " + (", ".join(loaded) or "none") + "."
+        if deferred:
+            result += "\nOther permitted tools (request specific names to load): " + ", ".join(deferred)
+        if not matches:
+            result += " No match was found in the permitted catalog. Try a different query or an explicit tool name."
+        return result
 
     def _invalidate_system_prompt_cache(self) -> None:
         """Force a rebuild of the cached system prompt on the next loop iteration.
@@ -813,13 +732,23 @@ class ReACTAgent:
         """Runs the core ReACT loop with conversation history and streaming."""
         self.active_message_id = trigger_message_id
         self._listening = True
+        from core.agent.run_budget import root_budget_id, request_scope, create_budget, BudgetExceeded
+        budget_token = None
+        if root_budget_id.get() is None:
+            root_id = str(uuid.uuid4())
+            await create_budget(root_id, self._run_budget_limit())
+            budget_token = root_budget_id.set(root_id)
         listener_task = asyncio.create_task(
             self._listen_for_notifications(),
             name=f"react-notifications:{self.agent_id}",
         )
 
+        scope_token = request_scope.set({"project_id": self.project_id, "team_id": self.team_id,
+                                         "agent_id": self.agent_id, "agent_name": self.name})
         try:
             await self._run_loop_native(db_session, initial_prompt, attachments, token, trigger_message_id=trigger_message_id)
+        except (BudgetExceeded, TimeoutError) as exc:
+            await self._record_run_stop(db_session, str(exc))
         except asyncio.CancelledError:
             # User clicked "Stop Generating" — persist whatever was partially generated
             partial = getattr(self, "_current_thought_buffer", "").strip()
@@ -873,6 +802,9 @@ class ReACTAgent:
             self._log.info("Agent %s stopped by user request.", self.name)
             raise  # re-raise so asyncio.Task knows it was cancelled
         finally:
+            request_scope.reset(scope_token)
+            if budget_token is not None:
+                root_budget_id.reset(budget_token)
             self._listening = False
             listener_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1167,15 +1099,25 @@ class ReACTAgent:
                             get_model_context_window(model) - input_tokens - 256)
         if output_tokens < 64:
             return ""
-        # The text-only completion API does not return usage. Keep a conservative
-        # reservation even if the provider fails or the request times out.
         self._total_run_tokens = spent + input_tokens + output_tokens
-        return await asyncio.wait_for(llm_router.generate_completion(
-            model=model, system_prompt=system_prompt, messages=messages,
-            temperature=0.0, max_tokens=output_tokens,
-            project_id=self.project_id, team_id=self.team_id,
-            agent_id=self.agent_id, agent_name=self.name,
-        ), timeout=timeout)
+        async def collect():
+            text, usage = [], {}
+            async for event in llm_router.generate_with_tools(
+                model=model, system_prompt=system_prompt, messages=messages, tools=[],
+                temperature=0.0, max_tokens=output_tokens, allow_fallback=False,
+                project_id=self.project_id, team_id=self.team_id,
+                agent_id=self.agent_id, agent_name=self.name,
+                run_id=getattr(self, "_run_id", None), purpose="maintenance"):
+                if event.get("type") == "text_delta":
+                    text.append(event.get("delta", ""))
+                elif event.get("type") == "usage":
+                    usage.update(event.get("usage", {}))
+            from core.agent.token_budget import reported_total
+            used = reported_total(usage)
+            if used is not None:
+                self._total_run_tokens += used - input_tokens - output_tokens
+            return "".join(text)
+        return await asyncio.wait_for(collect(), timeout=timeout)
 
     async def _record_run_stop(self, db_session: AsyncSession, text: str) -> None:
         message = Message(team_id=self._as_uuid(self.team_id), sender_id=self.agent_id,
@@ -1202,6 +1144,10 @@ class ReACTAgent:
         keep_recent = cc["recent_messages_to_keep"]
 
         from core.agent.context_condenser import ContextCondenser, WORKING_STATE_SYSTEM_PROMPT
+        policy = getattr(self, "_context_policy", None)
+        if policy is not None:
+            keep_recent = ContextCondenser.recent_token_tail(messages,
+                max(1000, policy.input_target // 4), self.model)
 
         prefix_end, start = ContextCondenser.compute_pruning_bounds(messages, keep_recent)
         if start <= prefix_end:
@@ -1211,8 +1157,17 @@ class ReACTAgent:
         to_compact = messages[prefix_end:start]
         if not to_compact:
             return messages
+        try:
+            constraint_evidence = ContextCondenser.retained_constraint_evidence(to_compact)
+        except ValueError:
+            return messages
 
         # Explicit coverage watermark: extract newest message being compacted
+        checkpoint_scope = f"{self.team_id}:{self.agent_id}"
+        expected_checkpoint_version = None
+        if db_session is not None and not getattr(self, "is_private_response", False):
+            from core.agent.checkpoint_store import checkpoint_version
+            expected_checkpoint_version = await checkpoint_version(checkpoint_scope)
         last_compacted = to_compact[-1]
         covered_msg_id = last_compacted.get("id")
         covered_ts = last_compacted.get("created_at")
@@ -1247,7 +1202,7 @@ class ReACTAgent:
             if not isinstance(summary, str) or not summary.strip():
                 return messages
             summary = summary[:12000]
-            full_summary = f"{pinned_block}{summary}" if pinned_block else summary
+            full_summary = f"{pinned_block}{constraint_evidence}\n{summary}"
             compacted = ContextCondenser.apply_sliding_window_pruning(
                 messages=messages,
                 checkpoint_card=full_summary,
@@ -1263,6 +1218,7 @@ class ReACTAgent:
                     team_uuid = self._as_uuid(self.team_id)
                     cov_uuid = uuid.UUID(str(covered_msg_id)) if covered_msg_id else None
                     cp_event = CompactionEvent(
+                        id=uuid.uuid4(),
                         team_id=team_uuid,
                         summary=full_summary,
                         message_count_before=len(messages),
@@ -1274,6 +1230,13 @@ class ReACTAgent:
                             (datetime.fromisoformat(m["created_at"]) if isinstance(m.get("created_at"), str)
                              else m["created_at"] for m in messages if m.get("created_at")), default=None),
                     )
+                    from core.agent.observation_cache import pin_observations
+                    await asyncio.to_thread(pin_observations, f"{self.team_id}:{self.agent_id}",
+                                            str(cp_event.id), compacted)
+                    from core.agent.checkpoint_store import claim_checkpoint
+                    if not await claim_checkpoint(db_session, checkpoint_scope, expected_checkpoint_version):
+                        await db_session.rollback()
+                        return messages
                     db_session.add(cp_event)
                     await db_session.commit()
                     cp_event_id = str(cp_event.id)
@@ -1453,6 +1416,8 @@ class ReACTAgent:
 
         # ── Reset per-session state ───────────────────────────────────────────
         model = self.model
+        self._active_model = model
+        attempted_models = {model}
         self._cached_system_prompt = None
         self._cached_system_prompt_task = None
         self._last_observation = ""
@@ -1467,6 +1432,20 @@ class ReACTAgent:
         self._tool_call_history: List[str] = []
         self._oscillating_warned: bool = False
         self._total_run_tokens: int = 0
+        from core.agent.context_compiler import select_policy, CHAT, WORK
+        from core.agent.loop_policy import LoopGuard, cancellable_events
+        from core.llm.config_manager import load_config
+        optimization = load_config().get("context_optimization", {})
+        optimization = optimization if isinstance(optimization, dict) else {}
+        self._optimization = optimization
+        self._context_policy = (select_policy(initial_prompt, self.role,
+            attachments=bool(attachments), task_id=self.task_id)
+            if optimization.get("profiles", True) else WORK)
+        self._candidate_policy = self._context_policy
+        if optimization.get("shadow_mode", False):
+            self._context_policy = WORK
+        guard = LoopGuard()
+        self._compaction_attempted_size = 0
 
         if trigger_message_id:
             self.active_message_id = trigger_message_id
@@ -1493,16 +1472,8 @@ class ReACTAgent:
         # ── Build system prompt & tool schemas ───────────────────────────────
         system_prompt = await self.assemble_system_prompt(db_session, initial_prompt)
 
-        # Mode & Role-based tool scoping (Claude Code / Roo Code style)
-        # Prevents sending 120+ tool schemas (25k-30k tokens) by filtering to role-relevant families and capping at 12 tools
+        # Load a bounded working set; other permitted tools remain discoverable.
         self._dynamically_requested_tools.clear()
-        allowed_categories, selected_tool_names = resolve_active_tools(
-            role=self.role,
-            initial_prompt=initial_prompt,
-            dynamically_requested_tools=self._dynamically_requested_tools,
-            max_tools=12,
-        )
-        tools = self._build_tools_schema(allowed_categories, selected_tool_names, permissions)
 
         # ── Load conversation history into MessageHistory ─────────────────────
         from core.llm.multi_model_router import get_model_context_window
@@ -1518,9 +1489,14 @@ class ReACTAgent:
         else:
             history_limit = 4
 
-        raw_history = await self._load_conversation_history(
-            db_session, limit=history_limit, exclude_msg_id=trigger_message_id
-        )
+        if self.history_mode == "isolated":
+            raw_history = []
+        elif self.history_mode == "selected":
+            raw_history = self.selected_history
+        else:
+            raw_history = await self._load_conversation_history(
+                db_session, limit=history_limit, exclude_msg_id=trigger_message_id
+            )
         history = MessageHistory(seed=raw_history)
 
         if attachments:
@@ -1585,6 +1561,11 @@ class ReACTAgent:
         # ── Main ReAct loop ───────────────────────────────────────────────────
         while loop_count < max_loops:
             loop_count += 1
+            try:
+                guard.check(token)
+            except TimeoutError as exc:
+                await self._record_run_stop(db_session, str(exc))
+                return
 
             # Refresh policy from a new session so a long-lived transaction cannot
             # keep using a revoked role, disabled agent, or old permissions.
@@ -1606,10 +1587,11 @@ class ReACTAgent:
                 self._host_capabilities_allowed = True
             except Exception:
                 self._host_capabilities_allowed = False
-            allowed_categories, selected_tool_names = resolve_active_tools(
-                role=self.role, initial_prompt=initial_prompt,
-                dynamically_requested_tools=self._dynamically_requested_tools, max_tools=12)
-            tools = self._build_tools_schema(allowed_categories, selected_tool_names, permissions)
+            if self._context_policy == CHAT:
+                allowed_categories, selected_tool_names = set(), []
+            else:
+                allowed_categories, selected_tool_names = await self._select_tools(initial_prompt, permissions)
+            tools = self._prepare_tools(allowed_categories, selected_tool_names, permissions, model, optimization)
 
             # Invalidate/refresh system prompt if worker results arrived
             if self._cached_system_prompt is None:
@@ -1632,21 +1614,15 @@ class ReACTAgent:
             trigger_ratio = cc["token_trigger_ratio"]
             estimated_tokens = self._estimate_tokens(messages, system_prompt=system_prompt, tools=tools)
 
-            await event_bus.publish(self.topic, {
-                "type": "context_usage",
-                "sender_id": self.agent_id,
-                "sender_name": self.name,
-                "model": model,
-                "estimated_tokens": estimated_tokens,
-                "context_window": window_size,
-                "usage_percent": round((estimated_tokens / window_size) * 100, 1) if window_size > 0 else 0,
-                "loop_count": loop_count,
-                "max_loops": max_loops,
-            })
-
             # Enforce cumulative run token budget circuit breaker
             # Compact before deciding the next request is unaffordable.
-            if ContextCondenser.is_under_context_pressure(estimated_tokens, window_size, trigger_ratio):
+            hard_pressure = ContextCondenser.is_under_context_pressure(estimated_tokens, window_size, trigger_ratio)
+            soft_pressure = (optimization.get("compaction_policy", True) and not optimization.get("shadow_mode", False)
+                and self._context_policy != CHAT
+                and estimated_tokens > self._context_policy.input_target * 1.2
+                and estimated_tokens > self._compaction_attempted_size * 1.2)
+            if hard_pressure or soft_pressure:
+                self._compaction_attempted_size = estimated_tokens
                 messages = await self._rolling_compact(messages, db_session=db_session, triggered_by="auto")
                 history = MessageHistory(seed=messages)
                 messages = history.get_messages()
@@ -1722,8 +1698,11 @@ class ReACTAgent:
             had_error = False
 
             for attempt in range(3):
+                guard.check(token)
                 assistant_text = ""
                 tool_uses = []
+                reasoning_blocks = []
+                response_started = False
                 stop_reason = None
                 self._current_thought_buffer = ""
 
@@ -1733,8 +1712,16 @@ class ReACTAgent:
                         "sender_id": self.agent_id,
                     })
 
-                request_input_tokens = self._estimate_tokens(messages, system_prompt=system_prompt, tools=tools)
-                request_max_tokens = min(8192, window_size - request_input_tokens - 256,
+                from core.agent.context_compiler import compile_request, ContextCapacityError
+                try:
+                    plan = compile_request(system_prompt, messages, tools, model=model,
+                        context_window=window_size, policy=self._context_policy)
+                except ContextCapacityError as exc:
+                    await self._record_run_stop(db_session, str(exc))
+                    return
+                request_id = str(uuid.uuid4())
+                request_input_tokens = plan.estimated_tokens
+                request_max_tokens = min(plan.output_reserve,
                                          max_budget_tokens - self._total_run_tokens - request_input_tokens)
                 if request_max_tokens < 1:
                     had_error = True
@@ -1754,7 +1741,7 @@ class ReACTAgent:
                 self._total_run_tokens += reserved_tokens
                 request_usage = {}
                 try:
-                    async for event in llm_router.generate_with_tools(
+                    async for event in cancellable_events(llm_router.generate_with_tools(
                         model=model,
                         system_prompt=system_prompt,
                         messages=messages,
@@ -1767,9 +1754,16 @@ class ReACTAgent:
                         agent_name=self.name,
                         project_id=self.project_id,
                         fallback_model=self.fallback_model,
-                        reasoning_effort=self.reasoning_effort if self.reasoning_effort != "none" else None,
-                    ):
+                        reasoning_effort=self.reasoning_effort if self.reasoning_effort != "none" and self._context_policy != CHAT else None,
+                        call_id=request_id, run_id=self._run_id, purpose="agent",
+                        context_snapshot={**plan.event(), "shadow_profile":
+                            self._candidate_policy.name if optimization.get("shadow_mode", False) else None},
+                        allow_fallback=False,
+                    ), token):
+                        guard.check(token)
                         etype = event.get("type", "")
+                        if etype in {"text_delta", "reasoning_delta", "reasoning_block", "tool_use"}:
+                            response_started = True
 
                         if etype == "text_delta":
                             chunk = event["delta"]
@@ -1800,6 +1794,8 @@ class ReACTAgent:
 
                         elif etype == "tool_use":
                             tool_uses.append(event)
+                        elif etype == "reasoning_block":
+                            reasoning_blocks.append(event["block"])
 
                         elif etype == "usage":
                             request_usage.update(event.get("usage", {}))
@@ -1807,16 +1803,41 @@ class ReACTAgent:
                         elif etype == "message_stop":
                             stop_reason = event.get("stop_reason")
 
-                    if request_usage:
-                        from core.agent.token_budget import reported_total
-                        used = reported_total(request_usage)
-                        if used is not None:
-                            self._total_run_tokens += used - reserved_tokens
                     break  # Success — exit retry loop
 
                 except Exception as e:
+                    from core.agent.run_budget import BudgetExceeded
+                    if isinstance(e, BudgetExceeded):
+                        raise
+                    if isinstance(e, ContextCapacityError):
+                        await self._record_run_stop(db_session, str(e))
+                        return
                     from core.llm.multi_model_router import LLMProviderError
+                    if response_started:
+                        await self._record_run_stop(db_session, "Provider stream interrupted after partial output. No pending tool calls were executed; completion is unverified.")
+                        return
                     if isinstance(e, LLMProviderError):
+                        fallback = (self.fallback_model or "").strip()
+                        if fallback and fallback not in attempted_models and attempt < 2:
+                            from core.llm.multi_model_router import normalize_model_id
+                            fallback = normalize_model_id(fallback)
+                            if fallback not in attempted_models:
+                                attempted_models.add(fallback)
+                                model = self._active_model = fallback
+                                window_size = min(cc["context_window_size"], get_model_context_window(model))
+                                tools = self._prepare_tools(allowed_categories, selected_tool_names, permissions, model, optimization)
+                                continue
+                        if e.error_type in {"rate_limit_exceeded", "provider_unavailable"} and attempt < 2:
+                            delay = 2 ** attempt
+                            if token:
+                                try:
+                                    await asyncio.wait_for(token.wait(), timeout=delay)
+                                    raise asyncio.CancelledError()
+                                except asyncio.TimeoutError:
+                                    pass
+                            else:
+                                await asyncio.sleep(delay)
+                            continue
                         had_error = True
                         error_msg = f"⚠️ {e.message}"
                         self._log.error("[native] LLM Provider Error: %s", e.message)
@@ -1881,6 +1902,11 @@ class ReACTAgent:
                             "role": self.role,
                             "text": error_msg,
                         })
+                finally:
+                    from core.agent.token_budget import reported_total
+                    used = reported_total(request_usage)
+                    if used is not None:
+                        self._total_run_tokens += used - reserved_tokens
 
             if had_error:
                 await event_bus.publish(self.topic, {
@@ -1911,7 +1937,7 @@ class ReACTAgent:
             if not tool_uses:
                 if stop_reason in ("max_tokens", "length"):
                     self._log.warning("[native] Model stopped due to length/max_tokens truncation.")
-                    if loop_count < max_loops - 1:
+                    if loop_count < max_loops - 1 and guard.allow_correction("truncation"):
                         history.add_assistant_text(text=assistant_text or "[Response truncated]")
                         history.add_context_note("Your response hit its output limit. Continue from where it stopped; verify the result before reporting completion.")
                         continue
@@ -1919,7 +1945,7 @@ class ReACTAgent:
 
 
                 if not assistant_text.strip():
-                    if loop_count < max_loops - 1:
+                    if loop_count < max_loops - 1 and guard.allow_correction("empty"):
                         self._log.warning("[native] Empty assistant text received without tool calls; requesting output.")
                         history.add_context_note(
                             "[SYSTEM NOTE: Your response was completely empty. Please provide your answer or next action.]"
@@ -1932,21 +1958,30 @@ class ReACTAgent:
                 from core.agent.intent_engine import IntentEngine
 
                 from core.agent.intent_engine import CapabilityContext
-                # A reminder must never invent capabilities the harness did not expose.
-                schema_text = json.dumps(tools)
+                # Unloaded tools remain discoverable, but denied tools never justify a correction.
+                from core.tools.tool_executor import get_visible_tools
+                from core.agent.context_compiler import tool_name as schema_tool_name
+                active_names = {schema_tool_name(decl) for item in tools
+                                for decl in item.get("functionDeclarations", [item])}
+                available_names = {spec.name for spec in get_visible_tools(
+                    self.team_id, self.agent_id, permissions, self._host_capabilities_allowed)}
+                can_discover = "fetch_tool_schemas" in active_names
+                accessible_names = available_names if can_discover else active_names
                 false_refusal_obs = IntentEngine.detect_false_refusal(assistant_text, CapabilityContext(
-                    browser_available='"browser_navigate"' in schema_text,
-                    shell_available='"execute_command"' in schema_text,
-                    filesystem_available='"write_file"' in schema_text,
+                    browser_available="browser_navigate" in accessible_names,
+                    web_available="web_search" in accessible_names,
+                    shell_available="execute_command" in accessible_names,
+                    filesystem_available="write_file" in accessible_names,
+                    discovery_available=can_discover,
                 ))
-                if false_refusal_obs and loop_count < max_loops - 1:
+                if false_refusal_obs and loop_count < max_loops - 1 and guard.allow_correction("refusal"):
                     self._log.warning("[native] False refusal detected on loop %d: %s", loop_count, assistant_text[:100])
                     history.add_assistant_text(text=assistant_text)
                     history.add_context_note(false_refusal_obs)
                     continue
 
                 unexecuted_promise_obs = IntentEngine.detect_unexecuted_promise(assistant_text, has_tool_call=False)
-                if unexecuted_promise_obs and loop_count < max_loops - 1:
+                if unexecuted_promise_obs and loop_count < max_loops - 1 and guard.allow_correction("promise"):
                     self._log.warning("[native] Unexecuted promise detected on loop %d: %s", loop_count, assistant_text[:100])
                     history.add_assistant_text(text=assistant_text)
                     history.add_context_note(unexecuted_promise_obs)
@@ -1975,7 +2010,10 @@ class ReACTAgent:
                 is_temporary_subagent = self.name.startswith("Sub-")
                 coordinator_notification = None
                 if self.parent_coordinator_id:
-                    coordinator_notification = self._build_task_notification(assistant_text, "completed")
+                    completion_status = "blocked" if (stop_reason in ("max_tokens", "length")
+                        or unexecuted_promise_obs or false_refusal_obs or not assistant_text.strip()
+                        or "completion could not be verified" in assistant_text.lower()) else "completed"
+                    coordinator_notification = self._build_task_notification(assistant_text, completion_status)
                     if is_temporary_subagent:
                         assistant_text = coordinator_notification
 
@@ -2043,7 +2081,7 @@ class ReACTAgent:
                 terminated = True
                 break
 
-            history.add_assistant_text(text=assistant_text, tool_uses=tool_use_blocks)
+            history.add_assistant_text(text=assistant_text, tool_uses=tool_use_blocks, reasoning_blocks=reasoning_blocks)
 
             # ── Execute tools SEQUENTIALLY to preserve causality ──────────────
             await event_bus.publish(self.topic, {
@@ -2121,18 +2159,9 @@ class ReACTAgent:
                     self._consecutive_tool_errors = 0
 
                 # Handle fetch_tool_schemas dynamic discovery
-                if tool_name == "fetch_tool_schemas":
-                    raw_names = tool_args.get("tool_names") or tool_args.get("tool_name") or []
-                    if isinstance(raw_names, str):
-                        raw_names = [raw_names]
-                    for rn in raw_names:
-                        self._dynamically_requested_tools.add(str(rn).strip())
-                    family = (tool_args.get("family") or tool_args.get("category") or "").lower().strip()
-                    if family:
-                        from core.tools.tool_registry import ToolRegistry
-                        for s_name, s_spec in ToolRegistry._tools.items():
-                            if s_spec.category.lower() == family:
-                                self._dynamically_requested_tools.add(s_name)
+                if tool_name == "fetch_tool_schemas" and not is_error:
+                    activated = await asyncio.to_thread(self._activate_discovered_tools, tool_args, permissions)
+                    observation = activated + "\n" + str(observation)
 
                 tool_outcome_hashes[tool_id] = _hs.sha256(str(observation).encode("utf-8")).hexdigest()
                 # Cache the original result before rendering a bounded preview.
@@ -2150,16 +2179,6 @@ class ReACTAgent:
                     continue
                 res = await _exec_single_tool(tc)
                 results.append(res)
-
-            # If any tools were dynamically requested via fetch_tool_schemas, update active tools schema
-            if self._dynamically_requested_tools:
-                allowed_categories, selected_tool_names = resolve_active_tools(
-                    role=self.role,
-                    initial_prompt=initial_prompt,
-                    dynamically_requested_tools=self._dynamically_requested_tools,
-                    max_tools=12,
-                )
-                tools = self._build_tools_schema(allowed_categories, selected_tool_names, permissions)
 
             # Persist and broadcast tool traces
             for tool_id, tool_name, observation, is_err in results:

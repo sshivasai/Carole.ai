@@ -341,3 +341,11 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.kanbanContainer { container-type: inline-size; padding: clamp(14px, 2vw, 24px); }
+.kanbanHeader { gap: 12px; flex-wrap: wrap; }
+.kanbanBoard { min-height: 0; overscroll-behavior-x: contain; scroll-snap-type: x proximity; gap: 14px; }
+.kanbanColumn { scroll-snap-align: start; min-height: 0; border-radius: 14px; }
+.columnBody { min-height: 0; overscroll-behavior: contain; }
+.taskCard { border-radius: 10px; }.taskTitle { overflow-wrap: anywhere; }
+@container (max-width: 600px) { .kanbanColumn { min-width: min(290px, 85cqw); }.kanbanHeader h3 { font-size: 20px; } }

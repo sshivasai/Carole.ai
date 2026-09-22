@@ -274,7 +274,7 @@ export default function ObservabilitySettings({ onToast }: Props) {
           <p style={{ margin: "0 0 10px 0", color: "var(--color-body, #52525b)" }}>
             OpenLLMetry is built on top of the <strong>OpenTelemetry (OTel)</strong> standard. When you chat with an agent, decompose a task with Archer, or run a tool, the OpenLLMetry SDK intercepts the requests in-process and tracks:
           </p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", gap: 12 }}>
             <div style={{ padding: "8px 12px", background: "var(--color-canvas-raised, #ffffff)", borderRadius: 6, border: "1px solid var(--color-hairline, #d1d5db)" }}>
               <strong style={{ color: "var(--color-fg-strong, #18181b)" }}>1. Spans</strong>: Each distinct operation (agent goal, planning step, code generation, tool invocation) is tracked with exact start/end times and error statuses.
             </div>
@@ -292,7 +292,7 @@ export default function ObservabilitySettings({ onToast }: Props) {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(190px, 100%), 1fr))",
           gap: 12,
         }}
       >
@@ -626,7 +626,7 @@ export default function ObservabilitySettings({ onToast }: Props) {
                     <div
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))",
                         gap: 8,
                         marginBottom: 10,
                       }}

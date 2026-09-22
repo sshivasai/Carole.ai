@@ -24,7 +24,7 @@ export function formatModelName(rawModel: string): string {
   if (m.includes("gpt-4o")) return "GPT-4o";
   if (m.includes("o1-mini") || m.includes("o3-mini")) return "o3-mini";
   if (m.includes("o1")) return "o1 Preview";
-  if (m.includes("gemini-2.0-flash") || m.includes("gemini-2-flash")) return "Gemini 2.0 Flash";
+  if (m.includes("gemini-3.6-flash") || m.includes("gemini-3-6-flash")) return "Gemini 3.6 Flash";
   if (m.includes("gemini-1.5-pro")) return "Gemini 1.5 Pro";
   if (m.includes("gemini-1.5-flash")) return "Gemini 1.5 Flash";
   if (m.includes("deepseek-reasoner") || m.includes("deepseek-r1")) return "DeepSeek R1";

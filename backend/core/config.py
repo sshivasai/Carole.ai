@@ -9,6 +9,7 @@ All prompt text has been moved to:
 """
 
 import os
+import re
 from pathlib import Path
 
 # ==========================================
@@ -114,6 +115,43 @@ _AGENT_SETTINGS_DEFAULTS = {
 }
 
 
+_GOOGLE_FLASH_FALLBACK = "gemini-3.6-flash"
+
+
+def _available_google_model_ids() -> set[str]:
+    """Read the hot-reloaded Google catalog without importing it eagerly."""
+    try:
+        from core.llm.model_catalog import load_model_catalog
+
+        provider = load_model_catalog().get("google", {})
+        return {
+            entry["value"].strip()
+            for entry in provider.get("models", [])
+            if isinstance(entry, dict)
+            and isinstance(entry.get("value"), str)
+            and entry["value"].strip()
+        }
+    except Exception:
+        return set()
+
+
+def _select_google_default_model() -> str:
+    """Keep the pinned Flash model while available, then use a discovered stable Flash."""
+    available = _available_google_model_ids()
+    if not available or _GOOGLE_FLASH_FALLBACK in available:
+        return _GOOGLE_FLASH_FALLBACK
+
+    stable_flash: list[tuple[tuple[int, int], str]] = []
+    for model in available:
+        match = re.fullmatch(r"gemini-(\d+)\.(\d+)-flash", model)
+        if match:
+            stable_flash.append(((int(match.group(1)), int(match.group(2))), model))
+
+    if stable_flash:
+        return max(stable_flash)[1]
+    return _GOOGLE_FLASH_FALLBACK
+
+
 def _get_default_model(key: str, cfg: dict | None = None) -> str:
     from core.llm.config_manager import load_config, get_key
 
@@ -136,14 +174,14 @@ def _get_default_model(key: str, cfg: dict | None = None) -> str:
         if openai_key:
             return "openai/gpt-4o"
         if google_key:
-            return "gemini-2.0-flash"
+            return _select_google_default_model()
         if openrouter_key:
             return "openrouter/free"
         return _MODEL_DEFAULTS.get("DEFAULT_CODER_MODEL", "openrouter/free")
 
     elif key in ("DEFAULT_FAST_MODEL", "DEFAULT_JUDGE_MODEL"):
         if google_key:
-            return "gemini-2.0-flash"
+            return _select_google_default_model()
         if openai_key:
             return "openai/gpt-4o-mini"
         if anthropic_key:
@@ -165,7 +203,7 @@ def _get_default_model(key: str, cfg: dict | None = None) -> str:
         if anthropic_key:
             return "claude-3-5-sonnet-latest"
         if google_key:
-            return "gemini-2.0-flash"
+            return _select_google_default_model()
         if openrouter_key:
             return "openrouter/auto"
         return _MODEL_DEFAULTS.get("DEFAULT_SMART_MODEL", "openrouter/auto")
@@ -225,4 +263,3 @@ def __getattr__(name: str):
         return int(_AGENT_SETTINGS_DEFAULTS[name])
 
     raise AttributeError(f"module 'core.config' has no attribute {name!r}")
-

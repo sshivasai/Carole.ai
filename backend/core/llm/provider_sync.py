@@ -77,6 +77,11 @@ async def fetch_openrouter_models(client: httpx.AsyncClient, api_key: Optional[s
         results.append({
             "value": f"openrouter/{model_id}",
             "label": f"{raw_name}{suffix}",
+            **({"context_window": item["context_length"]} if isinstance(item.get("context_length"), int) and item["context_length"] > 0 else {}),
+            **({"output_limit": item["top_provider"]["max_completion_tokens"]}
+               if isinstance(item.get("top_provider"), dict)
+               and isinstance(item["top_provider"].get("max_completion_tokens"), int)
+               and item["top_provider"]["max_completion_tokens"] > 0 else {}),
         })
 
     return results
@@ -158,8 +163,12 @@ async def fetch_google_models(client: httpx.AsyncClient, api_key: str) -> List[D
     Fetch models from Google Gemini API (GET /v1beta/models).
     Filters for models that support generateContent.
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    resp = await client.get(url, timeout=DEFAULT_DISCOVERY_TIMEOUT)
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    resp = await client.get(
+        url,
+        headers={"x-goog-api-key": api_key},
+        timeout=DEFAULT_DISCOVERY_TIMEOUT,
+    )
     resp.raise_for_status()
     payload = resp.json()
     items = payload.get("models", [])
@@ -257,8 +266,8 @@ def _merge_provider_models(
     """
     Intelligently merges fetched models into existing models list:
     1. Preserves special routing entries (e.g. openrouter/auto, openrouter/free) at index 0 and 1.
-    2. Keeps existing custom models that the user manually defined.
-    3. Merges newly fetched models without duplicates.
+    2. Uses Google's discovery response as authoritative so retired models disappear.
+    3. For other providers, keeps existing custom models and merges fetched models.
     """
     merged: List[Dict[str, Any]] = []
     seen_values = set()
@@ -292,6 +301,11 @@ def _merge_provider_models(
         if val and val not in seen_values:
             merged.append(m)
             seen_values.add(val)
+
+    # Google's models.list response is scoped to this API key and authoritative.
+    # Keeping absent entries would make retired models appear usable indefinitely.
+    if provider_id == "google":
+        return merged
 
     # 3. Retain any existing models that were not in fetched (user-defined or custom entries)
     for m in existing_models:

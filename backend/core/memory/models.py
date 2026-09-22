@@ -17,7 +17,7 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, String, Text, DateTime, ForeignKey, JSON, Boolean,
-    Uuid, Integer, Numeric, Float, Index, CheckConstraint, func,
+    Uuid, Integer, Numeric, Float, Index, CheckConstraint, UniqueConstraint, func,
 )
 from sqlalchemy.ext.mutable import MutableDict, MutableList
 from .database import Base
@@ -108,7 +108,7 @@ class Agent(Base):
     team_id = Column(Uuid, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(100), nullable=False)
     role = Column(String(100), nullable=False)  # e.g. "Coder", "Reviewer", "Manager", or custom role
-    model = Column(String(255), nullable=False)  # e.g. "claude-sonnet-4", "gpt-4o-mini", "gemini-2.0-flash"
+    model = Column(String(255), nullable=False)  # e.g. "claude-sonnet-4", "gpt-4o-mini", "gemini-3.6-flash"
     fallback_model = Column(String(255), nullable=True)  # Optional recovery model if primary fails
     # Reasoning effort for reasoning-capable models: none | low | medium | high
     reasoning_effort = Column(String(20), nullable=False, default="none")
@@ -518,6 +518,7 @@ class TokenUsage(Base):
     __tablename__ = "token_usage"
 
     __table_args__ = (
+        UniqueConstraint("call_id", name="uq_token_usage_call_id"),
         Index("ix_token_usage_project_created", "project_id", "created_at"),
         Index("ix_token_usage_team_created", "team_id", "created_at"),
         Index("ix_token_usage_agent_created", "agent_id", "created_at"),
@@ -555,8 +556,35 @@ class TokenUsage(Base):
     total_tokens = Column(Integer, nullable=True)
     # NULL means unknown cost, not a free request.
     estimated_cost_usd = Column(Numeric(20, 8), nullable=True)  # e.g. 0.00240000
+    call_id = Column(String(36), nullable=True)
+    run_id = Column(String(36), nullable=True, index=True)
+    purpose = Column(String(32), nullable=True)
+    accounting = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class ContextCheckpointHead(Base):
+    __tablename__ = "context_checkpoint_heads"
+    scope = Column(String(80), primary_key=True)
+    version = Column(Integer, nullable=False, default=0)
+
+
+class RunTokenBudget(Base):
+    __tablename__ = "run_token_budgets"
+    id = Column(String(36), primary_key=True)
+    token_limit = Column(Integer, nullable=False)
+    spent = Column(Integer, nullable=False, default=0)
+    reserved = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class TokenReservation(Base):
+    __tablename__ = "token_reservations"
+    id = Column(String(36), primary_key=True)
+    run_id = Column(String(36), ForeignKey("run_token_budgets.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount = Column(Integer, nullable=False)
+    settled = Column(Boolean, nullable=False, default=False)
+
 
 class McpServer(Base):
     __tablename__ = "mcp_servers"

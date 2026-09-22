@@ -38,6 +38,14 @@ def test_prompts_json_schema_and_keys():
         assert len(defaults[key].strip()) > 50, f"Prompt {key} is unexpectedly empty"
 
 
+def test_tool_instructions_use_discovery_and_current_permissions():
+    defaults = load_default_prompts()
+    for key in ["role.orchestrator", "system.reasoning_rules", "system.tool_use"]:
+        assert "fetch_tool_schemas" in defaults[key]
+        assert "full access" not in defaults[key].lower()
+    assert "AN ORCHESTRATOR NEVER WRITES" not in defaults["system.coordinator_directives"]
+
+
 def test_system_consolidation_alignment_with_auto_dream():
     """Verify system.consolidation instructions match auto_dream parser expectations."""
     prompt = get_prompt("system.consolidation")

@@ -113,6 +113,7 @@ class MessageHistory:
                     self.add_assistant_text(
                         text=combined_text,
                         tool_uses=tool_uses if tool_uses else None,
+                        reasoning_blocks=[b for b in blocks if b.get("type") in {"thinking", "redacted_thinking"}],
                     )
                 self._carry_metadata(msg)
 
@@ -169,6 +170,7 @@ class MessageHistory:
         self,
         text: str,
         tool_uses: Optional[List[Dict[str, Any]]] = None,
+        reasoning_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
         Append an assistant turn.
@@ -180,6 +182,10 @@ class MessageHistory:
         """
         cleaned_text = text.strip() if text else ""
         content: List[Dict[str, Any]] = []
+        for block in reasoning_blocks or []:
+            if block.get("type") not in {"thinking", "redacted_thinking"}:
+                raise ValueError("Invalid provider reasoning block")
+            content.append(deepcopy(block))
 
         if cleaned_text:
             content.append({"type": "text", "text": cleaned_text})

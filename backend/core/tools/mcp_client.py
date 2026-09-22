@@ -439,11 +439,12 @@ class MCPManager:
             
                 # Extract parameters from JSON schema
                 parameters = {}
-                if hasattr(tool, "inputSchema") and tool.inputSchema:
-                    if isinstance(tool.inputSchema, dict):
-                        properties = tool.inputSchema.get("properties", {})
+                input_schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None)
+                if input_schema:
+                    if isinstance(input_schema, dict):
+                        properties = input_schema.get("properties", {})
                         for k, v in properties.items():
-                            parameters[k] = {**v, "_required": k in tool.inputSchema.get("required", [])}
+                            parameters[k] = {**v, "_required": k in input_schema.get("required", [])}
             
                 # Register in ToolRegistry — skip if already registered (dedup guard for global MCPs
                 # that may be reconnected from DB AND also auto-booted via create_task).
@@ -461,7 +462,7 @@ class MCPManager:
                     handler=tool_handler,
                     team_id=team_id,
                     agent_id=agent_id,
-                    input_schema=tool.inputSchema if isinstance(tool.inputSchema, dict) else None,
+                    input_schema=input_schema if isinstance(input_schema, dict) else None,
                 )
                 if ToolRegistry.get(spec.name):
                     print(f"  [WARN] Skipping duplicate MCP tool: {spec.name} (already registered)")

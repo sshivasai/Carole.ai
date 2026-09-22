@@ -65,3 +65,22 @@
  .navigation { width: 200px; }
  .content { padding: 18px; }
 }
+
+/* Settings remains usable inside narrow workspace panels, not only small windows. */
+.settings { container-type: inline-size; }
+.content { scrollbar-gutter: stable; overscroll-behavior: contain; }
+.contentIntro, .settingPage { max-width: 1040px; margin-inline: auto; }
+.contentIntro { padding-block: 6px 24px; margin-bottom: 24px; }
+.navItem { min-height: 44px; }
+.navItem:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.settingPage :global(input:not([type=checkbox]):not([type=radio])), .settingPage :global(select) { min-height: 38px; max-width: 100%; }
+@container (max-width: 720px) {
+  .header { padding: 12px; }.headerIdentity p, .agentStatus { display: none; }
+  .layout { flex-direction: column; }
+  .navigation { width: 100%; padding: 10px; overflow: visible; border-right: 0; border-bottom: 1px solid var(--color-hairline); }
+  .searchBox { display: block; padding: 0 0 8px; margin: 0; border: 0; }
+  .navGroups { display: flex; flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; }
+  .navGroups > div { display: contents; }.groupLabel { display: none; }.navList { flex-direction: row; }
+  .navItem { width: auto; grid-template-columns: 26px auto; white-space: nowrap; min-height: 40px; }.navItem > i { display: none; }
+  .content { padding: 18px 14px; }.contentIntro h1 { font-size: 22px; }
+}

@@ -391,6 +391,7 @@ class MessageRouter:
                 worker_task.add_done_callback(_on_worker_done)
 
             # Enqueue the work item safely with capacity check
+            from core.agent.run_budget import root_budget_id
             try:
                 self._queues[agent_id].put_nowait({
                     "prompt_text": prompt_text,
@@ -401,6 +402,7 @@ class MessageRouter:
                     "parent_message_id": parent_message_id,
                     "dedupe_key": effective_key,
                     "enqueued_at": time.time(),
+                    "root_budget_id": root_budget_id.get(),
                 })
                 self._pending[agent_id].append(prompt_text)
                 self._pending_keys[agent_id].add(effective_key)
@@ -494,6 +496,8 @@ class MessageRouter:
                 except Exception as exc:
                     logger.debug("Could not record queue_delay metric: %s", exc)
 
+            from core.agent.run_budget import root_budget_id
+            budget_context = root_budget_id.set(item.get("root_budget_id") if isinstance(item, dict) else None)
             try:
                 # B5: Watchdog timeout - prevent a single stuck task from
                 # blocking the queue indefinitely.
@@ -515,6 +519,7 @@ class MessageRouter:
                     snapshot.name, exc, exc_info=exc
                 )
             finally:
+                root_budget_id.reset(budget_context)
                 # Remove from pending snapshot safely under lock
                 async with self._get_enqueue_lock(agent_id):
                     pending = self._pending.get(agent_id, [])
@@ -597,6 +602,10 @@ class MessageRouter:
             react.active_message_id = trigger_message_id
 
         token = CancellationToken()
+        if parent_coordinator_id:
+            from core.llm.config_manager import load_config
+            if load_config().get("context_optimization", {}).get("worker_isolation", True):
+                react.history_mode = "isolated"
 
         async def _run():
             async with async_session() as agent_db:

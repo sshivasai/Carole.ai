@@ -25,6 +25,8 @@ class CapabilityContext:
     browser_available: bool = False
     shell_available: bool = False
     filesystem_available: bool = False
+    web_available: bool = False
+    discovery_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,12 +202,24 @@ class IntentEngine:
         # Unknown capabilities never justify overriding a refusal or boundary.
         if capabilities is None:
             return None
-        if cls._FALSE_BROWSER_REFUSAL_RE.search(response_text) and capabilities.browser_available:
-            return "Browser tools are available. If the action is authorized, use a native tool call; otherwise explain the missing permission."
+        # Do not turn a real approval denial or tool failure into a claim of availability.
+        if re.search(r"permission|approval|denied|blocked|failed|error", response_text, re.I):
+            return None
+        refusal = re.search(r"\b(?:cannot|can't|unable to|don't have|do not have|not available|unavailable|lack)\b", response_text, re.I)
+        if not refusal:
+            return None
+        mentions_browser = re.search(r"\bbrowser|\bbrowse|\bweb\b|internet", response_text, re.I)
+        if mentions_browser and (capabilities.browser_available or capabilities.web_available):
+            if capabilities.discovery_available:
+                return "Relevant permitted tools are discoverable. Use fetch_tool_schemas(query=...) to load the needed capability, then a native tool call within the user's authorization."
+            return "Browser or web tools are available. If the action is authorized, use a native tool call; otherwise explain the missing permission."
         shell_denial = re.search(r"shell|execute\s+commands?", response_text, re.I)
         file_denial = re.search(r"create\s+files?|file\s+access", response_text, re.I)
         if (shell_denial and capabilities.shell_available) or (file_denial and capabilities.filesystem_available):
             return "The relevant tools are available. Use native tool calls only within the user's authorization and current permissions."
+
+        if capabilities.discovery_available and re.search(r"tool|schema|capabilit", response_text, re.I):
+            return "A tool missing from the active schemas may still be permitted. Check fetch_tool_schemas(query=...) before reporting a missing capability. Discovery never overrides a permission denial."
 
         return None
 

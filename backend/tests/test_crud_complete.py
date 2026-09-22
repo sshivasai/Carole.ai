@@ -94,7 +94,7 @@ async def test_agent_crud_and_configuration(client: AsyncClient):
         "name": "Senior Coder",
         "role": "Coder",
         "model": "anthropic/claude-3.5-sonnet",
-        "fallback_model": "google/gemini-2.0-flash",
+        "fallback_model": "google/gemini-3.6-flash",
         "reasoning_effort": "high",
         "system_prompt": "You write clean, modular Python and TypeScript code.",
         "personality": "mentor",

@@ -4,6 +4,11 @@ import ChatInterface from "@/components/ChatInterface";
 import AgentPermissionCard from "@/components/AgentPermissionCard";
 import AskUserQuestionCard from "@/components/AskUserQuestionCard";
 import FileChangeCard from "@/components/FileChangeCard";
+import WorkspaceHome from "@/components/WorkspaceHome";
+import SettingsPanel from "@/components/SettingsPanel";
+import MarkdownViewer from "@/components/MarkdownViewer";
+import FileExplorerPanel from "@/components/FileExplorerPanel";
+import { ThemeProvider } from "@/hooks/useTheme";
 import Modal from "@/components/Modal";
 import { AuthProvider } from "@/hooks/useAuth";
 import type { ChatMessage } from "@/lib/types";
@@ -22,11 +27,11 @@ export default function ChatPreview() {
   return <div className={"app-workspace " + (light ? "theme-light" : "theme-dark")} style={{ height: "100dvh", display: "flex", flexDirection: "column", background: "var(--color-canvas)", color: "var(--color-ink)" }}>
     <div style={{ padding: 10, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, borderBottom: "1px solid var(--color-hairline)", fontSize: 12 }}>
       <strong>Local UI fixture</strong><span>No agent actions are sent.</span>
-      <select aria-label="Preview state" value={view} onChange={e => setView(e.target.value)}><option value="conversation">Conversation</option><option value="empty">Empty conversation</option><option value="requests">Requests & changes</option><option value="workspace">Workspace controls</option></select>
+      <select aria-label="Preview state" value={view} onChange={e => setView(e.target.value)}><option value="conversation">Conversation</option><option value="empty">Empty conversation</option><option value="requests">Requests & changes</option><option value="workspace">Workspace controls</option><option value="home">Home layout</option><option value="markdown">Markdown document</option><option value="files">File workspace (no project)</option><option value="settings">Settings (backend reads)</option></select>
       <label><input type="checkbox" checked={fail} onChange={e => setFail(e.target.checked)} /> Simulate failure</label>
       <button onClick={() => setReset(v => v + 1)}>Reset requests</button><button onClick={() => setLight(v => !v)}>Toggle preview theme</button>
     </div>
-    {view === "workspace" ? <div style={{flex: 1, overflow: "auto", padding: 24}}>
+    {view === "markdown" ? <MarkdownViewer content={"# Workspace guide\n\nA readable document with **formatted text**, [section links](#review), and code.\n\n## Getting started\n\n- [x] Open a workspace\n- [ ] Review the changes\n\n```typescript\nconst project = { name: 'Carole', ready: true };\nconsole.log(project);\n```\n\n> Keep changes small and reviewable.\n\n## Review\n\n| File | Change | Status |\n| --- | --- | --- |\n| src/components/MarkdownViewer.tsx | Add document navigation | Ready |\n| src/components/FileExplorerPanel.tsx | Preserve unsaved edits | Ready |\n\n## Review\n\nRepeated headings receive their own links.\n\n"} path="docs/guide.md" /> : view === "files" ? <ThemeProvider><AuthProvider><div style={{ flex: 1, minHeight: 0 }}><FileExplorerPanel /></div></AuthProvider></ThemeProvider> : view === "settings" ? <AuthProvider><div style={{ flex: 1, minHeight: 0 }}><SettingsPanel teamId={null} projectId={null} agents={[]} onToast={() => {}} onTeamDeleted={() => {}} onProjectDeleted={() => {}} /></div></AuthProvider> : view === "home" ? <WorkspaceHome projects={[]} projectId={null} onProjectChange={() => {}} teams={[]} teamId={null} onTeamChange={() => {}} agents={[]} tasks={[]} messages={[]} onStartObjective={() => {}} onNavigateToChat={() => setView("conversation")} onNavigateToTasks={() => {}} /> : view === "workspace" ? <div style={{flex: 1, overflow: "auto", padding: 24}}>
       <div style={{maxWidth: 760, margin: "0 auto", display: "grid", gap: 20}}>
         <div className="card">
           <h2 className="display-md">Workspace controls</h2>

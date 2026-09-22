@@ -1,4 +1,5 @@
 "use client";
+import { isPendingApproval } from "@/features/chat/approval";
 import PrivateAttachment from "./PrivateAttachment";
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { ChatMessage, AgentConfig, CompactionEvent } from "@/lib/types";
@@ -44,6 +45,8 @@ interface Props {
   onOpenDiffFile?: (path: string, originalContent: string) => void;
   lastTokenEvent?: any;
   contextUsage?: any;
+  contextByAgent?: Record<string, import("@/features/chat/contextUsage").ContextSnapshot>;
+  usageByAgent?: Record<string, import("@/features/chat/contextUsage").TokenUsageEvent>;
   pendingChatInputAppend?: string | null;
   onAppendConsumed?: () => void;
   /** List of compaction checkpoints to render as dividers in the timeline. */
@@ -762,6 +765,8 @@ export default function ChatInterface({
   onOpenDiffFile,
   lastTokenEvent,
   contextUsage,
+  contextByAgent,
+  usageByAgent,
   pendingChatInputAppend,
   onAppendConsumed,
   compactionEvents = [],
@@ -813,17 +818,34 @@ export default function ChatInterface({
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
 
-  const { childMessagesByParent, orphanIntermediateIds } = useMemo(() => {
+  const { childMessagesByParent, explicitChildIds, orphanIntermediateIds } = useMemo(() => {
     const groups: Record<string, ChatMessage[]> = {};
+    const explicitIds = new Set<string>();
     const orphanIds = new Set<string>();
+    const messagesById = new Map(messages.map(message => [message.id, message]));
 
     // 1. Explicit parent_message attachments
     for (const msg of messages) {
       const parentAttachment = msg.attachments?.find((a: any) => a.type === "parent_message");
       if (parentAttachment?.id) {
         const pid = parentAttachment.id;
+        const parent = messagesById.get(pid);
+        const isInteractiveRequest = msg.type === "agent_question" ||
+          msg.type === "ask_user" ||
+          msg.type === "approval_request" ||
+          msg.type === "browser_intervention";
+        const parentIsHuman = parent && (
+          parent.sender_id === "human" || parent.sender_id === user?.id || parent.role === "user"
+        );
+
+        // ask_user currently references the triggering human message while the
+        // assistant response is still streaming. Such requests must remain
+        // top-level until an eligible assistant parent exists, or they vanish.
+        if (isInteractiveRequest && (!parent || parentIsHuman)) continue;
+
         if (!groups[pid]) groups[pid] = [];
         groups[pid].push(msg);
+        explicitIds.add(msg.id);
       }
     }
 
@@ -866,7 +888,11 @@ export default function ChatInterface({
       }
     }
 
-    return { childMessagesByParent: groups, orphanIntermediateIds: orphanIds };
+    return {
+      childMessagesByParent: groups,
+      explicitChildIds: explicitIds,
+      orphanIntermediateIds: orphanIds,
+    };
   }, [messages, user?.id]);
 
   const markdownComponents = useMemo(() => ({
@@ -958,7 +984,7 @@ export default function ChatInterface({
     isUserScrolledUpRef.current = false;
     setIsUserScrolledUp(false);
     if (scrollRef.current) {
-      if (smooth) {
+      if (smooth && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
         scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
       } else {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -968,12 +994,8 @@ export default function ChatInterface({
 
   const pendingActions = useMemo(() => {
     return messages.filter(m => {
-      const isPendingApproval = Boolean(
-        (m.pending_approval && m.pending_approval.status !== "approved" && m.pending_approval.status !== "denied" && m.pending_approval.status !== "expired" && m.pending_approval.status !== "cancelled" && m.pending_approval.status !== "superseded") ||
-        (m.type === "approval_request" && m.status !== "approved" && m.status !== "denied" && m.status !== "expired" && m.status !== "cancelled" && m.status !== "superseded")
-      );
       const isPendingQuestion = Boolean((m.type === "ask_user" || m.type === "agent_question") && !(m as any).is_answered);
-      return isPendingApproval || isPendingQuestion;
+      return isPendingApproval(m) || isPendingQuestion;
     });
   }, [messages]);
 
@@ -1191,7 +1213,7 @@ export default function ChatInterface({
       setMentionOpen(false);
       setSendError(null);
     } catch (err: any) {
-      setSendError(err?.message || "Failed to dispatch message.");
+      if (activeTeamRef.current === teamId) setSendError(err?.message || "Failed to dispatch message.");
     } finally {
       sendLock.current = false;
       setIsSending(false);
@@ -1422,7 +1444,7 @@ export default function ChatInterface({
   return (
     <div className="cw-workspace" style={{ flex: 1, minHeight: 0, height: "100%", width: "100%", position: "relative" }}>
       <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <div className="cw-team-reveal" tabIndex={0} aria-label="Show team controls">
+        <div className="cw-team-reveal">
         <header className="cw-header" style={{ position: "relative", zIndex: 40 }}>
           <div className="cw-header-left">
             <div className="cw-title">
@@ -1443,7 +1465,7 @@ export default function ChatInterface({
             </div>
           </div>
           <div className="cw-header-actions">
-            <ContextUsageGauge projectId={projectId || undefined} teamId={teamId || undefined} estimatedTokens={contextUsage?.estimated_tokens} contextWindow={contextUsage?.context_window} usagePercent={contextUsage?.usage_percent} lastTokenEvent={lastTokenEvent} messages={messages} agents={agents} />
+            <ContextUsageGauge projectId={projectId || undefined} teamId={teamId || undefined} contextByAgent={contextByAgent} usageByAgent={usageByAgent} lastTokenEvent={lastTokenEvent} messages={messages} agents={agents} />
             <button className={`cw-background-button ${showBackground ? "cw-background-button-active" : ""}`} aria-expanded={showBackground} onClick={() => setShowBackground(v => !v)} title="View background work">
               <BackgroundWorkMark />
               <span>Work</span>
@@ -1499,7 +1521,7 @@ export default function ChatInterface({
 
               const msg = item.msg;
               // Hide child subagent/teammate messages and linked intermediate messages from top-level chat flow
-              const isChild = msg.attachments?.some((a: any) => a.type === "parent_message") || orphanIntermediateIds.has(msg.id);
+              const isChild = explicitChildIds.has(msg.id) || orphanIntermediateIds.has(msg.id);
               if (isChild && !searchMode) {
                 return null;
               }
@@ -2032,24 +2054,6 @@ export default function ChatInterface({
                               />
                             </div>
                           )}
-                          {/* Linked interactive questions asked during this turn */}
-                          {!isHuman && !isThinking && (childMessagesByParent[msg.id] || [])
-                            .filter(c => c.type === "agent_question" || c.type === "ask_user")
-                            .map(qChild => (
-                              <div key={qChild.id} style={{ marginBottom: "12px" }}>
-                                <AskUserCard msg={qChild} />
-                              </div>
-                            ))
-                          }
-                          {/* Linked interactive approvals requested during this turn */}
-                          {!isHuman && !isThinking && (childMessagesByParent[msg.id] || [])
-                            .filter(c => c.type === "approval_request")
-                            .map(appChild => (
-                              <div key={appChild.id} style={{ marginBottom: "12px" }}>
-                                <ApprovalCard msg={appChild} />
-                              </div>
-                            ))
-                          }
                           <div className="markdown-body">
                             <ReactMarkdown
                               skipHtml={true}
@@ -2061,6 +2065,24 @@ export default function ChatInterface({
                           </div>
                         </>
                       )}
+                      {/* Requests must remain actionable while the parent agent is waiting.
+                          Keeping these outside the isThinking branch prevents a UI deadlock. */}
+                      {!isHuman && linkedChildIntermediates
+                        .filter(c => c.type === "agent_question" || c.type === "ask_user")
+                        .map(qChild => (
+                          <div data-chat-message={qChild.id} key={qChild.id} style={{ marginTop: "12px" }}>
+                            <AskUserCard msg={qChild} />
+                          </div>
+                        ))
+                      }
+                      {!isHuman && linkedChildIntermediates
+                        .filter(c => c.type === "approval_request")
+                        .map(appChild => (
+                          <div data-chat-message={appChild.id} key={appChild.id} style={{ marginTop: "12px" }}>
+                            <ApprovalCard msg={appChild} />
+                          </div>
+                        ))
+                      }
                       {isStreaming && <TypingIndicator />}
                       {(isStreaming || isThinking) && !isHuman && <StopAgentButton agentId={msg.sender_id} />}
                       {/* File Changes Card — associated directly with this assistant message! */}

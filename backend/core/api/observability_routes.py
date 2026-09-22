@@ -90,7 +90,7 @@ async def emit_sample_trace(user: dict = Depends(require_instance_owner)):
         with tracer.start_as_current_span("Security: Judge AI Gate") as judge:
             judge.set_attribute("agent.name", "Judge AI")
             judge.set_attribute("agent.role", "Security Interceptor")
-            judge.set_attribute("agent.model", "gemini-2.0-flash")
+            judge.set_attribute("agent.model", "gemini-3.6-flash")
             judge.set_attribute("tool.call", "pytest --cov=core")
             judge.set_attribute("llm.usage.prompt_tokens", 850)
             judge.set_attribute("llm.usage.completion_tokens", 120)

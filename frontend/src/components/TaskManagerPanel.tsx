@@ -1,6 +1,18 @@
-import React, { useEffect, useState } from "react";
-import { Terminal, XCircle, SkipForward, Loader2, Info } from "lucide-react";
-import { api } from "@/hooks/useApi";
+import React, { useEffect, useState, useCallback } from "react";
+import { Terminal, XCircle, Loader2, Info } from "lucide-react";
+import { getApiBase } from "@/hooks/useApi";
+
+const apiFetch = async (url: string, opts: RequestInit = {}) => {
+    const token = localStorage.getItem("carole_token");
+    if (token) {
+      opts.headers = { ...opts.headers, Authorization: `Bearer ${token}` };
+    }
+    const base = getApiBase();
+    const res = await fetch(`${base}${url}`, opts);
+    if (!res.ok) throw new Error("API Error");
+    return res.json();
+  };
+
 
 export interface TaskInfo {
   pid: number;
@@ -13,88 +25,86 @@ export interface TaskInfo {
   returncode: number | null;
 }
 
-export function TaskManagerPanel({ teamId, onClose }: { teamId: string | null; onClose?: () => void }) {
+export function TaskManagerPanel(props: { teamId: string | null; onClose?: () => void }) {
+  return <TaskManagerContent key={props.teamId || "none"} {...props} />;
+}
+
+function TaskManagerContent({ teamId, onClose }: { teamId: string | null; onClose?: () => void }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const fetchTasks = async () => {
+  const [error, setError] = useState("");
+  const fetchTasks = useCallback(async (signal?: AbortSignal) => {
     if (!teamId) return;
     try {
-      const res = await apiFetch(`/api/tasks?team_id=${teamId}`);
+      const res = await apiFetch(`/api/tasks?team_id=${encodeURIComponent(teamId)}`, { signal });
       if (res && Array.isArray(res)) setTasks(res);
-    } catch (e) {
-      console.error("Failed to fetch tasks", e);
+      setError("");
+    } catch {
+      if (!signal?.aborted) setError("Unable to load background tasks. Retrying shortly.");
     }
-  };
+  }, [teamId]);
 
   useEffect(() => {
-    fetchTasks();
-    const intv = setInterval(fetchTasks, 3000);
-    return () => clearInterval(intv);
-  }, [teamId]);
+    const controller = new AbortController();
+    // Starts external I/O; state updates occur only after the response resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void fetchTasks(controller.signal);
+    const intv = setInterval(() => void fetchTasks(controller.signal), 3000);
+    return () => { controller.abort(); clearInterval(intv); };
+  }, [fetchTasks]);
 
   const killTask = async (pid: number) => {
     setLoading(true);
     try {
       await apiFetch(`/api/tasks/${pid}/kill`, { method: "POST" });
       await fetchTasks();
-    } catch (e) {
-      console.error(e);
+    } catch {
+      setError("Could not stop the task. Please try again.");
     } finally {
       setLoading(false);
     }
   };
 
-  // Polyfill for standalone apiFetch since it's not exported normally
-  const apiFetch = async (url: string, opts: RequestInit = {}) => {
-    const token = localStorage.getItem("carole_token");
-    if (token) {
-      opts.headers = { ...opts.headers, Authorization: `Bearer ${token}` };
-    }
-    const base = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
-    const res = await fetch(`${base}${url}`, opts);
-    if (!res.ok) throw new Error("API Error");
-    return res.json();
-  };
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0f172a", color: "#e2e8f0" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px", borderBottom: "1px solid #1e293b", background: "#1e293b" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--color-canvas)", color: "var(--color-ink)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px", borderBottom: "1px solid var(--color-canvas-raised)", background: "var(--color-canvas-raised)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <Terminal size={16} color="#38bdf8" />
+          <Terminal size={16} color="var(--color-primary-soft)" />
           <span style={{ fontSize: "14px", fontWeight: 600 }}>Task Manager</span>
         </div>
         {onClose && (
-          <button onClick={onClose} style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer" }}>
+          <button aria-label="Close task manager" onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--color-mute)", cursor: "pointer" }}>
             <XCircle size={16} />
           </button>
         )}
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+        {error && <p role="alert" style={{ color: "var(--color-danger)", fontSize: 13 }}>{error}</p>}
         {tasks.length === 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "#64748b", gap: "8px" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--color-mute)", gap: "8px" }}>
             <Info size={24} />
-            <span style={{ fontSize: "13px" }}>No active background tasks</span>
+            <span style={{ fontSize: "13px" }}>{teamId ? "No active background tasks" : "Select a team to view its tasks"}</span>
           </div>
         ) : (
           tasks.map(task => (
-            <div key={task.pid} style={{ background: "#1e293b", padding: "12px", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "8px", border: "1px solid #334155" }}>
+            <div key={task.pid} style={{ background: "var(--color-canvas-raised)", padding: "12px", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "8px", border: "1px solid var(--color-hairline)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "12px", color: "#94a3b8", fontFamily: "monospace" }}>PID: {task.pid}</span>
+                <span style={{ fontSize: "12px", color: "var(--color-mute)", fontFamily: "monospace" }}>PID: {task.pid}</span>
                 <span style={{ 
                   fontSize: "11px", 
                   padding: "2px 6px", 
                   borderRadius: "12px", 
                   background: task.status === "running" ? "rgba(52,211,153,0.1)" : "rgba(148,163,184,0.1)",
-                  color: task.status === "running" ? "#34d399" : "#94a3b8",
+                  color: task.status === "running" ? "var(--color-success)" : "var(--color-mute)",
                   textTransform: "uppercase"
                 }}>
                   {task.status}
                 </span>
               </div>
               
-              <div style={{ fontSize: "13px", fontFamily: "monospace", color: "#e2e8f0", wordBreak: "break-all", background: "#0f172a", padding: "8px", borderRadius: "4px" }}>
+              <div style={{ fontSize: "13px", fontFamily: "monospace", color: "var(--color-ink)", wordBreak: "break-all", background: "var(--color-canvas)", padding: "8px", borderRadius: "4px" }}>
                 {task.command}
               </div>
 
