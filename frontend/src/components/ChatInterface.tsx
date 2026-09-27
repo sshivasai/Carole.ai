@@ -1486,7 +1486,7 @@ export default function ChatInterface({
         {
           searchMode && (
             <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", borderBottom: "1px solid var(--border-glass)", background: "var(--bg-glass-panel)" }}>
-              <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", gap: "var(--sp-sm)" }}>
+              <div style={{ maxWidth: "1180px", width: "100%", margin: "0 auto", display: "flex", gap: "var(--sp-sm)" }}>
                 <input className="input" style={{ flex: 1, minHeight: 32 }} placeholder="Search messages..."
                   value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
                   onKeyDown={e => { if (e.key === "Enter") handleSearch(); }} autoFocus />
@@ -1499,7 +1499,7 @@ export default function ChatInterface({
 
         {/* Messages */}
         <div className="cw-scroll" ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "var(--sp-xl) var(--sp-2xl)", position: "relative", zIndex: 1 }}>
-          <div className="cw-timeline" style={{ maxWidth: "min(1360px, 94%)", width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--sp-lg)", minHeight: "100%" }}>
+          <div className="cw-timeline" style={{ maxWidth: "min(1180px, 100%)", width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--sp-lg)", minHeight: "100%" }}>
             {/* Load older button */}
             {!searchMode && hasOlderMessages && messages.length >= 50 && (
               <div style={{ display: "flex", justifyContent: "center", paddingBottom: 8 }}>
@@ -2243,7 +2243,7 @@ export default function ChatInterface({
         {
           attachments.length > 0 && (
             <div style={{ flexShrink: 0, padding: "var(--sp-sm) var(--sp-2xl)", background: "var(--bg-glass-panel)", backdropFilter: "var(--blur-md)", WebkitBackdropFilter: "var(--blur-md)" }}>
-              <div style={{ maxWidth: "1080px", width: "100%", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "var(--sp-sm)" }}>
+              <div style={{ maxWidth: "1180px", width: "100%", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "var(--sp-sm)" }}>
                 {attachments.map((att, i) => {
                   const isImage = att.type?.startsWith("image/");
                   const ext = (att.name || "").split(".").pop()?.toLowerCase() ?? "";

@@ -1949,6 +1949,8 @@
 }
 
 .modelStrip img {
+  width: auto;
+  height: 24px;
   max-width: 66px;
   max-height: 24px;
   object-fit: contain;
@@ -1965,6 +1967,17 @@
 :global(.theme-dark) .invertLogo,
 :global([data-theme="dark"]) .invertLogo {
   filter: invert(1);
+}
+
+:global(.theme-dark) .modelStrip img.invertLogo,
+:global([data-theme="dark"]) .modelStrip img.invertLogo {
+  filter: invert(1) grayscale(1);
+}
+
+:global(.theme-dark) .modelStrip img.invertLogo:hover,
+:global([data-theme="dark"]) .modelStrip img.invertLogo:hover {
+  filter: invert(1);
+  opacity: 1;
 }
 
 .faqSection {

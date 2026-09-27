@@ -74,6 +74,15 @@ const infrastructure = [
   { name: "WebSockets", logo: "/logos/websocket.svg", group: "Realtime" },
 ];
 
+const modelProviders = [
+  { name: "Anthropic", logo: "/logos/anthropic.svg" },
+  { name: "OpenAI", logo: "/logos/openai.svg" },
+  { name: "Google Gemini", logo: "/logos/googlegemini.svg" },
+  { name: "Local Ollama", logo: "/logos/ollama.svg", invert: true },
+  { name: "OpenRouter", logo: "/logos/openrouter.svg" },
+  { name: "NVIDIA NIM", logo: "/logos/nvidia.svg" },
+];
+
 const workflow = [
   {
     number: "01",
@@ -465,8 +474,15 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
         </div>
         <div className={styles.modelStrip}>
           <span>Works across model providers</span>
-          {["anthropic", "openai", "googlegemini", "deepseek", "groq", "mistral", "ollama"].map((model) => (
-            <img key={model} src={`/logos/${model}.svg`} alt={model} loading="lazy" />
+          {modelProviders.map((provider) => (
+            <img
+              key={provider.name}
+              className={provider.invert ? styles.invertLogo : ""}
+              src={provider.logo}
+              alt={provider.name}
+              title={provider.name}
+              loading="lazy"
+            />
           ))}
         </div>
       </section>
@@ -501,28 +517,5 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
         <div><a href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer">GitHub</a><a href="#integrations">MCP tools</a><a href="#infrastructure">Infrastructure</a></div>
       </footer>
     </main>
-  );
-}
-                <span>{faq.q}</span><ChevronDown size={18} />
-              </button >
-  <div id={`faq-answer-${index}`} className={styles.faqAnswer} aria-hidden={openFaq !== index}><p>{faq.a}</p></div>
-            </div >
-          ))}
-        </div >
-      </section >
-
-      <section className={styles.finalCta}>
-        <div className={styles.finalGlow} />
-        <span className={styles.eyebrow}>Ready when you are</span>
-        <h2>Bring your next build.<br /><em>Carole brings the team.</em></h2>
-        <button className={styles.primaryCta} onClick={onSignUp}>Create your workspace <ArrowRight size={17} /></button>
-      </section>
-
-      <footer className={styles.footer}>
-        <a className={styles.logo} href="#top"><img className={styles.brandMark} src="/branding/logo-mark-animated.webp" alt="" /><img className={styles.brandWordmark} src={theme === "dark" ? "/branding/logo-wordmark-dark.png" : "/branding/logo-wordmark.png"} alt="Carole.ai" /></a>
-        <p>Open-source multi-agent workspace for building software.</p>
-        <div><a href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer">GitHub</a><a href="#integrations">MCP tools</a><a href="#infrastructure">Infrastructure</a></div>
-      </footer>
-    </main >
   );
 }
