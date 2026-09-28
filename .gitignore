@@ -24,6 +24,7 @@ var/
 # Virtual environments
 venv/
 .venv/
+.wheel-test/
 env/
 .env
 .env.example
@@ -33,6 +34,11 @@ node_modules/
 .next/
 out/
 .npm/
+
+# Generated release assets (created by scripts/prepare_release.py)
+backend/carole_ai/web/*
+!backend/carole_ai/web/__init__.py
+backend/carole_ai/resources/
 
 # IDEs and OS
 .vscode/

@@ -5,6 +5,11 @@ export function getApiBase(): string {
     return process.env.NEXT_PUBLIC_API_URL;
   }
   if (typeof window !== "undefined") {
+    // The packaged application serves the exported UI and API from one
+    // FastAPI origin. Keep the separate :8000 backend during `next dev`.
+    if (process.env.NODE_ENV === "production") {
+      return window.location.origin;
+    }
     const host = window.location.hostname || "localhost";
     const protocol = window.location.protocol || "http:";
     return `${protocol}//${host}:8000`;

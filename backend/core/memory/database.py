@@ -83,14 +83,21 @@ def _register_orm_models():
 def _run_alembic_upgrade(stamp_only: bool = False) -> None:
     """Run Alembic migrations to head synchronously in a worker thread."""
     from pathlib import Path
+    from importlib.resources import files as resource_files
     from alembic.config import Config
     from alembic import command
 
     backend_dir = Path(__file__).resolve().parent.parent.parent
     ini_path = backend_dir / "alembic.ini"
     if not ini_path.exists():
-        logger.warning("Alembic configuration not found at %s; skipping migration.", ini_path)
-        return
+        # Wheels keep migration resources inside the carole_ai package rather
+        # than writing files into the site-packages root.
+        packaged = resource_files("carole_ai").joinpath("resources")
+        ini_path = Path(str(packaged.joinpath("alembic.ini")))
+        backend_dir = Path(str(packaged))
+        if not ini_path.exists():
+            logger.warning("Alembic configuration not found at %s; skipping migration.", ini_path)
+            return
 
     alembic_cfg = Config(str(ini_path))
     alembic_cfg.set_main_option("script_location", str(backend_dir / "alembic"))

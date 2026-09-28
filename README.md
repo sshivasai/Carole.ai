@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="frontend/public/branding/logo-full-dark-animated.gif" alt="Carole.ai Logo" width="280" />
+  <img src="https://raw.githubusercontent.com/sshivasai/Carole.ai/master/frontend/public/branding/logo-full-dark-animated.gif" alt="Carole.ai Logo" width="280" />
  
 </p>
 
@@ -8,6 +8,21 @@
 **AI AGENTS. REAL WORK.**
 
 Carole.ai is an advanced AI-powered assistant and development environment with a robust suite of features including Hybrid GraphRAG, zero-cost meeting integration, MCP (Model Context Protocol) expansion, and a native real-time Kanban board.
+
+## Install
+
+Carole.ai includes its production web interface in the Python package, so Node.js
+is not required at runtime. Python 3.11 or 3.12 is supported.
+
+```bash
+pip install carole.ai
+caroleai
+```
+
+Carole.ai opens at [http://127.0.0.1:8000](http://127.0.0.1:8000) and stores
+persistent application data in `~/.carole`. For an isolated application install,
+you can use `pipx install carole.ai`. Browser automation additionally requires
+the one-time command `playwright install chromium`.
 
 ## Features
 

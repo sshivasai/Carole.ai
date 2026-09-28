@@ -1,0 +1,5 @@
+include README.md
+recursive-include backend/carole_ai/web *
+recursive-include backend/carole_ai/resources *
+recursive-include backend/core/defaults *.json
+recursive-include backend/core/tools *.js

@@ -11,6 +11,9 @@ export function getWsBase(): string {
   if (typeof window !== "undefined") {
     const host = window.location.hostname || "localhost";
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    if (process.env.NODE_ENV === "production") {
+      return `${protocol}//${window.location.host}`;
+    }
     return `${protocol}//${host}:8000`;
   }
   return "ws://localhost:8000";

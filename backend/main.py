@@ -36,7 +36,8 @@ if sys.platform == "win32":
         pass
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -412,6 +413,14 @@ app.include_router(observability_router)
 
 @app.get("/")
 def read_root():
+    try:
+        from importlib.resources import files as resource_files
+
+        index = resource_files("carole_ai.web").joinpath("index.html")
+        if index.is_file():
+            return FileResponse(str(index))
+    except (ImportError, ModuleNotFoundError, FileNotFoundError):
+        pass
     return {"message": "Carole.ai Backend is Running", "version": "0.2.0"}
 
 
@@ -895,6 +904,19 @@ async def register_tool_runtime(body: ToolRegisterRequest, user: dict = Depends(
 # ============================================================
 # Startup
 # ============================================================
+
+# Mount the statically exported Next.js application last so it can never
+# shadow API or WebSocket routes. The directory is populated by the release
+# build and is intentionally absent from normal backend-only development.
+try:
+    from importlib.resources import files as resource_files
+
+    _web_root = resource_files("carole_ai.web")
+    if _web_root.joinpath("index.html").is_file():
+        app.mount("/", StaticFiles(directory=str(_web_root), html=True), name="frontend")
+        logger.info("Serving packaged Carole.ai frontend from %s", _web_root)
+except (ImportError, ModuleNotFoundError, FileNotFoundError) as exc:
+    logger.debug("Packaged frontend is not available: %s", exc)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", 8000)), reload=False)
