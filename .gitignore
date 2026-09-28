@@ -25,6 +25,7 @@ var/
 venv/
 .venv/
 .wheel-test/
+.install-test/
 env/
 .env
 .env.example
