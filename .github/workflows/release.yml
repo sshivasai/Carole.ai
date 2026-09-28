@@ -35,8 +35,9 @@ jobs:
       - name: Verify wheel entry point
         run: |
           python -m venv wheel-test
-          wheel-test/bin/pip install --no-deps dist/*.whl
+          wheel-test/bin/pip install dist/*.whl
           wheel-test/bin/caroleai --version
+          wheel-test/bin/pip check
           test -f wheel-test/lib/python3.12/site-packages/carole_ai/web/index.html
 
       - uses: actions/upload-artifact@v4

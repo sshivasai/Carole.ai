@@ -1,7 +1,7 @@
 fastapi>=0.100.0
 uvicorn>=0.23.0
 python-dotenv>=1.0.0
-sqlalchemy>=2.0.0
+sqlalchemy>=2.0.0,<2.1
 aiosqlite>=0.19.0
 alembic>=1.13.0
 lancedb>=0.5.0

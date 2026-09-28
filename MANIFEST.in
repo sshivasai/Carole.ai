@@ -3,3 +3,7 @@ recursive-include backend/carole_ai/web *
 recursive-include backend/carole_ai/resources *
 recursive-include backend/core/defaults *.json
 recursive-include backend/core/tools *.js
+global-exclude *.pyc *.pyo
+prune backend/carole_ai/web/__pycache__
+prune backend/carole_ai/resources/alembic/__pycache__
+prune backend/carole_ai/resources/alembic/versions/__pycache__
