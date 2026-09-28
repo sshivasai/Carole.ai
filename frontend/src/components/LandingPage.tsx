@@ -40,6 +40,7 @@ type LandingPageProps = {
   onSignUp?: () => void;
   theme?: "light" | "dark";
   onToggleTheme?: () => void;
+  hosted?: boolean;
 };
 
 type DemoTab = "activity" | "approval" | "changes" | "terminal" | "browser";
@@ -115,8 +116,8 @@ const faqs = [
     a: "Actions that need your judgment appear as clear approval requests with the command, reason, and affected scope before the agent proceeds.",
   },
   {
-    q: "Is Carole open source?",
-    a: "Yes. Carole.ai is open source under the Apache 2.0 license, so teams can inspect, extend, and self-host it.",
+    q: "Can I inspect the source?",
+    a: "The source is public on GitHub, so you can inspect the project and run it locally. Check the repository for its current reuse terms.",
   },
 ];
 
@@ -287,7 +288,7 @@ function ProductPreview() {
   );
 }
 
-export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: themeOverride, onToggleTheme }: LandingPageProps) {
+export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: themeOverride, onToggleTheme, hosted = false }: LandingPageProps) {
   const themeContext = useTheme();
   const theme = themeOverride ?? themeContext.theme;
   const toggleTheme = onToggleTheme ?? themeContext.toggleTheme;
@@ -295,7 +296,7 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
   const [copied, setCopied] = useState(false);
 
   const copyInstall = async () => {
-    await navigator.clipboard?.writeText("pip install carole-ai && carole run");
+    await navigator.clipboard?.writeText("pip install carole.ai && caroleai");
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   };
@@ -326,15 +327,16 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
         <div className={styles.heroGlow} />
         <motion.div className={styles.heroCopy} initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.55 }}>
           <img className={styles.heroBrandMark} src="/branding/logo-mark-animated.webp" alt="" />
-          <div className={styles.heroKicker}> The open-source workspace for agent teams</div>
+          <div className={styles.heroKicker}> The local-first workspace for agent teams</div>
           <h1>A software team<br />you can <em>talk to.</em></h1>
           <p>Plan, delegate, review, and ship with a coordinated team of AI agents—without losing sight of what they are doing.</p>
           <div className={styles.heroActions}>
             <button className={styles.primaryCta} onClick={onSignUp}>Start building <ArrowRight size={17} /></button>
             <a className={styles.secondaryCta} href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer"><GitHubMark /> View on GitHub</a>
           </div>
+          {hosted && <p className={styles.localNote}>Install and run Carole.ai first. Sign in and Start building open your own local workspace at 127.0.0.1:8000.</p>}
           <div className={styles.heroProof}>
-            <span><Check size={14} /> Apache 2.0</span>
+            <span><Check size={14} /> Public source</span>
             <span><Check size={14} /> Local-first</span>
             <span><Check size={14} /> Model-flexible</span>
           </div>
@@ -439,7 +441,7 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
 
       <section className={styles.openSourceSection} id="open-source">
         <div className={styles.openSourceCopy}>
-          <span className={styles.eyebrow}>Open source by design</span>
+          <span className={styles.eyebrow}>Public source on GitHub</span>
           <h2>Your team. Your models.<br />Your machine.</h2>
           <p>Inspect the system, adapt the workflow, connect the tools you trust, and choose the models that fit each role.</p>
           <a href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer">Explore the repository <ArrowRight size={16} /></a>
@@ -448,9 +450,9 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
           <div className={styles.terminalHead}><span><i /><i /><i /></span><small>terminal</small></div>
           <div className={styles.terminalBody}>
             <span className={styles.comment}># Install and start your workspace</span>
-            <div><span className={styles.prompt}>$</span> pip install carole-ai</div>
-            <div><span className={styles.prompt}>$</span> carole run</div>
-            <span className={styles.ready}>✓ Workspace ready at localhost:3000</span>
+            <div><span className={styles.prompt}>$</span> pip install carole.ai</div>
+            <div><span className={styles.prompt}>$</span> caroleai</div>
+            <span className={styles.ready}>✓ Workspace ready at 127.0.0.1:8000</span>
           </div>
           <button className={styles.copyButton} onClick={copyInstall}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button>
         </div>
@@ -513,7 +515,7 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
 
       <footer className={styles.footer}>
         <a className={styles.logo} href="#top"><img className={styles.brandMark} src="/branding/logo-mark-animated.webp" alt="" /><img className={styles.brandWordmark} src={theme === "dark" ? "/branding/logo-wordmark-dark.png" : "/branding/logo-wordmark.png"} alt="Carole.ai" /></a>
-        <p>Open-source multi-agent workspace for building software.</p>
+        <p>Local-first multi-agent workspace for building software.</p>
         <div><a href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer">GitHub</a><a href="#integrations">MCP tools</a><a href="#infrastructure">Infrastructure</a></div>
       </footer>
     </main>

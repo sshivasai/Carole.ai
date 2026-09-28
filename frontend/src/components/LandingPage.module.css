@@ -261,6 +261,14 @@
   gap: 11px;
 }
 
+.heroCopy>.localNote {
+  max-width: 560px;
+  margin: 15px auto 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .primaryCta {
   min-height: 49px;
   padding: 0 21px;
