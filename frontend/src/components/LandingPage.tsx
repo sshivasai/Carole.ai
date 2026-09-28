@@ -296,7 +296,7 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
   const [copied, setCopied] = useState(false);
 
   const copyInstall = async () => {
-    await navigator.clipboard?.writeText("pip install carole.ai && caroleai");
+    await navigator.clipboard?.writeText("pip install carole.ai\ncaroleai");
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   };
@@ -309,6 +309,7 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
           <img className={styles.brandWordmark} src={theme === "dark" ? "/branding/logo-wordmark-dark.png" : "/branding/logo-wordmark.png"} alt="Carole.ai" />
         </a>
         <div className={styles.navLinks}>
+          {hosted && <a href="#install">Install</a>}
           <a href="#workflow">Workflow</a>
           <a href="#integrations">MCP tools</a>
           <a href="#control">Control</a>
@@ -331,10 +332,32 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
           <h1>A software team<br />you can <em>talk to.</em></h1>
           <p>Plan, delegate, review, and ship with a coordinated team of AI agents—without losing sight of what they are doing.</p>
           <div className={styles.heroActions}>
-            <button className={styles.primaryCta} onClick={onSignUp}>Start building <ArrowRight size={17} /></button>
+            {hosted ? (
+              <a className={styles.primaryCta} href="#install">Install &amp; get started <ArrowRight size={17} /></a>
+            ) : (
+              <button className={styles.primaryCta} onClick={onSignUp}>Start building <ArrowRight size={17} /></button>
+            )}
             <a className={styles.secondaryCta} href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer"><GitHubMark /> View on GitHub</a>
           </div>
-          {hosted && <p className={styles.localNote}>Install and run Carole.ai first. Sign in and Start building open your own local workspace at 127.0.0.1:8000.</p>}
+          {hosted && (
+            <div className={styles.quickStart} id="install">
+              <div className={styles.quickStartHeader}>
+                <div>
+                  <span className={styles.quickStartEyebrow}>GET STARTED</span>
+                  <h2>Install Carole.ai on your computer</h2>
+                </div>
+                <button className={styles.quickStartCopy} type="button" onClick={copyInstall} aria-live="polite">
+                  {copied ? <Check size={15} /> : <Copy size={15} />}
+                  {copied ? "Copied" : "Copy commands"}
+                </button>
+              </div>
+              <div className={styles.quickStartCommands} aria-label="Installation commands">
+                <div><span>1</span><code>pip install carole.ai</code></div>
+                <div><span>2</span><code>caroleai</code></div>
+              </div>
+              <p>Then open <a href="http://127.0.0.1:8000/">127.0.0.1:8000</a> to sign in or start building. Your workspace runs locally, not on this website.</p>
+            </div>
+          )}
           <div className={styles.heroProof}>
             <span><Check size={14} /> Public source</span>
             <span><Check size={14} /> Local-first</span>

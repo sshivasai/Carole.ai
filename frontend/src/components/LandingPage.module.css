@@ -153,6 +153,7 @@
   color: var(--accent-ink);
   background: var(--accent);
   font-weight: 700;
+  text-decoration: none;
   cursor: pointer;
   transition: transform .2s ease, box-shadow .2s ease;
 }
@@ -261,12 +262,105 @@
   gap: 11px;
 }
 
-.heroCopy>.localNote {
-  max-width: 560px;
-  margin: 15px auto 0;
+.quickStart {
+  width: min(590px, 100%);
+  margin: 24px auto 0;
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .12);
+  text-align: left;
+}
+
+.quickStartHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.quickStartEyebrow {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .13em;
+}
+
+.quickStartHeader h2 {
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+}
+
+.quickStartCopy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  background: var(--panel-raised);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.quickStartCopy:hover {
+  border-color: var(--accent);
+}
+
+.quickStartCommands {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.quickStartCommands>div {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel-raised) 60%, transparent);
+}
+
+.quickStartCommands span {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.quickStartCommands code {
+  color: var(--ink);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.quickStart>p {
+  margin: 14px 0 0;
   color: var(--muted);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.55;
+}
+
+.quickStart>p a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .primaryCta {
@@ -2217,6 +2311,27 @@
 }
 
 @media (max-width: 640px) {
+  .quickStart {
+    padding: 16px;
+  }
+
+  .quickStartHeader {
+    align-items: flex-start;
+  }
+
+  .quickStartHeader h2 {
+    font-size: 14px;
+  }
+
+  .quickStartCopy {
+    padding: 8px;
+    font-size: 11px;
+  }
+
+  .quickStartCommands code {
+    font-size: 12px;
+  }
+
   .nav {
     top: 10px;
     width: calc(100% - 20px);
