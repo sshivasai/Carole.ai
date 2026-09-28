@@ -14,6 +14,10 @@ The public landing page is [caroleai.com](https://caroleai.com/). It does not
 host accounts or the backend: Sign in and Sign up open `http://127.0.0.1:8000`
 on the visitor's own computer after they install and start Carole.ai.
 
+## Demo
+
+[Watch the Carole.ai demo video](Demo.mp4)
+
 ## Install and run
 
 Use Python 3.11 or 3.12. A virtual environment is recommended:
