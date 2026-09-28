@@ -10,6 +10,10 @@ integrations, browser automation, and a Kanban board. The PyPI package includes
 the built web interface: one `caroleai` command runs the FastAPI backend and
 serves the frontend from the same address.
 
+The public landing page is [caroleai.com](https://caroleai.com/). It does not
+host accounts or the backend: Sign in and Sign up open `http://127.0.0.1:8000`
+on the visitor's own computer after they install and start Carole.ai.
+
 ## Install and run
 
 Use Python 3.11 or 3.12. A virtual environment is recommended:
