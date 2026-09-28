@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sshivasai/Carole.ai/master/frontend/public/branding/logo-full.png" alt="Carole.ai logo" width="320" />
+  <img src="https://raw.githubusercontent.com/sshivasai/Carole.ai/master/frontend/public/branding/logo-full-white-bg.png" alt="Carole.ai logo on a white background" width="320" />
 </p>
 
 <h1 align="center">Carole.ai</h1>
