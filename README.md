@@ -16,7 +16,9 @@ on the visitor's own computer after they install and start Carole.ai.
 
 ## Demo
 
-[Watch the Carole.ai demo video](Demo.mp4)
+[![Animated preview of the Carole.ai demo](Demo.webp)](Demo.mp4)
+
+Click the preview to watch the full video with sound.
 
 ## Install and run
 
