@@ -40,7 +40,7 @@ out/
 backend/carole_ai/web/*
 !backend/carole_ai/web/__init__.py
 backend/carole_ai/resources/*
-!backend/carole_ai/resources/google_oauth_client.json
+!backend/carole_ai/resources/google_oauth_client_id.txt
 
 # IDEs and OS
 .vscode/

@@ -6,6 +6,7 @@ def test_packaged_desktop_oauth_client_is_available():
     config, client_type = google._load_client_config()
     assert client_type == "installed"
     assert config[client_type]["client_id"].endswith(".apps.googleusercontent.com")
+    assert "client_secret" not in config[client_type]
 
 
 def test_google_scopes_match_workspace_tools():

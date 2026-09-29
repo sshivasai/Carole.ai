@@ -76,23 +76,28 @@ def _purge_expired_sessions() -> None:
 def _load_client_config() -> tuple[dict, str]:
     """Load OAuth client identity, preferring an explicit user override.
 
-    Desktop client identity is public by design.  User access/refresh tokens
-    are never read from these files and live only in the OS credential vault.
+    The built-in Desktop client is a public OAuth client and therefore ships
+    only its client ID.  It uses PKCE and never embeds a client secret.  User
+    access/refresh tokens live only in the OS credential vault.
     """
+    explicit_client_id = os.getenv("CAROLE_GOOGLE_CLIENT_ID", "").strip()
+    if explicit_client_id:
+        if not explicit_client_id.endswith(".apps.googleusercontent.com"):
+            raise RuntimeError("CAROLE_GOOGLE_CLIENT_ID is not a valid Google OAuth client ID")
+        return {
+            "installed": {
+                "client_id": explicit_client_id,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [REDIRECT_URI],
+            }
+        }, "installed"
+
     configured = os.getenv("CAROLE_GOOGLE_CREDENTIALS")
     candidates: list[tuple[str, object]] = []
     if configured:
         candidates.append(("CAROLE_GOOGLE_CREDENTIALS", Path(configured).expanduser()))
-    candidates.extend(
-        [
-            ("user", _USER_CREDS_PATH),
-            (
-                "packaged",
-                resources.files("carole_ai").joinpath("resources/google_oauth_client.json"),
-            ),
-            ("legacy", _LEGACY_CREDS_PATH),
-        ]
-    )
+    candidates.extend([("user", _USER_CREDS_PATH), ("legacy", _LEGACY_CREDS_PATH)])
 
     for source, candidate in candidates:
         try:
@@ -111,6 +116,25 @@ def _load_client_config() -> tuple[dict, str]:
                 raise RuntimeError("OAuth client JSON must contain an installed or web client")
             continue
         return {cred_type: dict(raw[cred_type])}, cred_type
+
+    public_client_id = resources.files("carole_ai").joinpath(
+        "resources/google_oauth_client_id.txt"
+    )
+    try:
+        client_id = public_client_id.read_text(encoding="utf-8").strip()
+    except (OSError, AttributeError):
+        client_id = ""
+    if client_id:
+        if not client_id.endswith(".apps.googleusercontent.com"):
+            raise RuntimeError("Packaged Google OAuth client ID is invalid")
+        return {
+            "installed": {
+                "client_id": client_id,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [REDIRECT_URI],
+            }
+        }, "installed"
 
     raise FileNotFoundError("Google OAuth client configuration is not available")
 

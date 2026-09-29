@@ -119,10 +119,11 @@ use the backend Git API; the former Next.js Git endpoint returns HTTP 410.
 Attachments require authenticated downloads. Google accounts must reconnect
 through Settings after upgrading: credentials are stored separately per account
 in the operating-system credential vault, and any legacy private token file is
-migrated and removed. The bundled Desktop OAuth client identifies Carole.ai but
-does not grant access to any Google account; access begins only after the user
-consents locally. The OAuth start request must include browser credentials so
-its callback can verify the initiating browser.
+migrated and removed. The bundled public Desktop OAuth client ID identifies
+Carole.ai; no OAuth client secret is included in the repository or package. It
+grants no Google account access by itself—access begins only after the user
+consents locally through the PKCE-protected flow. The OAuth start request must
+include browser credentials so its callback can verify the initiating browser.
 
 Docker stores application data in the `carole_data` volume at `/data/carole`.
 Back up and copy any existing `.carole` data into that volume before switching

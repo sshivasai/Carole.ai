@@ -49,12 +49,14 @@ def main() -> None:
     _copy_tree(exported, WEB_TARGET, keep={"__init__.py"})
 
     RESOURCE_TARGET.mkdir(parents=True, exist_ok=True)
-    oauth_client = RESOURCE_TARGET / "google_oauth_client.json"
-    if not oauth_client.is_file():
+    oauth_client_id = RESOURCE_TARGET / "google_oauth_client_id.txt"
+    if not oauth_client_id.is_file():
         raise SystemExit(
-            "Missing backend/carole_ai/resources/google_oauth_client.json; "
-            "a Desktop OAuth client is required for the built-in Google connection"
+            "Missing backend/carole_ai/resources/google_oauth_client_id.txt; "
+            "a public Desktop OAuth client ID is required for the built-in Google connection"
         )
+    if (RESOURCE_TARGET / "google_oauth_client.json").exists():
+        raise SystemExit("Refusing to package a Google OAuth client secret JSON")
     shutil.copy2(ROOT / "backend" / "alembic.ini", RESOURCE_TARGET / "alembic.ini")
     _copy_tree(ROOT / "backend" / "alembic", RESOURCE_TARGET / "alembic")
 
