@@ -39,7 +39,8 @@ out/
 # Generated release assets (created by scripts/prepare_release.py)
 backend/carole_ai/web/*
 !backend/carole_ai/web/__init__.py
-backend/carole_ai/resources/
+backend/carole_ai/resources/*
+!backend/carole_ai/resources/google_oauth_client.json
 
 # IDEs and OS
 .vscode/
@@ -86,3 +87,4 @@ backend/audit/backend-tests-verified.xml
 backend/audit/backend-tests-verified.xml
 
 audit
+brag-output/

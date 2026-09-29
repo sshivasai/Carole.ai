@@ -342,13 +342,24 @@ ROLE_TEMPLATES = [
             "Utility automation",
         ],
         "custom_instructions": (
-            "Use create_meeting for Google Calendar events, send_email for communications, "
-            "and generate_mom for meeting notes from transcriptions. Always be professional."
+            "Use Google Workspace tools for Gmail, Calendar, and Tasks. Read first, explain "
+            "the intended change clearly, and wait for the built-in human approval before "
+            "sending messages or creating, editing, trashing, or deleting user data."
         ),
         "recommended_model": DEFAULT_FAST_MODEL,
         "recommended_permissions": {
-            "create_meeting": "judge",
-            "send_email": "judge",
+            "create_meeting": "human",
+            "list_calendar_events": "safe",
+            "update_calendar_event": "human",
+            "delete_calendar_event": "human",
+            "send_email": "human",
+            "list_emails": "safe",
+            "read_email": "safe",
+            "manage_email": "human",
+            "list_google_tasks": "safe",
+            "create_google_task": "human",
+            "update_google_task": "human",
+            "delete_google_task": "human",
             "generate_mom": "safe",
             "join_google_meet": "judge",
             "send_message": "safe",

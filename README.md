@@ -44,6 +44,13 @@ automation, install the Chromium browser once with `playwright install chromium`
 Connect an AI model provider in the app's settings or supply its API key through
 your environment.
 
+To use Google Workspace tools, open **Settings → Google Workspace Integration**
+and choose **Connect Google Account**. Carole opens Google's consent page for
+the user's own account; no shared Google login is used. Refresh and access
+tokens remain on that computer in Windows Credential Manager, macOS Keychain,
+or Linux Secret Service. Read operations can run directly, while sending email
+or creating, editing, trashing, or deleting Google data requires human approval.
+
 Run `caroleai --help` for options including `--port`, `--data-dir`, and
 `--no-browser`. The command binds to `127.0.0.1` by default. Keep it local unless
 you have deliberately secured access: the instance owner can use host-level
@@ -58,6 +65,7 @@ API keys or secrets to this repository.
 
 - Hybrid GraphRAG memory with LanceDB and a `networkx` code graph.
 - MCP integrations and a dynamic tool registry.
+- Gmail, Calendar, Meet, and Google Tasks integration through local OAuth.
 - Browser and meeting workflows, including Google Meet integration.
 - Real-time Kanban and project-management tools.
 
@@ -109,9 +117,12 @@ is not an OS sandbox for untrusted tenants.
 File, search, Git, and history APIs require an owned project UUID. Clients must
 use the backend Git API; the former Next.js Git endpoint returns HTTP 410.
 Attachments require authenticated downloads. Google accounts must reconnect
-through Settings after upgrading: credentials are now stored separately per
-account, and the old shared token is not reused. The OAuth start request must
-include browser credentials so its callback can verify the initiating browser.
+through Settings after upgrading: credentials are stored separately per account
+in the operating-system credential vault, and any legacy private token file is
+migrated and removed. The bundled Desktop OAuth client identifies Carole.ai but
+does not grant access to any Google account; access begins only after the user
+consents locally. The OAuth start request must include browser credentials so
+its callback can verify the initiating browser.
 
 Docker stores application data in the `carole_data` volume at `/data/carole`.
 Back up and copy any existing `.carole` data into that volume before switching

@@ -231,9 +231,12 @@ def test_google_tokens_require_owner_and_never_fall_back(tmp_path, monkeypatch):
     import uuid
     from core.api import google_auth_routes as google
     monkeypatch.setattr(google, "CAROLE_HOME_DIR", tmp_path)
+    saved = {}
+    monkeypatch.setattr(google.google_token_store, "save", lambda user_id, value: saved.__setitem__(user_id, value))
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
     google._save_token(SimpleNamespace(to_json=lambda: '{"token":"private"}'), a)
-    assert google._token_path(a).exists()
+    assert saved[a] == '{"token":"private"}'
+    assert not google._token_path(a).exists()
     assert not google._token_path(b).exists()
     assert google.get_google_credentials() is None
 

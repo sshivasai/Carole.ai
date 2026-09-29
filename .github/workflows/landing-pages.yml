@@ -41,6 +41,9 @@ jobs:
         run: |
           mkdir site
           cp frontend/out/hosted.html site/index.html
+          mkdir -p site/privacy site/terms
+          cp frontend/out/hosted/privacy.html site/privacy/index.html
+          cp frontend/out/hosted/terms.html site/terms/index.html
           cp -R frontend/out/_next frontend/out/branding frontend/out/logos site/
           cp frontend/out/favicon.ico frontend/out/apple-touch-icon.png site/
           touch site/.nojekyll

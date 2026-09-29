@@ -31,7 +31,20 @@ from core.tools.interaction_tools import interaction_tools
 from core.tools.code_analysis_tools import code_analysis_tools
 from core.tools.memory_tools import memory_tools
 from core.tools.meeting_tool import meeting_tool
-from core.tools.google_workspace_tools import create_meeting, send_email
+from core.tools.google_workspace_tools import (
+    create_meeting,
+    send_email,
+    list_emails,
+    read_email,
+    manage_email,
+    list_calendar_events,
+    update_calendar_event,
+    delete_calendar_event,
+    list_google_tasks,
+    create_google_task,
+    update_google_task,
+    delete_google_task,
+)
 from core.judge.judge_evaluator import judge_evaluator
 from core.config import APPROVAL_TIMEOUT_SECS
 
@@ -659,12 +672,62 @@ def register_builtin_tools():
                   "start_time_iso": {"type": "string", "required": True},
                   "end_time_iso": {"type": "string", "required": True},
                   "attendees_emails": {"type": "array", "required": False}},
-                 "judge", _wrap_create_meeting),
+                 "human", _wrap_create_meeting),
+        ToolSpec("list_calendar_events", "List Google Calendar events in a time range", "workspace",
+                 {"time_min": {"type": "string", "required": True, "description": "RFC3339 start time"},
+                  "time_max": {"type": "string", "required": False, "description": "RFC3339 end time"},
+                  "max_results": {"type": "integer", "required": False}},
+                 "safe", _wrap_list_calendar_events),
+        ToolSpec("update_calendar_event", "Update a Google Calendar event and notify attendees", "workspace",
+                 {"event_id": {"type": "string", "required": True},
+                  "summary": {"type": "string", "required": False},
+                  "start_time_iso": {"type": "string", "required": False},
+                  "end_time_iso": {"type": "string", "required": False},
+                  "attendees_emails": {"type": "array", "required": False}},
+                 "human", _wrap_update_calendar_event),
+        ToolSpec("delete_calendar_event", "Delete a Google Calendar event and notify attendees", "workspace",
+                 {"event_id": {"type": "string", "required": True}},
+                 "human", _wrap_delete_calendar_event),
         ToolSpec("send_email", "Send an email using Gmail", "workspace",
                  {"to_email": {"type": "string", "required": True},
                   "subject": {"type": "string", "required": True},
                   "body": {"type": "string", "required": True}},
-                 "judge", _wrap_send_email),
+                 "human", _wrap_send_email),
+        ToolSpec("list_emails", "Search and list Gmail messages", "workspace",
+                 {"query": {"type": "string", "required": False, "description": "Gmail search query"},
+                  "max_results": {"type": "integer", "required": False}},
+                 "safe", _wrap_list_emails),
+        ToolSpec("read_email", "Read a Gmail message body and metadata", "workspace",
+                 {"message_id": {"type": "string", "required": True}},
+                 "safe", _wrap_read_email),
+        ToolSpec("manage_email", "Archive, trash, restore, or change the read state of a Gmail message", "workspace",
+                 {"message_id": {"type": "string", "required": True},
+                  "action": {"type": "string", "required": True,
+                             "description": "archive, trash, untrash, mark_read, or mark_unread"}},
+                 "human", _wrap_manage_email),
+        ToolSpec("list_google_tasks", "List tasks from a Google Tasks list", "workspace",
+                 {"tasklist_id": {"type": "string", "required": False},
+                  "include_completed": {"type": "boolean", "required": False},
+                  "max_results": {"type": "integer", "required": False}},
+                 "safe", _wrap_list_google_tasks),
+        ToolSpec("create_google_task", "Create a Google Task", "workspace",
+                 {"title": {"type": "string", "required": True},
+                  "notes": {"type": "string", "required": False},
+                  "due": {"type": "string", "required": False, "description": "RFC3339 due date"},
+                  "tasklist_id": {"type": "string", "required": False}},
+                 "human", _wrap_create_google_task),
+        ToolSpec("update_google_task", "Update or complete a Google Task", "workspace",
+                 {"task_id": {"type": "string", "required": True},
+                  "title": {"type": "string", "required": False},
+                  "notes": {"type": "string", "required": False},
+                  "due": {"type": "string", "required": False},
+                  "completed": {"type": "boolean", "required": False},
+                  "tasklist_id": {"type": "string", "required": False}},
+                 "human", _wrap_update_google_task),
+        ToolSpec("delete_google_task", "Delete a Google Task", "workspace",
+                 {"task_id": {"type": "string", "required": True},
+                  "tasklist_id": {"type": "string", "required": False}},
+                 "human", _wrap_delete_google_task),
         ToolSpec("generate_mom", "Generate structured Minutes of Meeting from a transcription", "workspace",
                  {"transcription": {"type": "string", "required": True}},
                  "safe", _wrap_generate_mom),
@@ -3342,6 +3405,116 @@ async def _wrap_send_email(args: Dict[str, Any], team_id: str) -> str:
         return "Error: Missing 'to_email', 'subject', or 'body'."
     # Keep synchronous Google I/O off the event loop.
     return await asyncio.to_thread(send_email, to_email, subject, body, await _google_owner(team_id))
+
+
+async def _wrap_list_emails(args: Dict[str, Any], team_id: str) -> str:
+    return await asyncio.to_thread(
+        list_emails,
+        args.get("query", ""),
+        args.get("max_results", 10),
+        await _google_owner(team_id),
+    )
+
+
+async def _wrap_read_email(args: Dict[str, Any], team_id: str) -> str:
+    message_id = args.get("message_id", "")
+    if not message_id:
+        return "Error: Missing 'message_id'."
+    return await asyncio.to_thread(read_email, message_id, await _google_owner(team_id))
+
+
+async def _wrap_manage_email(args: Dict[str, Any], team_id: str) -> str:
+    message_id, action = args.get("message_id", ""), args.get("action", "")
+    if not message_id or not action:
+        return "Error: Missing 'message_id' or 'action'."
+    return await asyncio.to_thread(manage_email, message_id, action, await _google_owner(team_id))
+
+
+async def _wrap_list_calendar_events(args: Dict[str, Any], team_id: str) -> str:
+    time_min = args.get("time_min", "")
+    if not time_min:
+        return "Error: Missing 'time_min'."
+    return await asyncio.to_thread(
+        list_calendar_events,
+        time_min,
+        args.get("time_max"),
+        args.get("max_results", 20),
+        await _google_owner(team_id),
+    )
+
+
+async def _wrap_update_calendar_event(args: Dict[str, Any], team_id: str) -> str:
+    event_id = args.get("event_id", "")
+    if not event_id:
+        return "Error: Missing 'event_id'."
+    return await asyncio.to_thread(
+        update_calendar_event,
+        event_id,
+        args.get("summary"),
+        args.get("start_time_iso"),
+        args.get("end_time_iso"),
+        args.get("attendees_emails"),
+        await _google_owner(team_id),
+    )
+
+
+async def _wrap_delete_calendar_event(args: Dict[str, Any], team_id: str) -> str:
+    event_id = args.get("event_id", "")
+    if not event_id:
+        return "Error: Missing 'event_id'."
+    return await asyncio.to_thread(delete_calendar_event, event_id, await _google_owner(team_id))
+
+
+async def _wrap_list_google_tasks(args: Dict[str, Any], team_id: str) -> str:
+    return await asyncio.to_thread(
+        list_google_tasks,
+        args.get("tasklist_id", "@default"),
+        args.get("include_completed", False),
+        args.get("max_results", 50),
+        await _google_owner(team_id),
+    )
+
+
+async def _wrap_create_google_task(args: Dict[str, Any], team_id: str) -> str:
+    title = args.get("title", "")
+    if not title:
+        return "Error: Missing 'title'."
+    return await asyncio.to_thread(
+        create_google_task,
+        title,
+        args.get("notes", ""),
+        args.get("due"),
+        args.get("tasklist_id", "@default"),
+        await _google_owner(team_id),
+    )
+
+
+async def _wrap_update_google_task(args: Dict[str, Any], team_id: str) -> str:
+    task_id = args.get("task_id", "")
+    if not task_id:
+        return "Error: Missing 'task_id'."
+    return await asyncio.to_thread(
+        update_google_task,
+        task_id,
+        args.get("title"),
+        args.get("notes"),
+        args.get("due"),
+        args.get("completed"),
+        args.get("tasklist_id", "@default"),
+        await _google_owner(team_id),
+    )
+
+
+async def _wrap_delete_google_task(args: Dict[str, Any], team_id: str) -> str:
+    task_id = args.get("task_id", "")
+    if not task_id:
+        return "Error: Missing 'task_id'."
+    return await asyncio.to_thread(
+        delete_google_task,
+        task_id,
+        args.get("tasklist_id", "@default"),
+        await _google_owner(team_id),
+    )
 
 async def _wrap_generate_mom(args: Dict[str, Any], team_id: str) -> str:
     transcription = args.get("transcription", "")

@@ -18,6 +18,8 @@ networkx>=3.0.0
 google-api-python-client>=2.0.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
+keyring>=25.0.0
+SecretStorage>=3.3.3; sys_platform == "linux"
 mcp>=1.0.0,<3
 websockets
 langchain-openai

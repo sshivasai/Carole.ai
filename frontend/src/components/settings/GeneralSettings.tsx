@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useCallback } from "react";
-import { User, ShieldCheck, Activity, CheckCircle, AlertTriangle, RefreshCw, Loader2, Calendar, Mail, Video, ExternalLink } from "lucide-react";
+import { User, ShieldCheck, Activity, CheckCircle, AlertTriangle, RefreshCw, Loader2, Calendar, Mail, Video, ExternalLink, ListChecks } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/hooks/useApi";
 import SettingTooltip from "./SettingTooltip";
@@ -173,8 +173,8 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
                 <h3 className="display-sm" style={{ margin: 0 }}>Google Workspace Integration</h3>
                 <SettingTooltip
                   title="Google OAuth"
-                  why="Grants agents scoped access to read calendar availability, schedule meetings, and send emails."
-                  how="OAuth2 tokens are stored locally and refreshed automatically for agent Google tools (gmail_send, calendar_create_event)."
+                  why="Grants agents scoped access to Gmail, Calendar, Meet scheduling, and Google Tasks."
+                  how="Your OAuth tokens stay on this computer in the operating-system credential vault. External changes always require human approval."
                 />
                 {googleStatus?.connected ? (
                   <span className="badge badge-green" style={{ fontSize: 9 }}>Connected</span>
@@ -183,7 +183,7 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
                 )}
               </div>
               <p className="caption text-mute" style={{ margin: 0 }}>
-                Allow agents to manage Calendar events, create Meet links, and draft Gmail messages.
+                Connect your own Google account. Read actions are scoped; sends, edits, trash, and deletes require your approval.
               </p>
             </div>
           </div>
@@ -275,7 +275,22 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
                 }}
               >
                 <Mail size={13} color="#EA4335" />
-                <span>Gmail Drafts &amp; Send</span>
+                <span>Gmail Read &amp; Manage</span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--sp-sm)",
+                  padding: "var(--sp-sm) var(--sp-md)",
+                  background: "var(--color-canvas-soft)",
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--color-hairline)",
+                  fontSize: 11,
+                }}
+              >
+                <ListChecks size={13} color="#4285F4" />
+                <span>Google Tasks</span>
               </div>
             </div>
           </div>
@@ -293,7 +308,11 @@ export default function GeneralSettings({ teamId, onToast }: Props) {
               }}
             >
               <AlertTriangle size={14} color="var(--color-mute)" />
-              <div className="caption">No Google account connected. Connect to unlock Gmail, Meet, and Calendar agent tools.</div>
+              <div className="caption">
+                {googleStatus?.reason === "secure_token_store_unavailable"
+                  ? "A secure OS credential vault is unavailable. Configure Windows Credential Manager, macOS Keychain, or Linux Secret Service before connecting."
+                  : "No Google account connected. Connect to unlock Gmail, Meet, Calendar, and Tasks agent tools."}
+              </div>
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <button

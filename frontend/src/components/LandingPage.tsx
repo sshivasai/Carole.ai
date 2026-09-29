@@ -539,7 +539,7 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
       <footer className={styles.footer}>
         <a className={styles.logo} href="#top"><img className={styles.brandMark} src="/branding/logo-mark-animated.webp" alt="" /><img className={styles.brandWordmark} src={theme === "dark" ? "/branding/logo-wordmark-dark.png" : "/branding/logo-wordmark.png"} alt="Carole.ai" /></a>
         <p>Local-first multi-agent workspace for building software.</p>
-        <div><a href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer">GitHub</a><a href="#integrations">MCP tools</a><a href="#infrastructure">Infrastructure</a></div>
+        <div><a href="https://github.com/sshivasai/Carole.ai" target="_blank" rel="noreferrer">GitHub</a><a href="#integrations">MCP tools</a><a href="https://caroleai.com/privacy/">Privacy</a><a href="https://caroleai.com/terms/">Terms</a></div>
       </footer>
     </main>
   );

@@ -43,6 +43,15 @@ def main() -> None:
     if args.data_dir:
         os.environ["CAROLE_HOME_DIR"] = str(args.data_dir.expanduser().resolve())
 
+    # Google Desktop OAuth must return to the same local Carole.ai instance,
+    # including when the user selects a non-default port.
+    connect_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
+    local_url = f"http://{connect_host}:{args.port}"
+    os.environ.setdefault(
+        "GOOGLE_REDIRECT_URI", f"{local_url}/api/auth/google/callback"
+    )
+    os.environ.setdefault("FRONTEND_URL", local_url)
+
     if not args.no_browser:
         threading.Thread(
             target=_open_when_ready,

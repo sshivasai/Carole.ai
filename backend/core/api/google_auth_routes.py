@@ -13,9 +13,9 @@ Endpoints:
 import json
 import asyncio
 import uuid
-import tempfile
 import logging
 import os
+from importlib import resources
 from pathlib import Path
 
 from fastapi import APIRouter, Request, Depends
@@ -31,25 +31,31 @@ router = APIRouter(prefix="/api/auth/google", tags=["google_oauth"])
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 from core.config import CAROLE_HOME_DIR
+from core.auth import google_token_store
+from core.auth.google_token_store import SecureTokenStoreError
 
-_CREDS_PATH = Path(__file__).parent.parent.parent / "credentials.json"
+_LEGACY_CREDS_PATH = Path(__file__).parent.parent.parent / "credentials.json"
+_USER_CREDS_PATH = CAROLE_HOME_DIR / "google_oauth_client.json"
+
+
 def _token_path(user_id: str) -> Path:
+    """Legacy plaintext token path, retained only for one-time migration."""
     return CAROLE_HOME_DIR / "google_tokens" / f"{uuid.UUID(str(user_id))}.json"
 
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
 
 # Redirect URI must be registered in Google Cloud Console
-REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback")
+REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/auth/google/callback")
 # Where to send the user after OAuth completes
-FRONTEND_SUCCESS_URL = os.getenv("FRONTEND_URL", "http://localhost:3000") + "?google_connected=1"
-FRONTEND_ERROR_URL   = os.getenv("FRONTEND_URL", "http://localhost:3000") + "?google_error=1"
+FRONTEND_SUCCESS_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:8000") + "?google_connected=1"
+FRONTEND_ERROR_URL   = os.getenv("FRONTEND_URL", "http://127.0.0.1:8000") + "?google_error=1"
 
 # Store OAuth states in memory.
 # Bounded to prevent memory DoS (max 200 sessions), entries expire after 10 min.
@@ -67,41 +73,86 @@ def _purge_expired_sessions() -> None:
         _AUTH_SESSIONS.pop(k, None)
 
 
+def _load_client_config() -> tuple[dict, str]:
+    """Load OAuth client identity, preferring an explicit user override.
+
+    Desktop client identity is public by design.  User access/refresh tokens
+    are never read from these files and live only in the OS credential vault.
+    """
+    configured = os.getenv("CAROLE_GOOGLE_CREDENTIALS")
+    candidates: list[tuple[str, object]] = []
+    if configured:
+        candidates.append(("CAROLE_GOOGLE_CREDENTIALS", Path(configured).expanduser()))
+    candidates.extend(
+        [
+            ("user", _USER_CREDS_PATH),
+            (
+                "packaged",
+                resources.files("carole_ai").joinpath("resources/google_oauth_client.json"),
+            ),
+            ("legacy", _LEGACY_CREDS_PATH),
+        ]
+    )
+
+    for source, candidate in candidates:
+        try:
+            if not candidate.is_file():
+                continue
+            raw = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, AttributeError) as exc:
+            if source == "CAROLE_GOOGLE_CREDENTIALS":
+                raise RuntimeError("CAROLE_GOOGLE_CREDENTIALS is not a valid OAuth client file") from exc
+            logger.warning("Ignoring invalid Google OAuth client configuration from %s", source)
+            continue
+
+        cred_type = "installed" if "installed" in raw else "web" if "web" in raw else ""
+        if not cred_type or not raw[cred_type].get("client_id"):
+            if source == "CAROLE_GOOGLE_CREDENTIALS":
+                raise RuntimeError("OAuth client JSON must contain an installed or web client")
+            continue
+        return {cred_type: dict(raw[cred_type])}, cred_type
+
+    raise FileNotFoundError("Google OAuth client configuration is not available")
+
+
 def _credentials_file_exists() -> bool:
-    return _CREDS_PATH.exists()
+    try:
+        _load_client_config()
+        return True
+    except (FileNotFoundError, RuntimeError):
+        return False
 
 
 def _load_token(user_id: str) -> Credentials | None:
-    """Load saved token from ~/.carole/google_token.json. Returns None if missing or invalid."""
+    """Load a token from the OS vault, migrating an old private file once."""
     token_path = _token_path(user_id)
-    if not token_path.exists():
-        return None
     try:
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        token_json = google_token_store.load(user_id)
+        if token_json is None and token_path.exists():
+            token_json = token_path.read_text(encoding="utf-8")
+            google_token_store.save(user_id, token_json)
+            token_path.unlink(missing_ok=True)
+        if token_json is None:
+            return None
+        creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
         # Try to refresh if expired
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(GoogleRequest())
                 _save_token(creds, user_id)
             except Exception:
-                token_path.unlink(missing_ok=True)
+                google_token_store.delete(user_id)
                 return None
         return creds if creds and creds.valid else None
+    except SecureTokenStoreError:
+        raise
     except Exception:
         return None
 
 
 def _save_token(creds: Credentials, user_id: str) -> None:
-    """Atomically persist credentials in an owner-specific private file."""
-    path = _token_path(user_id)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".token-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(creds.to_json())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    """Persist credentials in the current user's OS credential vault."""
+    google_token_store.save(user_id, creds.to_json())
 
 
 def get_google_credentials(user_id: str | None = None) -> Credentials | None:
@@ -115,9 +166,15 @@ def get_google_credentials(user_id: str | None = None) -> Credentials | None:
 async def google_status(user: dict = Depends(require_auth)):
     """Returns whether a Google account is currently connected. Requires authentication."""
     if not _credentials_file_exists():
-        return {"connected": False, "reason": "credentials.json not found on server"}
+        return {"connected": False, "reason": "oauth_client_not_configured"}
 
-    creds = await asyncio.to_thread(_load_token, user["sub"])
+    if not google_token_store.available():
+        return {"connected": False, "reason": "secure_token_store_unavailable"}
+
+    try:
+        creds = await asyncio.to_thread(_load_token, user["sub"])
+    except SecureTokenStoreError:
+        return {"connected": False, "reason": "secure_token_store_unavailable"}
     if not creds:
         return {"connected": False, "reason": "not_authorized"}
 
@@ -138,7 +195,8 @@ async def google_status(user: dict = Depends(require_auth)):
     return {
         "connected": True,
         "email": email,
-        "scopes": ["calendar", "gmail"],
+        "scopes": ["calendar", "gmail", "tasks"],
+        "token_storage": "os_credential_vault",
     }
 
 
@@ -152,17 +210,11 @@ async def google_authorize(user: dict = Depends(require_auth)):
     if not _credentials_file_exists():
         return JSONResponse(
             status_code=503,
-            content={"error": "credentials.json not found. Place your Google OAuth Web App credentials in the backend directory."},
+            content={"error": "Google OAuth client configuration is unavailable."},
         )
 
     try:
-        with open(_CREDS_PATH) as f:
-            raw = json.load(f)
-
-        # Google Cloud issues either 'web' or 'installed' app credentials.
-        # Normalise to what google-auth-oauthlib expects.
-        cred_type = "web" if "web" in raw else "installed"
-        client_config = {cred_type: raw[cred_type]}
+        client_config, cred_type = _load_client_config()
 
         # Patch redirect URI into the config so it matches what we expect
         client_config[cred_type].setdefault("redirect_uris", [REDIRECT_URI])
@@ -173,6 +225,7 @@ async def google_authorize(user: dict = Depends(require_auth)):
             client_config,
             scopes=SCOPES,
             redirect_uri=REDIRECT_URI,
+            autogenerate_code_verifier=True,
         )
         auth_url, state = flow.authorization_url(
             access_type="offline",
@@ -226,7 +279,7 @@ async def google_callback(request: Request):
     import secrets
     browser_state = request.cookies.get("carole_google_state", "")
     if not state or not browser_state or not secrets.compare_digest(state, browser_state) or state not in _AUTH_SESSIONS:
-        logger.warning("OAuth callback rejected — unknown or expired state: %s", state)
+        logger.warning("OAuth callback rejected — unknown or expired state")
         return RedirectResponse(FRONTEND_ERROR_URL + "&reason=invalid_state")
 
     session_data = _AUTH_SESSIONS.pop(state)  # Remove to prevent replay
@@ -240,11 +293,7 @@ async def google_callback(request: Request):
 
 
     try:
-        with open(_CREDS_PATH) as f:
-            raw = json.load(f)
-
-        cred_type = "web" if "web" in raw else "installed"
-        client_config = {cred_type: raw[cred_type]}
+        client_config, cred_type = _load_client_config()
         client_config[cred_type].setdefault("redirect_uris", [REDIRECT_URI])
         if REDIRECT_URI not in client_config[cred_type]["redirect_uris"]:
             client_config[cred_type]["redirect_uris"].append(REDIRECT_URI)
@@ -254,6 +303,7 @@ async def google_callback(request: Request):
             scopes=SCOPES,
             redirect_uri=REDIRECT_URI,
             state=state,
+            autogenerate_code_verifier=False,
         )
         
         # Restore PKCE code verifier
@@ -273,7 +323,10 @@ async def google_disconnect(user: dict = Depends(require_auth)):
     """
     Revokes the Google token and deletes the local token file. Requires authentication.
     """
-    creds = await asyncio.to_thread(_load_token, user["sub"])
+    try:
+        creds = await asyncio.to_thread(_load_token, user["sub"])
+    except SecureTokenStoreError:
+        creds = None
     if creds:
         try:
             import httpx
@@ -286,5 +339,9 @@ async def google_disconnect(user: dict = Depends(require_auth)):
         except Exception:
             pass  # Best-effort revoke; always delete local token
 
+    try:
+        await asyncio.to_thread(google_token_store.delete, user["sub"])
+    except SecureTokenStoreError:
+        return JSONResponse(status_code=503, content={"error": "secure_token_store_unavailable"})
     _token_path(user["sub"]).unlink(missing_ok=True)
     return {"status": "disconnected"}
