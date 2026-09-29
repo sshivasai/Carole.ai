@@ -2,9 +2,6 @@
   <img src="https://raw.githubusercontent.com/sshivasai/Carole.ai/master/frontend/public/branding/logo-full-white-bg.png" alt="Carole.ai logo on a white background" width="320" />
 </p>
 
-<h1 align="center">Carole.ai</h1>
-<p align="center"><strong>AI AGENTS. REAL WORK.</strong></p>
-
 Carole.ai is a local AI agent workspace with chat, project tools, memory, MCP
 integrations, browser automation, and a Kanban board. The PyPI package includes
 the built web interface: one `caroleai` command runs the FastAPI backend and
@@ -14,7 +11,6 @@ The public landing page is [caroleai.com](https://caroleai.com/). It does not
 host accounts or the backend: Sign in and Sign up open `http://127.0.0.1:8000`
 on the visitor's own computer after they install and start Carole.ai.
 
-## Demo
 
 [![Animated preview of the Carole.ai demo](Demo.webp)](Demo.mp4)
 
