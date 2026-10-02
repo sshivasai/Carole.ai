@@ -97,7 +97,6 @@ def _load_client_config() -> tuple[dict, str]:
     candidates: list[tuple[str, object]] = []
     if configured:
         candidates.append(("CAROLE_GOOGLE_CREDENTIALS", Path(configured).expanduser()))
-    candidates.extend([("user", _USER_CREDS_PATH), ("legacy", _LEGACY_CREDS_PATH)])
 
     for source, candidate in candidates:
         try:
@@ -135,6 +134,22 @@ def _load_client_config() -> tuple[dict, str]:
                 "redirect_uris": [REDIRECT_URI],
             }
         }, "installed"
+
+    # Compatibility fallback for installations created before Carole shipped a
+    # built-in public Desktop client. These files must never silently override
+    # the packaged client; a custom client now requires CAROLE_GOOGLE_CREDENTIALS.
+    for source, candidate in (("user", _USER_CREDS_PATH), ("legacy", _LEGACY_CREDS_PATH)):
+        try:
+            if not candidate.is_file():
+                continue
+            raw = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, AttributeError):
+            logger.warning("Ignoring invalid Google OAuth client configuration from %s", source)
+            continue
+
+        cred_type = "installed" if "installed" in raw else "web" if "web" in raw else ""
+        if cred_type and raw[cred_type].get("client_id"):
+            return {cred_type: dict(raw[cred_type])}, cred_type
 
     raise FileNotFoundError("Google OAuth client configuration is not available")
 
