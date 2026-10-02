@@ -162,6 +162,27 @@ def _credentials_file_exists() -> bool:
         return False
 
 
+def _fetch_oauth_token(flow: Flow, client_config: dict, cred_type: str, code: str):
+    """Exchange an authorization code for public or confidential clients.
+
+    ``google-auth-oauthlib``'s ``Flow.fetch_token`` assumes every client config
+    contains a ``client_secret`` key. Installed Desktop clients are public
+    clients, so Carole ships only the client ID and uses PKCE. For that case,
+    call the underlying OAuth session with the client ID in the request body
+    and omit client authentication entirely.
+    """
+    config = client_config[cred_type]
+    if config.get("client_secret"):
+        return flow.fetch_token(code=code)
+    return flow.oauth2session.fetch_token(
+        config["token_uri"],
+        code=code,
+        code_verifier=flow.code_verifier,
+        include_client_id=True,
+        client_secret=None,
+    )
+
+
 def _load_token(user_id: str) -> Credentials | None:
     """Load a token from the OS vault, migrating an old private file once."""
     token_path = _token_path(user_id)
@@ -349,7 +370,7 @@ async def google_callback(request: Request):
         if code_verifier:
             flow.code_verifier = code_verifier
 
-        await asyncio.to_thread(flow.fetch_token, code=code)
+        await asyncio.to_thread(_fetch_oauth_token, flow, client_config, cred_type, code)
         await asyncio.to_thread(_save_token, flow.credentials, user_id)
         return RedirectResponse(FRONTEND_SUCCESS_URL)
     except Exception as e:

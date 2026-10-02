@@ -9,6 +9,49 @@ def test_packaged_desktop_oauth_client_is_available():
     assert "client_secret" not in config[client_type]
 
 
+def test_public_desktop_client_uses_pkce_token_exchange_without_secret():
+    from core.api import google_auth_routes as google
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def fetch_token(self, token_uri, **kwargs):
+            self.calls.append((token_uri, kwargs))
+            return {"access_token": "token"}
+
+    class FakeFlow:
+        def __init__(self):
+            self.oauth2session = FakeSession()
+            self.code_verifier = "pkce-verifier"
+
+        def fetch_token(self, **_kwargs):
+            raise AssertionError("Public clients must not use Flow.fetch_token")
+
+    flow = FakeFlow()
+    config = {
+        "installed": {
+            "client_id": "client.apps.googleusercontent.com",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+
+    result = google._fetch_oauth_token(flow, config, "installed", "auth-code")
+
+    assert result == {"access_token": "token"}
+    assert flow.oauth2session.calls == [
+        (
+            "https://oauth2.googleapis.com/token",
+            {
+                "code": "auth-code",
+                "code_verifier": "pkce-verifier",
+                "include_client_id": True,
+                "client_secret": None,
+            },
+        )
+    ]
+
+
 def test_google_scopes_match_workspace_tools():
     from core.api.google_auth_routes import SCOPES
 
