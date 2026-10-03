@@ -1,7 +1,7 @@
 """
 # backend/core/api/google_auth_routes.py
 
-Google OAuth 2.0 web flow for Calendar + Gmail integration.
+Google Desktop OAuth 2.0 flow for Calendar, Gmail, and Tasks integration.
 
 Endpoints:
   GET  /api/auth/google/authorize   — Generate Google consent URL for an authenticated client
@@ -17,6 +17,7 @@ import logging
 import os
 from importlib import resources
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, Depends
 from core.auth.auth_middleware import require_auth
@@ -51,7 +52,7 @@ SCOPES = [
     "openid",
 ]
 
-# Redirect URI must be registered in Google Cloud Console
+# Desktop clients return to the same local loopback listener used to authorize.
 REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/auth/google/callback")
 # Where to send the user after OAuth completes
 FRONTEND_SUCCESS_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:8000") + "?google_connected=1"
@@ -76,9 +77,9 @@ def _purge_expired_sessions() -> None:
 def _load_client_config() -> tuple[dict, str]:
     """Load OAuth client identity, preferring an explicit user override.
 
-    The built-in Desktop client is a public OAuth client and therefore ships
-    only its client ID.  It uses PKCE and never embeds a client secret.  User
-    access/refresh tokens live only in the OS credential vault.
+    The built-in Desktop client uses PKCE and a hosted token relay so its
+    Google-issued client secret is not distributed in the Python package.
+    User access/refresh tokens are persisted only in the OS credential vault.
     """
     explicit_client_id = os.getenv("CAROLE_GOOGLE_CLIENT_ID", "").strip()
     if explicit_client_id:
@@ -130,7 +131,7 @@ def _load_client_config() -> tuple[dict, str]:
             "installed": {
                 "client_id": client_id,
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
+                "token_uri": _broker_token_uri() or "https://oauth2.googleapis.com/token",
                 "redirect_uris": [REDIRECT_URI],
             }
         }, "installed"
@@ -154,6 +155,24 @@ def _load_client_config() -> tuple[dict, str]:
     raise FileNotFoundError("Google OAuth client configuration is not available")
 
 
+def _broker_token_uri() -> str | None:
+    """Load the release-pinned token service; never trust a URL from a token file."""
+    endpoint = os.getenv("CAROLE_GOOGLE_TOKEN_ENDPOINT", "").strip()
+    if not endpoint:
+        try:
+            endpoint = resources.files("carole_ai").joinpath(
+                "resources/google_oauth_token_endpoint.txt"
+            ).read_text(encoding="utf-8").strip()
+        except (OSError, AttributeError):
+            return None
+    parsed = urlsplit(endpoint)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment
+            or parsed.path != "/token"):
+        raise RuntimeError("Google token service must be an HTTPS /token endpoint")
+    return endpoint
+
+
 def _credentials_file_exists() -> bool:
     try:
         _load_client_config()
@@ -165,11 +184,9 @@ def _credentials_file_exists() -> bool:
 def _fetch_oauth_token(flow: Flow, client_config: dict, cred_type: str, code: str):
     """Exchange an authorization code for public or confidential clients.
 
-    ``google-auth-oauthlib``'s ``Flow.fetch_token`` assumes every client config
-    contains a ``client_secret`` key. Installed Desktop clients are public
-    clients, so Carole ships only the client ID and uses PKCE. For that case,
-    call the underlying OAuth session with the client ID in the request body
-    and omit client authentication entirely.
+    Explicit client JSON can exchange directly with Google. The built-in
+    client sends its PKCE verifier to the token relay, which adds Google's
+    issued client secret server-side. Never send a client secret to the relay.
     """
     config = client_config[cred_type]
     if config.get("client_secret"):
@@ -183,6 +200,14 @@ def _fetch_oauth_token(flow: Flow, client_config: dict, cred_type: str, code: st
     )
 
 
+def _oauth_error_summary(exc: Exception) -> str:
+    """Return useful OAuth diagnostics without logging codes or tokens."""
+    error = str(getattr(exc, "error", "") or "").strip()
+    description = str(getattr(exc, "description", "") or "").strip()
+    parts = [part for part in (error, description) if part]
+    return ": ".join(parts)[:500] or "no provider error details"
+
+
 def _load_token(user_id: str) -> Credentials | None:
     """Load a token from the OS vault, migrating an old private file once."""
     token_path = _token_path(user_id)
@@ -194,14 +219,33 @@ def _load_token(user_id: str) -> Credentials | None:
             token_path.unlink(missing_ok=True)
         if token_json is None:
             return None
-        creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
+        token_info = json.loads(token_json)
+        # Public Desktop clients have no confidential secret. google-auth's
+        # authorized-user loader still requires the field, and its refresh
+        # implementation rejects None. An empty value preserves public-client
+        # semantics while satisfying that library's credential schema.
+        if token_info.get("client_secret") is None:
+            token_info["client_secret"] = ""
+        creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+        saved_endpoint = token_info.get("token_uri", "https://oauth2.googleapis.com/token")
+        if saved_endpoint != "https://oauth2.googleapis.com/token":
+            # google-auth's loader always resets token_uri to Google. Restore
+            # only our configured relay, preventing credentials from directing
+            # refresh tokens to an arbitrary endpoint after a vault edit.
+            if saved_endpoint != _broker_token_uri() or token_info.get("client_secret"):
+                return None
+            expiry = creds.expiry
+            creds = creds.with_token_uri(saved_endpoint)
+            # google-auth's copy helper does not preserve the access expiry.
+            creds.expiry = expiry
         # Try to refresh if expired
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(GoogleRequest())
                 _save_token(creds, user_id)
-            except Exception:
-                google_token_store.delete(user_id)
+            except Exception as exc:
+                # A temporary Google/relay outage must not erase a connection.
+                logger.warning("Google token refresh failed (%s)", type(exc).__name__)
                 return None
         return creds if creds and creds.valid else None
     except SecureTokenStoreError:
@@ -349,7 +393,7 @@ async def google_callback(request: Request):
     from core.auth.auth_service import auth_service
     async with async_session() as db:
         if not user_id or not await auth_service.get_active_user(db, user_id):
-            return RedirectResponse(FRONTEND_ERROR_URL)
+            return RedirectResponse(FRONTEND_ERROR_URL + "&reason=user_unavailable")
 
 
     try:
@@ -371,11 +415,24 @@ async def google_callback(request: Request):
             flow.code_verifier = code_verifier
 
         await asyncio.to_thread(_fetch_oauth_token, flow, client_config, cred_type, code)
-        await asyncio.to_thread(_save_token, flow.credentials, user_id)
-        return RedirectResponse(FRONTEND_SUCCESS_URL)
     except Exception as e:
-        logger.warning("Google OAuth exchange failed (%s)", type(e).__name__)
-        return RedirectResponse(FRONTEND_ERROR_URL)
+        logger.warning(
+            "Google OAuth token exchange failed (%s): %s",
+            type(e).__name__,
+            _oauth_error_summary(e),
+        )
+        return RedirectResponse(FRONTEND_ERROR_URL + "&reason=token_exchange_failed")
+
+    try:
+        await asyncio.to_thread(_save_token, flow.credentials, user_id)
+    except SecureTokenStoreError:
+        logger.warning("Google OAuth token save failed: secure OS credential vault unavailable")
+        return RedirectResponse(FRONTEND_ERROR_URL + "&reason=secure_token_store_failed")
+    except Exception as e:
+        logger.warning("Google OAuth token save failed (%s)", type(e).__name__)
+        return RedirectResponse(FRONTEND_ERROR_URL + "&reason=token_save_failed")
+
+    return RedirectResponse(FRONTEND_SUCCESS_URL)
 
 
 @router.post("/disconnect")

@@ -61,7 +61,9 @@ def main() -> None:
 
     import uvicorn
 
-    uvicorn.run("main:app", host=args.host, port=args.port, reload=False)
+    # OAuth callback query strings contain short-lived authorization codes.
+    # Keep application diagnostics, but do not write request URLs to access logs.
+    uvicorn.run("main:app", host=args.host, port=args.port, reload=False, access_log=False)
 
 
 if __name__ == "__main__":

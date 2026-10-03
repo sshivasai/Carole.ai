@@ -18,7 +18,8 @@ export default function PrivacyPage() {
       <h2>Google account data</h2>
       <p>Google connection is optional. If you choose to connect an account, Carole.ai requests only the permissions shown on Google&apos;s consent screen to identify your account and work with Gmail messages, Calendar events, and Google Tasks. The app accesses this data only when you or an agent invokes the corresponding feature.</p>
       <ul>
-        <li>OAuth access and refresh tokens remain on your device in its operating-system credential vault.</li>
+        <li>OAuth access and refresh tokens are stored on your device in its operating-system credential vault.</li>
+        <li>For the built-in Google connection, authorization codes, PKCE verifiers, and tokens pass through Carole.ai&apos;s OAuth token service hosted on Cloudflare to exchange and refresh credentials with Google. This service keeps the application&apos;s client secret on the server. It processes tokens in memory without storing them in a cloud database or application logs. Gmail, Calendar, and Tasks API calls are made directly from your device to Google.</li>
         <li>The public Desktop OAuth client identity bundled with Carole.ai is not a user token and cannot access an account by itself.</li>
         <li>Carole.ai does not sell Google user data or use it for advertising.</li>
         <li>Email sending and other external changes require an in-app human approval before execution.</li>

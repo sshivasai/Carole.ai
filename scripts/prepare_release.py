@@ -57,6 +57,9 @@ def main() -> None:
         )
     if (RESOURCE_TARGET / "google_oauth_client.json").exists():
         raise SystemExit("Refusing to package a Google OAuth client secret JSON")
+    oauth_token_endpoint = RESOURCE_TARGET / "google_oauth_token_endpoint.txt"
+    if not oauth_token_endpoint.is_file():
+        raise SystemExit("Missing public Google OAuth token-service endpoint")
     shutil.copy2(ROOT / "backend" / "alembic.ini", RESOURCE_TARGET / "alembic.ini")
     _copy_tree(ROOT / "backend" / "alembic", RESOURCE_TARGET / "alembic")
 

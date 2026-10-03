@@ -120,7 +120,13 @@ Attachments require authenticated downloads. Google accounts must reconnect
 through Settings after upgrading: credentials are stored separately per account
 in the operating-system credential vault, and any legacy private token file is
 migrated and removed. The bundled public Desktop OAuth client ID identifies
-Carole.ai; no OAuth client secret is included in the repository or package. It
+Carole.ai; no OAuth client secret is included in the repository or package. The
+built-in connection exchanges authorization codes and refreshes tokens through
+a small Cloudflare-hosted OAuth service that supplies the client secret. User
+tokens pass through that service in memory and are persisted only in the local
+OS credential vault. Google API calls go directly from the device to Google.
+See [OAuth service operations](services/google-oauth/README.md) for deployment,
+free-tier limits, and verification requirements. The public client ID
 grants no Google account access by itself—access begins only after the user
 consents locally through the PKCE-protected flow. The OAuth start request must
 include browser credentials so its callback can verify the initiating browser.
