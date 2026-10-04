@@ -42,8 +42,8 @@ jobs:
 
       - name: Run backend tests before publishing
         run: |
-          wheel-test/bin/pip install pytest pytest-asyncio
-          PYTHONPATH=backend timeout 300 wheel-test/bin/python -m pytest -c backend/pytest.ini backend/tests/test_google_workspace_oauth.py backend/tests/test_auth.py -q
+          wheel-test/bin/pip install pytest pytest-asyncio numpy
+          PYTHONPATH=backend timeout 900 wheel-test/bin/python -m pytest -c backend/pytest.ini backend/tests -q
           PYTHONPATH=backend timeout 300 wheel-test/bin/python -m pytest -c backend/pytest.ini --confcutdir=backend/auth_tests backend/auth_tests -q
 
       - name: Run OAuth service tests before publishing

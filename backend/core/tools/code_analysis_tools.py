@@ -435,7 +435,13 @@ class CodeAnalysisTools:
         try:
             safe_path = self._resolve_safe_path(file_path)
             rel_path = str(safe_path.relative_to(self.workspace_root)).replace("\\", "/")
-            res = await code_graph.get_module_dependencies(rel_path, project_id)
+            # A missing file has no module graph to inspect. Avoid building the
+            # entire workspace index for a path that cannot have dependencies.
+            res = (
+                await code_graph.get_module_dependencies(rel_path, project_id)
+                if safe_path.is_file()
+                else {"dependencies": [], "dependents": []}
+            )
 
             lines = [f"📦 Module Dependencies for '{rel_path}':"]
             deps = res.get("dependencies", [])
@@ -461,4 +467,3 @@ class CodeAnalysisTools:
 
 # Singleton
 code_analysis_tools = CodeAnalysisTools()
-

@@ -5,8 +5,9 @@ Tests for Phase 3 (AST-Aware Code Intelligence & Hybrid RAG) and Phase 4 (Code S
 """
 
 import pytest
+import numpy as np
 from core.knowledge.ast_parser import parse_file_ast, ASTChunk
-from core.knowledge.hybrid_search import tokenize_code, BM25Index, HybridCodeSearch
+from core.knowledge.hybrid_search import tokenize_code, BM25Index, HybridCodeSearch, StaticCodeEmbedder
 from core.knowledge.code_graph import CodeGraph
 from core.tools.code_analysis_tools import CodeAnalysisTools
 
@@ -137,7 +138,18 @@ export class AuthService {
 
 
 @pytest.mark.asyncio
-async def test_static_code_embeddings_model2vec():
+async def test_static_code_embeddings_model2vec(monkeypatch):
+    # Keep this integration test independent of Hugging Face availability and
+    # model download time; the search/ranking pipeline is what it verifies.
+    class FakeModel:
+        def encode(self, texts):
+            return np.array([
+                [1.0, 0.0] if any(term in text.lower() for term in ("auth", "security", "token", "credential"))
+                else [0.0, 1.0]
+                for text in texts
+            ], dtype=np.float32)
+
+    monkeypatch.setattr(StaticCodeEmbedder, "get_model", classmethod(lambda cls: FakeModel()))
     chunk1 = ASTChunk(
         name="authenticate_user",
         kind="function",
