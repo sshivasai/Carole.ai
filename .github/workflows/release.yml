@@ -44,7 +44,7 @@ jobs:
         run: |
           wheel-test/bin/pip install pytest pytest-asyncio numpy
           wheel-test/bin/python -m playwright install --with-deps chromium
-          PYTHONPATH=backend timeout 600 wheel-test/bin/python -m pytest -c backend/pytest.ini backend/tests -x -vv
+          PYTHONPATH=backend timeout 600 xvfb-run -a wheel-test/bin/python -m pytest -c backend/pytest.ini backend/tests -x -vv
           PYTHONPATH=backend timeout 300 wheel-test/bin/python -m pytest -c backend/pytest.ini --confcutdir=backend/auth_tests backend/auth_tests -q
 
       - name: Run OAuth service tests before publishing
