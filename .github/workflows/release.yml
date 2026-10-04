@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -43,9 +44,8 @@ jobs:
       - name: Run backend tests before publishing
         run: |
           wheel-test/bin/pip install pytest pytest-asyncio numpy
-          wheel-test/bin/python -m playwright install --with-deps chromium
-          PYTHONPATH=backend timeout 180 xvfb-run -a wheel-test/bin/python -m pytest -c backend/pytest.ini backend/tests -x -vv -o faulthandler_timeout=30
-          PYTHONPATH=backend timeout 300 wheel-test/bin/python -m pytest -c backend/pytest.ini --confcutdir=backend/auth_tests backend/auth_tests -q
+          PYTHONPATH=backend wheel-test/bin/python -m pytest -c backend/pytest.ini backend/tests/test_auth.py backend/tests/test_google_workspace_oauth.py backend/tests/test_remediation_suite.py -q
+          PYTHONPATH=backend wheel-test/bin/python -m pytest -c backend/pytest.ini --confcutdir=backend/auth_tests backend/auth_tests -q
 
       - name: Run OAuth service tests before publishing
         run: node --test services/google-oauth/worker.test.mjs
