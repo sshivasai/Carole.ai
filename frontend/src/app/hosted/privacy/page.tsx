@@ -1,41 +1,55 @@
 import type { Metadata } from "next";
 import LegalPage from "@/components/LegalPage";
+import styles from "@/components/LegalPage.module.css";
 
 export const metadata: Metadata = {
   title: "Privacy Policy — Carole.ai",
-  description: "How Carole.ai handles local workspace and Google account data.",
+  description: "How the local Carole.ai workspace handles account data, Google connections, and AI providers.",
   alternates: { canonical: "/privacy/" },
 };
 
+const sections = [
+  { id: "local-data", label: "What stays on your device" },
+  { id: "google", label: "Google account connection" },
+  { id: "providers", label: "AI providers and integrations" },
+  { id: "controls", label: "Your controls" },
+  { id: "security", label: "Security and contact" },
+];
+
 export default function PrivacyPage() {
-  return (
-    <LegalPage title="Privacy Policy">
-      <p>Carole.ai is a local-first AI agent workspace. This policy explains what information the Carole.ai application processes when you install it and connect third-party services such as Google Workspace.</p>
+  return <LegalPage title="Privacy Policy" summary="Your workspace is local by default. This page explains the limited cases where data leaves your device." sections={sections}>
+    <section id="local-data">
+      <h2>What stays on your device</h2>
+      <p>Carole.ai runs its web interface and backend on your computer. Projects, conversations, settings, and local account records are stored in a database on your device by default—not in a Carole.ai-hosted account database. Local account passwords are hashed before storage; we do not store their plaintext versions.</p>
+      <p className={styles.notice}>“Local-first” does not mean no data ever leaves your device. Google OAuth exchanges, the Google APIs you choose to use, and model or tool providers you configure involve those services as described below.</p>
+    </section>
 
-      <h2>Local workspace data</h2>
-      <p>Your projects, agent conversations, settings, and local application data are stored on your device. Carole.ai does not operate a hosted account database for the locally installed application.</p>
-
-      <h2>Google account data</h2>
-      <p>Google connection is optional. If you choose to connect an account, Carole.ai requests only the permissions shown on Google&apos;s consent screen to identify your account and work with Gmail messages, Calendar events, and Google Tasks. The app accesses this data only when you or an agent invokes the corresponding feature.</p>
+    <section id="google">
+      <h2>Google account connection</h2>
+      <p>Connecting Google is optional. With your consent, Carole.ai can use the permissions shown on Google’s consent screen for Gmail, Calendar, and Tasks. The local app makes Google API calls directly from your device when you use those features.</p>
       <ul>
-        <li>OAuth access and refresh tokens are stored on your device in its operating-system credential vault.</li>
-        <li>For the built-in Google connection, authorization codes, PKCE verifiers, and tokens pass through Carole.ai&apos;s OAuth token service hosted on Cloudflare to exchange and refresh credentials with Google. This service keeps the application&apos;s client secret on the server. It processes tokens in memory without storing them in a cloud database or application logs. Gmail, Calendar, and Tasks API calls are made directly from your device to Google.</li>
-        <li>The public Desktop OAuth client identity bundled with Carole.ai is not a user token and cannot access an account by itself.</li>
+        <li>Google access and refresh tokens are saved locally in your operating system’s credential vault.</li>
+        <li>The built-in connection uses a Cloudflare-hosted token exchange service to exchange and refresh Google credentials. Authorization codes, PKCE verifiers, and tokens pass through that service in memory. The service does not persist them in a cloud database or application logs.</li>
+        <li>The public OAuth client ID included with Carole.ai cannot access your account on its own.</li>
         <li>Carole.ai does not sell Google user data or use it for advertising.</li>
-        <li>Email sending and other external changes require an in-app human approval before execution.</li>
       </ul>
+      <p>Agent actions that send, edit, trash, or delete data are designed to request in-app approval before execution. Review the requested action and its scope before approving.</p>
+    </section>
 
-      <h2>AI providers and other integrations</h2>
-      <p>When you configure an AI model provider or another integration, the data needed for your request is sent directly from your device to that provider under its own privacy terms. Review the provider and model you select before sharing sensitive information.</p>
+    <section id="providers">
+      <h2>AI providers and integrations</h2>
+      <p>When you configure an AI model, MCP tool, or another integration, the information needed for that request may be sent from your device to that provider. This can include content you ask an agent to work with, including Google content. Those services have their own privacy practices; review the provider you select before sharing sensitive material.</p>
+    </section>
 
-      <h2>Retention and control</h2>
-      <p>You can disconnect Google from Carole.ai at any time. Disconnecting revokes the connection when possible and removes the locally stored token. You can also revoke access from your Google Account security settings and delete local Carole.ai data from your device.</p>
+    <section id="controls">
+      <h2>Your controls</h2>
+      <p>You can disconnect Google in Carole.ai, revoke its access in your Google Account, and remove locally stored workspace data from your device. Uninstalling the app alone may not remove your local workspace database or credentials from the operating-system vault.</p>
+    </section>
 
-      <h2>Security</h2>
-      <p>We use least-privilege OAuth scopes, local credential-vault storage, and approval gates for external mutations. No system is perfectly secure, so keep your operating system updated and protect your device account.</p>
-
-      <h2>Contact</h2>
-      <p>Questions or privacy requests can be sent to <a href="mailto:support.carole.ai@gmail.com">support.carole.ai@gmail.com</a>.</p>
-    </LegalPage>
-  );
+    <section id="security">
+      <h2>Security and contact</h2>
+      <p>Carole.ai uses local storage, credential-vault token storage, and approval gates to reduce risk. No system is perfectly secure. Keep your device account and operating system protected.</p>
+      <p>Questions or privacy requests: <a href="mailto:support.carole.ai@gmail.com">support.carole.ai@gmail.com</a>.</p>
+    </section>
+  </LegalPage>;
 }

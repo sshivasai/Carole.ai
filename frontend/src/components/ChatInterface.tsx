@@ -252,6 +252,7 @@ function AskUserCard({ msg, onAnswerSubmit }: { msg: ChatMessage; onAnswerSubmit
 
   return (
     <AskUserQuestionCard
+      key={msg.question_id || msg.id}
       questionId={msg.question_id || msg.id}
       agentName={msg.sender_name || "Agent"}
       question={parsedQuestion}

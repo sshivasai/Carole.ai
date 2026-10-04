@@ -18,7 +18,6 @@ export default function AskUserQuestionCard({ questionId, agentName, question = 
   const lock = useRef(false);
   const currentId = useRef(questionId);
   useEffect(() => { currentId.current = questionId; }, [questionId]);
-  useEffect(() => { setDrafts({}); setError(""); }, [questionId]);
   const resolved = answered || receipt?.id === questionId;
   const update = (index: number, patch: Partial<{ selected: string[]; text: string }>) => setDrafts(prev => ({ ...prev, [index]: { ...(prev[index] || { selected: [], text: "" }), ...patch } }));
   const valueAt = (index: number) => [...(drafts[index]?.selected || []), ...(drafts[index]?.text.trim() ? [drafts[index].text.trim()] : [])].join(", ");
@@ -35,7 +34,7 @@ export default function AskUserQuestionCard({ questionId, agentName, question = 
   };
   if (resolved) return <section className="cw-request cw-request-resolved" data-status="approved"><div className="cw-receipt"><Check size={16} /><strong>Response sent</strong><small>{agentName}</small></div><div className="cw-request-content"><p>{chosenAnswer || receipt?.answer}</p></div></section>;
   return <section className="cw-request cw-question" aria-label="Agent question" aria-busy={busy}>
-    <div className="cw-request-heading"><span className="cw-request-icon"><MessageCircleQuestion size={21} /></span><div><span className="cw-eyebrow">Your input</span><h3>Let’s choose a direction</h3><p>{agentName} needs your input to continue.</p></div></div>
+    <div className="cw-request-heading"><span className="cw-request-icon"><MessageCircleQuestion size={21} /></span><div><span className="cw-eyebrow">Answer requested</span><h3>{list.length > 1 ? `${list.length} questions from ${agentName}` : `${agentName} has a question`}</h3><p>Choose an option or write your own answer to continue.</p></div></div>
     <form className="cw-request-content" onSubmit={e => { e.preventDefault(); void submit(); }}>
       {list.map((q, index) => <fieldset key={q.id || index} disabled={busy}>
         <legend>{list.length > 1 ? (index + 1) + ". " : ""}{q.question}</legend>
