@@ -40,6 +40,15 @@ jobs:
           wheel-test/bin/pip check
           test -f wheel-test/lib/python3.12/site-packages/carole_ai/web/index.html
 
+      - name: Run backend tests before publishing
+        run: |
+          wheel-test/bin/pip install pytest pytest-asyncio
+          PYTHONPATH=backend timeout 300 wheel-test/bin/python -m pytest -c backend/pytest.ini backend/tests/test_google_workspace_oauth.py backend/tests/test_auth.py -q
+          PYTHONPATH=backend timeout 300 wheel-test/bin/python -m pytest -c backend/pytest.ini --confcutdir=backend/auth_tests backend/auth_tests -q
+
+      - name: Run OAuth service tests before publishing
+        run: node --test services/google-oauth/worker.test.mjs
+
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions
