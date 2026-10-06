@@ -13,6 +13,16 @@ from pathlib import Path
 from carole_ai import __version__
 
 
+def _port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer from 1 to 65535") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be an integer from 1 to 65535")
+    return port
+
+
 def _open_when_ready(host: str, port: int) -> None:
     connect_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     deadline = time.monotonic() + 30
@@ -31,7 +41,7 @@ def _parser() -> argparse.ArgumentParser:
         description="Run the Carole.ai backend and web application.",
     )
     parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")))
+    parser.add_argument("--port", type=_port, default=os.getenv("PORT", "8000"))
     parser.add_argument("--data-dir", type=Path, help="Persistent Carole.ai data directory")
     parser.add_argument("--no-browser", action="store_true", help="Do not open the web UI")
     parser.add_argument("--version", action="version", version=f"Carole.ai {__version__}")
