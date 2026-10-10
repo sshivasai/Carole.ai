@@ -355,7 +355,7 @@ export default function LandingPage({ onLaunchApp, onSignIn, onSignUp, theme: th
                 <div><span>1</span><code>pip install carole.ai</code></div>
                 <div><span>2</span><code>caroleai</code></div>
               </div>
-              <p>Then open <a href="http://127.0.0.1:8000/">127.0.0.1:8000</a> to sign in or start building. Your workspace runs locally, not on this website.</p>
+              <p>Keep the terminal running, then <a href="#install" onClick={(event) => { event.preventDefault(); onLaunchApp?.(); }}>open your local workspace</a> to sign in or start building. Your workspace runs on your computer.</p>
             </div>
           )}
           <div className={styles.heroProof}>
